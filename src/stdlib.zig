@@ -152,8 +152,9 @@ fn openBase(state: *State) !void {
 }
 
 fn openTable(state: *State) !void {
-    const table_lib = try state.newTableWithHints(0, 8);
+    const table_lib = try state.newTableWithHints(0, 9);
     try setField(state, table_lib, "concat", .{ .native = .table_concat });
+    try setField(state, table_lib, "dedup", .{ .native = .table_dedup });
     try setField(state, table_lib, "insert", .{ .native = .table_insert });
     try setField(state, table_lib, "move", .{ .native = .table_move });
     try setField(state, table_lib, "pack", .{ .native = .table_pack });
@@ -180,6 +181,9 @@ fn openString(state: *State) !void {
     try setField(state, string_lib, "packsize", .{ .native = .string_packsize });
     try setField(state, string_lib, "rep", .{ .native = .string_rep });
     try setField(state, string_lib, "reverse", .{ .native = .string_reverse });
+    try setField(state, string_lib, "rsplit", .{ .native = .string_rsplit });
+    try setField(state, string_lib, "split", .{ .native = .string_split });
+    try setField(state, string_lib, "strip", .{ .native = .string_strip });
     try setField(state, string_lib, "sub", .{ .native = .string_sub });
     try setField(state, string_lib, "unpack", .{ .native = .string_unpack });
     try setField(state, string_lib, "upper", .{ .native = .string_upper });
@@ -439,6 +443,7 @@ pub fn callNative(state: *State, native: NativeFn, thread: *Thread, op: bytecode
         .tonumber => try base.tonumber(state, thread, op),
         .warn => try base.warn(state, thread, op),
         .table_concat => try table.concat(state, thread, op),
+        .table_dedup => try table.dedup(state, thread, op),
         .table_insert => try table.insert(state, thread, op),
         .table_move => try table.move(state, thread, op),
         .table_pack => try table.pack(state, thread, op),
@@ -460,6 +465,9 @@ pub fn callNative(state: *State, native: NativeFn, thread: *Thread, op: bytecode
         .string_packsize => try string.packsize(state, thread, op),
         .string_rep => try string.rep(state, thread, op),
         .string_reverse => try string.reverse(state, thread, op),
+        .string_rsplit => try string.rsplit(state, thread, op),
+        .string_split => try string.split(state, thread, op),
+        .string_strip => try string.strip(state, thread, op),
         .string_sub => try string.sub(state, thread, op),
         .string_unpack => try string.unpack(state, thread, op),
         .string_upper => try string.upper(state, thread, op),

@@ -772,6 +772,132 @@ pub fn reverse(state: *State, thread: *Thread, op: bytecode.Call) !void {
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(out) }});
 }
 
+/// Returns an array table split from the right. An omitted separator splits on ASCII whitespace.
+/// The optional maximum split count defaults to unlimited.
+pub fn rsplit(state: *State, thread: *Thread, op: bytecode.Call) !void {
+    try splitImpl(state, thread, op, true);
+}
+
+/// Returns an array table of pieces. An omitted separator splits on ASCII whitespace.
+/// The optional maximum split count defaults to unlimited.
+pub fn split(state: *State, thread: *Thread, op: bytecode.Call) !void {
+    try splitImpl(state, thread, op, false);
+}
+
+fn splitImpl(state: *State, thread: *Thread, op: bytecode.Call, from_right: bool) !void {
+    const function_name = if (from_right) "string.rsplit" else "string.split";
+    const source = try state.expectArgumentString(thread, op, function_name, 0);
+    const separator: ?[]const u8 = if (op.arg_count < 2 or runtime.argValue(state, thread, op, 1) == .nil)
+        null
+    else
+        try state.expectArgumentString(thread, op, function_name, 1);
+    const maxsplit = if (op.arg_count >= 3) try integerArgument(state, thread, op, function_name, 2) else -1;
+    if (separator) |bytes| if (bytes.len == 0) return state.fail("empty separator");
+
+    var pieces = std.ArrayList([]const u8).empty;
+    defer pieces.deinit(state.allocator);
+    if (separator) |bytes| {
+        try splitOnSeparator(state, &pieces, source, bytes, maxsplit, from_right);
+    } else {
+        try splitWhitespace(state, &pieces, source, maxsplit, from_right);
+    }
+
+    const result = try state.newTableWithHints(@intCast(pieces.items.len), 0);
+    for (pieces.items, 0..) |piece, index| {
+        const output_index = if (from_right) pieces.items.len - index else index + 1;
+        try result.table.set(state.allocator, .{ .integer = @intCast(output_index) }, .{ .string = try state.intern(piece) });
+    }
+    try state.returnValues(thread, op.base, op.return_count, &.{result});
+}
+
+fn splitOnSeparator(state: *State, pieces: *std.ArrayList([]const u8), source: []const u8, separator: []const u8, maxsplit: i64, from_right: bool) !void {
+    var split_count: i64 = 0;
+    if (!from_right) {
+        var start: usize = 0;
+        while (maxsplit < 0 or split_count < maxsplit) {
+            const relative = std.mem.indexOf(u8, source[start..], separator) orelse break;
+            const found = start + relative;
+            try pieces.append(state.allocator, source[start..found]);
+            start = found + separator.len;
+            split_count += 1;
+        }
+        try pieces.append(state.allocator, source[start..]);
+        return;
+    }
+
+    var end = source.len;
+    while (maxsplit < 0 or split_count < maxsplit) {
+        const found = std.mem.lastIndexOf(u8, source[0..end], separator) orelse break;
+        try pieces.append(state.allocator, source[found + separator.len .. end]);
+        end = found;
+        split_count += 1;
+    }
+    try pieces.append(state.allocator, source[0..end]);
+}
+
+fn splitWhitespace(state: *State, pieces: *std.ArrayList([]const u8), source: []const u8, maxsplit: i64, from_right: bool) !void {
+    if (from_right) return splitWhitespaceFromRight(state, pieces, source, maxsplit);
+
+    var pos: usize = 0;
+    while (pos < source.len and stripByte(null, source[pos])) pos += 1;
+    if (pos == source.len) return;
+    if (maxsplit == 0) return pieces.append(state.allocator, source[pos..]);
+
+    var split_count: i64 = 0;
+    while (pos < source.len) {
+        const token_start = pos;
+        while (pos < source.len and !stripByte(null, source[pos])) pos += 1;
+        if (pos == source.len) return pieces.append(state.allocator, source[token_start..]);
+        try pieces.append(state.allocator, source[token_start..pos]);
+        split_count += 1;
+        while (pos < source.len and stripByte(null, source[pos])) pos += 1;
+        if (pos == source.len) return;
+        if (maxsplit > 0 and split_count >= maxsplit) return pieces.append(state.allocator, source[pos..]);
+    }
+}
+
+fn splitWhitespaceFromRight(state: *State, pieces: *std.ArrayList([]const u8), source: []const u8, maxsplit: i64) !void {
+    var end = source.len;
+    while (end > 0 and stripByte(null, source[end - 1])) end -= 1;
+    if (end == 0) return;
+    if (maxsplit == 0) return pieces.append(state.allocator, source[0..end]);
+
+    var split_count: i64 = 0;
+    while (end > 0) {
+        const token_end = end;
+        var start = end;
+        while (start > 0 and !stripByte(null, source[start - 1])) start -= 1;
+        if (start == 0) return pieces.append(state.allocator, source[0..token_end]);
+        try pieces.append(state.allocator, source[start..token_end]);
+        split_count += 1;
+        end = start;
+        while (end > 0 and stripByte(null, source[end - 1])) end -= 1;
+        if (end == 0) return;
+        if (maxsplit > 0 and split_count >= maxsplit) return pieces.append(state.allocator, source[0..end]);
+    }
+}
+
+/// Removes leading and trailing ASCII whitespace, or bytes in the optional character set.
+pub fn strip(state: *State, thread: *Thread, op: bytecode.Call) !void {
+    const source = try state.expectArgumentString(thread, op, "string.strip", 0);
+    const chars: ?[]const u8 = if (op.arg_count < 2 or runtime.argValue(state, thread, op, 1) == .nil)
+        null
+    else
+        try state.expectArgumentString(thread, op, "string.strip", 1);
+
+    var start: usize = 0;
+    while (start < source.len and stripByte(chars, source[start])) : (start += 1) {}
+    var end = source.len;
+    while (end > start and stripByte(chars, source[end - 1])) : (end -= 1) {}
+
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(source[start..end]) }});
+}
+
+fn stripByte(chars: ?[]const u8, byte_value: u8) bool {
+    const bytes = chars orelse " \t\n\r\x0b\x0c";
+    return std.mem.indexOfScalar(u8, bytes, byte_value) != null;
+}
+
 pub fn sub(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const source = try state.expectArgumentString(thread, op, "string.sub", 0);
     const start_arg = if (op.arg_count >= 2) try integerArgument(state, thread, op, "string.sub", 1) else 1;

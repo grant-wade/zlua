@@ -36,6 +36,38 @@ fn concatIndexError(state: *State, index: i64) ![]const u8 {
     return state.intern(out.items);
 }
 
+/// Returns the unique elements from the input sequence in first-occurrence order.
+/// Equality follows raw Lua table-key equality; non-array fields are ignored.
+pub fn dedup(state: *State, thread: *Thread, op: bytecode.Call) !void {
+    const table_value = runtime.argValue(state, thread, op, 0);
+    _ = try state.expectArgumentTable(thread, op, "table.dedup", 0);
+    const len = runtime.toInteger(try state.lengthOf(thread, table_value)) orelse return state.fail("object length is not an integer");
+    if (len > 1_000_000) return state.fail("array too big");
+    const count: u32 = if (len > 0) @intCast(len) else 0;
+
+    var seen = try runtime.Table.init(state.allocator, 0, count);
+    defer seen.deinit(state.allocator);
+
+    const result = try state.newTableWithHints(count, 0);
+    const result_root = try state.rootValue(result);
+    defer state.unrootValue(result_root);
+
+    var result_index: i64 = 1;
+    var index: i64 = 1;
+    while (index <= len) : (index += 1) {
+        const value = try state.getTableFromThread(thread, table_value, .{ .integer = index });
+        if (value == .nil) continue;
+        const is_nan = value == .number and std.math.isNan(value.number);
+        const seen_key = if (value == .number) if (runtime.floatToInteger(value.number)) |integer| Value{ .integer = integer } else value else value;
+        if (!is_nan and seen.get(seen_key) != .nil) continue;
+        if (!is_nan) try seen.set(state.allocator, seen_key, .{ .boolean = true });
+        try result.table.set(state.allocator, .{ .integer = result_index }, value);
+        result_index += 1;
+    }
+
+    try state.returnValues(thread, op.base, op.return_count, &.{result});
+}
+
 pub fn insert(state: *State, thread: *Thread, op: bytecode.Call) !void {
     if (op.arg_count < 2 or op.arg_count > 3) return state.failArgumentMessage("table.insert", 1, "wrong number of arguments");
     const table_value = runtime.argValue(state, thread, op, 0);

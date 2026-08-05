@@ -72,6 +72,7 @@
 ## Functions
 
 - [concat](#fn-concat)
+- [dedup](#fn-dedup)
 - [insert](#fn-insert)
 - [move](#fn-move)
 - [pack](#fn-pack)
@@ -85,6 +86,17 @@
 
 ```zig
 pub fn concat(state: *State, thread: *Thread, op: bytecode.Call) !void
+```
+
+<a id="fn-dedup"></a>
+
+## dedup
+
+Returns the unique elements from the input sequence in first-occurrence order.
+Equality follows raw Lua table-key equality; non-array fields are ignored.
+
+```zig
+pub fn dedup(state: *State, thread: *Thread, op: bytecode.Call) !void
 ```
 
 <a id="fn-insert"></a>

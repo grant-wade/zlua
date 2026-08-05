@@ -54,7 +54,7 @@ The base library installs the core globals and `_G` table:
 
 | Library | Opened global | Functions and fields |
 | --- | --- | --- |
-| `table` | `table` | `concat`, `insert`, `move`, `pack`, `remove`, `sort`, `unpack`, `create` |
+| `table` | `table` | `concat`, `dedup`, `insert`, `move`, `pack`, `remove`, `sort`, `unpack`, `create` |
 | `string` | `string` | `byte`, `char`, `dump`, `find`, `format`, `gmatch`, `gsub`, `len`, `lower`, `match`, `pack`, `packsize`, `rep`, `reverse`, `sub`, `unpack`, `upper` |
 | `math` | `math` | `abs`, `acos`, `asin`, `atan`, `ceil`, `cos`, `deg`, `exp`, `floor`, `fmod`, `frexp`, `huge`, `ldexp`, `log`, `max`, `maxinteger`, `min`, `mininteger`, `modf`, `pi`, `rad`, `random`, `randomseed`, `sin`, `sqrt`, `tan`, `tointeger`, `type`, `ult` |
 | `utf8` | `utf8` | `char`, `charpattern`, `codepoint`, `codes`, `len`, `offset` |
@@ -65,7 +65,9 @@ The base library installs the core globals and `_G` table:
 | `package` | `package` | `loaded`, `preload`, `searchers`, `searchpath`, `path`, `cpath`, `config`; also opens `require`, `loadfile`, and `dofile` globals |
 | `fs` | `fs` | Filesystem inspection, traversal, file helpers, mutation utilities, directory objects, and `fs.path` |
 
-`table.create` is a zlua helper for preallocating table array/hash capacity. The extension library set contains `json`, `toml`, `msgpack`, `csv`, and `fs`.
+`table.create` is a zlua helper for preallocating table array/hash capacity. `table.dedup(tbl)` is a zlua extension that returns a new sequence containing the first occurrence of each element in `1..#tbl`; it preserves order, ignores non-array fields, and leaves the input unchanged. Equality follows raw Lua table-key equality, so numeric integer/float equivalents are duplicates, reference values compare by identity without invoking `__eq`, and NaN values remain distinct. Inputs larger than 1,000,000 elements raise an `array too big` error, and sparse-table behavior is unspecified.
+
+The extension library set contains `json`, `toml`, `msgpack`, `csv`, and `fs`.
 
 ## Host-Facing Libraries
 

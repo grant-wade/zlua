@@ -87,6 +87,9 @@
 - [packsize](#fn-packsize)
 - [rep](#fn-rep)
 - [reverse](#fn-reverse)
+- [rsplit](#fn-rsplit)
+- [split](#fn-split)
+- [strip](#fn-strip)
 - [sub](#fn-sub)
 - [unpack](#fn-unpack)
 - [upper](#fn-upper)
@@ -217,6 +220,38 @@ pub fn rep(state: *State, thread: *Thread, op: bytecode.Call) !void
 
 ```zig
 pub fn reverse(state: *State, thread: *Thread, op: bytecode.Call) !void
+```
+
+<a id="fn-rsplit"></a>
+
+## rsplit
+
+Returns an array table split from the right. An omitted separator splits on ASCII whitespace.
+The optional maximum split count defaults to unlimited.
+
+```zig
+pub fn rsplit(state: *State, thread: *Thread, op: bytecode.Call) !void
+```
+
+<a id="fn-split"></a>
+
+## split
+
+Returns an array table of pieces. An omitted separator splits on ASCII whitespace.
+The optional maximum split count defaults to unlimited.
+
+```zig
+pub fn split(state: *State, thread: *Thread, op: bytecode.Call) !void
+```
+
+<a id="fn-strip"></a>
+
+## strip
+
+Removes leading and trailing ASCII whitespace, or bytes in the optional character set.
+
+```zig
+pub fn strip(state: *State, thread: *Thread, op: bytecode.Call) !void
 ```
 
 <a id="fn-sub"></a>
