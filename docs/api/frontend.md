@@ -52,6 +52,7 @@
 - [stdlib.toml](stdlib/toml.md)
 - [stdlib.msgpack](stdlib/msgpack.md)
 - [stdlib.csv](stdlib/csv.md)
+- [stdlib.fs](stdlib/fs.md)
 - [runtime.vm](runtime/vm.md)
 - [runtime.tests](runtime/tests.md)
 - [runtime.internal](runtime/internal.md)

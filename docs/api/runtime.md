@@ -52,6 +52,7 @@
 - [stdlib.toml](stdlib/toml.md)
 - [stdlib.msgpack](stdlib/msgpack.md)
 - [stdlib.csv](stdlib/csv.md)
+- [stdlib.fs](stdlib/fs.md)
 - [runtime.vm](runtime/vm.md)
 - [runtime.tests](runtime/tests.md)
 - [runtime.internal](runtime/internal.md)
@@ -106,6 +107,11 @@
 - [MemoryFilesystem](#alias-memoryfilesystem)
 - [FilesystemCapability](#alias-filesystemcapability)
 - [CustomFilesystem](#alias-customfilesystem)
+- [HostDirectory](#alias-hostdirectory)
+- [FilesystemFileKind](#alias-filesystemfilekind)
+- [FilesystemFileStat](#alias-filesystemfilestat)
+- [FilesystemDirectoryEntry](#alias-filesystemdirectoryentry)
+- [deinitFilesystemDirectoryEntries](#alias-deinitfilesystemdirectoryentries)
 - [EnvironmentCapability](#alias-environmentcapability)
 - [CustomEnvironment](#alias-customenvironment)
 - [ClockCapability](#alias-clockcapability)
@@ -481,6 +487,56 @@ pub const CustomFilesystem = host.CustomFilesystem;
 ```
 
 References: [`host.CustomFilesystem`](runtime/host.md#type-customfilesystem)
+
+<a id="alias-hostdirectory"></a>
+
+## HostDirectory
+
+```zig
+pub const HostDirectory = host.HostDirectory;
+```
+
+References: [`host.HostDirectory`](runtime/host.md#type-hostdirectory)
+
+<a id="alias-filesystemfilekind"></a>
+
+## FilesystemFileKind
+
+```zig
+pub const FilesystemFileKind = host.FileKind;
+```
+
+References: [`host.FileKind`](runtime/host.md#type-filekind)
+
+<a id="alias-filesystemfilestat"></a>
+
+## FilesystemFileStat
+
+```zig
+pub const FilesystemFileStat = host.FileStat;
+```
+
+References: [`host.FileStat`](runtime/host.md#type-filestat)
+
+<a id="alias-filesystemdirectoryentry"></a>
+
+## FilesystemDirectoryEntry
+
+```zig
+pub const FilesystemDirectoryEntry = host.DirectoryEntry;
+```
+
+References: [`host.DirectoryEntry`](runtime/host.md#type-directoryentry)
+
+<a id="alias-deinitfilesystemdirectoryentries"></a>
+
+## deinitFilesystemDirectoryEntries
+
+```zig
+pub const deinitFilesystemDirectoryEntries = host.deinitDirectoryEntries;
+```
+
+References: [`host.deinitDirectoryEntries`](runtime/host.md#fn-deinitdirectoryentries)
 
 <a id="alias-environmentcapability"></a>
 

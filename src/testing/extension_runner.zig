@@ -128,7 +128,9 @@ fn runOne(
     var expected = try readExpected(allocator, io, path);
     defer expected.deinit(allocator);
 
-    const argv = [_][]const u8{ zlua_exe, "--stdlib", options.stdlib, path };
+    const parent = std.fs.path.dirname(path) orelse "";
+    const fixture_stdlib = if (std.mem.eql(u8, std.fs.path.basename(parent), "fs")) "full" else options.stdlib;
+    const argv = [_][]const u8{ zlua_exe, "--stdlib", fixture_stdlib, path };
     var result = try process.runProcess(allocator, io, &argv, .{ .timeout_ms = options.timeout_ms, .max_output_bytes = 1024 * 1024 });
     defer result.deinit(allocator);
 

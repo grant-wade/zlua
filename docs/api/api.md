@@ -51,6 +51,7 @@
 - [stdlib.toml](stdlib/toml.md)
 - [stdlib.msgpack](stdlib/msgpack.md)
 - [stdlib.csv](stdlib/csv.md)
+- [stdlib.fs](stdlib/fs.md)
 - [runtime.vm](runtime/vm.md)
 - [runtime.tests](runtime/tests.md)
 - [runtime.internal](runtime/internal.md)
@@ -154,6 +155,11 @@ and should not be treated as a stable embedding contract.
 - [MemoryFilesystem](#alias-memoryfilesystem)
 - [FilesystemCapability](#alias-filesystemcapability)
 - [CustomFilesystem](#alias-customfilesystem)
+- [HostDirectory](#alias-hostdirectory)
+- [FilesystemFileKind](#alias-filesystemfilekind)
+- [FilesystemFileStat](#alias-filesystemfilestat)
+- [FilesystemDirectoryEntry](#alias-filesystemdirectoryentry)
+- [deinitFilesystemDirectoryEntries](#alias-deinitfilesystemdirectoryentries)
 - [EnvironmentCapability](#alias-environmentcapability)
 - [CustomEnvironment](#alias-customenvironment)
 - [ClockCapability](#alias-clockcapability)
@@ -326,6 +332,66 @@ pub const CustomFilesystem = runtime.CustomFilesystem;
 ```
 
 References: [`runtime.CustomFilesystem`](runtime.md#alias-customfilesystem)
+
+<a id="alias-hostdirectory"></a>
+
+## HostDirectory
+
+Borrowed directory root for capability-scoped host filesystem access.
+
+```zig
+pub const HostDirectory = runtime.HostDirectory;
+```
+
+References: [`runtime.HostDirectory`](runtime.md#alias-hostdirectory)
+
+<a id="alias-filesystemfilekind"></a>
+
+## FilesystemFileKind
+
+Portable filesystem entry kind used by custom filesystem callbacks.
+
+```zig
+pub const FilesystemFileKind = runtime.FilesystemFileKind;
+```
+
+References: [`runtime.FilesystemFileKind`](runtime.md#alias-filesystemfilekind)
+
+<a id="alias-filesystemfilestat"></a>
+
+## FilesystemFileStat
+
+[Metadata](testing/metadata.md#type-metadata) returned by custom filesystem callbacks.
+
+```zig
+pub const FilesystemFileStat = runtime.FilesystemFileStat;
+```
+
+References: [`runtime.FilesystemFileStat`](runtime.md#alias-filesystemfilestat)
+
+<a id="alias-filesystemdirectoryentry"></a>
+
+## FilesystemDirectoryEntry
+
+Directory entry returned by custom filesystem callbacks.
+
+```zig
+pub const FilesystemDirectoryEntry = runtime.FilesystemDirectoryEntry;
+```
+
+References: [`runtime.FilesystemDirectoryEntry`](runtime.md#alias-filesystemdirectoryentry)
+
+<a id="alias-deinitfilesystemdirectoryentries"></a>
+
+## deinitFilesystemDirectoryEntries
+
+Releases an owned custom directory-entry slice and its names.
+
+```zig
+pub const deinitFilesystemDirectoryEntries = runtime.deinitFilesystemDirectoryEntries;
+```
+
+References: [`runtime.deinitFilesystemDirectoryEntries`](runtime.md#alias-deinitfilesystemdirectoryentries)
 
 <a id="alias-environmentcapability"></a>
 

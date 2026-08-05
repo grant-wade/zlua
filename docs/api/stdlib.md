@@ -3,7 +3,7 @@
 ## Navigation
 
 - [API Index](README.md)
-- Submodules: [stdlib.base](stdlib/base.md), [stdlib.table](stdlib/table.md), [stdlib.string](stdlib/string.md), [stdlib.math](stdlib/math.md), [stdlib.utf8](stdlib/utf8.md), [stdlib.coroutine](stdlib/coroutine.md), [stdlib.debug](stdlib/debug.md), [stdlib.package](stdlib/package.md), [stdlib.io](stdlib/io.md), [stdlib.os](stdlib/os.md), [stdlib.json](stdlib/json.md), [stdlib.zerde_lua](stdlib/zerde_lua.md), [stdlib.toml](stdlib/toml.md), [stdlib.msgpack](stdlib/msgpack.md), [stdlib.csv](stdlib/csv.md)
+- Submodules: [stdlib.base](stdlib/base.md), [stdlib.table](stdlib/table.md), [stdlib.string](stdlib/string.md), [stdlib.math](stdlib/math.md), [stdlib.utf8](stdlib/utf8.md), [stdlib.coroutine](stdlib/coroutine.md), [stdlib.debug](stdlib/debug.md), [stdlib.package](stdlib/package.md), [stdlib.io](stdlib/io.md), [stdlib.os](stdlib/os.md), [stdlib.json](stdlib/json.md), [stdlib.zerde_lua](stdlib/zerde_lua.md), [stdlib.toml](stdlib/toml.md), [stdlib.msgpack](stdlib/msgpack.md), [stdlib.csv](stdlib/csv.md), [stdlib.fs](stdlib/fs.md)
 
 <details>
 <summary>All documents</summary>
@@ -52,6 +52,7 @@
 - [stdlib.toml](stdlib/toml.md)
 - [stdlib.msgpack](stdlib/msgpack.md)
 - [stdlib.csv](stdlib/csv.md)
+- [stdlib.fs](stdlib/fs.md)
 - [runtime.vm](runtime/vm.md)
 - [runtime.tests](runtime/tests.md)
 - [runtime.internal](runtime/internal.md)
@@ -99,6 +100,7 @@
 - [toml](#import-toml) `@import("stdlib/toml.zig")`
 - [msgpack](#import-msgpack) `@import("stdlib/msgpack.zig")`
 - [csv](#import-csv) `@import("stdlib/csv.zig")`
+- [fs](#import-fs) `@import("stdlib/fs.zig")`
 
 <a id="import-base"></a>
 
@@ -212,6 +214,14 @@ pub const msgpack = @import("stdlib/msgpack.zig");
 pub const csv = @import("stdlib/csv.zig");
 ```
 
+<a id="import-fs"></a>
+
+## fs
+
+```zig
+pub const fs = @import("stdlib/fs.zig");
+```
+
 <a id="type-libraryselection"></a>
 
 ## LibrarySelection
@@ -273,6 +283,7 @@ pub const LibrarySet = struct {
     toml: bool = false,
     msgpack: bool = false,
     csv: bool = false,
+    fs: bool = false,
 };
 ```
 

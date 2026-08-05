@@ -28,6 +28,11 @@ fn run() !void {
                 .write_file = Host.writeFile,
                 .remove_file = Host.removeFile,
                 .rename_file = Host.renameFile,
+                .stat = Host.stat,
+                .read_dir_alloc = Host.readDirAlloc,
+                .make_dir = Host.makeDir,
+                .remove_path = Host.removePath,
+                .copy_file = Host.copyFile,
             } },
             .environment = .{ .custom = .{
                 .context = &host,
@@ -48,7 +53,8 @@ fn run() !void {
 
     try lua.doString(
         \\assert(_VERSION == 'Lua 5.5')
-        \\assert(io ~= nil and os ~= nil and package ~= nil and debug ~= nil)
+        \\assert(io ~= nil and os ~= nil and package ~= nil and debug ~= nil and fs ~= nil)
+        \\assert(fs.path.join('boot', 'init.lua') == 'boot/init.lua')
         \\
         \\local t = { 3, 1, 2 }
         \\table.sort(t)
@@ -88,6 +94,13 @@ fn run() !void {
         \\local loaded = assert(loadfile('boot/init.lua'))
         \\assert(loaded() == 'booted')
         \\assert(require('mod').answer == 42)
+        \\assert(fs.stat('boot').kind == 'directory')
+        \\local boot_entries = assert(fs.list('boot'))
+        \\assert(#boot_entries == 1 and boot_entries[1].name == 'init.lua')
+        \\assert(fs.mkdir('work/deep', { parents = true }))
+        \\assert(fs.write('work/deep/value.txt', 'custom fs'))
+        \\assert(fs.read('work/deep/value.txt') == 'custom fs')
+        \\assert(fs.remove('work', { recursive = true }))
         \\local input = io.read('l')
         \\assert(input == 'kernel input')
         \\local f = assert(io.open('tmp.txt', 'w'))
@@ -123,6 +136,27 @@ const Host = struct {
 
     fn renameFile(context: ?*anyopaque, old_path: []const u8, new_path: []const u8) !void {
         try fromContext(context).filesystem.renameFile(old_path, new_path);
+    }
+
+    fn stat(context: ?*anyopaque, path: []const u8, follow_symlinks: bool) !zlua.FilesystemFileStat {
+        _ = follow_symlinks;
+        return fromContext(context).filesystem.statPath(path);
+    }
+
+    fn readDirAlloc(context: ?*anyopaque, allocator: std.mem.Allocator, path: []const u8) ![]zlua.FilesystemDirectoryEntry {
+        return fromContext(context).filesystem.readDirAlloc(allocator, path);
+    }
+
+    fn makeDir(context: ?*anyopaque, path: []const u8, parents: bool) !void {
+        try fromContext(context).filesystem.makeDir(path, parents);
+    }
+
+    fn removePath(context: ?*anyopaque, path: []const u8, recursive: bool) !void {
+        try fromContext(context).filesystem.removePath(path, recursive);
+    }
+
+    fn copyFile(context: ?*anyopaque, source: []const u8, destination: []const u8, overwrite: bool) !void {
+        try fromContext(context).filesystem.copyFile(source, destination, overwrite);
     }
 
     fn getenv(context: ?*anyopaque, name: []const u8) ?[]const u8 {

@@ -51,6 +51,7 @@
 - [stdlib.toml](stdlib/toml.md)
 - [stdlib.msgpack](stdlib/msgpack.md)
 - [stdlib.csv](stdlib/csv.md)
+- [stdlib.fs](stdlib/fs.md)
 - [runtime.vm](runtime/vm.md)
 - [runtime.tests](runtime/tests.md)
 - [runtime.internal](runtime/internal.md)
@@ -92,6 +93,11 @@
 - [MemoryFilesystem](#alias-memoryfilesystem)
 - [FilesystemCapability](#alias-filesystemcapability)
 - [CustomFilesystem](#alias-customfilesystem)
+- [HostDirectory](#alias-hostdirectory)
+- [FilesystemFileKind](#alias-filesystemfilekind)
+- [FilesystemFileStat](#alias-filesystemfilestat)
+- [FilesystemDirectoryEntry](#alias-filesystemdirectoryentry)
+- [deinitFilesystemDirectoryEntries](#alias-deinitfilesystemdirectoryentries)
 - [EnvironmentCapability](#alias-environmentcapability)
 - [CustomEnvironment](#alias-customenvironment)
 - [ClockCapability](#alias-clockcapability)
@@ -116,7 +122,7 @@
 ## version
 
 ```zig
-pub const version = "0.3.0";
+pub const version = "0.4.0";
 ```
 
 <a id="const-lua_target_version"></a>
@@ -362,6 +368,56 @@ pub const CustomFilesystem = api.CustomFilesystem;
 ```
 
 References: [`api.CustomFilesystem`](api.md#alias-customfilesystem)
+
+<a id="alias-hostdirectory"></a>
+
+## HostDirectory
+
+```zig
+pub const HostDirectory = api.HostDirectory;
+```
+
+References: [`api.HostDirectory`](api.md#alias-hostdirectory)
+
+<a id="alias-filesystemfilekind"></a>
+
+## FilesystemFileKind
+
+```zig
+pub const FilesystemFileKind = api.FilesystemFileKind;
+```
+
+References: [`api.FilesystemFileKind`](api.md#alias-filesystemfilekind)
+
+<a id="alias-filesystemfilestat"></a>
+
+## FilesystemFileStat
+
+```zig
+pub const FilesystemFileStat = api.FilesystemFileStat;
+```
+
+References: [`api.FilesystemFileStat`](api.md#alias-filesystemfilestat)
+
+<a id="alias-filesystemdirectoryentry"></a>
+
+## FilesystemDirectoryEntry
+
+```zig
+pub const FilesystemDirectoryEntry = api.FilesystemDirectoryEntry;
+```
+
+References: [`api.FilesystemDirectoryEntry`](api.md#alias-filesystemdirectoryentry)
+
+<a id="alias-deinitfilesystemdirectoryentries"></a>
+
+## deinitFilesystemDirectoryEntries
+
+```zig
+pub const deinitFilesystemDirectoryEntries = api.deinitFilesystemDirectoryEntries;
+```
+
+References: [`api.deinitFilesystemDirectoryEntries`](api.md#alias-deinitfilesystemdirectoryentries)
 
 <a id="alias-environmentcapability"></a>
 

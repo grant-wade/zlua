@@ -58,6 +58,10 @@ pub const StdlibMode = stdlib.LibrarySelection;
 pub const MemoryFile = host.MemoryFile;
 pub const MemoryFilesystem = host.MemoryFilesystem;
 pub const FilesystemCapability = host.FilesystemCapability;
+pub const HostDirectory = host.HostDirectory;
+pub const FilesystemFileKind = host.FileKind;
+pub const FilesystemFileStat = host.FileStat;
+pub const FilesystemDirectoryEntry = host.DirectoryEntry;
 pub const EnvironmentCapability = host.EnvironmentCapability;
 pub const ClockCapability = host.ClockCapability;
 pub const ProcessCapability = host.ProcessCapability;
@@ -1322,6 +1326,14 @@ pub const State = struct {
                 const io = try self.requireIo("filesystem I/O unavailable");
                 return Dir.cwd().readFileAlloc(io, path, self.allocator, .limited(1024 * 1024)) catch return self.fail("cannot open file");
             },
+            .host_dir => |root| if (comptime builtin.os.tag == .freestanding) {
+                return self.fail("host filesystem unavailable");
+            } else {
+                const io = try self.requireIo("filesystem I/O unavailable");
+                const normalized = host.MemoryFilesystem.normalizePathAlloc(self.allocator, path, host.MemoryFilesystem.default_max_path_len) catch return self.fail("cannot open file");
+                defer self.allocator.free(normalized);
+                return root.dir.readFileAlloc(io, normalized, self.allocator, .limited(1024 * 1024)) catch return self.fail("cannot open file");
+            },
         }
     }
 
@@ -1357,6 +1369,15 @@ pub const State = struct {
                 const io = try self.requireIo("filesystem I/O unavailable");
                 Dir.cwd().writeFile(io, .{ .sub_path = path, .data = data }) catch return self.fail("cannot write file");
             },
+            .host_dir => |root| if (comptime builtin.os.tag == .freestanding) {
+                return self.fail("host filesystem unavailable");
+            } else {
+                if (root.read_only) return self.fail("filesystem write access disabled");
+                const io = try self.requireIo("filesystem I/O unavailable");
+                const normalized = host.MemoryFilesystem.normalizePathAlloc(self.allocator, path, host.MemoryFilesystem.default_max_path_len) catch return self.fail("cannot write file");
+                defer self.allocator.free(normalized);
+                root.dir.writeFile(io, .{ .sub_path = normalized, .data = data }) catch return self.fail("cannot write file");
+            },
         }
     }
 
@@ -1374,6 +1395,15 @@ pub const State = struct {
                 const io = try self.requireIo("filesystem I/O unavailable");
                 Dir.cwd().deleteFile(io, path) catch return self.fail("cannot remove file");
             },
+            .host_dir => |root| if (comptime builtin.os.tag == .freestanding) {
+                return self.fail("host filesystem unavailable");
+            } else {
+                if (root.read_only) return self.fail("filesystem write access disabled");
+                const io = try self.requireIo("filesystem I/O unavailable");
+                const normalized = host.MemoryFilesystem.normalizePathAlloc(self.allocator, path, host.MemoryFilesystem.default_max_path_len) catch return self.fail("cannot remove file");
+                defer self.allocator.free(normalized);
+                root.dir.deleteFile(io, normalized) catch return self.fail("cannot remove file");
+            },
         }
     }
 
@@ -1390,6 +1420,273 @@ pub const State = struct {
             } else {
                 const io = try self.requireIo("filesystem I/O unavailable");
                 Dir.cwd().rename(old_path, Dir.cwd(), new_path, io) catch return self.fail("cannot rename file");
+            },
+            .host_dir => |root| if (comptime builtin.os.tag == .freestanding) {
+                return self.fail("host filesystem unavailable");
+            } else {
+                if (root.read_only) return self.fail("filesystem write access disabled");
+                const io = try self.requireIo("filesystem I/O unavailable");
+                const old_normalized = host.MemoryFilesystem.normalizePathAlloc(self.allocator, old_path, host.MemoryFilesystem.default_max_path_len) catch return self.fail("cannot rename file");
+                defer self.allocator.free(old_normalized);
+                const new_normalized = host.MemoryFilesystem.normalizePathAlloc(self.allocator, new_path, host.MemoryFilesystem.default_max_path_len) catch return self.fail("cannot rename file");
+                defer self.allocator.free(new_normalized);
+                root.dir.rename(old_normalized, root.dir, new_normalized, io) catch return self.fail("cannot rename file");
+            },
+        }
+    }
+
+    pub fn fsReadFileAlloc(self: *State, path: []const u8, max_bytes: usize) anyerror![]const u8 {
+        switch (self.options.filesystem) {
+            .disabled => return error.FilesystemDisabled,
+            .memory => |files| {
+                const normalized = try host.MemoryFilesystem.normalizePathAlloc(self.allocator, path, host.MemoryFilesystem.default_max_path_len);
+                defer self.allocator.free(normalized);
+                for (files) |file| {
+                    if (std.mem.eql(u8, file.path, normalized)) {
+                        if (file.contents.len > max_bytes) return error.StreamTooLong;
+                        return self.allocator.dupe(u8, file.contents);
+                    }
+                }
+                return error.FileNotFound;
+            },
+            .memory_rw => |filesystem| {
+                const bytes = try filesystem.readFileAlloc(self.allocator, path);
+                if (bytes.len > max_bytes) {
+                    self.allocator.free(bytes);
+                    return error.StreamTooLong;
+                }
+                return bytes;
+            },
+            .custom => |filesystem| {
+                const bytes = try filesystem.read_file_alloc(filesystem.context, self.allocator, path);
+                if (bytes.len > max_bytes) {
+                    self.allocator.free(bytes);
+                    return error.StreamTooLong;
+                }
+                return bytes;
+            },
+            .host_cwd => if (comptime builtin.os.tag == .freestanding) return error.OperationUnsupported else {
+                const io = self.options.io orelse return error.IoUnavailable;
+                return Dir.cwd().readFileAlloc(io, path, self.allocator, .limited(max_bytes));
+            },
+            .host_dir => |root| if (comptime builtin.os.tag == .freestanding) return error.OperationUnsupported else {
+                const io = self.options.io orelse return error.IoUnavailable;
+                const normalized = try host.MemoryFilesystem.normalizePathAlloc(self.allocator, path, host.MemoryFilesystem.default_max_path_len);
+                defer self.allocator.free(normalized);
+                return root.dir.readFileAlloc(io, normalized, self.allocator, .limited(max_bytes));
+            },
+        }
+    }
+
+    pub fn fsWriteFile(self: *State, path: []const u8, data: []const u8) anyerror!void {
+        switch (self.options.filesystem) {
+            .disabled, .memory => return error.FilesystemReadOnly,
+            .memory_rw => |filesystem| return filesystem.writeFile(path, data),
+            .custom => |filesystem| {
+                const write = filesystem.write_file orelse return error.OperationUnsupported;
+                return write(filesystem.context, path, data);
+            },
+            .host_cwd => if (comptime builtin.os.tag == .freestanding) return error.OperationUnsupported else {
+                const io = self.options.io orelse return error.IoUnavailable;
+                return Dir.cwd().writeFile(io, .{ .sub_path = path, .data = data });
+            },
+            .host_dir => |root| if (comptime builtin.os.tag == .freestanding) return error.OperationUnsupported else {
+                if (root.read_only) return error.FilesystemReadOnly;
+                const io = self.options.io orelse return error.IoUnavailable;
+                const normalized = try host.MemoryFilesystem.normalizePathAlloc(self.allocator, path, host.MemoryFilesystem.default_max_path_len);
+                defer self.allocator.free(normalized);
+                return root.dir.writeFile(io, .{ .sub_path = normalized, .data = data });
+            },
+        }
+    }
+
+    pub fn fsStat(self: *State, path: []const u8, follow_symlinks: bool) anyerror!host.FileStat {
+        switch (self.options.filesystem) {
+            .disabled => return error.FilesystemDisabled,
+            .memory => |files| {
+                var view = try host.MemoryFilesystem.initWithFiles(self.allocator, files);
+                defer view.deinit();
+                return view.statPath(path);
+            },
+            .memory_rw => |filesystem| return filesystem.statPath(path),
+            .custom => |filesystem| {
+                const stat = filesystem.stat orelse return error.OperationUnsupported;
+                return stat(filesystem.context, path, follow_symlinks);
+            },
+            .host_cwd => if (comptime builtin.os.tag == .freestanding) return error.OperationUnsupported else {
+                const io = self.options.io orelse return error.IoUnavailable;
+                return .fromStd(try Dir.cwd().statFile(io, path, .{ .follow_symlinks = follow_symlinks }));
+            },
+            .host_dir => |root| if (comptime builtin.os.tag == .freestanding) return error.OperationUnsupported else {
+                const io = self.options.io orelse return error.IoUnavailable;
+                const normalized = try host.MemoryFilesystem.normalizeRootPathAlloc(self.allocator, path, host.MemoryFilesystem.default_max_path_len);
+                defer self.allocator.free(normalized);
+                if (normalized.len == 0) return .fromStd(try root.dir.stat(io));
+                return .fromStd(try root.dir.statFile(io, normalized, .{ .follow_symlinks = follow_symlinks }));
+            },
+        }
+    }
+
+    pub fn fsReadDirAlloc(self: *State, path: []const u8) anyerror![]host.DirectoryEntry {
+        switch (self.options.filesystem) {
+            .disabled => return error.FilesystemDisabled,
+            .memory => |files| {
+                var view = try host.MemoryFilesystem.initWithFiles(self.allocator, files);
+                defer view.deinit();
+                return view.readDirAlloc(self.allocator, path);
+            },
+            .memory_rw => |filesystem| return filesystem.readDirAlloc(self.allocator, path),
+            .custom => |filesystem| {
+                const read_dir = filesystem.read_dir_alloc orelse return error.OperationUnsupported;
+                return read_dir(filesystem.context, self.allocator, path);
+            },
+            .host_cwd, .host_dir => {
+                if (comptime builtin.os.tag == .freestanding) return error.OperationUnsupported;
+                const io = self.options.io orelse return error.IoUnavailable;
+                const base: Dir = switch (self.options.filesystem) {
+                    .host_cwd => Dir.cwd(),
+                    .host_dir => |root| root.dir,
+                    else => unreachable,
+                };
+                const owned_path = if (self.options.filesystem == .host_dir)
+                    try host.MemoryFilesystem.normalizeRootPathAlloc(self.allocator, path, host.MemoryFilesystem.default_max_path_len)
+                else
+                    null;
+                defer if (owned_path) |normalized| self.allocator.free(normalized);
+                const open_path = if (owned_path) |normalized| if (normalized.len == 0) "." else normalized else path;
+                var dir = try base.openDir(io, open_path, .{ .iterate = true });
+                defer dir.close(io);
+                var iterator = dir.iterate();
+                var entries: std.ArrayList(host.DirectoryEntry) = .empty;
+                errdefer {
+                    for (entries.items) |entry| self.allocator.free(entry.name);
+                    entries.deinit(self.allocator);
+                }
+                while (try iterator.next(io)) |entry| {
+                    try entries.append(self.allocator, .{
+                        .name = try self.allocator.dupe(u8, entry.name),
+                        .kind = .fromStd(entry.kind),
+                        .inode = @intCast(entry.inode),
+                    });
+                }
+                return entries.toOwnedSlice(self.allocator);
+            },
+        }
+    }
+
+    pub fn fsMakeDir(self: *State, path: []const u8, parents: bool) anyerror!void {
+        switch (self.options.filesystem) {
+            .disabled, .memory => return error.FilesystemReadOnly,
+            .memory_rw => |filesystem| return filesystem.makeDir(path, parents),
+            .custom => |filesystem| {
+                const make_dir = filesystem.make_dir orelse return error.OperationUnsupported;
+                return make_dir(filesystem.context, path, parents);
+            },
+            .host_cwd, .host_dir => {
+                if (comptime builtin.os.tag == .freestanding) return error.OperationUnsupported;
+                const root: Dir = switch (self.options.filesystem) {
+                    .host_cwd => Dir.cwd(),
+                    .host_dir => |value| blk: {
+                        if (value.read_only) return error.FilesystemReadOnly;
+                        break :blk value.dir;
+                    },
+                    else => unreachable,
+                };
+                const io = self.options.io orelse return error.IoUnavailable;
+                const owned = if (self.options.filesystem == .host_dir) try host.MemoryFilesystem.normalizePathAlloc(self.allocator, path, host.MemoryFilesystem.default_max_path_len) else null;
+                defer if (owned) |normalized| self.allocator.free(normalized);
+                const actual = owned orelse path;
+                if (parents) return root.createDirPath(io, actual);
+                return root.createDir(io, actual, .default_dir);
+            },
+        }
+    }
+
+    pub fn fsRemovePath(self: *State, path: []const u8, recursive: bool) anyerror!void {
+        switch (self.options.filesystem) {
+            .disabled, .memory => return error.FilesystemReadOnly,
+            .memory_rw => |filesystem| return filesystem.removePath(path, recursive),
+            .custom => |filesystem| {
+                if (filesystem.remove_path) |remove_path| return remove_path(filesystem.context, path, recursive);
+                if (!recursive) if (filesystem.remove_file) |remove_file| return remove_file(filesystem.context, path);
+                return error.OperationUnsupported;
+            },
+            .host_cwd, .host_dir => {
+                if (comptime builtin.os.tag == .freestanding) return error.OperationUnsupported;
+                const root: Dir = switch (self.options.filesystem) {
+                    .host_cwd => Dir.cwd(),
+                    .host_dir => |value| blk: {
+                        if (value.read_only) return error.FilesystemReadOnly;
+                        break :blk value.dir;
+                    },
+                    else => unreachable,
+                };
+                const io = self.options.io orelse return error.IoUnavailable;
+                const owned = if (self.options.filesystem == .host_dir) try host.MemoryFilesystem.normalizePathAlloc(self.allocator, path, host.MemoryFilesystem.default_max_path_len) else null;
+                defer if (owned) |normalized| self.allocator.free(normalized);
+                const actual = owned orelse path;
+                if (recursive) return root.deleteTree(io, actual);
+                const stat = try root.statFile(io, actual, .{ .follow_symlinks = false });
+                return if (stat.kind == .directory) root.deleteDir(io, actual) else root.deleteFile(io, actual);
+            },
+        }
+    }
+
+    pub fn fsRenamePath(self: *State, old_path: []const u8, new_path: []const u8) anyerror!void {
+        switch (self.options.filesystem) {
+            .disabled, .memory => return error.FilesystemReadOnly,
+            .memory_rw => |filesystem| return filesystem.renamePath(old_path, new_path),
+            .custom => |filesystem| {
+                const rename = filesystem.rename_file orelse return error.OperationUnsupported;
+                return rename(filesystem.context, old_path, new_path);
+            },
+            .host_cwd, .host_dir => {
+                if (comptime builtin.os.tag == .freestanding) return error.OperationUnsupported;
+                const root: Dir = switch (self.options.filesystem) {
+                    .host_cwd => Dir.cwd(),
+                    .host_dir => |value| blk: {
+                        if (value.read_only) return error.FilesystemReadOnly;
+                        break :blk value.dir;
+                    },
+                    else => unreachable,
+                };
+                const io = self.options.io orelse return error.IoUnavailable;
+                const old_owned = if (self.options.filesystem == .host_dir) try host.MemoryFilesystem.normalizePathAlloc(self.allocator, old_path, host.MemoryFilesystem.default_max_path_len) else null;
+                defer if (old_owned) |normalized| self.allocator.free(normalized);
+                const new_owned = if (self.options.filesystem == .host_dir) try host.MemoryFilesystem.normalizePathAlloc(self.allocator, new_path, host.MemoryFilesystem.default_max_path_len) else null;
+                defer if (new_owned) |normalized| self.allocator.free(normalized);
+                return root.rename(old_owned orelse old_path, root, new_owned orelse new_path, io);
+            },
+        }
+    }
+
+    pub fn fsCopyFile(self: *State, source: []const u8, destination: []const u8, overwrite: bool) anyerror!void {
+        switch (self.options.filesystem) {
+            .disabled, .memory => return error.FilesystemReadOnly,
+            .memory_rw => |filesystem| return filesystem.copyFile(source, destination, overwrite),
+            .custom => |filesystem| {
+                if (filesystem.copy_file) |copy| return copy(filesystem.context, source, destination, overwrite);
+                const bytes = try filesystem.read_file_alloc(filesystem.context, self.allocator, source);
+                defer self.allocator.free(bytes);
+                const write = filesystem.write_file orelse return error.OperationUnsupported;
+                return write(filesystem.context, destination, bytes);
+            },
+            .host_cwd, .host_dir => {
+                if (comptime builtin.os.tag == .freestanding) return error.OperationUnsupported;
+                const root: Dir = switch (self.options.filesystem) {
+                    .host_cwd => Dir.cwd(),
+                    .host_dir => |value| blk: {
+                        if (value.read_only) return error.FilesystemReadOnly;
+                        break :blk value.dir;
+                    },
+                    else => unreachable,
+                };
+                const io = self.options.io orelse return error.IoUnavailable;
+                const source_owned = if (self.options.filesystem == .host_dir) try host.MemoryFilesystem.normalizePathAlloc(self.allocator, source, host.MemoryFilesystem.default_max_path_len) else null;
+                defer if (source_owned) |normalized| self.allocator.free(normalized);
+                const destination_owned = if (self.options.filesystem == .host_dir) try host.MemoryFilesystem.normalizePathAlloc(self.allocator, destination, host.MemoryFilesystem.default_max_path_len) else null;
+                defer if (destination_owned) |normalized| self.allocator.free(normalized);
+                return root.copyFile(source_owned orelse source, root, destination_owned orelse destination, io, .{ .replace = overwrite });
             },
         }
     }
@@ -2471,6 +2768,10 @@ pub const State = struct {
             .gmatch_iterator => |state_table| {
                 if (state_table.get(.{ .string = "__zlua_lines_iterator" }) != .nil) {
                     const values = try stdlib.io.linesNext(self, .{ .table = state_table });
+                    try self.returnValues(thread, resolved.base, resolved.return_count, values);
+                } else if (state_table.get(.{ .string = "__zlua_fs_iterator" }) != .nil) {
+                    const values = try stdlib.fs.iteratorNext(self, .{ .table = state_table });
+                    defer if (values.len != 0) self.allocator.free(values);
                     try self.returnValues(thread, resolved.base, resolved.return_count, values);
                 } else {
                     const values = try stdlib.string.gmatchNext(self, .{ .table = state_table });

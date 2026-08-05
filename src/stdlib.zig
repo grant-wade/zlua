@@ -16,6 +16,7 @@ pub const json = @import("stdlib/json.zig");
 pub const toml = @import("stdlib/toml.zig");
 pub const msgpack = @import("stdlib/msgpack.zig");
 pub const csv = @import("stdlib/csv.zig");
+pub const fs = @import("stdlib/fs.zig");
 
 const bytecode = compile.bytecode;
 const State = runtime.State;
@@ -59,6 +60,7 @@ pub const LibrarySet = struct {
     toml: bool = false,
     msgpack: bool = false,
     csv: bool = false,
+    fs: bool = false,
 
     pub fn safe() LibrarySet {
         return .{
@@ -81,11 +83,12 @@ pub const LibrarySet = struct {
         libraries.os = true;
         libraries.debug = true;
         libraries.package = true;
+        libraries.fs = true;
         return libraries;
     }
 
     pub fn isEmpty(self: LibrarySet) bool {
-        return !self.base and !self.table and !self.string and !self.math and !self.utf8 and !self.coroutine and !self.io and !self.os and !self.debug and !self.package and !self.json and !self.toml and !self.msgpack and !self.csv;
+        return !self.base and !self.table and !self.string and !self.math and !self.utf8 and !self.coroutine and !self.io and !self.os and !self.debug and !self.package and !self.json and !self.toml and !self.msgpack and !self.csv and !self.fs;
     }
 };
 
@@ -104,6 +107,7 @@ pub fn openLibraries(state: *State, selection: LibrarySelection) !void {
     if (libraries.toml) try openToml(state);
     if (libraries.msgpack) try openMsgpack(state);
     if (libraries.csv) try openCsv(state);
+    if (libraries.fs) try openFs(state);
     if (libraries.package) try openPackage(state, libraries);
 }
 
@@ -332,6 +336,38 @@ fn openCsv(state: *State) !void {
     try state.globals.put(try state.intern("csv"), csv_lib);
 }
 
+fn openFs(state: *State) !void {
+    const fs_lib = try state.newTableWithHints(0, 20);
+    try setField(state, fs_lib, "read", .{ .native = .fs_read });
+    try setField(state, fs_lib, "write", .{ .native = .fs_write });
+    try setField(state, fs_lib, "open", .{ .native = .fs_open });
+    try setField(state, fs_lib, "stat", .{ .native = .fs_stat });
+    try setField(state, fs_lib, "exists", .{ .native = .fs_exists });
+    try setField(state, fs_lib, "list", .{ .native = .fs_list });
+    try setField(state, fs_lib, "scandir", .{ .native = .fs_scandir });
+    try setField(state, fs_lib, "walk", .{ .native = .fs_walk });
+    try setField(state, fs_lib, "mkdir", .{ .native = .fs_mkdir });
+    try setField(state, fs_lib, "remove", .{ .native = .fs_remove });
+    try setField(state, fs_lib, "copy", .{ .native = .fs_copy });
+    try setField(state, fs_lib, "rename", .{ .native = .fs_rename });
+    try setField(state, fs_lib, "move", .{ .native = .fs_move });
+    try setField(state, fs_lib, "touch", .{ .native = .fs_touch });
+    try setField(state, fs_lib, "open_dir", .{ .native = .fs_open_dir });
+
+    const path_lib = try state.newTableWithHints(0, 10);
+    try setField(state, path_lib, "join", .{ .native = .fs_path_join });
+    try setField(state, path_lib, "normalize", .{ .native = .fs_path_normalize });
+    try setField(state, path_lib, "basename", .{ .native = .fs_path_basename });
+    try setField(state, path_lib, "dirname", .{ .native = .fs_path_dirname });
+    try setField(state, path_lib, "extension", .{ .native = .fs_path_extension });
+    try setField(state, path_lib, "stem", .{ .native = .fs_path_stem });
+    try setField(state, path_lib, "is_absolute", .{ .native = .fs_path_is_absolute });
+    try setField(state, path_lib, "relative", .{ .native = .fs_path_relative });
+    try setField(state, path_lib, "separator", .{ .string = try state.intern(&.{std.fs.path.sep}) });
+    try setField(state, fs_lib, "path", path_lib);
+    try state.globals.put(try state.intern("fs"), fs_lib);
+}
+
 fn openPackage(state: *State, libraries: LibrarySet) !void {
     try state.globals.put(try state.intern("loadfile"), .{ .native = .loadfile });
     try state.globals.put(try state.intern("dofile"), .{ .native = .dofile });
@@ -355,6 +391,7 @@ fn openPackage(state: *State, libraries: LibrarySet) !void {
     if (libraries.toml) try setField(state, loaded, "toml", state.getGlobal("toml"));
     if (libraries.msgpack) try setField(state, loaded, "msgpack", state.getGlobal("msgpack"));
     if (libraries.csv) try setField(state, loaded, "csv", state.getGlobal("csv"));
+    if (libraries.fs) try setField(state, loaded, "fs", state.getGlobal("fs"));
     try setField(state, loaded, "package", package_lib);
     try setField(state, package_lib, "loaded", loaded);
     try setField(state, package_lib, "preload", preload);
@@ -512,6 +549,44 @@ pub fn callNative(state: *State, native: NativeFn, thread: *Thread, op: bytecode
         .msgpack_write => try msgpack.write(state, thread, op),
         .csv_read => try csv.read(state, thread, op),
         .csv_write => try csv.write(state, thread, op),
+        .fs_read => try fs.read(state, thread, op),
+        .fs_write => try fs.write(state, thread, op),
+        .fs_open => try fs.open(state, thread, op),
+        .fs_stat => try fs.stat(state, thread, op),
+        .fs_exists => try fs.exists(state, thread, op),
+        .fs_list => try fs.list(state, thread, op),
+        .fs_scandir => try fs.scandir(state, thread, op),
+        .fs_walk => try fs.walk(state, thread, op),
+        .fs_mkdir => try fs.mkdir(state, thread, op),
+        .fs_remove => try fs.remove(state, thread, op),
+        .fs_copy => try fs.copy(state, thread, op),
+        .fs_rename => try fs.rename(state, thread, op),
+        .fs_move => try fs.move(state, thread, op),
+        .fs_touch => try fs.touch(state, thread, op),
+        .fs_open_dir => try fs.openDir(state, thread, op),
+        .fs_iterator_next => try fs.iteratorNextNative(state, thread, op),
+        .fs_iterator_close => try fs.iteratorClose(state, thread, op),
+        .fs_iterator_skip => try fs.iteratorSkip(state, thread, op),
+        .fs_error_tostring => try fs.errorTostring(state, thread, op),
+        .fs_file_stat => try fs.fileStat(state, thread, op),
+        .fs_file_tell => try fs.fileTell(state, thread, op),
+        .fs_file_truncate => try fs.fileTruncate(state, thread, op),
+        .fs_file_path => try fs.filePath(state, thread, op),
+        .fs_dir_entries => try fs.dirEntries(state, thread, op),
+        .fs_dir_walk => try fs.dirWalk(state, thread, op),
+        .fs_dir_open => try fs.dirOpen(state, thread, op),
+        .fs_dir_stat => try fs.dirStat(state, thread, op),
+        .fs_dir_mkdir => try fs.dirMkdir(state, thread, op),
+        .fs_dir_remove => try fs.dirRemove(state, thread, op),
+        .fs_dir_close => try fs.dirClose(state, thread, op),
+        .fs_path_join => try fs.pathJoin(state, thread, op),
+        .fs_path_normalize => try fs.pathNormalize(state, thread, op),
+        .fs_path_basename => try fs.pathBasename(state, thread, op),
+        .fs_path_dirname => try fs.pathDirname(state, thread, op),
+        .fs_path_extension => try fs.pathExtension(state, thread, op),
+        .fs_path_stem => try fs.pathStem(state, thread, op),
+        .fs_path_is_absolute => try fs.pathIsAbsolute(state, thread, op),
+        .fs_path_relative => try fs.pathRelative(state, thread, op),
         .api_callback_dispatch => try state.callApiCallbackDispatch(thread, op),
     }
 }
@@ -531,4 +606,5 @@ test {
     _ = toml;
     _ = msgpack;
     _ = csv;
+    _ = fs;
 }

@@ -1,4 +1,4 @@
-pub const version = "0.3.1";
+pub const version = "0.4.0";
 pub const lua_target_version = "Lua 5.5";
 
 pub const frontend = @import("frontend.zig");
@@ -27,6 +27,11 @@ pub const MemoryFile = api.MemoryFile;
 pub const MemoryFilesystem = api.MemoryFilesystem;
 pub const FilesystemCapability = api.FilesystemCapability;
 pub const CustomFilesystem = api.CustomFilesystem;
+pub const HostDirectory = api.HostDirectory;
+pub const FilesystemFileKind = api.FilesystemFileKind;
+pub const FilesystemFileStat = api.FilesystemFileStat;
+pub const FilesystemDirectoryEntry = api.FilesystemDirectoryEntry;
+pub const deinitFilesystemDirectoryEntries = api.deinitFilesystemDirectoryEntries;
 pub const EnvironmentCapability = api.EnvironmentCapability;
 pub const CustomEnvironment = api.CustomEnvironment;
 pub const ClockCapability = api.ClockCapability;

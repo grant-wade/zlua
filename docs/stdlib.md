@@ -13,8 +13,8 @@ zlua separates library selection from host capabilities. Library selection contr
 | `none` | No standard libraries. |
 | `base` | Base globals only. |
 | `safe` | Base, table, string, math, utf8, coroutine, json, toml, msgpack, and csv. |
-| `full` | Safe libraries plus io, os, debug, and package. |
-| Granular set | Any explicit combination of `base`, `table`, `string`, `math`, `utf8`, `coroutine`, `io`, `os`, `debug`, `package`, `json`, `toml`, `msgpack`, and `csv`. |
+| `full` | Safe libraries plus io, os, debug, package, and the zlua `fs` extension. |
+| Granular set | Any explicit combination of `base`, `table`, `string`, `math`, `utf8`, `coroutine`, `io`, `os`, `debug`, `package`, `json`, `toml`, `msgpack`, `csv`, and `fs`. |
 
 The command-line interpreter defaults to `full` and host-oriented capabilities. The Zig embedding API defaults to `safe` and sandboxed capabilities.
 
@@ -63,12 +63,13 @@ The base library installs the core globals and `_G` table:
 | `os` | `os` | `time`, `clock`, `date`, `getenv`, `setlocale`, `execute`, `remove`, `rename`, `tmpname`, `difftime` |
 | `debug` | `debug` | `traceback`, `getinfo`, `getupvalue`, `setupvalue`, `upvalueid`, `upvaluejoin`, `getlocal`, `setlocal`, `getregistry`, `sethook`, `gethook`, `setmetatable`, `setuservalue`, `getuservalue` |
 | `package` | `package` | `loaded`, `preload`, `searchers`, `searchpath`, `path`, `cpath`, `config`; also opens `require`, `loadfile`, and `dofile` globals |
+| `fs` | `fs` | Filesystem inspection, traversal, file helpers, mutation utilities, directory objects, and `fs.path` |
 
-`table.create` is a zlua helper for preallocating table array/hash capacity. The extension library set contains `json`, `toml`, `msgpack`, and `csv`.
+`table.create` is a zlua helper for preallocating table array/hash capacity. The extension library set contains `json`, `toml`, `msgpack`, `csv`, and `fs`.
 
 ## Host-Facing Libraries
 
-Opening `io`, `os`, or `package` does not by itself grant host access in embedded states. The matching host capability must also be configured.
+Opening `io`, `os`, `package`, or `fs` does not by itself grant host access in embedded states. The matching host capability must also be configured.
 
 | Library functions | Required capability |
 | --- | --- |
@@ -78,6 +79,7 @@ Opening `io`, `os`, or `package` does not by itself grant host access in embedde
 | `os.getenv` | `environment` |
 | `os.execute` | `process`, with configured I/O and environment behavior |
 | `os.remove`, `os.rename`, `os.tmpname` | `filesystem` and/or `io`, depending on operation |
+| `fs` inspection, traversal, file, and mutation operations | `filesystem`; std-backed host variants also require configured `std.Io` access |
 
 The CLI configures these capabilities for normal interpreter use. Embedded hosts opt in explicitly.
 
@@ -95,6 +97,49 @@ When `package` is open, zlua installs `require`, `loadfile`, and `dofile` global
 | `package.config` | `"/\n;\n?\n!\n-\n"`. |
 
 `require` can load Lua files only when a filesystem capability is available. In embedded sandboxes, use memory-backed files if scripts should be able to load modules without host filesystem access.
+
+## Filesystem Extension
+
+The `fs` extension is included in `full` and can be selected explicitly with `fs`. It is excluded from `safe`; opening it never grants access by itself, and every operation remains gated by the state's filesystem capability. When `package` is open, `require("fs")` returns the `fs` global.
+
+```lua
+local fs = require("fs")
+
+for entry in fs.scandir("src") do
+  print(entry.path, entry.kind)
+end
+
+local walker <close> = assert(fs.walk(".", { max_depth = 4 }))
+for entry in walker do
+  if entry.kind == "directory" and entry.name == ".git" then walker:skip() end
+end
+
+local file <close> = assert(fs.open("output.bin", "w+"))
+assert(file:write("hello"))
+assert(file:seek("set", 0) == 0)
+assert(file:read("all") == "hello")
+```
+
+| Member | Behavior |
+| --- | --- |
+| `fs.stat(path[, options])` | Returns metadata. `follow_symlinks` defaults to true. Timestamps are `{ seconds, nanoseconds }` tables. |
+| `fs.exists(path[, options])` | Returns false only for a missing path; other failures return `nil, error`. |
+| `fs.list(path[, options])` | Returns entry snapshots sorted by name unless `sorted=false`. |
+| `fs.scandir(path)` | Returns a callable, closable directory iterator. |
+| `fs.walk(path[, options])` | Returns a callable, closable recursive iterator. Supports `max_depth`; `walker:skip()` prunes the current directory. |
+| `fs.read(path[, options])` | Binary-safe whole-file read. `max_bytes` defaults to 256 MiB. |
+| `fs.write(path, bytes[, options])` | Options are `append`, `exclusive`, `atomic`, and `create_parents`. |
+| `fs.open(path[, mode])` | Opens a file with standard methods plus `stat`, `tell`, `truncate`, `path`, and `sync`. |
+| `fs.open_dir(path)` | Returns a closable directory object with `entries`, `walk`, `open`, `stat`, `mkdir`, and `remove`. |
+| `fs.mkdir(path[, options])` | Supports `parents` and `exist_ok`. |
+| `fs.remove(path[, options])` | Supports `recursive` and `missing_ok`. |
+| `fs.copy(source, destination[, options])` | Copies files or directory trees with `recursive=true`; supports `overwrite`. |
+| `fs.rename`, `fs.move` | Rename paths; `move` falls back to copy/remove for cross-device files. |
+| `fs.touch(path)` | Creates an empty file or updates an existing file. |
+
+Entries contain `name`, `path`, `kind`, `inode`, and, while walking, `depth`. Operational failures return `nil, error`. Errors have `code`, `system`, `operation`, `path`, optional `destination`, and `message`; `tostring(error)` returns the message. Argument errors raise normally, and traversal failures raise because generic `for` has no terminal-error channel.
+
+`fs.path` provides `join`, `normalize`, `basename`, `dirname`, `extension`, `stem`, `is_absolute`, `relative`, and `separator`. These helpers are lexical and perform no filesystem access.
 
 ## JSON Extension
 

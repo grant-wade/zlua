@@ -52,6 +52,7 @@
 - [stdlib.toml](../stdlib/toml.md)
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
+- [stdlib.fs](../stdlib/fs.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
@@ -89,6 +90,12 @@
 - [fileSetvbuf](#fn-filesetvbuf)
 - [linesIter](#fn-linesiter)
 - [linesNext](#fn-linesnext)
+- [newFile](#fn-newfile)
+- [parseMode](#fn-parsemode)
+
+## Types
+
+- [ParsedMode](#type-parsedmode)
 
 <a id="fn-read"></a>
 
@@ -241,4 +248,36 @@ pub fn linesIter(state: *State, thread: *Thread, op: bytecode.Call) !void
 ```zig
 pub fn linesNext(state: *State, iterator: Value) ![]const Value
 ```
+
+<a id="fn-newfile"></a>
+
+## newFile
+
+```zig
+pub fn newFile(state: *State, path: []const u8, mode: []const u8, contents: []const u8, parsed: ParsedMode) !Value
+```
+
+References: [`ParsedMode`](#type-parsedmode)
+
+<a id="type-parsedmode"></a>
+
+## ParsedMode
+
+```zig
+pub const ParsedMode = struct {
+    kind: u8,
+    append: bool,
+    reads_existing: bool,
+};
+```
+
+<a id="fn-parsemode"></a>
+
+## parseMode
+
+```zig
+pub fn parseMode(mode: []const u8) ?ParsedMode
+```
+
+References: [`ParsedMode`](#type-parsedmode)
 

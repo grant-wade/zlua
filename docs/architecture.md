@@ -276,7 +276,7 @@ Library selection:
 | `none` | No standard libraries. |
 | `base` | Base globals only. |
 | `safe` | Base, table, string, math, utf8, coroutine, json, toml, and msgpack. |
-| `full` | Safe libraries plus io, os, debug, and package. |
+| `full` | Safe libraries plus io, os, debug, package, and the zlua `fs` extension. |
 | `libraries` | Explicit per-library set. |
 
 The CLI initializes the runtime with `.full` libraries and host capabilities. The Zig embedding API defaults to `.safe` libraries and sandboxed capabilities.
@@ -290,12 +290,12 @@ Host effects are explicit runtime options. This is essential for embedding becau
 | Capability | Runtime type | Modes |
 | --- | --- | --- |
 | I/O | `std.Io`, stdout/stderr writers, stdin buffer | Disabled/absent by default in embedding, host-oriented in CLI. |
-| Filesystem | `FilesystemCapability` | `disabled`, read-only memory files, read/write memory filesystem, host current working directory. |
+| Filesystem | `FilesystemCapability` | `disabled`, read-only memory tree, read/write memory filesystem, ambient host current working directory, borrowed rooted host directory, or custom callbacks. |
 | Environment | Environment map pointer | Disabled or provided by host. |
 | Clock | `ClockCapability` | `disabled`, fixed value, or system clock. |
 | Process | `ProcessCapability` | Disabled or enabled. |
 
-The memory filesystem is intentionally simple: it stores path/content pairs in memory, supports read/write/remove/rename, and avoids touching the host filesystem. It is useful for plugin hosts that need `loadfile`, `dofile`, or `require` without granting host directory access.
+The memory filesystem stores a sandbox-relative file and directory tree, supports metadata/list/walk and file/directory mutations, and avoids touching the host filesystem. The `fs` extension consumes the same capability layer as `io`, `os`, and package loading. Hosted operations receive the state's explicit Zig 0.16 `std.Io`; rooted host directories reject absolute and parent-traversal paths.
 
 ## Garbage Collection
 

@@ -468,7 +468,7 @@ fn refreshReadable(state: *State, file: *runtime.Table) !void {
     try file.set(state.allocator, .{ .string = try state.intern("__zlua_file_content") }, .{ .string = try state.intern(contents) });
 }
 
-fn newFile(state: *State, path: []const u8, mode: []const u8, contents: []const u8, parsed: ParsedMode) !Value {
+pub fn newFile(state: *State, path: []const u8, mode: []const u8, contents: []const u8, parsed: ParsedMode) !Value {
     const value = try state.newTableWithHints(0, 18);
     const file = value.table;
     try file.set(state.allocator, .{ .string = try state.intern("__zlua_file") }, .{ .boolean = true });
@@ -551,13 +551,13 @@ fn setPos(state: *State, file: *runtime.Table, pos: usize) !void {
     try file.set(state.allocator, .{ .string = try state.intern("__zlua_file_pos") }, .{ .integer = @intCast(pos) });
 }
 
-const ParsedMode = struct {
+pub const ParsedMode = struct {
     kind: u8,
     append: bool,
     reads_existing: bool,
 };
 
-fn parseMode(mode: []const u8) ?ParsedMode {
+pub fn parseMode(mode: []const u8) ?ParsedMode {
     if (mode.len == 0) return null;
     const kind = mode[0];
     if (kind != 'r' and kind != 'w' and kind != 'a') return null;

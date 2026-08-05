@@ -15,7 +15,7 @@ The Zig embedding API is the main public surface. Runtime internals, zlua binary
 1. Add zlua to your Zig package dependencies:
 
 ```sh
-zig fetch --save git+https://codeberg.org/gron/zlua#v0.3.1
+zig fetch --save git+https://codeberg.org/gron/zlua#v0.4.0
 ```
 
 2. Wire the dependency into your executable in `build.zig`:
@@ -147,7 +147,7 @@ Start with [docs/README.md](docs/README.md) for the full documentation index.
 | [Architecture](docs/architecture.md) | How the implementation fits together. |
 | [Commands](docs/commands.md) | `just` recipes, `zig build` steps, CLI options, and harness arguments. |
 | [Development](docs/development.md) | Project shape, commands, source conventions, and local workflow. |
-| [Lua Standard Library and Extensions](docs/stdlib.md) | Lua-visible standard libraries, selection modes, and JSON/TOML/MessagePack extensions. |
+| [Lua Standard Library and Extensions](docs/stdlib.md) | Lua-visible standard libraries, selection modes, filesystem utilities, and data-format extensions. |
 | [Testing](docs/testing.md) | Test layers, CLua differential fixtures, official dashboard, and C API fixtures. |
 | [Lua C API Compatibility](docs/c-api.md) | Supported C API scope, build/link instructions, caveats, and fixture policy. |
 | [Benchmarking](docs/benchmark.md) | Benchmark harness and current performance methodology. |

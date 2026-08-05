@@ -43,19 +43,37 @@ var lua = try zlua.State.init(allocator, .{});
 
 This opens safe libraries while leaving filesystem, environment, clock, process, and default output access disabled unless explicitly configured.
 
-The sandbox boundary has two layers. The `stdlib` option controls which Lua globals are opened. The `capabilities` option controls whether opened libraries can reach host services. Opening `.full` exposes globals such as `io`, `os`, `package`, `require`, `loadfile`, and `dofile`, but those functions still fail or return denial-style errors when the matching host capability is disabled.
+The sandbox boundary has two layers. The `stdlib` option controls which Lua globals are opened. The `capabilities` option controls whether opened libraries can reach host services. Opening `.full` exposes globals such as `io`, `os`, `fs`, `package`, `require`, `loadfile`, and `dofile`, but those functions still fail or return denial-style errors when the matching host capability is disabled.
 
 | Capability | Grants | Disabled behavior |
 | --- | --- | --- |
 | `io` | Host `std.Io`, stdin contents, and optional stdout/stderr writers. Required by std-backed host filesystem, clock, and process operations that need Zig I/O. | No host I/O handle is available; std-backed file, clock, or process operations that require it fail instead of falling back to ambient process I/O. |
-| `filesystem` | `.memory` read-only files, `.memory_rw` writable memory files, `.host_cwd` access to the process current working directory, or `.custom` callback-backed files. | `loadfile`, `dofile`, `require`, `io.open`, `io.lines`, `os.remove`, and `os.rename` cannot read or mutate host files. |
+| `filesystem` | `.memory` read-only files, `.memory_rw` writable memory files, ambient `.host_cwd`, rooted `.host_dir`, or `.custom` callback-backed files and directories. | `fs`, `loadfile`, `dofile`, `require`, `io.open`, `io.lines`, `os.remove`, and `os.rename` cannot access files. |
 | `environment` | A std environment map or `.custom` callback for `os.getenv`. Std-backed child processes also receive `.map` environments. | `os.getenv` returns `nil`; enabled std-backed child processes receive no implicit environment map from zlua. |
 | `clock` | A fixed timestamp, std system clock, or `.custom` callback for `os.time` and default-time `os.date` calls. | Current-time reads fail with `clock access disabled`. |
 | `process` | `os.execute` through std process spawning or a `.custom` callback. | `os.execute` fails with `process access disabled`; zlua does not provide dynamic native module loading. |
 
 The command-line `zlua` binary is intentionally different from the embedding default: it starts with full host filesystem, environment, process, and I/O access so it behaves like a normal Lua interpreter. Use the Zig embedding API when untrusted or plugin-style code should start sandboxed.
 
-The std-backed host variants, `.filesystem = .host_cwd`, `.clock = .system`, and `.process = .enabled`, use Zig standard-library host facilities. They are intended for normal hosted targets. Freestanding embedders, kernels, unikernels, and other non-std hosts should provide `.custom` capabilities instead.
+The std-backed host variants, `.filesystem = .host_cwd`, `.filesystem = .{ .host_dir = ... }`, `.clock = .system`, and `.process = .enabled`, use Zig 0.16's explicit `std.Io` host facilities. They are intended for normal hosted targets. Freestanding embedders, kernels, unikernels, and other non-std hosts should provide `.custom` capabilities instead.
+
+Use `.host_dir` rather than `.host_cwd` when Lua should be confined to a borrowed directory handle. Absolute paths and `..` traversal are rejected, and `read_only` can deny mutations:
+
+```zig
+var plugin_root = try std.Io.Dir.cwd().openDir(io, "plugins", .{});
+defer plugin_root.close(io);
+
+var lua = try zlua.State.init(allocator, .{
+    .stdlib = .full,
+    .capabilities = .{
+        .io = .{ .runtime = io },
+        .filesystem = .{ .host_dir = .{ .dir = plugin_root, .read_only = true } },
+    },
+});
+defer lua.deinit();
+```
+
+The directory handle is borrowed and must outlive the zlua state.
 
 To capture output and provide deterministic time:
 
@@ -92,7 +110,7 @@ try lua.setPackagePath("plugins/?.lua");
 try lua.doString("assert(require('mathx').double(21) == 42)", .{ .name = "=require" });
 ```
 
-Use `MemoryFilesystem` with `.memory_rw` when Lua code should be able to create, update, remove, or rename files without touching the host filesystem:
+Use `MemoryFilesystem` with `.memory_rw` when Lua code should be able to inspect directory trees and create, update, remove, copy, or rename files without touching the host filesystem:
 
 ```zig
 var filesystem = zlua.MemoryFilesystem.init(allocator);
@@ -116,6 +134,8 @@ defer allocator.free(report);
 
 `State.addMemoryFile` can add owned files to a state that was initialized with disabled or read-only memory filesystem access. It writes through to `.memory_rw` filesystems and returns `error.UnsupportedOption` for host and custom filesystem states.
 
+The memory filesystem models files and directories. Parent directories for seeded and directly written files are created implicitly; `fs.mkdir`, `fs.list`, `fs.scandir`, `fs.walk`, recursive copy, and recursive remove operate on the same tree.
+
 Memory filesystem paths are sandbox-relative. zlua normalizes `.` segments and repeated `/` separators, rejects absolute paths, rejects `..` path traversal, rejects backslash-containing paths, rejects NUL bytes, rejects empty paths, and enforces a configurable maximum normalized path length for writable memory files. `loadfile`, `dofile`, and `require` use the same memory-filesystem path checks, so package paths that expand to absolute or parent-traversal paths do not escape the memory sandbox.
 
 `MemoryFilesystem.init` uses the default path limit. Use `MemoryFilesystem.initWithOptions` or `MemoryFilesystem.initWithFilesAndOptions` to set `max_path_len` or an optional `max_bytes` content quota. The quota counts file contents, applies during seed-file initialization, creates, and overwrites, decreases when files are removed, and `renameFile` overwrites an existing normalized target without changing the total byte count except for the removed target contents.
@@ -126,7 +146,7 @@ Memory filesystem paths are sandbox-relative. zlua normalizes `.` segments and r
 
 Use `.custom` capabilities when the host has filesystem, environment, clock, or process services that are not exposed through Zig's std host APIs. This is the intended shape for freestanding kernels that still want Lua's full host-facing standard library profile.
 
-Custom callbacks receive an opaque context pointer supplied by the embedder. Filesystem read callbacks must return an allocator-owned buffer using the allocator passed by zlua. Optional filesystem mutation callbacks can be left `null`; Lua write/remove/rename operations then report capability-denial style errors.
+Custom callbacks receive an opaque context pointer supplied by the embedder. Filesystem read callbacks must return an allocator-owned buffer using the allocator passed by zlua. `fs` additionally uses the optional `stat`, `read_dir_alloc`, `make_dir`, `remove_path`, and `copy_file` callbacks. Directory-entry names and their returned slice must be allocated with the supplied allocator; use `zlua.deinitFilesystemDirectoryEntries` for matching cleanup. Missing optional callbacks produce structured `unsupported` errors and never fall back to ambient host access.
 
 ```zig
 const Host = struct {

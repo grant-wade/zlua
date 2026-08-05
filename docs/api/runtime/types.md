@@ -52,6 +52,7 @@
 - [stdlib.toml](../stdlib/toml.md)
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
+- [stdlib.fs](../stdlib/fs.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
@@ -300,6 +301,44 @@ pub const NativeFn = enum {
     msgpack_write,
     csv_read,
     csv_write,
+    fs_read,
+    fs_write,
+    fs_open,
+    fs_stat,
+    fs_exists,
+    fs_list,
+    fs_scandir,
+    fs_walk,
+    fs_mkdir,
+    fs_remove,
+    fs_copy,
+    fs_rename,
+    fs_move,
+    fs_touch,
+    fs_open_dir,
+    fs_iterator_next,
+    fs_iterator_close,
+    fs_iterator_skip,
+    fs_error_tostring,
+    fs_file_stat,
+    fs_file_tell,
+    fs_file_truncate,
+    fs_file_path,
+    fs_dir_entries,
+    fs_dir_walk,
+    fs_dir_open,
+    fs_dir_stat,
+    fs_dir_mkdir,
+    fs_dir_remove,
+    fs_dir_close,
+    fs_path_join,
+    fs_path_normalize,
+    fs_path_basename,
+    fs_path_dirname,
+    fs_path_extension,
+    fs_path_stem,
+    fs_path_is_absolute,
+    fs_path_relative,
     api_callback_dispatch,
 };
 ```

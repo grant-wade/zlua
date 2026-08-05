@@ -1,0 +1,6 @@
+not_found	FileNotFound	read
+a/b/c.txt
+a/c
+c.txt	a/b
+.txt	c
+false	../c/d

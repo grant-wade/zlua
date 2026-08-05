@@ -103,6 +103,16 @@ pub const IoCapability = struct {
 pub const FilesystemCapability = runtime.FilesystemCapability;
 /// Callback-backed filesystem access for embedders with non-std host services.
 pub const CustomFilesystem = runtime.CustomFilesystem;
+/// Borrowed directory root for capability-scoped host filesystem access.
+pub const HostDirectory = runtime.HostDirectory;
+/// Portable filesystem entry kind used by custom filesystem callbacks.
+pub const FilesystemFileKind = runtime.FilesystemFileKind;
+/// Metadata returned by custom filesystem callbacks.
+pub const FilesystemFileStat = runtime.FilesystemFileStat;
+/// Directory entry returned by custom filesystem callbacks.
+pub const FilesystemDirectoryEntry = runtime.FilesystemDirectoryEntry;
+/// Releases an owned custom directory-entry slice and its names.
+pub const deinitFilesystemDirectoryEntries = runtime.deinitFilesystemDirectoryEntries;
 
 /// Environment-variable access granted to `os.getenv` and enabled child processes.
 pub const EnvironmentCapability = runtime.EnvironmentCapability;
@@ -578,7 +588,7 @@ pub const State = struct {
                 try filesystem.writeFile(path, contents);
                 return;
             },
-            .host_cwd, .custom => return error.UnsupportedOption,
+            .host_cwd, .host_dir, .custom => return error.UnsupportedOption,
         }
 
         try self.appendMemoryFile(path, contents, true);
@@ -3097,6 +3107,58 @@ test "api read-only memory filesystem denies stdlib writes" {
         \\read = assert(io.open('seed.txt', 'r'))
         \\assert(read:read('*a') == 'seed')
     , .{ .name = "=api-memory-read-only-negative" });
+}
+
+test "fs extension supports memory filesystem directory utilities" {
+    var filesystem = MemoryFilesystem.init(std.testing.allocator);
+    defer filesystem.deinit();
+    try filesystem.writeFile("seed/sub/a.txt", "alpha");
+
+    var lua = try State.init(std.testing.allocator, .{
+        .stdlib = .full,
+        .capabilities = .{ .filesystem = .{ .memory_rw = &filesystem } },
+    });
+    defer lua.deinit();
+
+    try lua.doString(
+        \\assert(fs ~= nil and require('fs') == fs)
+        \\local entries = assert(fs.list('seed'))
+        \\assert(#entries == 1 and entries[1].name == 'sub' and entries[1].kind == 'directory')
+        \\assert(fs.stat('seed/sub/a.txt').size == 5)
+        \\assert(fs.mkdir('work/deep', { parents = true }))
+        \\assert(fs.write('work/deep/data.bin', 'abc'))
+        \\local seen = {}
+        \\for entry in fs.walk('work') do seen[entry.path] = entry.kind end
+        \\assert(seen['work/deep'] == 'directory' and seen['work/deep/data.bin'] == 'file')
+        \\assert(fs.copy('work', 'copy', { recursive = true }))
+        \\assert(fs.read('copy/deep/data.bin') == 'abc')
+        \\assert(fs.remove('work', { recursive = true }))
+        \\assert(not fs.exists('work'))
+    , .{ .name = "=api-fs-memory" });
+}
+
+test "fs host directory capability confines paths to borrowed root" {
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+
+    var lua = try State.init(std.testing.allocator, .{
+        .stdlib = .full,
+        .capabilities = .{
+            .io = .{ .runtime = std.testing.io },
+            .filesystem = .{ .host_dir = .{ .dir = temporary.dir } },
+        },
+    });
+    defer lua.deinit();
+
+    try lua.doString(
+        \\assert(fs.mkdir('inside/deep', { parents = true }))
+        \\assert(fs.write('inside/deep/value.txt', 'rooted'))
+        \\assert(fs.read('inside/deep/value.txt') == 'rooted')
+        \\local escaped, escape_err = fs.write('../escape.txt', 'bad')
+        \\assert(escaped == nil and escape_err.code == 'invalid_path')
+        \\local absolute, absolute_err = fs.stat('/tmp')
+        \\assert(absolute == nil and absolute_err.code == 'invalid_path')
+    , .{ .name = "=api-fs-host-dir" });
 }
 
 test "api writable memory filesystem supports Lua writes and mutations" {

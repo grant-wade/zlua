@@ -1,0 +1,5 @@
+file	11
+1	b	directory
+.zlua-fs-basic-test/file.txt	d
+dir	2	directory
+ok

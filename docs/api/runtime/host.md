@@ -52,6 +52,7 @@
 - [stdlib.toml](../stdlib/toml.md)
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
+- [stdlib.fs](../stdlib/fs.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
@@ -68,11 +69,19 @@
 
 </details>
 
+## Functions
+
+- [deinitDirectoryEntries](#fn-deinitdirectoryentries)
+
 ## Types
 
 - [MemoryFile](#type-memoryfile)
+- [FileKind](#type-filekind)
+- [FileStat](#type-filestat)
+- [DirectoryEntry](#type-directoryentry)
 - [MemoryFilesystem](#type-memoryfilesystem)
 - [FilesystemCapability](#type-filesystemcapability)
+- [HostDirectory](#type-hostdirectory)
 - [CustomFilesystem](#type-customfilesystem)
 - [EnvironmentCapability](#type-environmentcapability)
 - [CustomEnvironment](#type-customenvironment)
@@ -94,6 +103,98 @@ pub const MemoryFile = struct {
 };
 ```
 
+<a id="type-filekind"></a>
+
+## FileKind
+
+```zig
+pub const FileKind = enum {
+    block_device,
+    character_device,
+    directory,
+    named_pipe,
+    sym_link,
+    file,
+    unix_domain_socket,
+    whiteout,
+    door,
+    event_port,
+    unknown,
+};
+```
+
+### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [fromStd](#fn-filekind-fromstd) | `kind: std.Io.File.Kind` | `FileKind` |  |
+
+<a id="fn-filekind-fromstd"></a>
+
+### FileKind.fromStd
+
+```zig
+pub fn fromStd(kind: std.Io.File.Kind) FileKind
+```
+
+References: [`FileKind`](#type-filekind)
+
+<a id="type-filestat"></a>
+
+## FileStat
+
+```zig
+pub const FileStat = struct {
+    inode: u64 = 0,
+    nlink: u64 = 1,
+    size: u64 = 0,
+    permissions: u64 = 0,
+    kind: FileKind,
+    atime: ?std.Io.Timestamp = null,
+    mtime: std.Io.Timestamp = .{ .nanoseconds = 0 },
+    ctime: std.Io.Timestamp = .{ .nanoseconds = 0 },
+    block_size: u32 = 1,
+};
+```
+
+### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [fromStd](#fn-filestat-fromstd) | `stat: std.Io.File.Stat` | `FileStat` |  |
+
+<a id="fn-filestat-fromstd"></a>
+
+### FileStat.fromStd
+
+```zig
+pub fn fromStd(stat: std.Io.File.Stat) FileStat
+```
+
+References: [`FileStat`](#type-filestat)
+
+<a id="type-directoryentry"></a>
+
+## DirectoryEntry
+
+```zig
+pub const DirectoryEntry = struct {
+    name: []const u8,
+    kind: FileKind,
+    inode: u64 = 0,
+};
+```
+
+<a id="fn-deinitdirectoryentries"></a>
+
+## deinitDirectoryEntries
+
+```zig
+pub fn deinitDirectoryEntries(allocator: std.mem.Allocator, entries: []DirectoryEntry) void
+```
+
+References: [`DirectoryEntry`](#type-directoryentry)
+
 <a id="type-memoryfilesystem"></a>
 
 ## MemoryFilesystem
@@ -102,6 +203,7 @@ pub const MemoryFile = struct {
 pub const MemoryFilesystem = struct {
     allocator: std.mem.Allocator,
     files: std.ArrayList(MemoryFile) = .empty,
+    directories: std.ArrayList([]const u8) = .empty,
     options: Options = .{},
     bytes_used: usize = 0,
 };
@@ -120,9 +222,16 @@ pub const MemoryFilesystem = struct {
 | [deinit](#fn-memoryfilesystem-deinit) | `self: *MemoryFilesystem` | `void` |  |
 | [readFileAlloc](#fn-memoryfilesystem-readfilealloc) | `self: *const MemoryFilesystem, allocator: std.mem.Allocator, path: []const u8` | `![]const u8` |  |
 | [writeFile](#fn-memoryfilesystem-writefile) | `self: *MemoryFilesystem, path: []const u8, contents: []const u8` | `!void` |  |
+| [makeDir](#fn-memoryfilesystem-makedir) | `self: *MemoryFilesystem, path: []const u8, parents: bool` | `!void` |  |
+| [statPath](#fn-memoryfilesystem-statpath) | `self: *const MemoryFilesystem, path: []const u8` | `!FileStat` |  |
+| [readDirAlloc](#fn-memoryfilesystem-readdiralloc) | `self: *const MemoryFilesystem, allocator: std.mem.Allocator, path: []const u8` | `![]DirectoryEntry` |  |
 | [removeFile](#fn-memoryfilesystem-removefile) | `self: *MemoryFilesystem, path: []const u8` | `!void` |  |
+| [removePath](#fn-memoryfilesystem-removepath) | `self: *MemoryFilesystem, path: []const u8, recursive: bool` | `!void` |  |
 | [renameFile](#fn-memoryfilesystem-renamefile) | `self: *MemoryFilesystem, old_path: []const u8, new_path: []const u8` | `!void` |  |
+| [renamePath](#fn-memoryfilesystem-renamepath) | `self: *MemoryFilesystem, old_path: []const u8, new_path: []const u8` | `!void` |  |
+| [copyFile](#fn-memoryfilesystem-copyfile) | `self: *MemoryFilesystem, source: []const u8, destination: []const u8, overwrite: bool` | `!void` |  |
 | [normalizePathAlloc](#fn-memoryfilesystem-normalizepathalloc) | `allocator: std.mem.Allocator, path: []const u8, max_path_len: usize` | `![]u8` |  |
+| [normalizeRootPathAlloc](#fn-memoryfilesystem-normalizerootpathalloc) | `allocator: std.mem.Allocator, path: []const u8, max_path_len: usize` | `![]u8` |  |
 
 <a id="const-memoryfilesystem-default_max_path_len"></a>
 
@@ -213,12 +322,52 @@ pub fn writeFile(self: *MemoryFilesystem, path: []const u8, contents: []const u8
 
 References: [`MemoryFilesystem`](#type-memoryfilesystem)
 
+<a id="fn-memoryfilesystem-makedir"></a>
+
+### MemoryFilesystem.makeDir
+
+```zig
+pub fn makeDir(self: *MemoryFilesystem, path: []const u8, parents: bool) !void
+```
+
+References: [`MemoryFilesystem`](#type-memoryfilesystem)
+
+<a id="fn-memoryfilesystem-statpath"></a>
+
+### MemoryFilesystem.statPath
+
+```zig
+pub fn statPath(self: *const MemoryFilesystem, path: []const u8) !FileStat
+```
+
+References: [`MemoryFilesystem`](#type-memoryfilesystem), [`FileStat`](#type-filestat)
+
+<a id="fn-memoryfilesystem-readdiralloc"></a>
+
+### MemoryFilesystem.readDirAlloc
+
+```zig
+pub fn readDirAlloc(self: *const MemoryFilesystem, allocator: std.mem.Allocator, path: []const u8) ![]DirectoryEntry
+```
+
+References: [`MemoryFilesystem`](#type-memoryfilesystem), [`DirectoryEntry`](#type-directoryentry)
+
 <a id="fn-memoryfilesystem-removefile"></a>
 
 ### MemoryFilesystem.removeFile
 
 ```zig
 pub fn removeFile(self: *MemoryFilesystem, path: []const u8) !void
+```
+
+References: [`MemoryFilesystem`](#type-memoryfilesystem)
+
+<a id="fn-memoryfilesystem-removepath"></a>
+
+### MemoryFilesystem.removePath
+
+```zig
+pub fn removePath(self: *MemoryFilesystem, path: []const u8, recursive: bool) !void
 ```
 
 References: [`MemoryFilesystem`](#type-memoryfilesystem)
@@ -233,12 +382,40 @@ pub fn renameFile(self: *MemoryFilesystem, old_path: []const u8, new_path: []con
 
 References: [`MemoryFilesystem`](#type-memoryfilesystem)
 
+<a id="fn-memoryfilesystem-renamepath"></a>
+
+### MemoryFilesystem.renamePath
+
+```zig
+pub fn renamePath(self: *MemoryFilesystem, old_path: []const u8, new_path: []const u8) !void
+```
+
+References: [`MemoryFilesystem`](#type-memoryfilesystem)
+
+<a id="fn-memoryfilesystem-copyfile"></a>
+
+### MemoryFilesystem.copyFile
+
+```zig
+pub fn copyFile(self: *MemoryFilesystem, source: []const u8, destination: []const u8, overwrite: bool) !void
+```
+
+References: [`MemoryFilesystem`](#type-memoryfilesystem)
+
 <a id="fn-memoryfilesystem-normalizepathalloc"></a>
 
 ### MemoryFilesystem.normalizePathAlloc
 
 ```zig
 pub fn normalizePathAlloc(allocator: std.mem.Allocator, path: []const u8, max_path_len: usize) ![]u8
+```
+
+<a id="fn-memoryfilesystem-normalizerootpathalloc"></a>
+
+### MemoryFilesystem.normalizeRootPathAlloc
+
+```zig
+pub fn normalizeRootPathAlloc(allocator: std.mem.Allocator, path: []const u8, max_path_len: usize) ![]u8
 ```
 
 <a id="type-filesystemcapability"></a>
@@ -251,7 +428,19 @@ pub const FilesystemCapability = union(enum) {
     memory: []const MemoryFile,
     memory_rw: *MemoryFilesystem,
     host_cwd,
+    host_dir: HostDirectory,
     custom: CustomFilesystem,
+};
+```
+
+<a id="type-hostdirectory"></a>
+
+## HostDirectory
+
+```zig
+pub const HostDirectory = struct {
+    dir: std.Io.Dir,
+    read_only: bool = false,
 };
 ```
 
@@ -266,6 +455,11 @@ pub const CustomFilesystem = struct {
     write_file: ?*const fn (context: ?*anyopaque, path: []const u8, contents: []const u8) anyerror!void = null,
     remove_file: ?*const fn (context: ?*anyopaque, path: []const u8) anyerror!void = null,
     rename_file: ?*const fn (context: ?*anyopaque, old_path: []const u8, new_path: []const u8) anyerror!void = null,
+    stat: ?*const fn (context: ?*anyopaque, path: []const u8, follow_symlinks: bool) anyerror!FileStat = null,
+    read_dir_alloc: ?*const fn (context: ?*anyopaque, allocator: std.mem.Allocator, path: []const u8) anyerror![]DirectoryEntry = null,
+    make_dir: ?*const fn (context: ?*anyopaque, path: []const u8, parents: bool) anyerror!void = null,
+    remove_path: ?*const fn (context: ?*anyopaque, path: []const u8, recursive: bool) anyerror!void = null,
+    copy_file: ?*const fn (context: ?*anyopaque, source: []const u8, destination: []const u8, overwrite: bool) anyerror!void = null,
 };
 ```
 

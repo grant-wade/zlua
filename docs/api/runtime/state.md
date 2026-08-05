@@ -52,6 +52,7 @@
 - [stdlib.toml](../stdlib/toml.md)
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
+- [stdlib.fs](../stdlib/fs.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
@@ -116,6 +117,10 @@
 - [MemoryFile](#alias-memoryfile)
 - [MemoryFilesystem](#alias-memoryfilesystem)
 - [FilesystemCapability](#alias-filesystemcapability)
+- [HostDirectory](#alias-hostdirectory)
+- [FilesystemFileKind](#alias-filesystemfilekind)
+- [FilesystemFileStat](#alias-filesystemfilestat)
+- [FilesystemDirectoryEntry](#alias-filesystemdirectoryentry)
 - [EnvironmentCapability](#alias-environmentcapability)
 - [ClockCapability](#alias-clockcapability)
 - [ProcessCapability](#alias-processcapability)
@@ -290,6 +295,38 @@ pub const MemoryFilesystem = host.MemoryFilesystem;
 
 ```zig
 pub const FilesystemCapability = host.FilesystemCapability;
+```
+
+<a id="alias-hostdirectory"></a>
+
+## HostDirectory
+
+```zig
+pub const HostDirectory = host.HostDirectory;
+```
+
+<a id="alias-filesystemfilekind"></a>
+
+## FilesystemFileKind
+
+```zig
+pub const FilesystemFileKind = host.FileKind;
+```
+
+<a id="alias-filesystemfilestat"></a>
+
+## FilesystemFileStat
+
+```zig
+pub const FilesystemFileStat = host.FileStat;
+```
+
+<a id="alias-filesystemdirectoryentry"></a>
+
+## FilesystemDirectoryEntry
+
+```zig
+pub const FilesystemDirectoryEntry = host.DirectoryEntry;
 ```
 
 <a id="alias-environmentcapability"></a>
@@ -539,6 +576,14 @@ pub const State = struct {
 | [writeFile](#fn-state-writefile) | `self: *State, path: []const u8, data: []const u8` | `!void` |  |
 | [removeFile](#fn-state-removefile) | `self: *State, path: []const u8` | `!void` |  |
 | [renameFile](#fn-state-renamefile) | `self: *State, old_path: []const u8, new_path: []const u8` | `!void` |  |
+| [fsReadFileAlloc](#fn-state-fsreadfilealloc) | `self: *State, path: []const u8, max_bytes: usize` | `anyerror![]const u8` |  |
+| [fsWriteFile](#fn-state-fswritefile) | `self: *State, path: []const u8, data: []const u8` | `anyerror!void` |  |
+| [fsStat](#fn-state-fsstat) | `self: *State, path: []const u8, follow_symlinks: bool` | `anyerror!host.FileStat` |  |
+| [fsReadDirAlloc](#fn-state-fsreaddiralloc) | `self: *State, path: []const u8` | `anyerror![]host.DirectoryEntry` |  |
+| [fsMakeDir](#fn-state-fsmakedir) | `self: *State, path: []const u8, parents: bool` | `anyerror!void` |  |
+| [fsRemovePath](#fn-state-fsremovepath) | `self: *State, path: []const u8, recursive: bool` | `anyerror!void` |  |
+| [fsRenamePath](#fn-state-fsrenamepath) | `self: *State, old_path: []const u8, new_path: []const u8` | `anyerror!void` |  |
+| [fsCopyFile](#fn-state-fscopyfile) | `self: *State, source: []const u8, destination: []const u8, overwrite: bool` | `anyerror!void` |  |
 | [getenv](#fn-state-getenv) | `self: *State, name: []const u8` | `?[]const u8` |  |
 | [currentTime](#fn-state-currenttime) | `self: *State` | `!i64` |  |
 | [executeProcess](#fn-state-executeprocess) | `self: *State, command: []const u8` | `!ProcessResult` |  |
@@ -1249,6 +1294,86 @@ References: [`State`](#type-state)
 
 ```zig
 pub fn renameFile(self: *State, old_path: []const u8, new_path: []const u8) !void
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-fsreadfilealloc"></a>
+
+### State.fsReadFileAlloc
+
+```zig
+pub fn fsReadFileAlloc(self: *State, path: []const u8, max_bytes: usize) anyerror![]const u8
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-fswritefile"></a>
+
+### State.fsWriteFile
+
+```zig
+pub fn fsWriteFile(self: *State, path: []const u8, data: []const u8) anyerror!void
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-fsstat"></a>
+
+### State.fsStat
+
+```zig
+pub fn fsStat(self: *State, path: []const u8, follow_symlinks: bool) anyerror!host.FileStat
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-fsreaddiralloc"></a>
+
+### State.fsReadDirAlloc
+
+```zig
+pub fn fsReadDirAlloc(self: *State, path: []const u8) anyerror![]host.DirectoryEntry
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-fsmakedir"></a>
+
+### State.fsMakeDir
+
+```zig
+pub fn fsMakeDir(self: *State, path: []const u8, parents: bool) anyerror!void
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-fsremovepath"></a>
+
+### State.fsRemovePath
+
+```zig
+pub fn fsRemovePath(self: *State, path: []const u8, recursive: bool) anyerror!void
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-fsrenamepath"></a>
+
+### State.fsRenamePath
+
+```zig
+pub fn fsRenamePath(self: *State, old_path: []const u8, new_path: []const u8) anyerror!void
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-fscopyfile"></a>
+
+### State.fsCopyFile
+
+```zig
+pub fn fsCopyFile(self: *State, source: []const u8, destination: []const u8, overwrite: bool) anyerror!void
 ```
 
 References: [`State`](#type-state)
