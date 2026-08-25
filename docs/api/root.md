@@ -77,6 +77,8 @@
 
 - [State](#alias-state)
 - [Options](#alias-options)
+- [Stdlib](#alias-stdlib)
+- [LibrarySet](#alias-libraryset)
 - [Value](#alias-value)
 - [Ref](#alias-ref)
 - [Table](#alias-table)
@@ -208,6 +210,26 @@ pub const Options = api.Options;
 ```
 
 References: [`api.Options`](api.md#type-options)
+
+<a id="alias-stdlib"></a>
+
+## Stdlib
+
+```zig
+pub const Stdlib = api.Stdlib;
+```
+
+References: [`api.Stdlib`](api.md#type-stdlib)
+
+<a id="alias-libraryset"></a>
+
+## LibrarySet
+
+```zig
+pub const LibrarySet = api.LibrarySet;
+```
+
+References: [`api.LibrarySet`](api.md#alias-libraryset)
 
 <a id="alias-value"></a>
 

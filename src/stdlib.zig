@@ -112,15 +112,18 @@ pub fn openLibraries(state: *State, selection: LibrarySelection) !void {
 }
 
 pub fn installGlobalTable(state: *State) !void {
-    const global_value = try state.newTableWithHints(0, @intCast(state.globals.count() + 1));
-    const table_value = global_value.table;
-    state.global_table = table_value;
+    const table_value = state.global_table orelse blk: {
+        const global_value = try state.newTableWithHints(0, @intCast(state.globals.count() + 1));
+        state.global_table = global_value.table;
+        break :blk global_value.table;
+    };
 
     var globals = state.globals.iterator();
     while (globals.next()) |entry| {
         try table_value.set(state.allocator, .{ .string = entry.key_ptr.* }, entry.value_ptr.*);
     }
 
+    const global_value = Value{ .table = table_value };
     const key = try state.intern("_G");
     try state.globals.put(key, global_value);
     try table_value.set(state.allocator, .{ .string = key }, global_value);

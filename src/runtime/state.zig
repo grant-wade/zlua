@@ -174,7 +174,7 @@ pub const State = struct {
         };
         errdefer state.deinit();
         try stdlib.openLibraries(&state, options.stdlib);
-        if (!options.stdlib.isEmpty()) try stdlib.installGlobalTable(&state);
+        try stdlib.installGlobalTable(&state);
         state.resetAutoGcThreshold();
         return state;
     }

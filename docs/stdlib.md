@@ -10,7 +10,7 @@ zlua separates library selection from host capabilities. Library selection contr
 
 | Selection | Libraries |
 | --- | --- |
-| `none` | No standard libraries. |
+| `none` | No standard libraries; the global environment remains available for script-defined and host-registered globals. |
 | `base` | Base globals only. |
 | `safe` | Base, table, string, math, utf8, coroutine, json, toml, msgpack, and csv. |
 | `full` | Safe libraries plus io, os, debug, package, and the zlua `fs` extension. |
@@ -34,11 +34,11 @@ var full = try zlua.State.init(allocator, .{ .stdlib = .full });
 
 ## Base Globals
 
-The base library installs the core globals and `_G` table:
+Every state has a global environment table exposed as `_G`. The base library installs the remaining core globals:
 
 | Global | Notes |
 | --- | --- |
-| `_G` | Global environment table installed when any library selection is non-empty. |
+| `_G` | Global environment table, available even when the library selection is `none`. |
 | `_VERSION` | `Lua 5.5`. |
 | `assert`, `error`, `pcall`, `xpcall` | Error and protected-call helpers. |
 | `collectgarbage` | Lua-facing GC control. `step` currently performs full collection-style work. |

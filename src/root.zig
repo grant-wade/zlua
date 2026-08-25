@@ -11,6 +11,8 @@ pub const testing = @import("testing.zig");
 
 pub const State = api.State;
 pub const Options = api.Options;
+pub const Stdlib = api.Stdlib;
+pub const LibrarySet = api.LibrarySet;
 pub const Value = api.Value;
 pub const Ref = api.Ref;
 pub const Table = api.Table;

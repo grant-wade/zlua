@@ -151,6 +151,7 @@ and should not be treated as a stable embedding contract.
 
 ## Aliases
 
+- [LibrarySet](#alias-libraryset)
 - [MemoryFile](#alias-memoryfile)
 - [MemoryFilesystem](#alias-memoryfilesystem)
 - [FilesystemCapability](#alias-filesystemcapability)
@@ -229,6 +230,18 @@ Returns options for `State.newUserdataPtr`, parameterized by the pointed-to Zig 
 pub fn UserdataPtrOptions(comptime T: type) type
 ```
 
+<a id="alias-libraryset"></a>
+
+## LibrarySet
+
+Flags for selecting individual standard libraries.
+
+```zig
+pub const LibrarySet = stdlib.LibrarySet;
+```
+
+References: [`stdlib.LibrarySet`](stdlib.md#type-libraryset)
+
 <a id="type-stdlib"></a>
 
 ## Stdlib
@@ -236,7 +249,7 @@ pub fn UserdataPtrOptions(comptime T: type) type
 Standard-library selection used when creating or opening a state.
 
 ```zig
-pub const Stdlib = enum {
+pub const Stdlib = union(enum) {
     /// Open no standard libraries.
     none,
     /// Open only base functionality.
@@ -245,6 +258,8 @@ pub const Stdlib = enum {
     safe,
     /// Open the full Lua standard-library surface; host capabilities still gate ambient access.
     full,
+    /// Open only the explicitly selected libraries.
+    custom: LibrarySet,
 };
 ```
 
@@ -769,7 +784,7 @@ pub const State = struct {
 | [allocator](#fn-state-allocator) | `self: *State` | `std.mem.Allocator` | Returns the allocator used for API-owned allocations returned to the host. |
 | [instructionBudget](#fn-state-instructionbudget) | `self: *const State` | `InstructionBudget` | Returns the cumulative instruction budget usage for this state. |
 | [resetInstructionBudget](#fn-state-resetinstructionbudget) | `self: *State` | `void` | Resets the cumulative instruction counter to zero. |
-| [openLibs](#fn-state-openlibs) | `self: *State, mode: Stdlib` | `!void` | Opens additional standard libraries after state creation. |
+| [openLibs](#fn-state-openlibs) | `self: *State, selection: Stdlib` | `!void` | Opens additional standard libraries after state creation. |
 | [collect](#fn-state-collect) | `self: *State` | `!void` | Runs a full garbage collection cycle. |
 | [stepGc](#fn-state-stepgc) | `self: *State, budget: GcBudget` | `!GcStepResult` | Runs garbage-collection work for &#96;budget&#96; and reports whether collection completed. |
 | [push](#fn-state-push) | `self: *State, value: anytype` | `!Value` | Converts a Zig value into a rooted high-level Lua &#96;Value&#96;. |
@@ -866,7 +881,7 @@ References: [`State`](#type-state)
 Opens additional standard libraries after state creation.
 
 ```zig
-pub fn openLibs(self: *State, mode: Stdlib) !void
+pub fn openLibs(self: *State, selection: Stdlib) !void
 ```
 
 References: [`State`](#type-state), [`Stdlib`](#type-stdlib)
