@@ -67,8 +67,10 @@ pub fn UserdataPtrOptions(comptime T: type) type {
     };
 }
 
+/// Flags for selecting individual standard libraries.
+pub const LibrarySet = stdlib.LibrarySet;
 /// Standard-library selection used when creating or opening a state.
-pub const Stdlib = enum {
+pub const Stdlib = union(enum) {
     /// Open no standard libraries.
     none,
     /// Open only base functionality.
@@ -77,6 +79,8 @@ pub const Stdlib = enum {
     safe,
     /// Open the full Lua standard-library surface; host capabilities still gate ambient access.
     full,
+    /// Open only the explicitly selected libraries.
+    custom: LibrarySet,
 };
 
 /// A read-only file entry for memory-backed filesystem capabilities.
@@ -422,9 +426,10 @@ pub const State = struct {
     }
 
     /// Opens additional standard libraries after state creation.
-    pub fn openLibs(self: *State, mode: Stdlib) !void {
-        try stdlib.openLibraries(&self.raw_state, toRuntimeStdlib(mode));
-        if (!toRuntimeStdlib(mode).isEmpty()) try stdlib.installGlobalTable(&self.raw_state);
+    pub fn openLibs(self: *State, selection: Stdlib) !void {
+        const runtime_selection = toRuntimeStdlib(selection);
+        try stdlib.openLibraries(&self.raw_state, runtime_selection);
+        if (!runtime_selection.isEmpty()) try stdlib.installGlobalTable(&self.raw_state);
     }
 
     /// Runs a full garbage collection cycle.
@@ -1329,12 +1334,13 @@ fn runtimeOptions(options: Options) runtime.StateOptions {
     };
 }
 
-fn toRuntimeStdlib(mode: Stdlib) runtime.StdlibMode {
-    return switch (mode) {
+fn toRuntimeStdlib(selection: Stdlib) runtime.StdlibMode {
+    return switch (selection) {
         .none => .none,
         .base => .base,
         .safe => .safe,
         .full => .full,
+        .custom => |libraries| .{ .libraries = libraries },
     };
 }
 
@@ -1865,6 +1871,48 @@ test "api safe stdlib excludes ambient capability libraries" {
         \\assert(package == nil)
         \\assert(require == nil)
     , .{ .name = "=api-safe-stdlib-negative" });
+}
+
+test "api none stdlib keeps a global environment without libraries" {
+    var lua = try State.init(std.testing.allocator, .{ .stdlib = .none });
+    defer lua.deinit();
+
+    try lua.setGlobal("host_value", 41);
+    var chunk = try lua.loadString(
+        "host_value = host_value + 1; return host_value == 42 and _G == _ENV and print == nil and math == nil",
+        .{ .name = "=api-none-stdlib" },
+    );
+    defer chunk.deinit();
+
+    try std.testing.expect(try chunk.call(.{}, bool));
+    try std.testing.expectEqual(@as(i64, 42), try lua.getGlobal("host_value", i64));
+}
+
+test "api can open custom libraries after none" {
+    var lua = try State.init(std.testing.allocator, .{ .stdlib = .none });
+    defer lua.deinit();
+
+    try lua.setGlobal("host_value", 81);
+    var chunk = try lua.loadString("return math.sqrt(host_value)", .{ .name = "=api-open-after-none" });
+    defer chunk.deinit();
+
+    try lua.openLibs(.{ .custom = .{ .math = true } });
+    try std.testing.expectEqual(@as(f64, 9), try chunk.call(.{}, f64));
+}
+
+test "api custom stdlib opens only selected libraries" {
+    var lua = try State.init(std.testing.allocator, .{
+        .stdlib = .{ .custom = .{ .math = true, .json = true } },
+    });
+    defer lua.deinit();
+
+    var chunk = try lua.loadString(
+        "return math ~= nil and json ~= nil and string == nil and print == nil",
+        .{ .name = "=api-custom-stdlib" },
+    );
+    defer chunk.deinit();
+
+    try std.testing.expect(try chunk.call(.{}, bool));
 }
 
 test "api load string, do string, and protected error" {

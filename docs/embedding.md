@@ -24,13 +24,15 @@ pub fn main() !void {
 
 `State.init` defaults to `.safe` standard libraries and sandboxed host access. Use `.stdlib = .full` only when you need the full standard-library surface, and grant filesystem, environment, process, clock, and I/O capabilities explicitly.
 
-Supported standard-library modes are:
+Standard libraries can be selected with the `none`, `base`, `safe`, and `full` presets, or with a `custom` set. The `none` preset still creates the Lua global environment, so scripts can use globals registered by the host, but it opens no standard libraries.
 
 ```zig
-none
-base
-safe
-full
+var lua = try zlua.State.init(allocator, .{
+    .stdlib = .{ .custom = .{
+        .math = true,
+        .json = true,
+    } },
+});
 ```
 
 ## Capabilities
@@ -614,6 +616,7 @@ Embedding examples live under `examples`:
 
 ```text
 examples/run_script.zig
+examples/select_libraries.zig
 examples/register_function.zig
 examples/typed_host_function.zig
 examples/plugin_sandbox.zig

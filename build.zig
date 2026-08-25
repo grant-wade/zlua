@@ -160,6 +160,7 @@ pub fn build(b: *std.Build) void {
 
     const embedding_examples = [_]EmbeddingExample{
         .{ .key = "run_script", .name = "zlua-embed-run-script", .path = "examples/run_script.zig" },
+        .{ .key = "select_libraries", .name = "zlua-embed-select-libraries", .path = "examples/select_libraries.zig" },
         .{ .key = "register_function", .name = "zlua-embed-register-function", .path = "examples/register_function.zig" },
         .{ .key = "typed_host_function", .name = "zlua-embed-typed-host-function", .path = "examples/typed_host_function.zig" },
         .{ .key = "plugin_sandbox", .name = "zlua-embed-plugin-sandbox", .path = "examples/plugin_sandbox.zig" },
