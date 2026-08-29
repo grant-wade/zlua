@@ -12,7 +12,8 @@ const EmbeddingExample = struct {
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    const official_memory_limit_mb = b.option(u64, "official-memory-limit-mb", "Memory cap per official-suite child process in MiB (0 disables)") orelse 256;
+    const default_official_memory_limit_mb: u64 = if (b.graph.host.result.os.tag == .linux) 256 else 0;
+    const official_memory_limit_mb = b.option(u64, "official-memory-limit-mb", "Memory cap per official-suite child process in MiB (0 disables; Linux only)") orelse default_official_memory_limit_mb;
     const example_filters = b.args orelse &[_][]const u8{};
 
     const lua_deps_step = addFetchLuaStep(b);
@@ -23,8 +24,10 @@ pub fn build(b: *std.Build) void {
     const zerde_mod = zerde_dep.module("zerde");
 
     const clua_optimize: std.builtin.OptimizeMode = .ReleaseSafe;
+    const bench_optimize: std.builtin.OptimizeMode = .ReleaseFast;
     const clua_exe = addClua(b, target, clua_optimize, lua_deps_step);
-    const clua_lib = addCluaLib(b, target, clua_optimize, lua_deps_step);
+    const clua_lib = addCluaLib(b, target, clua_optimize, lua_deps_step, "lua5.5-core");
+    const clua_startup_bench_lib = addCluaLib(b, target, bench_optimize, lua_deps_step, "lua5.5-startup-bench");
     b.installArtifact(clua_exe);
 
     const mod = b.addModule("zlua", .{
@@ -33,7 +36,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{.{ .name = "zerde", .module = zerde_mod }},
     });
-    const bench_optimize: std.builtin.OptimizeMode = .ReleaseFast;
     const zerde_bench_dep = b.dependency("zerde", .{
         .target = target,
         .optimize = bench_optimize,
@@ -72,6 +74,17 @@ pub fn build(b: *std.Build) void {
         }),
     });
     zlua_c_lib.step.dependOn(lua_deps_step);
+    const zlua_c_startup_bench_lib = b.addLibrary(.{
+        .name = "zlua-c-startup-bench",
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/c_api.zig"),
+            .target = target,
+            .optimize = bench_optimize,
+            .imports = &.{.{ .name = "zerde", .module = zerde_bench_mod }},
+        }),
+    });
+    zlua_c_startup_bench_lib.step.dependOn(lua_deps_step);
     zlua_c_lib.installHeader(b.path(lua_source_root ++ "/lua.h"), "lua.h");
     zlua_c_lib.installHeader(b.path(lua_source_root ++ "/lauxlib.h"), "lauxlib.h");
     zlua_c_lib.installHeader(b.path(lua_source_root ++ "/lualib.h"), "lualib.h");
@@ -97,6 +110,31 @@ pub fn build(b: *std.Build) void {
             .imports = &.{.{ .name = "zlua", .module = bench_mod }},
         }),
     });
+
+    const native_startup_bench_exe = b.addExecutable(.{
+        .name = "zlua-bench-startup-native",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/bench_startup_main.zig"),
+            .target = target,
+            .optimize = bench_optimize,
+            .imports = &.{.{ .name = "zlua", .module = bench_mod }},
+        }),
+    });
+    const zlua_c_startup_bench_exe = addCStartupBench(b, target, bench_optimize, zlua_c_startup_bench_lib, "zlua-bench-startup-c-api");
+    const clua_startup_bench_exe = addCStartupBench(b, target, bench_optimize, clua_startup_bench_lib, "clua-bench-startup-c-api");
+
+    const startup_bench_step = b.step("bench-startup", "Benchmark native, zlua C API, and CLua startup in process");
+    const run_native_startup_bench = b.addRunArtifact(native_startup_bench_exe);
+    if (b.args) |args| run_native_startup_bench.addArgs(args);
+    const run_zlua_c_startup_bench = b.addRunArtifact(zlua_c_startup_bench_exe);
+    run_zlua_c_startup_bench.addArg("--engine=zlua-c");
+    if (b.args) |args| run_zlua_c_startup_bench.addArgs(args);
+    run_zlua_c_startup_bench.step.dependOn(&run_native_startup_bench.step);
+    const run_clua_startup_bench = b.addRunArtifact(clua_startup_bench_exe);
+    run_clua_startup_bench.addArg("--engine=clua");
+    if (b.args) |args| run_clua_startup_bench.addArgs(args);
+    run_clua_startup_bench.step.dependOn(&run_zlua_c_startup_bench.step);
+    startup_bench_step.dependOn(&run_clua_startup_bench.step);
 
     const diff_exe = b.addExecutable(.{
         .name = "zlua-test-diff",
@@ -447,6 +485,7 @@ fn addCluaLib(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     lua_deps_step: *std.Build.Step,
+    name: []const u8,
 ) *std.Build.Step.Compile {
     const lua_sources = [_][]const u8{
         "lapi.c",
@@ -501,12 +540,35 @@ fn addCluaLib(
     }
 
     const lib = b.addLibrary(.{
-        .name = "lua5.5-core",
+        .name = name,
         .linkage = .static,
         .root_module = clua_mod,
     });
     lib.step.dependOn(lua_deps_step);
     return lib;
+}
+
+fn addCStartupBench(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    library: *std.Build.Step.Compile,
+    name: []const u8,
+) *std.Build.Step.Compile {
+    const module = b.createModule(.{
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    module.addIncludePath(b.path(lua_source_root));
+    module.addCSourceFile(.{
+        .file = b.path("tools/bench_c_api_startup.c"),
+        .flags = &.{"-std=c11"},
+    });
+    module.linkLibrary(library);
+    if (target.result.os.tag != .windows) module.linkSystemLibrary("m", .{});
+    if (target.result.os.tag == .linux) module.linkSystemLibrary("dl", .{});
+    return b.addExecutable(.{ .name = name, .root_module = module });
 }
 
 fn cluaCFlags(target: std.Build.ResolvedTarget) []const []const u8 {

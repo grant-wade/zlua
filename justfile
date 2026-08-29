@@ -3,6 +3,7 @@ set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 zig := "zig"
 zlua := "zig-out/bin/zlua"
 clua := "zig-out/bin/lua5.5"
+official_memory_limit := if os() == "linux" { "--memory-limit-mb=256" } else { "" }
 
 # Show available commands.
 default:
@@ -67,7 +68,7 @@ extensions *args:
 
 # Run all official Lua 5.5 files, or selected files by name.
 official *args:
-    {{zig}} build --summary all run-test-official -- --debug-errors --memory-limit-mb=256 {{args}}
+    {{zig}} build --summary all run-test-official -- --debug-errors {{official_memory_limit}} {{args}}
 
 # Run all C API fixtures, or one fixture file/directory.
 c-api *args:
@@ -76,6 +77,10 @@ c-api *args:
 # Run ReleaseFast zlua vs CLua benchmarks, or one benchmark file/directory.
 bench *args:
     {{zig}} build -Doptimize=ReleaseFast --summary all run-test-bench -- {{args}}
+
+# Benchmark native, zlua C API, and CLua startup without process-launch timing.
+bench-startup *args:
+    {{zig}} build --summary all bench-startup -- {{args}}
 
 # Remove build outputs and Zig cache directories.
 clean:

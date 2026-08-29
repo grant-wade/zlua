@@ -1,9 +1,9 @@
-# testing.bench_runner
+# stdlib.static_strings
 
 ## Navigation
 
 - [API Index](../README.md)
-- Parent: [testing](../testing.md)
+- Parent: [stdlib](../stdlib.md)
 
 <details>
 <summary>All documents</summary>
@@ -72,19 +72,22 @@
 
 ## Functions
 
-- [runCli](#fn-runcli)
+- [canonical](#fn-canonical)
+- [get](#fn-get)
 
-<a id="fn-runcli"></a>
+<a id="fn-canonical"></a>
 
-## runCli
+## canonical
 
 ```zig
-pub fn runCli(
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    environ_map: *const std.process.Environ.Map,
-    zlua_exe: []const u8,
-    args: []const []const u8,
-) !u8
+pub fn canonical(bytes: []const u8) ?[]const u8
+```
+
+<a id="fn-get"></a>
+
+## get
+
+```zig
+pub fn get(comptime bytes: []const u8) []const u8
 ```
 

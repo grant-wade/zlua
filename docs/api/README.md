@@ -49,6 +49,7 @@ Generated Markdown API documentation.
 - [stdlib.msgpack](stdlib/msgpack.md)
 - [stdlib.csv](stdlib/csv.md)
 - [stdlib.fs](stdlib/fs.md)
+- [stdlib.static_strings](stdlib/static_strings.md)
 - [runtime.vm](runtime/vm.md)
 - [runtime.tests](runtime/tests.md)
 - [runtime.internal](runtime/internal.md)

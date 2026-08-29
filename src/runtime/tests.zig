@@ -448,11 +448,11 @@ test "keeps global table graph alive during collection" {
     const key = try state.intern("child");
     try child.table.set(state.allocator, .{ .string = try state.intern("answer") }, .{ .integer = 42 });
     try root.table.set(state.allocator, .{ .string = key }, child);
-    try state.globals.put(try state.intern("gc_root"), root);
+    try state.putGlobal("gc_root", root);
 
     try state.collectGarbage();
 
-    const kept_root = state.globals.get("gc_root") orelse Value.nil;
+    const kept_root = state.getGlobal("gc_root");
     try std.testing.expect(kept_root == .table);
     const kept_child = kept_root.table.get(.{ .string = key });
     try std.testing.expect(kept_child == .table);
@@ -467,7 +467,7 @@ test "weak value tables clear unreachable values" {
     const metatable = try state.newTableWithHints(0, 1);
     try metatable.table.set(state.allocator, .{ .string = try state.intern("__mode") }, .{ .string = try state.intern("v") });
     state.setTableMetatableRaw(weak.table, metatable.table);
-    try state.globals.put(try state.intern("weak_values"), weak);
+    try state.putGlobal("weak_values", weak);
 
     const dead = try state.newTableWithHints(0, 0);
     try weak.table.set(state.allocator, .{ .string = try state.intern("item") }, dead);
@@ -485,7 +485,7 @@ test "weak key tables clear unreachable keys" {
     const metatable = try state.newTableWithHints(0, 1);
     try metatable.table.set(state.allocator, .{ .string = try state.intern("__mode") }, .{ .string = try state.intern("k") });
     state.setTableMetatableRaw(weak.table, metatable.table);
-    try state.globals.put(try state.intern("weak_keys"), weak);
+    try state.putGlobal("weak_keys", weak);
 
     const dead_key = try state.newTableWithHints(0, 0);
     try weak.table.set(state.allocator, dead_key, .{ .integer = 1 });
@@ -503,13 +503,13 @@ test "ephemeron table marks value when key is reachable" {
     const metatable = try state.newTableWithHints(0, 1);
     try metatable.table.set(state.allocator, .{ .string = try state.intern("__mode") }, .{ .string = try state.intern("k") });
     state.setTableMetatableRaw(ephemeron.table, metatable.table);
-    try state.globals.put(try state.intern("ephemeron"), ephemeron);
+    try state.putGlobal("ephemeron", ephemeron);
 
     const key = try state.newTableWithHints(0, 0);
     const value = try state.newTableWithHints(0, 1);
     try value.table.set(state.allocator, .{ .string = try state.intern("answer") }, .{ .integer = 42 });
     try ephemeron.table.set(state.allocator, key, value);
-    try state.globals.put(try state.intern("live_key"), key);
+    try state.putGlobal("live_key", key);
 
     try state.collectGarbage();
 

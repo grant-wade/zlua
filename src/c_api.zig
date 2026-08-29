@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const runtime = @import("runtime.zig");
 const stdlib = @import("stdlib.zig");
 
@@ -57,6 +58,7 @@ const lua_Alloc = ?*const fn (?*anyopaque, ?*anyopaque, usize, usize) callconv(.
 const lua_WarnFunction = ?*const fn (?*anyopaque, ?[*:0]const u8, c_int) callconv(.c) void;
 const lua_Hook = ?*const fn (?*lua_State, ?*lua_Debug) callconv(.c) void;
 const VaList = std.builtin.VaList;
+const VaListParam = if (@typeInfo(VaList) == .pointer) VaList else *VaList;
 
 pub export const lua_ident: [18:0]u8 = "zlua C API phase 7".*;
 
@@ -178,6 +180,7 @@ const Value = union(enum) {
 
 const CString = struct {
     bytes: [:0]const u8,
+    runtime_peer: ?[]const u8 = null,
     external: bool = false,
     external_alloc_f: lua_Alloc = null,
     external_ud: ?*anyopaque = null,
@@ -203,6 +206,10 @@ const TableEntry = struct {
 const CTable = struct {
     entries: std.ArrayList(TableEntry) = .empty,
     metatable: ?*CTable = null,
+    runtime_peer: ?*runtime.Table = null,
+    runtime_root: ?usize = null,
+    syncing_to_runtime: bool = false,
+    syncing_from_runtime: bool = false,
     marked: bool = false,
 
     fn create(allocator: std.mem.Allocator, array_hint: c_int, record_hint: c_int) !*CTable {
@@ -378,7 +385,9 @@ const CState = struct {
     registry_table: *CTable,
     global_table: *CTable,
     strings: std.ArrayList(*CString) = .empty,
+    string_index: std.StringHashMap(*CString),
     tables: std.ArrayList(*CTable) = .empty,
+    runtime_table_index: std.AutoHashMap(*runtime.Table, *CTable),
     userdata: std.ArrayList(*CUserdata) = .empty,
     threads: std.ArrayList(*CThread) = .empty,
     panicf: lua_CFunction = null,
@@ -391,6 +400,8 @@ const CState = struct {
 
     fn deinitOwnedObjects(self: *CState) void {
         const alloc = self.allocator();
+        self.runtime_table_index.deinit();
+        self.string_index.deinit();
         for (self.tables.items) |table| table.deinit(alloc);
         for (self.userdata.items) |userdata| userdata.deinit(alloc);
         for (self.strings.items) |string| string.deinit(alloc);
@@ -551,6 +562,8 @@ fn setTop(thread: *CThread, idx: c_int) void {
 }
 
 fn createString(state: *CState, bytes: []const u8) ?*CString {
+    if (state.string_index.get(bytes)) |string| return string;
+
     const allocator = state.allocator();
     const storage = allocator.allocSentinel(u8, bytes.len, 0) catch return null;
     @memcpy(storage[0..bytes.len], bytes);
@@ -563,15 +576,30 @@ fn createString(state: *CState, bytes: []const u8) ?*CString {
         string.deinit(allocator);
         return null;
     };
+    state.string_index.put(storage, string) catch {
+        _ = state.strings.pop();
+        string.deinit(allocator);
+        return null;
+    };
     return string;
 }
 
 fn createExternalString(state: *CState, bytes: [:0]const u8, alloc_f: lua_Alloc, ud: ?*anyopaque) ?*CString {
+    if (state.string_index.get(bytes)) |string| {
+        if (alloc_f) |free_f| _ = free_f(ud, @constCast(bytes.ptr), bytes.len + 1, 0);
+        return string;
+    }
+
     const allocator = state.allocator();
     const string = allocator.create(CString) catch return null;
     string.* = .{ .bytes = bytes, .external = true, .external_alloc_f = alloc_f, .external_ud = ud };
     state.strings.append(allocator, string) catch {
-        allocator.destroy(string);
+        string.deinit(allocator);
+        return null;
+    };
+    state.string_index.put(bytes, string) catch {
+        _ = state.strings.pop();
+        string.deinit(allocator);
         return null;
     };
     return string;
@@ -579,6 +607,9 @@ fn createExternalString(state: *CState, bytes: [:0]const u8, alloc_f: lua_Alloc,
 
 fn destroyCString(state: *CState, string: *CString) void {
     const allocator = state.allocator();
+    if (state.string_index.get(string.bytes)) |indexed| {
+        if (indexed == string) _ = state.string_index.remove(string.bytes);
+    }
     for (state.strings.items, 0..) |candidate, index| {
         if (candidate == string) {
             _ = state.strings.orderedRemove(index);
@@ -660,6 +691,22 @@ fn createTable(state: *CState, array_hint: c_int, record_hint: c_int) ?*CTable {
         return null;
     };
     return table;
+}
+
+fn linkRuntimeTable(state: *CState, runtime_table: *runtime.Table, c_table: *CTable) !void {
+    if (c_table.runtime_peer) |peer| {
+        if (peer != runtime_table) return error.TableIdentityConflict;
+        return;
+    }
+    if (state.runtime_table_index.get(runtime_table)) |existing| {
+        if (existing != c_table) return error.TableIdentityConflict;
+        return;
+    }
+
+    try state.runtime_table_index.put(runtime_table, c_table);
+    errdefer _ = state.runtime_table_index.remove(runtime_table);
+    c_table.runtime_root = try state.runtime_state.rootValue(.{ .table = runtime_table });
+    c_table.runtime_peer = runtime_table;
 }
 
 fn createUserdata(state: *CState, size: usize, uservalue_count: usize) ?*CUserdata {
@@ -1093,9 +1140,16 @@ fn rawTableGetString(state: *CState, table: *CTable, key: []const u8) Value {
     return table.get(.{ .string = key_string });
 }
 
+fn setCTableRaw(state: *CState, table: *CTable, key: Value, value: Value) !void {
+    try table.set(state.allocator(), key, value);
+    if (table.runtime_peer != null and !table.syncing_from_runtime and !table.syncing_to_runtime) {
+        _ = try syncCTableToRuntime(state, table, 0);
+    }
+}
+
 fn rawTableSetString(state: *CState, table: *CTable, key: []const u8, value: Value) bool {
     const key_string = createString(state, key) orelse return false;
-    table.set(state.allocator(), .{ .string = key_string }, value) catch return false;
+    setCTableRaw(state, table, .{ .string = key_string }, value) catch return false;
     return true;
 }
 
@@ -1138,35 +1192,30 @@ fn getTable(thread: *CThread, table: *CTable, key: Value, depth: usize) Value {
 }
 
 fn setTable(thread: *CThread, table: *CTable, key: Value, value: Value, depth: usize) void {
-    const allocator = thread.owner.allocator();
     if (table.get(key) != .nil or depth >= 15) {
-        table.set(allocator, key, value) catch return;
+        setCTableRaw(thread.owner, table, key, value) catch return;
         return;
     }
     switch (tableMetafield(table, "__newindex")) {
         .table => |newindex_table| setTable(thread, newindex_table, key, value, depth + 1),
-        else => table.set(allocator, key, value) catch return,
+        else => setCTableRaw(thread.owner, table, key, value) catch return,
     }
 }
 
-fn cToRuntimeValue(state: *CState, value: Value, depth: usize) !runtime.Value {
-    if (depth > 16) return .nil;
+fn cToRuntimeValue(state: *CState, value: Value, depth: usize) anyerror!runtime.Value {
+    if (depth > 64) return .nil;
     return switch (value) {
         .nil => .nil,
         .boolean => |boolean| .{ .boolean = boolean },
         .integer => |integer| .{ .integer = @intCast(integer) },
         .number => |number| .{ .number = number },
-        .string => |string| .{ .string = try state.runtime_state.intern(string.bytes) },
-        .lua_closure => |closure| .{ .closure = closure },
-        .table => |table| blk: {
-            const runtime_table = (try state.runtime_state.newTableWithHints(0, @intCast(table.entries.items.len))).table;
-            for (table.entries.items) |entry| {
-                const key = try cToRuntimeValue(state, entry.key, depth + 1);
-                const item = try cToRuntimeValue(state, entry.value, depth + 1);
-                try runtime_table.set(state.runtime_state.allocator, key, item);
-            }
-            break :blk .{ .table = runtime_table };
+        .string => |string| blk: {
+            const peer = string.runtime_peer orelse try state.runtime_state.intern(string.bytes);
+            string.runtime_peer = peer;
+            break :blk .{ .string = peer };
         },
+        .lua_closure => |closure| .{ .closure = closure },
+        .table => |table| .{ .table = try syncCTableToRuntime(state, table, depth) },
         .userdata => |userdata| blk: {
             const runtime_value = try state.runtime_state.newUserdata(@ptrCast(userdata.bytes.ptr), 0, "userdata", null, null, null);
             break :blk runtime_value;
@@ -1177,32 +1226,43 @@ fn cToRuntimeValue(state: *CState, value: Value, depth: usize) !runtime.Value {
     };
 }
 
-fn runtimeToCValue(state: *CState, value: runtime.Value, depth: usize) !Value {
-    if (depth > 16) return .nil;
+fn syncCTableToRuntime(state: *CState, table: *CTable, depth: usize) anyerror!*runtime.Table {
+    const runtime_table = table.runtime_peer orelse blk: {
+        const created = (try state.runtime_state.newTableWithHints(0, @intCast(table.entries.items.len))).table;
+        try linkRuntimeTable(state, created, table);
+        break :blk created;
+    };
+    if (table.syncing_to_runtime) return runtime_table;
+
+    table.syncing_to_runtime = true;
+    defer table.syncing_to_runtime = false;
+    @memset(runtime_table.array.items, .nil);
+    for (runtime_table.entries.items) |*entry| entry.value = .nil;
+    for (table.entries.items) |entry| {
+        const key = try cToRuntimeValue(state, entry.key, depth + 1);
+        const item = try cToRuntimeValue(state, entry.value, depth + 1);
+        try runtime_table.set(state.runtime_state.allocator, key, item);
+    }
+    const metatable = if (table.metatable) |metatable_value| try syncCTableToRuntime(state, metatable_value, depth + 1) else null;
+    state.runtime_state.setTableMetatableRaw(runtime_table, metatable);
+    return runtime_table;
+}
+
+fn runtimeToCValue(state: *CState, value: runtime.Value, depth: usize) anyerror!Value {
+    if (depth > 64) return .nil;
     return switch (value) {
         .nil => .nil,
         .boolean => |boolean| .{ .boolean = boolean },
         .integer => |integer| .{ .integer = @intCast(integer) },
         .number => |number| .{ .number = number },
-        .string => |string| .{ .string = createString(state, string) orelse return error.OutOfMemory },
+        .string => |string| blk: {
+            const c_string = createString(state, string) orelse return error.OutOfMemory;
+            c_string.runtime_peer = string;
+            break :blk .{ .string = c_string };
+        },
         .closure => |closure| .{ .lua_closure = closure },
         .c_closure => |closure| .{ .c_closure = closure },
-        .table => |table| blk: {
-            const c_table = createTable(state, @intCast(table.array.items.len), @intCast(table.entries.items.len)) orelse return error.OutOfMemory;
-            for (table.array.items, 0..) |item, index| {
-                if (item == .nil) continue;
-                try c_table.set(state.allocator(), .{ .integer = @intCast(index + 1) }, try runtimeToCValue(state, item, depth + 1));
-            }
-            for (table.entries.items) |entry| {
-                if (entry.value == .nil) continue;
-                try c_table.set(
-                    state.allocator(),
-                    try runtimeToCValue(state, entry.key, depth + 1),
-                    try runtimeToCValue(state, entry.value, depth + 1),
-                );
-            }
-            break :blk .{ .table = c_table };
-        },
+        .table => |table| .{ .table = try syncRuntimeTableToC(state, table, depth) },
         .thread => .nil,
         .userdata => |userdata| if (findUserdataByPtr(state, userdata.ptr)) |c_userdata| .{ .userdata = c_userdata } else .nil,
         .coroutine_wrapper => .nil,
@@ -1211,26 +1271,42 @@ fn runtimeToCValue(state: *CState, value: runtime.Value, depth: usize) !Value {
     };
 }
 
+fn syncRuntimeTableToC(state: *CState, table: *runtime.Table, depth: usize) anyerror!*CTable {
+    const c_table = state.runtime_table_index.get(table) orelse blk: {
+        const created = createTable(state, @intCast(table.array.items.len), @intCast(table.entries.items.len)) orelse return error.OutOfMemory;
+        try linkRuntimeTable(state, table, created);
+        break :blk created;
+    };
+    if (c_table.syncing_from_runtime) return c_table;
+
+    c_table.syncing_from_runtime = true;
+    defer c_table.syncing_from_runtime = false;
+    c_table.entries.clearRetainingCapacity();
+    try c_table.entries.ensureTotalCapacity(state.allocator(), table.array.items.len + table.entries.items.len);
+    for (table.array.items, 0..) |item, index| {
+        if (item == .nil) continue;
+        try c_table.set(state.allocator(), .{ .integer = @intCast(index + 1) }, try runtimeToCValue(state, item, depth + 1));
+    }
+    for (table.entries.items) |entry| {
+        if (entry.value == .nil) continue;
+        try c_table.set(
+            state.allocator(),
+            try runtimeToCValue(state, entry.key, depth + 1),
+            try runtimeToCValue(state, entry.value, depth + 1),
+        );
+    }
+    c_table.metatable = if (table.metatable) |metatable| try syncRuntimeTableToC(state, metatable, depth + 1) else null;
+    return c_table;
+}
+
 fn pushRuntimeError(thread: *CThread) void {
     const value = runtimeToCValue(thread.owner, thread.owner.runtime_state.currentErrorValue(), 0) catch .nil;
     _ = pushValue(thread, value);
 }
 
 fn syncRuntimeGlobalsToC(state: *CState) void {
-    var globals = state.runtime_state.globals.iterator();
-    while (globals.next()) |entry| {
-        if (std.mem.eql(u8, entry.key_ptr.*, "_G")) continue;
-        const key = createString(state, entry.key_ptr.*) orelse continue;
-        const value = runtimeToCValue(state, entry.value_ptr.*, 0) catch continue;
-        state.global_table.set(state.allocator(), .{ .string = key }, value) catch continue;
-    }
     const runtime_globals = state.runtime_state.global_table orelse return;
-    for (runtime_globals.entries.items) |entry| {
-        if (entry.key != .string or std.mem.eql(u8, entry.key.string, "_G")) continue;
-        const key = createString(state, entry.key.string) orelse continue;
-        const value = runtimeToCValue(state, entry.value, 0) catch continue;
-        state.global_table.set(state.allocator(), .{ .string = key }, value) catch continue;
-    }
+    _ = syncRuntimeTableToC(state, runtime_globals, 0) catch return;
 }
 
 fn syncCGlobalToRuntime(state: *CState, name: []const u8, value: Value) void {
@@ -1944,6 +2020,8 @@ pub export fn lua_newstate(alloc_f: lua_Alloc, ud: ?*anyopaque, _: c_uint) callc
         .main_thread = undefined,
         .registry_table = undefined,
         .global_table = undefined,
+        .string_index = undefined,
+        .runtime_table_index = undefined,
     };
 
     block.* = .{
@@ -1952,6 +2030,8 @@ pub export fn lua_newstate(alloc_f: lua_Alloc, ud: ?*anyopaque, _: c_uint) callc
     state.main_thread = .{ .owner = state, .public_state = &block.header };
 
     const allocator = state.allocator();
+    state.string_index = std.StringHashMap(*CString).init(allocator);
+    state.runtime_table_index = std.AutoHashMap(*runtime.Table, *CTable).init(allocator);
     state.runtime_state = runtime.State.initWithOptions(allocator, .{ .stdlib = .none }) catch {
         freeHost(StateBlock, f, ud, block);
         freeHost(CState, f, ud, state);
@@ -1961,25 +2041,6 @@ pub export fn lua_newstate(alloc_f: lua_Alloc, ud: ?*anyopaque, _: c_uint) callc
     state.runtime_state.setCClosureDispatch(cClosureDispatch, state);
     state.runtime_state.setCClosureResumeDispatch(cClosureResumeDispatch);
     state.runtime_state.setCDebugHookDispatch(cDebugHookDispatch);
-    const runtime_globals = state.runtime_state.newTableWithHints(0, 1) catch {
-        state.runtime_state.deinit();
-        freeHost(StateBlock, f, ud, block);
-        freeHost(CState, f, ud, state);
-        return null;
-    };
-    state.runtime_state.global_table = runtime_globals.table;
-    const runtime_global_name = state.runtime_state.intern("_G") catch {
-        state.runtime_state.deinit();
-        freeHost(StateBlock, f, ud, block);
-        freeHost(CState, f, ud, state);
-        return null;
-    };
-    state.runtime_state.putGlobal(runtime_global_name, runtime_globals) catch {
-        state.runtime_state.deinit();
-        freeHost(StateBlock, f, ud, block);
-        freeHost(CState, f, ud, state);
-        return null;
-    };
 
     state.registry_table = createTable(state, 0, 3) orelse {
         state.runtime_state.deinit();
@@ -1989,6 +2050,13 @@ pub export fn lua_newstate(alloc_f: lua_Alloc, ud: ?*anyopaque, _: c_uint) callc
     };
 
     state.global_table = createTable(state, 0, 0) orelse {
+        state.deinitOwnedObjects();
+        state.runtime_state.deinit();
+        freeHost(StateBlock, f, ud, block);
+        freeHost(CState, f, ud, state);
+        return null;
+    };
+    linkRuntimeTable(state, state.runtime_state.global_table.?, state.global_table) catch {
         state.deinitOwnedObjects();
         state.runtime_state.deinit();
         freeHost(StateBlock, f, ud, block);
@@ -2555,8 +2623,12 @@ pub export fn lua_pushstring(L: ?*lua_State, s: ?[*:0]const u8) callconv(.c) ?[*
     return lua_pushlstring(L, s, std.mem.len(s.?));
 }
 
-pub export fn lua_pushvfstring(L: ?*lua_State, fmt: ?[*:0]const u8, args: *VaList) callconv(.c) ?[*:0]const u8 {
+pub export fn lua_pushvfstring(L: ?*lua_State, fmt: ?[*:0]const u8, args: VaListParam) callconv(.c) ?[*:0]const u8 {
     const thread = threadFromState(L) orelse return null;
+    if (comptime @typeInfo(VaList) == .pointer) {
+        var args_copy = args;
+        return pushFormattedString(thread, fmt, &args_copy);
+    }
     return pushFormattedString(thread, fmt, args);
 }
 
@@ -2897,7 +2969,7 @@ pub export fn lua_rawset(L: ?*lua_State, idx: c_int) callconv(.c) void {
     const table_value = valueAt(thread, idx) orelse .nil;
     const value = thread.stack.pop().?;
     const key = thread.stack.pop().?;
-    if (table_value == .table) table_value.table.set(thread.owner.allocator(), key, value) catch return;
+    if (table_value == .table) setCTableRaw(thread.owner, table_value.table, key, value) catch return;
 }
 
 pub export fn lua_rawseti(L: ?*lua_State, idx: c_int, n: lua_Integer) callconv(.c) void {
@@ -2910,7 +2982,7 @@ pub export fn lua_rawseti(L: ?*lua_State, idx: c_int, n: lua_Integer) callconv(.
     }
     const table_value = valueAt(thread, idx) orelse .nil;
     const value = thread.stack.pop().?;
-    if (table_value == .table) table_value.table.set(thread.owner.allocator(), .{ .integer = n }, value) catch return;
+    if (table_value == .table) setCTableRaw(thread.owner, table_value.table, .{ .integer = n }, value) catch return;
 }
 
 pub export fn lua_rawsetp(L: ?*lua_State, idx: c_int, ptr: ?*const anyopaque) callconv(.c) void {
@@ -2918,7 +2990,7 @@ pub export fn lua_rawsetp(L: ?*lua_State, idx: c_int, ptr: ?*const anyopaque) ca
     if (thread.stack.items.len == 0) return;
     const table_value = valueAt(thread, idx) orelse .nil;
     const value = thread.stack.pop().?;
-    if (table_value == .table) table_value.table.set(thread.owner.allocator(), .{ .light_userdata = @constCast(ptr) }, value) catch return;
+    if (table_value == .table) setCTableRaw(thread.owner, table_value.table, .{ .light_userdata = @constCast(ptr) }, value) catch return;
 }
 
 pub export fn lua_setmetatable(L: ?*lua_State, idx: c_int) callconv(.c) c_int {
@@ -2927,10 +2999,13 @@ pub export fn lua_setmetatable(L: ?*lua_State, idx: c_int) callconv(.c) c_int {
     const target = valueAt(thread, idx) orelse return 0;
     const metatable_value = thread.stack.pop().?;
     switch (target) {
-        .table => |table| table.metatable = switch (metatable_value) {
-            .nil => null,
-            .table => |metatable| metatable,
-            else => table.metatable,
+        .table => |table| {
+            table.metatable = switch (metatable_value) {
+                .nil => null,
+                .table => |metatable| metatable,
+                else => table.metatable,
+            };
+            if (table.runtime_peer != null) _ = syncCTableToRuntime(thread.owner, table, 0) catch {};
         },
         .userdata => |userdata| userdata.metatable = switch (metatable_value) {
             .nil => null,
@@ -3939,6 +4014,7 @@ extern fn realloc(?*anyopaque, usize) ?*anyopaque;
 extern fn free(?*anyopaque) void;
 extern fn strerror(c_int) ?[*:0]const u8;
 extern fn __errno_location() *c_int;
+extern fn __error() *c_int;
 extern fn fopen(?[*:0]const u8, ?[*:0]const u8) ?*anyopaque;
 extern fn fseek(?*anyopaque, c_long, c_int) c_int;
 extern fn ftell(?*anyopaque) c_long;
@@ -3948,7 +4024,10 @@ extern fn fclose(?*anyopaque) c_int;
 extern fn write(c_int, ?*const anyopaque, usize) isize;
 
 fn currentErrno() c_int {
-    return __errno_location().*;
+    return switch (builtin.os.tag) {
+        .macos, .ios, .watchos, .tvos, .visionos => __error().*,
+        else => __errno_location().*,
+    };
 }
 
 pub export fn luaL_alloc(_: ?*anyopaque, ptr: ?*anyopaque, _: usize, nsize: usize) callconv(.c) ?*anyopaque {
@@ -4262,7 +4341,6 @@ fn clearGlobalValue(state: *CState, name: []const u8) void {
     const key = createString(state, name) orelse return;
     state.global_table.set(state.allocator(), .{ .string = key }, .nil) catch {};
     if (state.runtime_state.global_table) |table| table.set(state.runtime_state.allocator, .{ .string = name }, .nil) catch {};
-    if (state.runtime_state.globals.getKey(name)) |existing| state.runtime_state.globals.put(existing, .nil) catch {};
 }
 
 fn openRuntimeLibraries(L: ?*lua_State, libraries: stdlib.LibrarySet, result_name: []const u8, install_global: bool) c_int {

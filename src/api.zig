@@ -771,20 +771,9 @@ pub const State = struct {
     }
 
     fn ensurePackageLibrary(self: *State) !void {
-        if (self.raw_state.globals.get("package") == null) {
+        if (self.raw_state.getGlobal("package") == .nil) {
             try stdlib.openLibraries(&self.raw_state, .{ .libraries = .{ .package = true } });
         }
-
-        try self.syncOpenedGlobal("loadfile");
-        try self.syncOpenedGlobal("dofile");
-        try self.syncOpenedGlobal("require");
-        try self.syncOpenedGlobal("package");
-    }
-
-    fn syncOpenedGlobal(self: *State, name: []const u8) !void {
-        const value = self.raw_state.globals.get(name) orelse return;
-        const raw_name = try self.raw_state.intern(name);
-        self.raw_state.putGlobal(raw_name, value) catch |err| return self.captureLuaError(err);
     }
 
     fn deinitOwnedMemoryFiles(self: *State, state_allocator: std.mem.Allocator) void {

@@ -54,8 +54,8 @@ pub fn runProcess(
     var run_argv = argv;
     var expand_arg0 = options.expand_arg0;
     if (options.memory_limit_mb != 0) {
-        if (builtin.os.tag != .linux) return error.UnsupportedMemoryLimit;
         if (argv.len == 0) return error.EmptyArgv;
+        if (builtin.os.tag != .linux) return error.UnsupportedMemoryLimit;
 
         const limit_kb = std.math.mul(u64, options.memory_limit_mb, 1024) catch return error.MemoryLimitTooLarge;
         limit_kb_arg = try std.fmt.allocPrint(allocator, "{d}", .{limit_kb});

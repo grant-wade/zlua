@@ -294,11 +294,7 @@ pub fn resetMarks(comptime State: type, self: *State) void {
 }
 
 pub fn markRoots(comptime State: type, self: *State) void {
-    var globals = self.globals.iterator();
-    while (globals.next()) |entry| {
-        markString(State, self, entry.key_ptr.*);
-        markValue(State, self, entry.value_ptr.*);
-    }
+    if (self.global_table) |table| if (isTrackedTable(State, self, table)) markTable(State, self, table);
     for (self.api_roots.items) |root| markValue(State, self, root);
     markRuntimeErrorPayload(State, self, self.last_error);
     if (self.current_thread) |thread| markThread(State, self, thread);

@@ -34,6 +34,32 @@ zig build -Doptimize=ReleaseFast --summary all run-test-bench -- <args>
 
 The build also passes a ReleaseFast `zlua-bench-release-fast` executable to the harness and compares it with the vendored `lua5.5` binary.
 
+## In-process startup benchmarks
+
+Use the dedicated startup benchmark when process launch would hide state initialization costs:
+
+```sh
+zig build bench-startup -- --iterations=1000 --warmup=100
+```
+
+This command builds every measured component in `ReleaseFast` and runs three in-process benchmarks in order:
+
+1. Native zlua states with `none`, `base`, `safe`, and `full` library selections.
+2. The zlua C API using `lua_newstate`, `luaL_openlibs`, and a trivial first chunk.
+3. CLua through the same C source and allocator instrumentation.
+
+The native report separates state/tracking-container setup, global-table installation, library opening, GC-baseline setup, chunk `load`, chunk `call`, and `deinit`. The C reports separate `newstate`, `openlibs`, `load`, `call`, and `close`. `startup-total` is the complete initialization time before loading a chunk, while `first-chunk` is the total through the first successful call and excludes teardown. Timings report median and p95 from measurements made inside the process, so executable launch is not included.
+
+Allocator columns are allocator-visible requested memory:
+
+- `alloc` and `resize`: successful allocation and resize operations.
+- `requested-B`: newly requested bytes, including positive resize growth.
+- `live-B`: requested bytes still live at the end of the phase.
+- `peak-B`: peak live requested bytes reached during the phase.
+- `runtime-B` (native only): zlua's GC/runtime object estimate, shown alongside rather than instead of allocator-visible memory.
+
+The C API comparison uses one source file (`tools/bench_c_api_startup.c`) and one counting `lua_Alloc` implementation for both engines.
+
 ## Benchmark Fixtures
 
 Benchmark fixtures live under `tests/bench/**/*.lua`. Categories are encoded by metadata and currently cover GC, standard library, string, table, and VM workloads.

@@ -469,7 +469,7 @@ fn refreshReadable(state: *State, file: *runtime.Table) !void {
 }
 
 pub fn newFile(state: *State, path: []const u8, mode: []const u8, contents: []const u8, parsed: ParsedMode) !Value {
-    const value = try state.newTableWithHints(0, 18);
+    const value = try state.newTableWithHints(0, 7);
     const file = value.table;
     try file.set(state.allocator, .{ .string = try state.intern("__zlua_file") }, .{ .boolean = true });
     try file.set(state.allocator, .{ .string = try state.intern("__zlua_file_path") }, .{ .string = try state.intern(path) });
@@ -478,13 +478,6 @@ pub fn newFile(state: *State, path: []const u8, mode: []const u8, contents: []co
     try file.set(state.allocator, .{ .string = try state.intern("__zlua_file_pos") }, .{ .integer = if (parsed.append) @as(i64, @intCast(contents.len + 1)) else 1 });
     try file.set(state.allocator, .{ .string = try state.intern("__zlua_file_closed") }, .{ .boolean = false });
     try file.set(state.allocator, .{ .string = try state.intern("__zlua_file_buffer_mode") }, .{ .string = try state.intern("full") });
-    try file.set(state.allocator, .{ .string = try state.intern("read") }, .{ .native = .io_file_read });
-    try file.set(state.allocator, .{ .string = try state.intern("write") }, .{ .native = .io_file_write });
-    try file.set(state.allocator, .{ .string = try state.intern("close") }, .{ .native = .io_file_close });
-    try file.set(state.allocator, .{ .string = try state.intern("seek") }, .{ .native = .io_file_seek });
-    try file.set(state.allocator, .{ .string = try state.intern("flush") }, .{ .native = .io_file_flush });
-    try file.set(state.allocator, .{ .string = try state.intern("lines") }, .{ .native = .io_file_lines });
-    try file.set(state.allocator, .{ .string = try state.intern("setvbuf") }, .{ .native = .io_file_setvbuf });
     state.setTableMetatableRaw(file, try state.fileMetatable());
     return value;
 }

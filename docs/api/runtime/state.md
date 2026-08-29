@@ -53,6 +53,7 @@
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
+- [stdlib.static_strings](../stdlib/static_strings.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
@@ -91,6 +92,7 @@
 
 ## Types
 
+- [StartupPhase](#type-startupphase)
 - [StateOptions](#type-stateoptions)
 - [State](#type-state)
 - [CompareOp](#type-compareop)
@@ -433,6 +435,19 @@ pub const GcMode = types.GcMode;
 pub const GcParam = types.GcParam;
 ```
 
+<a id="type-startupphase"></a>
+
+## StartupPhase
+
+```zig
+pub const StartupPhase = enum {
+    state,
+    globals,
+    libraries,
+    gc_baseline,
+};
+```
+
 <a id="type-stateoptions"></a>
 
 ## StateOptions
@@ -464,7 +479,6 @@ pub const StateOptions = struct {
 ```zig
 pub const State = struct {
     allocator: std.mem.Allocator,
-    globals: std.StringHashMap(Value),
     global_table: ?*Table = null,
     strings: std.StringHashMap([]const u8),
     string_allocations: std.ArrayList(StringAllocation) = .empty,
@@ -501,6 +515,7 @@ pub const State = struct {
     number_metatable: ?*Table = null,
     boolean_metatable: ?*Table = null,
     nil_metatable: ?*Table = null,
+    file_metatable: ?*Table = null,
     zerde_null: ?*Table = null,
     zerde_array_metatable: ?*Table = null,
     zerde_object_metatable: ?*Table = null,
@@ -524,6 +539,7 @@ pub const State = struct {
 | --- | --- | --- | --- |
 | [init](#fn-state-init) | `allocator: std.mem.Allocator` | `!State` |  |
 | [initWithOptions](#fn-state-initwithoptions) | `allocator: std.mem.Allocator, options: StateOptions` | `!State` |  |
+| [initWithOptionsObserved](#fn-state-initwithoptionsobserved) | `allocator: std.mem.Allocator,         options: StateOptions,         observer_context: anytype,         comptime observe: anytype,` | `!State` |  |
 | [stackValueLimit](#fn-state-stackvaluelimit) | `self: *const State` | `usize` |  |
 | [callFrameLimit](#fn-state-callframelimit) | `self: *const State` | `usize` |  |
 | [fileMetatable](#fn-state-filemetatable) | `state: *State` | `!*Table` |  |
@@ -774,6 +790,21 @@ References: [`State`](#type-state)
 
 ```zig
 pub fn initWithOptions(allocator: std.mem.Allocator, options: StateOptions) !State
+```
+
+References: [`StateOptions`](#type-stateoptions), [`State`](#type-state)
+
+<a id="fn-state-initwithoptionsobserved"></a>
+
+### State.initWithOptionsObserved
+
+```zig
+pub fn initWithOptionsObserved(
+        allocator: std.mem.Allocator,
+        options: StateOptions,
+        observer_context: anytype,
+        comptime observe: anytype,
+    ) !State
 ```
 
 References: [`StateOptions`](#type-stateoptions), [`State`](#type-state)
