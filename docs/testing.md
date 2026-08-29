@@ -109,7 +109,7 @@ Default behavior:
 | Files | Every top-level `.lua` file except `all.lua` |
 | Mode | `basic` |
 | Basic prelude | `_U=true; _soft=true; _port=true; _nomsg=true; T=nil; ARG=arg` |
-| Build-step memory cap | `256` MiB per child process |
+| Build-step memory cap | `256` MiB per child process on Linux; disabled on other platforms |
 | Timeout | Disabled by default unless provided with `--timeout-ms=` |
 
 Useful official commands:

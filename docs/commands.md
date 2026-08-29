@@ -51,7 +51,7 @@ The `justfile` is a convenience layer over `zig build` and direct binaries. It a
 | `just version` | `zig build run -- --version` | Prints zlua version information. |
 | `just clua-version` | `zig-out/bin/lua5.5 -v` after `just build` | Prints downloaded CLua version information. |
 | `just diff [args...]` | `zig build --summary all run-test-diff -- --debug-errors [args...]` | Runs the differential harness with debug errors enabled. |
-| `just official [args...]` | `zig build --summary all run-test-official -- --debug-errors --memory-limit-mb=256 [args...]` | Runs the official suite harness with debug errors and a 256 MiB child cap. |
+| `just official [args...]` | `zig build --summary all run-test-official -- --debug-errors [Linux memory cap] [args...]` | Runs the official suite harness with debug errors and a 256 MiB child cap on Linux. |
 | `just c-api [args...]` | `zig build --summary all test-c-api -- [args...]` | Runs C API fixtures. |
 | `just bench [args...]` | `zig build -Doptimize=ReleaseFast --summary all run-test-bench -- [args...]` | Runs benchmarks with a ReleaseFast zlua build. |
 | `just clean` | `rm -rf zig-out .zig-cache` | Removes local build outputs and Zig cache directories. |
@@ -66,7 +66,7 @@ The project uses Zig's standard build options plus one project-specific option. 
 | --- | --- |
 | `-Dtarget=<target>` | Standard Zig target selection. |
 | `-Doptimize=<mode>` | Standard Zig optimization mode, such as `Debug`, `ReleaseSafe`, `ReleaseFast`, or `ReleaseSmall`. |
-| `-Dofficial-memory-limit-mb=<n>` | Memory cap, in MiB, passed to the `test-official` step. The default is `256`; `0` disables the cap for that step. |
+| `-Dofficial-memory-limit-mb=<n>` | Linux-only memory cap, in MiB, passed to the `test-official` step. The default is `256` on Linux and `0` elsewhere; `0` disables the cap. |
 
 Examples:
 
@@ -217,12 +217,12 @@ Options:
 | `--mode=complete` | Run with the complete-suite prelude. |
 | `--mode=internal` | Parsed but currently skipped because internal `testC` builds are not wired. |
 | `--timeout-ms=<n>` | Per-process timeout in milliseconds. Default `0` disables timeout. |
-| `--memory-limit-mb=<n>` | Per-child memory cap in MiB. Default `0` disables the cap for direct harness runs. |
+| `--memory-limit-mb=<n>` | Linux-only per-child memory cap in MiB. Default `0` disables the cap for direct harness runs. |
 | `--show-clua` | Print CLua output. |
 | `--show-zlua` | Print zlua output. |
 | `--debug-errors` | Pass debug error reporting to zlua executions. |
 
-The `zig build test-official` step passes `--memory-limit-mb=<n>` from `-Dofficial-memory-limit-mb`, defaulting to `256`.
+The `zig build test-official` step passes `--memory-limit-mb=<n>` from `-Dofficial-memory-limit-mb`. It defaults to `256` on Linux and `0` on other platforms. Linux applies the limit with `ulimit -v`.
 
 ## Benchmark Harness
 

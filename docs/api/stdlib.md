@@ -3,7 +3,7 @@
 ## Navigation
 
 - [API Index](README.md)
-- Submodules: [stdlib.base](stdlib/base.md), [stdlib.table](stdlib/table.md), [stdlib.string](stdlib/string.md), [stdlib.math](stdlib/math.md), [stdlib.utf8](stdlib/utf8.md), [stdlib.coroutine](stdlib/coroutine.md), [stdlib.debug](stdlib/debug.md), [stdlib.package](stdlib/package.md), [stdlib.io](stdlib/io.md), [stdlib.os](stdlib/os.md), [stdlib.json](stdlib/json.md), [stdlib.zerde_lua](stdlib/zerde_lua.md), [stdlib.toml](stdlib/toml.md), [stdlib.msgpack](stdlib/msgpack.md), [stdlib.csv](stdlib/csv.md), [stdlib.fs](stdlib/fs.md)
+- Submodules: [stdlib.base](stdlib/base.md), [stdlib.table](stdlib/table.md), [stdlib.string](stdlib/string.md), [stdlib.math](stdlib/math.md), [stdlib.utf8](stdlib/utf8.md), [stdlib.coroutine](stdlib/coroutine.md), [stdlib.debug](stdlib/debug.md), [stdlib.package](stdlib/package.md), [stdlib.io](stdlib/io.md), [stdlib.os](stdlib/os.md), [stdlib.json](stdlib/json.md), [stdlib.zerde_lua](stdlib/zerde_lua.md), [stdlib.toml](stdlib/toml.md), [stdlib.msgpack](stdlib/msgpack.md), [stdlib.csv](stdlib/csv.md), [stdlib.fs](stdlib/fs.md), [stdlib.static_strings](stdlib/static_strings.md)
 
 <details>
 <summary>All documents</summary>
@@ -53,6 +53,7 @@
 - [stdlib.msgpack](stdlib/msgpack.md)
 - [stdlib.csv](stdlib/csv.md)
 - [stdlib.fs](stdlib/fs.md)
+- [stdlib.static_strings](stdlib/static_strings.md)
 - [runtime.vm](runtime/vm.md)
 - [runtime.tests](runtime/tests.md)
 - [runtime.internal](runtime/internal.md)
@@ -71,14 +72,18 @@
 
 ## Functions
 
+- [initHints](#fn-inithints)
+- [initHintsWithStdin](#fn-inithintswithstdin)
 - [openLibraries](#fn-openlibraries)
 - [installGlobalTable](#fn-installglobaltable)
+- [installGlobalTableWithHint](#fn-installglobaltablewithhint)
 - [callNative](#fn-callnative)
 
 ## Types
 
 - [LibrarySelection](#type-libraryselection)
 - [LibrarySet](#type-libraryset)
+- [InitHints](#type-inithints)
 
 ## Aliases
 
@@ -101,6 +106,7 @@
 - [msgpack](#import-msgpack) `@import("stdlib/msgpack.zig")`
 - [csv](#import-csv) `@import("stdlib/csv.zig")`
 - [fs](#import-fs) `@import("stdlib/fs.zig")`
+- [static_strings](#import-static_strings) `@import("stdlib/static_strings.zig")`
 
 <a id="import-base"></a>
 
@@ -222,6 +228,14 @@ pub const csv = @import("stdlib/csv.zig");
 pub const fs = @import("stdlib/fs.zig");
 ```
 
+<a id="import-static_strings"></a>
+
+## static_strings
+
+```zig
+pub const static_strings = @import("stdlib/static_strings.zig");
+```
+
 <a id="type-libraryselection"></a>
 
 ## LibrarySelection
@@ -325,6 +339,38 @@ pub fn isEmpty(self: LibrarySet) bool
 
 References: [`LibrarySet`](#type-libraryset)
 
+<a id="type-inithints"></a>
+
+## InitHints
+
+```zig
+pub const InitHints = struct {
+    globals: u32,
+    strings: usize,
+    tables: usize,
+};
+```
+
+<a id="fn-inithints"></a>
+
+## initHints
+
+```zig
+pub fn initHints(selection: LibrarySelection) InitHints
+```
+
+References: [`LibrarySelection`](#type-libraryselection), [`InitHints`](#type-inithints)
+
+<a id="fn-inithintswithstdin"></a>
+
+## initHintsWithStdin
+
+```zig
+pub fn initHintsWithStdin(selection: LibrarySelection, stdin: []const u8) InitHints
+```
+
+References: [`LibrarySelection`](#type-libraryselection), [`InitHints`](#type-inithints)
+
 <a id="fn-openlibraries"></a>
 
 ## openLibraries
@@ -341,6 +387,14 @@ References: [`LibrarySelection`](#type-libraryselection)
 
 ```zig
 pub fn installGlobalTable(state: *State) !void
+```
+
+<a id="fn-installglobaltablewithhint"></a>
+
+## installGlobalTableWithHint
+
+```zig
+pub fn installGlobalTableWithHint(state: *State, hash_hint: u32) !void
 ```
 
 <a id="alias-nativefn"></a>

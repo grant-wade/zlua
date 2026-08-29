@@ -11,6 +11,7 @@ pub const binary_chunk_payload_magic = chunk_mod.binary_chunk_payload_magic;
 
 pub const State = state_mod.State;
 pub const StateOptions = state_mod.StateOptions;
+pub const StartupPhase = state_mod.StartupPhase;
 
 pub const Value = types.Value;
 pub const NativeFn = types.NativeFn;

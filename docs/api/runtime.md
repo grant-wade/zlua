@@ -53,6 +53,7 @@
 - [stdlib.msgpack](stdlib/msgpack.md)
 - [stdlib.csv](stdlib/csv.md)
 - [stdlib.fs](stdlib/fs.md)
+- [stdlib.static_strings](stdlib/static_strings.md)
 - [runtime.vm](runtime/vm.md)
 - [runtime.tests](runtime/tests.md)
 - [runtime.internal](runtime/internal.md)
@@ -76,6 +77,7 @@
 - [binary_chunk_payload_magic](#alias-binary_chunk_payload_magic)
 - [State](#alias-state)
 - [StateOptions](#alias-stateoptions)
+- [StartupPhase](#alias-startupphase)
 - [Value](#alias-value)
 - [NativeFn](#alias-nativefn)
 - [UserdataFinalizer](#alias-userdatafinalizer)
@@ -182,6 +184,14 @@ pub const State = state_mod.State;
 
 ```zig
 pub const StateOptions = state_mod.StateOptions;
+```
+
+<a id="alias-startupphase"></a>
+
+## StartupPhase
+
+```zig
+pub const StartupPhase = state_mod.StartupPhase;
 ```
 
 <a id="alias-value"></a>

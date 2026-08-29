@@ -10,6 +10,7 @@ const frontend = @import("../frontend.zig");
 const gc_mod = @import("gc.zig");
 const host = @import("host.zig");
 const stdlib = @import("../stdlib.zig");
+const stdlib_static_strings = @import("../stdlib/static_strings.zig");
 const types = @import("types.zig");
 const vm_mod = @import("vm.zig");
 const value_mod = @import("value.zig");
@@ -87,6 +88,13 @@ const GcParams = types.GcParams;
 const WeakMode = types.WeakMode;
 const RuntimeAllocationStats = types.RuntimeAllocationStats;
 
+pub const StartupPhase = enum {
+    state,
+    globals,
+    libraries,
+    gc_baseline,
+};
+
 pub const StateOptions = struct {
     stdlib: StdlibMode = .full,
     io: ?std.Io = null,
@@ -107,7 +115,6 @@ pub const StateOptions = struct {
 
 pub const State = struct {
     allocator: std.mem.Allocator,
-    globals: std.StringHashMap(Value),
     global_table: ?*Table = null,
     strings: std.StringHashMap([]const u8),
     string_allocations: std.ArrayList(StringAllocation) = .empty,
@@ -144,6 +151,7 @@ pub const State = struct {
     number_metatable: ?*Table = null,
     boolean_metatable: ?*Table = null,
     nil_metatable: ?*Table = null,
+    file_metatable: ?*Table = null,
     zerde_null: ?*Table = null,
     zerde_array_metatable: ?*Table = null,
     zerde_object_metatable: ?*Table = null,
@@ -164,18 +172,43 @@ pub const State = struct {
     }
 
     pub fn initWithOptions(allocator: std.mem.Allocator, options: StateOptions) !State {
+        const NoopObserver = struct {
+            fn observe(_: void, _: StartupPhase, _: *State) void {}
+        };
+        return initWithOptionsObserved(allocator, options, {}, NoopObserver.observe);
+    }
+
+    pub fn initWithOptionsObserved(
+        allocator: std.mem.Allocator,
+        options: StateOptions,
+        observer_context: anytype,
+        comptime observe: anytype,
+    ) !State {
         var state = State{
             .allocator = allocator,
-            .globals = std.StringHashMap(Value).init(allocator),
             .strings = std.StringHashMap([]const u8).init(allocator),
             .string_allocation_index = PointerAllocationIndex.init(allocator),
             .table_allocation_index = PointerAllocationIndex.init(allocator),
             .options = options,
         };
         errdefer state.deinit();
+
+        const hints = stdlib.initHintsWithStdin(options.stdlib, options.stdin);
+        try state.strings.ensureTotalCapacity(@intCast(hints.strings));
+        try state.string_allocations.ensureTotalCapacity(allocator, hints.strings);
+        try state.string_allocation_index.ensureTotalCapacity(@intCast(hints.strings));
+        try state.table_allocations.ensureTotalCapacity(allocator, hints.tables);
+        try state.table_allocation_index.ensureTotalCapacity(@intCast(hints.tables));
+        observe(observer_context, .state, &state);
+
+        try stdlib.installGlobalTableWithHint(&state, hints.globals);
+        observe(observer_context, .globals, &state);
+
         try stdlib.openLibraries(&state, options.stdlib);
-        try stdlib.installGlobalTable(&state);
+        observe(observer_context, .libraries, &state);
+
         state.resetAutoGcThreshold();
+        observe(observer_context, .gc_baseline, &state);
         return state;
     }
 
@@ -188,17 +221,29 @@ pub const State = struct {
     }
 
     pub fn fileMetatable(state: *State) !*Table {
-        const value = try state.newTableWithHints(0, 3);
-        try state.setTableRaw(value.table, .{ .string = try state.intern("__name") }, .{ .string = try state.intern("FILE*") });
-        try state.setTableRaw(value.table, .{ .string = try state.intern("__close") }, .{ .native = .io_file_close });
-        try state.setTableRaw(value.table, .{ .string = try state.intern("__gc") }, .{ .native = .io_file_close });
-        return value.table;
+        if (state.file_metatable) |metatable| return metatable;
+
+        const value = try state.newTableWithHints(0, 11);
+        const metatable = value.table;
+        state.file_metatable = metatable;
+        errdefer state.file_metatable = null;
+        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("__name") }, .{ .string = stdlib_static_strings.get("FILE*") });
+        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("__index") }, value);
+        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("__close") }, .{ .native = .io_file_close });
+        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("__gc") }, .{ .native = .io_file_close });
+        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("read") }, .{ .native = .io_file_read });
+        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("write") }, .{ .native = .io_file_write });
+        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("close") }, .{ .native = .io_file_close });
+        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("seek") }, .{ .native = .io_file_seek });
+        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("flush") }, .{ .native = .io_file_flush });
+        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("lines") }, .{ .native = .io_file_lines });
+        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("setvbuf") }, .{ .native = .io_file_setvbuf });
+        return metatable;
     }
 
     pub fn deinit(self: *State) void {
         self.stdout.deinit(self.allocator);
         self.stderr.deinit(self.allocator);
-        self.globals.deinit();
         self.strings.deinit();
         self.string_allocation_index.deinit();
         self.table_allocation_index.deinit();
@@ -981,18 +1026,16 @@ pub const State = struct {
     }
 
     fn setGlobal(self: *State, name: []const u8, value: Value) !void {
-        const key = if (self.globals.contains(name)) name else try self.intern(name);
-        try self.globals.put(key, value);
-        if (self.global_table) |table| {
-            try self.setTableRaw(table, .{ .string = key }, value);
-            self.writeTableBarrier(table, .{ .string = key }, value);
-        }
+        const table = self.global_table orelse return error.RuntimeError;
+        const key = try self.intern(name);
+        try self.setTableRaw(table, .{ .string = key }, value);
+        self.writeTableBarrier(table, .{ .string = key }, value);
         self.markValue(value);
     }
 
     fn getGlobalValue(self: *State, name: []const u8) Value {
-        if (self.global_table) |table| return table.get(.{ .string = name });
-        return self.globals.get(name) orelse .nil;
+        const table = self.global_table orelse return .nil;
+        return table.get(.{ .string = name });
     }
 
     pub fn getGlobal(self: *State, name: []const u8) Value {
@@ -1897,6 +1940,7 @@ pub const State = struct {
     }
 
     pub fn intern(self: *State, bytes: []const u8) ![]const u8 {
+        if (stdlib_static_strings.canonical(bytes)) |static| return static;
         if (self.strings.get(bytes)) |interned| return interned;
         const interned = try self.allocateString(bytes);
         try self.strings.put(interned, interned);

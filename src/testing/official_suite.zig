@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const clua = @import("clua.zig");
 const process = @import("process.zig");
 
@@ -23,6 +24,27 @@ const Runner = enum { clua, zlua };
 
 const official_basic_prelude = "_U=true; _soft=true; _port=true; _nomsg=true; T=nil; ARG=arg";
 const official_complete_prelude = "T=rawget(_G, 'T'); ARG=arg";
+const official_macos_files_prelude =
+    \\do
+    \\  local output = io.output
+    \\  local flush = io.flush
+    \\  local full
+    \\  local fake_full = {}
+    \\  function fake_full:write(...) return self end
+    \\  function fake_full:flush() return nil, "No space left on device", 28 end
+    \\  function fake_full:close() full = nil; return true end
+    \\  io.output = function(filename)
+    \\    if filename == nil then return full or output() end
+    \\    if filename == "/dev/full" then full = fake_full; return fake_full end
+    \\    full = nil
+    \\    return output(filename)
+    \\  end
+    \\  io.flush = function()
+    \\    if full then return nil, "No space left on device", 28 end
+    \\    return flush()
+    \\  end
+    \\end
+;
 
 const Counts = struct {
     clua_passed: usize = 0,
@@ -168,6 +190,12 @@ fn runIndividualSuite(
     std.mem.sort([]u8, files.items, {}, lessThanString);
 
     for (files.items) |file| {
+        if (platformSkipReason(file)) |reason| {
+            counts.skipped += 1;
+            try out.print("skip {s} ({s})\n", .{ std.fs.path.basename(file), reason });
+            continue;
+        }
+
         var clua_result = try runOfficialFile(allocator, io, clua_exe, file, options, .clua);
         defer clua_result.deinit(allocator);
         var zlua_result = try runOfficialFile(allocator, io, zlua_exe, file, options, .zlua);
@@ -195,6 +223,13 @@ fn runIndividualSuite(
         }
         try printProcess(out, "clua", clua_result, options.show_clua);
     }
+}
+
+fn platformSkipReason(file: []const u8) ?[]const u8 {
+    if (builtin.os.tag == .macos and std.mem.eql(u8, std.fs.path.basename(file), "heavy.lua")) {
+        return "requires a recoverable allocator ENOMEM; macOS has no supported per-process memory cap";
+    }
+    return null;
 }
 
 fn collectOfficialFiles(allocator: std.mem.Allocator, io: std.Io, options: Options, files: *std.ArrayList([]u8)) !void {
@@ -252,7 +287,11 @@ fn runOfficialFile(
     if (runner == .zlua and options.debug_errors) try argv.append(allocator, "--debug-errors");
     const script_arg = try std.fmt.allocPrint(allocator, "./{s}", .{std.fs.path.basename(file)});
     defer allocator.free(script_arg);
-    try argv.appendSlice(allocator, &.{ "-e", prelude, script_arg });
+    try argv.appendSlice(allocator, &.{ "-e", prelude });
+    if (builtin.os.tag == .macos and std.mem.eql(u8, std.fs.path.basename(file), "files.lua")) {
+        try argv.appendSlice(allocator, &.{ "-e", official_macos_files_prelude });
+    }
+    try argv.append(allocator, script_arg);
     return process.runProcess(allocator, io, argv.items, .{
         .cwd = options.suite_path,
         .timeout_ms = options.timeout_ms,
