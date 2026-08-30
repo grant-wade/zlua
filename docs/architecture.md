@@ -1,415 +1,221 @@
 # Architecture
 
-zlua is a source-compatible Lua 5.5 implementation written in Zig. It has a conventional frontend/compiler/runtime split, but the most important architectural choice is that compatibility is oracle-driven: the official Lua 5.5 C implementation is the behavioral source of truth for parser acceptance, runtime semantics, standard-library behavior, error paths, and C API behavior.
+zlua is a Lua 5.5 implementation with a frontend, bytecode compiler, runtime, standard libraries, and two embedding layers. Compatibility is measured against the official Lua 5.5 implementation; it is the reference for accepted syntax, runtime behavior, diagnostics, libraries, and the C API.
 
-## System Shape
+## Main Boundaries
 
-The project has five major runtime-facing surfaces:
-
-| Surface | Entry point | Responsibility |
+| Area | Source | Role |
 | --- | --- | --- |
-| CLI | `src/main.zig` | Host-oriented `zlua` executable with full stdlib/capability defaults, REPL, `-e`, dump modes, script execution, and test subcommands. |
-| Zig embedding API | `src/api.zig` through `src/root.zig` | Stable typed facade for Zig hosts: states, tables, functions, callbacks, userdata, bytecode, capabilities, and resource limits. |
-| Runtime internals | `src/runtime.zig` and `src/runtime/` | VM state, values, objects, calls, coroutines, GC, host capabilities, binary chunks, debug state, and error unwinding. |
-| Standard libraries | `src/stdlib.zig` and `src/stdlib/` | Lua-visible library functions implemented as runtime-native functions. |
-| C API layer | `src/c_api.zig` | Lua 5.5 C API compatibility shim backed by zlua runtime objects where practical and separate C-facing stack/value wrappers where required. |
+| Package facade | `src/root.zig` | Exports the supported Zig API and lower-level subsystems. |
+| Zig embedding API | `src/api.zig` | Typed states, handles, callbacks, userdata, capabilities, and limits. |
+| CLI | `src/main.zig` | REPL, scripts, `-e`, dump modes, and test commands. |
+| Frontend and compiler | `src/frontend/`, `src/compile/` | Lexes, parses, resolves, and compiles Lua source. |
+| Runtime | `src/runtime.zig`, `src/runtime/` | Values, VM execution, calls, coroutines, GC, errors, and host services. |
+| Standard libraries | `src/stdlib.zig`, `src/stdlib/` | Lua-visible native functions and library setup. |
+| C API | `src/c_api.zig` | Lua 5.5 C API compatibility backed by the zlua runtime. |
 
-The testing and benchmark harnesses are first-class build artifacts, not external scripts. They live under `src/testing/` and use the same downloaded CLua oracle as the rest of the project.
+`src/api.zig`, re-exported through `src/root.zig`, is the intended Zig embedding boundary. Direct runtime imports expose object layouts, stack frames, GC bookkeeping, and bytecode details that may change.
 
-## Build Graph
-
-`build.zig` builds these important artifacts:
-
-| Artifact | Source | Purpose |
-| --- | --- | --- |
-| `zlua` | `src/main.zig` | CLI executable. |
-| `lua5.5` | `.zlua-deps/lua-5.5.0/src` | Downloaded CLua oracle. |
-| `zlua-test-diff` | `src/test_diff_main.zig` | Differential fixture runner. |
-| `zlua-test-official` | `src/test_official_main.zig` | Official Lua 5.5 dashboard runner. |
-| `zlua-test-bench` | `src/test_bench_main.zig` | Process-level benchmark runner. |
-| `zlua-c` | `src/c_api.zig` | Static Lua C API compatibility library. |
-| `zlua-test-c-api` | `src/test_c_api_main.zig` | C API differential fixture runner. |
-| `zlua-embed-*` | `examples/*.zig` | Zig embedding examples. |
-
-Testing policy and CI composition are documented in [testing.md](testing.md).
-
-## Public Facade
-
-`src/root.zig` is the library facade exposed to package users. It exports subsystem modules and aliases the high-level embedding types:
-
-```zig
-pub const frontend = @import("frontend.zig");
-pub const compile = @import("compile.zig");
-pub const runtime = @import("runtime.zig");
-pub const stdlib = @import("stdlib.zig");
-pub const testing = @import("testing.zig");
-
-pub const State = api.State;
-pub const Table = api.Table;
-pub const Function = api.Function;
-pub const Context = api.Context;
-```
-
-The intended embedding contract is `src/api.zig`, not `src/runtime.zig`. Runtime imports are useful for zlua internals and tests, but they expose object layouts, frame details, GC roots, and bytecode structures that are allowed to change.
-
-## Source To Execution
-
-The standard source execution path is:
+## Source to Execution
 
 ```text
 source bytes
-  -> frontend lexer
-  -> frontend AST
+  -> lexer
+  -> AST
   -> resolver
   -> compiler Proto
   -> runtime Closure
-  -> Thread stack + CallFrame
-  -> VM instruction loop
-  -> runtime/native stdlib calls
+  -> Thread stack and CallFrames
+  -> VM dispatch
+  -> Lua or native calls
 ```
 
-The same logical pipeline is used by the CLI, embedding API, and test harnesses, but the owning wrapper differs:
+The CLI, embedding API, and test harnesses use this pipeline through different wrappers:
 
-| Caller | Wrapper behavior |
+- The CLI handles files, stdin, shebangs, `arg`, and host-oriented defaults.
+- The Zig API turns load results into rooted `Function` handles and maps Lua failures to API errors or protected-call results.
+- Differential tests can stop after lexing, parsing, resolving, or compiling, or continue through execution.
+
+### Frontend
+
+`src/frontend/` contains the lexer, parser, AST, source spans, tokens, and diagnostics. An `Ast` owns an arena, so its nodes and strings are released together.
+
+The parser handles Lua 5.5 syntax such as `global` declarations, `<const>` and `<close>` locals, named varargs, labels, gotos, and both forms of `for`. Rules that need scope information are left to the resolver.
+
+### Resolver
+
+`src/compile/resolver.zig` checks declaration order, `_ENV` visibility, local attributes, writes to const and loop variables, named varargs, upvalue capture, and to-be-closed lifetimes. These checks happen before bytecode generation so load-time behavior can be compared directly with Lua 5.5.
+
+### Compiler and Proto
+
+The compiler lowers the resolved AST into `compile.proto.Proto`, the plan for a chunk or Lua function. A proto contains register-based instructions, constants, nested protos, upvalue descriptors, register requirements, function shape, line/local debug data, and operand origins for runtime errors.
+
+The instruction set is small enough to group by purpose:
+
+| Family | Examples |
 | --- | --- |
-| CLI | Reads files/stdin, strips initial shebangs, initializes `runtime.State` with full host capabilities, installs `arg`, and executes chunks. |
-| Embedding API | Converts Zig options to runtime options, loads strings/files/bytecode, returns rooted `Function` handles, and maps runtime failures to Zig errors or protected-call results. |
-| Differential harness | Can stop after lex/parse/resolve/compile stages or execute in a configured runtime state and compare with CLua. |
-| Official harness | Spawns CLua and zlua as child processes for each official file with the official prelude. |
+| Values and moves | `load_nil`, `load_bool`, `load_const`, `move` |
+| Globals, upvalues, and tables | `get_global`, `set_global`, `get_table`, `set_field`, `new_table` |
+| Operators | arithmetic, bitwise, comparison, length, and concatenation instructions |
+| Control flow | jumps, tests, numeric `for`, and generic `for` |
+| Calls | `call`, `tail_call`, `ret`, and `vararg` |
+| Closures and cleanup | `closure`, `close`, `check_close`, and `close_tbc` |
 
-## Frontend
+Constants keep numeric source text until loaded so conversion follows Lua rules. `Proto.error_sites` records where operands came from, allowing errors to name a local, global, field, method, or constant instead of reporting only a generic VM failure.
 
-The frontend owns lexical and syntactic compatibility before runtime behavior exists.
+## Runtime Model
 
-| Module | Responsibility |
+### State Ownership
+
+`runtime.State` owns a Lua universe. Its main state falls into a few groups:
+
+| Group | Contents |
 | --- | --- |
-| `frontend/source.zig` | Source spans and location utilities. |
-| `frontend/token.zig` | Token tags and token representation. |
-| `frontend/lexer.zig` | Tokenization, Lua literals, comments, long strings, keywords, and lexer diagnostics. |
-| `frontend/ast.zig` | AST node structures allocated from the AST arena. |
-| `frontend/parser.zig` | Recursive parser and parse diagnostics. |
-| `frontend/diagnostic.zig` | Frontend diagnostic payloads. |
+| Environment | The global table and primitive metatables. |
+| Interning | Dynamic interned strings and their allocation index. |
+| Heap objects | Tables, userdata, closures, upvalues, coroutines, loaded protos, and retained source buffers. |
+| Execution | Current thread, callback dispatch, instruction count, output buffers, and error state. |
+| Lifetime control | API roots, GC state, allocation totals, and host options. |
 
-`frontend.ast.Ast` owns an arena allocator. Parsed identifiers, blocks, expressions, and statements are slices/pointers into that arena. Deinitializing the AST releases the parse tree as a unit.
+The global environment table is the single source of truth for globals. `_G` points back to that table, including for states opened with no standard libraries. There is no separate native globals map to keep in sync.
 
-The AST models Lua 5.5-specific syntax currently supported by zlua, including `global` declarations, `<const>` and `<close>` local attributes, named varargs, labels, gotos, numeric and generic `for`, and function/method declarations.
+Objects allocated by a state are tracked in state-owned lists. `State.deinit` walks those lists and releases them. The GC uses the same lists for marking, sweeping, finalization, and memory accounting.
 
-The frontend does not decide every validity rule. Syntax shape is parsed first; declaration and scope legality is checked in the resolver so diagnostics can match CLua's load-time behavior more closely.
+### State Startup
 
-## Resolver
+State initialization is planned around the chosen standard libraries:
 
-`compile/resolver.zig` validates source-level rules that require scope knowledge. Its job is to accept or reject chunks before bytecode generation.
+1. `stdlib.initHintsWithStdin` predicts global entries, dynamic strings, and tables.
+2. The state reserves its string and table tracking capacity.
+3. The global table is created with the expected hash capacity and installs `_G`.
+4. Selected libraries create their tables with exact capacity hints.
+5. The initial GC threshold is set after library setup.
 
-Resolver responsibilities include:
+Common library names and fixed values live in `src/stdlib/static_strings.zig`. They are process-lifetime strings stored in the executable, so each state can reuse them without allocating or GC-tracking copies. `State.intern` returns the canonical static slice when one exists and uses the per-state interning table for all other strings.
+
+Library setup also avoids repeated object layouts. Standard file handles share one lazily created method metatable instead of copying methods into every file table.
+
+`State.initWithOptionsObserved` exposes the startup phases—state containers, globals, libraries, and GC baseline—to the in-process startup benchmark. High-level callers use `zlua.State.init`; internal runtime callers use `initWithOptions`.
+
+### Values and Heap Objects
+
+`runtime.types.Value` is a tagged union containing Lua scalars, object pointers, native functions, and a few internal callable values.
+
+| Object | Key data |
+| --- | --- |
+| `Closure` | Proto, Lua upvalues, lazily loaded constants, and debug-strip state. |
+| `CClosure` | C function identity and C upvalues. |
+| `Upvalue` | An open stack slot or a closed stored value. |
+| `Table` | Array part, hash entries and index, metatable, and GC flags. |
+| `Userdata` | Native pointer, type information, metatable, finalizer, and deinit hook. |
+| `Thread` | Value stack, call frames, continuations, open upvalues, hooks, and coroutine status. |
+
+Tables keep positive integer keys in an array part and other keys in hash entries backed by an index map. Iteration order is not a stable API except where compatibility tests pin Lua behavior.
+
+### Calls and Coroutines
+
+Each thread owns a value stack and `CallFrame` stack. Calls enter through helpers in `runtime/state.zig` and `runtime/call.zig`:
 
 ```text
-local/global declaration ordering
-_ENV visibility and initialization
-local attribute validation
-assignment to const and for-loop variables
-named vararg restrictions
-upvalue capture decisions
-to-be-closed lifetime boundaries
-```
-
-The differential harness uses the `resolve` stage to compare resolver acceptance against CLua `loadfile` without depending on VM execution.
-
-## Compiler And Proto
-
-The compiler lowers a resolved AST into `compile.proto.Proto`. A proto is the immutable runtime plan for a Lua function or chunk.
-
-`Proto` owns:
-
-| Field | Meaning |
-| --- | --- |
-| `constants` | Deduplicated bytecode constants: nil, booleans, integer text, number text, and strings. |
-| `instructions` | Register-based bytecode instructions. |
-| `line_info` | Per-PC line information for diagnostics and debug hooks. |
-| `locals` | Debug local names, register slots, PC ranges, and to-be-closed flags. |
-| `upvalues` | Captured value descriptors. |
-| `children` | Nested function prototypes. |
-| `error_sites` | Operand-origin metadata used for Lua-compatible runtime error messages. |
-| `max_registers` | Register frame size needed by the function. |
-| `param_count`, `is_vararg`, `named_vararg` | Function call and vararg shape. |
-| `source_name`, `debug_name`, line ranges | Debug and error reporting metadata. |
-
-The bytecode is register-oriented. Instructions operate on `u16` register indexes and refer to constants, child protos, upvalues, and jump offsets by compact indexes.
-
-Instruction set:
-
-| Instruction | Payload | Meaning |
-| --- | --- | --- |
-| `load_nil` | `Register` | Writes `nil` to the destination register. |
-| `load_bool` | `dest`, `value` | Writes a boolean constant to a register. |
-| `load_const` | `dest`, `constant` | Writes a `Proto.constants` entry to a register. |
-| `move` | `dest`, `source` | Copies one register to another. |
-| `get_global` | `register`, `name` | Reads a named global into a register. |
-| `set_global` | `register`, `name` | Writes a register value to a named global. |
-| `declare_global` | `table`, `value`, `name` | Declares a global in the target global table. |
-| `get_upvalue` | `register`, `upvalue` | Reads a captured upvalue into a register. |
-| `set_upvalue` | `register`, `upvalue` | Writes a register value to a captured upvalue. |
-| `get_table` | `dest`, `table`, `key` | Reads `table[key]` using register operands. |
-| `set_table` | `table`, `key`, `value` | Writes `table[key] = value` using register operands. |
-| `set_array` | `table`, `index`, `value` | Writes one array element during table construction. |
-| `get_field` | `dest`, `table`, `name` | Reads `table[name]` where `name` is a string constant. |
-| `set_field` | `table`, `name`, `value` | Writes `table[name] = value` where `name` is a string constant. |
-| `new_table` | `dest`, `array_hint`, `hash_hint` | Allocates a table with constructor size hints. |
-| `set_list` | `table`, `first`, `count`, `start_index` | Bulk-writes sequential constructor values. |
-| `add` | `dest`, `left`, `right` | Computes `left + right`. |
-| `sub` | `dest`, `left`, `right` | Computes `left - right`. |
-| `mul` | `dest`, `left`, `right` | Computes `left * right`. |
-| `div` | `dest`, `left`, `right` | Computes `left / right`. |
-| `idiv` | `dest`, `left`, `right` | Computes floor division. |
-| `mod` | `dest`, `left`, `right` | Computes modulo. |
-| `pow` | `dest`, `left`, `right` | Computes exponentiation. |
-| `unm` | `dest`, `source` | Computes unary minus. |
-| `band` | `dest`, `left`, `right` | Computes bitwise and. |
-| `bor` | `dest`, `left`, `right` | Computes bitwise or. |
-| `bxor` | `dest`, `left`, `right` | Computes bitwise exclusive or. |
-| `bnot` | `dest`, `source` | Computes bitwise not. |
-| `shl` | `dest`, `left`, `right` | Computes left shift. |
-| `shr` | `dest`, `left`, `right` | Computes right shift. |
-| `eq` | `dest`, `left`, `right` | Writes the equality comparison result. |
-| `lt` | `dest`, `left`, `right` | Writes the less-than comparison result. |
-| `le` | `dest`, `left`, `right` | Writes the less-or-equal comparison result. |
-| `not` | `dest`, `source` | Computes Lua logical not. |
-| `len` | `dest`, `source` | Computes Lua length. |
-| `concat` | `dest`, `left`, `right` | Concatenates values. |
-| `jmp` | `JumpOffset` | Moves the program counter by a relative offset. |
-| `compare_branch` | `left`, `right`, `op`, `jump_if_truthy`, `offset` | Branches on `eq`, `lt`, or `le`. |
-| `test_op` | `register`, `jump_if_truthy`, `offset` | Branches on register truthiness. |
-| `test_set` | `dest`, `source`, `jump_if_truthy`, `offset` | Copies `source` to `dest`, then branches on truthiness. |
-| `call` | `base`, `arg_count`, `return_count` | Calls a value with fixed or multret arity. |
-| `tail_call` | `base`, `arg_count`, `return_count` | Performs a tail call. |
-| `ret` | `first`, `count` | Returns fixed or multret values from a function. |
-| `vararg` | `dest`, `count` | Loads fixed or multret varargs. |
-| `closure` | `dest`, `proto` | Instantiates a child proto as a closure. |
-| `close` | `Register` | Closes open upvalues at or above a register. |
-| `check_close` | `Register` | Validates a to-be-closed value. |
-| `close_tbc` | `Register` | Runs to-be-closed cleanup for a register. |
-| `for_prep` | `base`, `offset` | Prepares a numeric `for` loop. |
-| `for_loop` | `base`, `offset` | Advances and branches a numeric `for` loop. |
-| `tfor_prep` | `base`, `variable_count`, `offset` | Advances a generic `for` iterator and exits on `nil`. |
-| `tfor_call` | `base`, `variable_count`, `offset` | Advances a generic `for` iterator and stores loop variables. |
-| `tfor_loop` | `base`, `variable_count`, `offset` | Jumps to continue a generic `for` loop. |
-
-The compiler preserves enough debug and operand-origin data to make runtime errors look like Lua errors instead of generic VM errors.
-
-## Runtime State
-
-`runtime.State` is the central owner of a Lua universe. One state owns the global environment, allocated runtime objects, interned strings, API roots, host options, GC state, current thread, error payloads, primitive metatables, C callback dispatch hooks, and runtime output buffers.
-
-Major state-owned collections:
-
-| Collection | Contents |
-| --- | --- |
-| `globals` and `global_table` | Global name map and `_G` table exposed to Lua. |
-| `strings` and `string_allocations` | Interned strings and tracked string storage. |
-| `table_allocations` | Heap tables. |
-| `userdata_allocations` | Full userdata values and finalizer/deinit metadata. |
-| `closure_allocations` | Lua closures loaded from protos. |
-| `c_closure_allocations` | C API closures. |
-| `upvalue_allocations` and `c_upvalue_allocations` | Lua and C closure upvalues. |
-| `thread_allocations` | Main thread and coroutine threads. |
-| `proto_allocations` | Runtime-owned loaded protos, including binary chunks. |
-| `source_allocations` | Source buffers retained for loaded file debug information. |
-| `api_roots` | Values rooted by the Zig embedding API. |
-
-This central ownership model makes teardown straightforward: `State.deinit` walks every allocation list and releases state-owned objects. The tradeoff is that GC and performance-sensitive paths need explicit allocation accounting and careful rooting.
-
-## Values And Objects
-
-Runtime values are represented by `runtime.types.Value`, a tagged union over Lua scalars and runtime object pointers. It also contains variants for built-in native functions and special internal callables such as coroutine wrappers and string iterators.
-
-Core heap objects:
-
-| Object | Shape |
-| --- | --- |
-| `Closure` | Points at a `Proto`, captured Lua upvalues, optional cached constants, and stripped-debug flag. |
-| `CClosure` | Function id plus C upvalues for the C API layer. |
-| `Upvalue` | Either open over a thread stack slot or closed over a stored value. |
-| `Table` | Split array plus hash-entry storage, hash index map, optional metatable, GC flags, and metatable linked-list hooks. |
-| `Userdata` | Native pointer, type identity, type name, optional metatable, finalizer, and deinit hook. |
-| `Thread` | Stack, call frames, continuation queues, open upvalues, debug hook state, yield/result bookkeeping, and coroutine status. |
-
-Tables use an array part for positive integer keys and a hash-entry list plus index map for other keys. Deleting hash keys leaves Lua-compatible iteration behavior to higher-level table logic and GC cleanup paths; table order should not be treated as a stable API except where tests intentionally pin CLua-compatible behavior.
-
-## Threads, Frames, And Calls
-
-Each executing Lua thread owns a value stack and a stack of `CallFrame` records. A frame points to a closure/proto, records a base stack index, program counter, return target, varargs, debug overrides, tail-call state, and pending returns.
-
-Calls flow through `runtime/state.zig` and helpers in `runtime/call.zig`:
-
-```text
-callable value + args
+value + arguments
   -> invokeValue
-  -> Lua closure frame, C closure dispatch, native stdlib call, or __call metamethod
-  -> runThreadUntil target frame count
-  -> return adjustment into caller registers
+  -> Lua frame, C closure, native function, or __call
+  -> runThreadUntil
+  -> adjust results for the caller
 ```
 
-Protected calls snapshot enough thread and state information to restore stack length, frame count, result state, and previous error state when runtime errors, stack overflow, unsupported opcodes, or OOM occur. This machinery is used by Lua `pcall`/`xpcall`, the Zig embedding `Function.protectedCall`, and the C API `lua_pcallk` path.
+Protected calls save enough state to restore stacks, frames, results, and prior error information. This path supports Lua `pcall`/`xpcall`, Zig `Function.protectedCall`, and C `lua_pcallk`.
 
-Coroutine and yield support is continuation-based. The thread stores protected-call, generic-for, tail-call, and single-call continuations so native calls, metamethods, protected calls, generic iterators, and close handlers can resume in the right opcode context after yielding.
+Yielding is continuation-based. Threads retain continuation records for protected calls, generic loops, branches, tail calls, and single calls so execution can resume in the correct opcode after a native call or metamethod yields.
 
-## VM Loop
+### VM and Limits
 
-The main instruction dispatch currently lives in `runtime/state.zig` near `runThreadUntil`. `runtime/vm.zig` contains cross-cutting execution-limit checks rather than the full dispatcher.
+The instruction dispatcher lives in `runtime/state.zig`; `runtime/vm.zig` performs cross-cutting limit checks. The VM handles Lua-specific result adjustment, varargs, tail calls, metamethods, to-be-closed unwinding, primitive metatables, debug hooks, and stack overflow guards.
 
-Each executed instruction can enforce:
+- `max_instructions` is a cumulative state budget that can be queried and reset through the Zig API.
+- `max_memory` combines allocator limits in the embedding API with runtime allocation accounting and conservative GC checks at instruction boundaries.
 
-| Limit | Behavior |
+### Garbage Collection
+
+The collector marks from the global table, API roots, active threads and stacks, closures, upvalues, metatables, current errors, and callback state. It also handles weak tables and userdata/table finalizers.
+
+Collection must remain safe across protected calls, yields, close handlers, finalizers, and host callbacks. Conservative collection is used where an in-progress operation temporarily holds values outside normal roots.
+
+`collectgarbage("step")` and `State.stepGc` currently do full-collection-style work rather than a truly incremental step. Runtime mode and tuning controls exist for Lua compatibility, but a full generational collector is still future work.
+
+## Standard Libraries and Host Access
+
+`src/stdlib.zig` chooses libraries, creates their tables, and installs native functions. Implementations are split by library under `src/stdlib/`. The CLI opens the full set; the Zig API defaults to the safe set. Both layers also support an explicit per-library selection.
+
+Native library functions use the runtime's existing thread and frame machinery for arguments, returns, errors, metamethods, and yields. There is no second internal stack API.
+
+Opening a library and granting host access are separate decisions:
+
+| Capability | Available modes |
 | --- | --- |
-| `max_instructions` | Counts executed instructions against a cumulative per-state budget, exposes query/reset through the embedding API, and raises `instruction limit exceeded` when reached. |
-| `max_memory` | The embedding API uses a bounded allocator for parser/compiler, bytecode, VM, API conversion, and output-buffer allocations. The VM also refreshes Lua heap totals at instruction boundaries, attempts conservative collection when possible, then raises `memory limit exceeded` if still over limit. |
+| I/O | Optional Zig `std.Io`, stdin bytes, and output writers. |
+| Filesystem | Disabled, read-only memory files, mutable memory filesystem, host cwd, rooted host directory, or callbacks. |
+| Environment | Disabled, host-provided map, or callbacks. |
+| Clock | Disabled, fixed, system, or callbacks. |
+| Process | Disabled, std-backed, or callbacks. |
 
-The VM is deliberately compatibility-first. It handles Lua-specific details such as fixed versus multret return adjustment, vararg expansion, named vararg tables, tail calls, to-be-closed unwinding, metamethod dispatch, primitive metatables, debug hooks, line events, C stack overflow guards, and official error-message edge cases.
+The memory filesystem normalizes sandbox-relative paths and rejects absolute paths and parent traversal. `io`, `os`, `package`, and `fs` all consume the same capability layer, so opening one of those libraries does not grant ambient access by itself.
 
-## Standard Libraries
+## Embedding Layers
 
-`src/stdlib.zig` opens libraries by inserting runtime-native values into globals and library tables. Native implementations live in separate files by library.
+### Zig API
 
-Library selection:
+`src/api.zig` wraps runtime values in typed, rooted handles such as `Table`, `Function`, `Ref`, `Userdata(T)`, `AnyUserdata`, `Value`, and `ErrorRef`. Handles that own a root must be deinitialized by the host.
 
-| Selection | Libraries |
-| --- | --- |
-| `none` | No standard libraries. |
-| `base` | Base globals only. |
-| `safe` | Base, table, string, math, utf8, coroutine, json, toml, and msgpack. |
-| `full` | Safe libraries plus io, os, debug, package, and the zlua `fs` extension. |
-| `libraries` | Explicit per-library set. |
+The API maps options into runtime options, converts values in both directions, wraps host callbacks and userdata, exposes module and memory-filesystem helpers, and captures Lua errors. Installing a handle into Lua gives Lua its own reference; it does not consume the host handle.
 
-The CLI initializes the runtime with `.full` libraries and host capabilities. The Zig embedding API defaults to `.safe` libraries and sandboxed capabilities.
+### C API
 
-Native library functions do not have an independent stack API. They operate through runtime state, thread frames, bytecode call metadata, and helper functions for argument access, returns, errors, and metamethod dispatch. This keeps Lua stdlib behavior aligned with the VM rather than creating a second internal calling convention.
+`src/c_api.zig` is a compatibility layer, not a direct cast of `runtime.State`. Its `lua_State` owns a C-facing stack, registry, strings, tables, userdata, threads, and continuations alongside a runtime state.
 
-## Host Capabilities
+Values that cross the boundary keep stable peers where identity matters:
 
-Host effects are explicit runtime options. This is essential for embedding because Lua libraries such as `io`, `os`, and `package` can otherwise reach the host environment.
+- C strings are indexed by content and may cache their runtime string.
+- C tables and runtime tables are linked in both directions.
+- Linked runtime tables stay rooted while used by the C layer.
+- Recursive synchronization uses in-progress guards so shared references and cycles survive conversion.
+- The C global table is linked to the runtime's canonical global table.
 
-| Capability | Runtime type | Modes |
-| --- | --- | --- |
-| I/O | `std.Io`, stdout/stderr writers, stdin buffer | Disabled/absent by default in embedding, host-oriented in CLI. |
-| Filesystem | `FilesystemCapability` | `disabled`, read-only memory tree, read/write memory filesystem, ambient host current working directory, borrowed rooted host directory, or custom callbacks. |
-| Environment | Environment map pointer | Disabled or provided by host. |
-| Clock | `ClockCapability` | `disabled`, fixed value, or system clock. |
-| Process | `ProcessCapability` | Disabled or enabled. |
+This bridge lets loaded Lua closures call through C-created tables without replacing table identity on every conversion. The C layer also implements stack indices, pseudo-indices, `luaL_*` helpers, coroutine continuations, status codes, and C-compatible exports matching the installed Lua headers.
 
-The memory filesystem stores a sandbox-relative file and directory tree, supports metadata/list/walk and file/directory mutations, and avoids touching the host filesystem. The `fs` extension consumes the same capability layer as `io`, `os`, and package loading. Hosted operations receive the state's explicit Zig 0.16 `std.Io`; rooted host directories reject absolute and parent-traversal paths.
+## Errors and Binary Chunks
 
-## Garbage Collection
+Load-time failures use `errors.Diagnostic`. Runtime failures use `RuntimeErrorPayload`, an error value, and traceback/debug context. The Zig API exposes these as `error.LuaError` or protected-call results; the C API maps them to Lua status codes.
 
-The collector is integrated with state-owned allocation lists. Objects carry mark/finalization bits, and the state tracks allocation totals for `collectgarbage("count")`, auto-GC thresholds, and memory limits.
-
-GC responsibilities include:
-
-```text
-mark roots from globals, registry/API roots, threads, stacks, frames, closures, upvalues, metatables, current errors, and callback state
-handle weak table key/value semantics
-run userdata and table finalizers in Lua-compatible order
-preserve objects across errors, yields, close handlers, and protected calls
-support collectgarbage modes and params at the Lua API surface
-provide conservative collection in dangerous execution windows
-```
-
-The public `collectgarbage("step")` and embedding `State.stepGc` currently perform full collection-style work rather than a true incremental budgeted step. `GcMode` and `GcParam` exist for Lua API compatibility, but a true generational collector is still future work.
-
-## Errors And Diagnostics
-
-zlua separates load diagnostics from runtime failures:
-
-| Error source | Representation |
-| --- | --- |
-| Lexer/parser/resolver/compiler | `errors.Diagnostic` rendered as Lua load errors. |
-| Runtime execution | `RuntimeErrorPayload` plus current error value and traceback/debug context. |
-| Protected calls | `ProtectedCallResult.success` or `ProtectedCallResult.failure`. |
-| Embedding convenience APIs | `error.LuaError` plus `State.errorMessage` or `State.takeErrorValue`. |
-| C API | Lua status codes such as `LUA_OK`, `LUA_ERRRUN`, `LUA_ERRSYNTAX`, `LUA_ERRMEM`, and `LUA_YIELD`. |
-
-`Proto.error_sites` carries operand-origin metadata so VM failures can produce messages such as bad arithmetic, bad call target, bad index, and bad length errors with useful Lua-compatible wording.
-
-Runtime errors must preserve Lua semantics across close handlers, finalizers, protected calls, coroutines, debug hooks, and host callbacks. This is why error state lives on `runtime.State` and why protected-call restoration is centralized.
-
-## Zig Embedding API
-
-`src/api.zig` wraps runtime values in rooted handles. A handle such as `Table`, `Function`, `Userdata(T)`, `AnyUserdata`, `Value`, `Tuple`, or `ErrorRef` owns a registry root when needed and must be deinitialized by the host.
-
-The facade is responsible for:
-
-```text
-mapping API options to runtime options
-opening safe/full libraries on demand
-rooting values that cross into host code
-converting Zig values to runtime values
-converting runtime values back to typed Zig results
-wrapping host callbacks as Lua closures
-turning callback conversion failures into Lua argument errors
-providing memory filesystem and module helpers
-capturing Lua errors for convenience APIs
-```
-
-The core embedding rule is that host-owned references should be explicit and short-lived. Installing a handle into a Lua table/global gives Lua its own reference; it does not transfer or consume the host handle.
-
-## C API Layer
-
-`src/c_api.zig` exposes Lua 5.5 C symbols and installs the downloaded Lua headers. It is not a simple direct export of `runtime.State`; it has C-facing wrapper types for stack values, strings, tables, userdata, threads, light userdata, Lua closures, C closures, and runtime-native functions.
-
-The C API layer must satisfy different constraints from the Zig API:
-
-| Constraint | Consequence |
-| --- | --- |
-| Stack-indexed API | C-facing `lua_State` needs Lua stack operations and pseudo-index behavior. |
-| C ABI | Exported functions and structs must match Lua 5.5 headers closely enough for fixtures. |
-| Continuations | `lua_callk`, `lua_pcallk`, `lua_yieldk`, and coroutine APIs need continuation state. |
-| Auxiliary library | `luaL_*` helpers need compatible argument checks, refs, buffers, loading, and errors. |
-| Differential fixtures | The same C fixture is compiled and run against CLua and zlua. |
-
-The C API status inventory lives in `tests/fixtures/c_api_status.toml`. Symbols marked `tested-clua-diff` have direct fixture coverage against both implementations.
-
-## Binary Chunks
-
-zlua has its own binary chunk format for zlua-to-zlua use. It is used by Lua `string.dump`, the embedding `Function.dumpBytecode`, and `State.loadBytecode`.
-
-Important boundaries:
-
-```text
-zlua can load zlua binary chunks
-zlua rejects malformed or incompatible zlua chunks
-zlua does not promise PUC Lua luac compatibility
-the internal bytecode format is not a stable external ABI
-```
-
-The binary chunk implementation lives under `src/runtime/chunk.zig` and runtime load/dump paths. It serializes enough proto and debug information to round-trip zlua closures while preserving the project’s freedom to change bytecode internals.
+zlua binary chunks serialize protos for zlua-to-zlua use. `string.dump`, `Function.dumpBytecode`, and `State.loadBytecode` use this format. It is version-sensitive, does not promise `luac` compatibility, and is not a stable external ABI.
 
 ## Testing Architecture
 
-Correctness is dashboard-driven. The main test architecture is part of the codebase:
+The test harnesses are Zig build artifacts under `src/testing/`:
 
-| Harness | Source | Oracle |
-| --- | --- | --- |
-| Unit tests | Zig `test` blocks | Zig assertions. |
-| Differential | `src/testing/diff_runner.zig` | Vendored CLua exit status and output. |
-| Official dashboard | `src/testing/official_suite.zig` | Vendored Lua 5.5 official tests under CLua and zlua. |
-| C API | `src/testing/c_api_runner.zig` | Same C fixture compiled against CLua and zlua. |
-| Benchmarks | `src/testing/bench_runner.zig` | Process-level CLua versus ReleaseFast zlua timing. |
-
-The differential harness can test staged acceptance before execution, which is why frontend, resolver, and compiler errors can be locked down independently of runtime semantics.
-
-See [testing.md](testing.md) and [benchmark.md](benchmark.md) for commands and methodology.
-
-## Architectural Invariants
-
-These are the rules to preserve when changing internals:
-
-| Invariant | Why it matters |
+| Layer | Reference |
 | --- | --- |
-| CLua behavior beats intuition. | Lua edge cases are often surprising, and the official tests encode those surprises. |
-| `src/api.zig` is the stable Zig boundary. | Embedding hosts should not depend on runtime object layout. |
-| Runtime objects are state-owned. | Teardown, GC, and roots depend on one owning state. |
-| Values crossing into host code must be rooted when they can outlive the call. | GC can run during callbacks, finalizers, errors, and allocation. |
-| Protected calls must restore stack/frame/error state. | `pcall`, `xpcall`, embedding protected calls, and C API protected calls rely on this. |
-| Host capabilities must remain explicit. | Safe embedding depends on avoiding accidental filesystem, process, environment, or clock access. |
-| Bytecode is internal. | Binary chunks are zlua-specific and should not freeze compiler/VM representation. |
-| Benchmarks do not replace compatibility tests. | Performance changes must preserve differential and official behavior. |
+| Unit tests | Zig assertions. |
+| Differential fixtures | The same Lua program under zlua and downloaded Lua 5.5. |
+| Extension fixtures | zlua-only libraries checked against committed output. |
+| Official suite | Upstream Lua 5.5 tests under both runtimes. |
+| C API fixtures | The same C fixture linked against zlua and Lua 5.5. |
+| Benchmarks | Process-level and in-process startup measurements. |
 
-Architecture changes should identify which boundary is moving. Most risky changes cross one of these boundaries: compiler to runtime, runtime to stdlib, runtime to embedding API, runtime to C API, or host capability to stdlib. Use the workflow in [development.md](development.md) for behavior changes.
+Staged differential tests can compare frontend, resolver, and compiler acceptance without depending on VM execution. Startup tests separately check allocation hints, static strings, global-table identity, and shared file metatables.
+
+## Invariants
+
+Changes should preserve these rules:
+
+- Official Lua behavior wins over intuition.
+- `src/api.zig` is the stable Zig embedding boundary.
+- The runtime global table is the only runtime store for globals.
+- State-owned values that escape into host code must be rooted.
+- Static strings must have process lifetime and never enter state-owned deallocation paths.
+- Standard-library startup changes must update capacity hints, the static-string catalog, and startup tests together.
+- Protected calls must restore stack, frame, result, and error state.
+- C/runtime value conversion must preserve table identity and cycles.
+- Host effects remain explicit capabilities.
+- Binary chunks and VM layouts remain internal.
+- Performance work must still pass differential, extension, official, embedding, and C API tests.
