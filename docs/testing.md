@@ -1,26 +1,27 @@
 # Testing
 
-zlua treats the official Lua 5.5 C implementation as the behavioral oracle. The build downloads that implementation into `.zlua-deps/` and builds it locally. The main rule is simple: when Lua-visible behavior is in question, compare against CLua and keep the fixture.
+Lua-visible behavior is checked against the official Lua 5.5 C implementation built by this repository. When a compatibility question comes up, compare both runtimes and keep the smallest useful fixture.
 
 ## Test Layers
 
-| Layer | Command | Scope |
+| Layer | Command | Covers |
 | --- | --- | --- |
-| Unit tests | `zig build test` or `just test` | Zig tests for the library facade, CLI root module, runtime internals, API conversion, and test utilities. |
-| Embedding examples | `zig build examples` or `just example` | Compiles every Zig-native embedding example under `examples`. |
-| CLua differential fixtures | `zig build test-diff` or `just diff` | Runs `tests/diff/**/*.lua` against CLua and zlua. |
-| Official Lua 5.5 dashboard | `zig build test-official` or `just official` | Runs each official Lua 5.5 test file, excluding `all.lua`, under CLua and zlua. |
-| C API fixtures | `zig build test-c-api` or `just c-api` | Compiles C fixtures against CLua and zlua and compares behavior. |
-| Full CI aggregate | `zig build ci` or `just ci` | Unit tests, embedding examples, differential fixtures, official dashboard, and C API fixtures. |
+| Zig tests | `zig build test` | Library, CLI, runtime, API, test utilities, and the freestanding smoke build. |
+| Embedding examples | `zig build examples` | Compiles every program under `examples/`. |
+| Differential fixtures | `zig build test-diff` | Runs `tests/diff/**/*.lua` under Lua 5.5 and zlua. |
+| Extension fixtures | `zig build test-extensions` | Checks zlua-only libraries and functions against checked-in output. |
+| Official suite | `zig build test-official` | Runs downloaded Lua 5.5 tests under both interpreters. |
+| C API fixtures | `zig build test-c-api` | Compiles and runs each C fixture against both libraries. |
+| Full check | `zig build ci` | All layers above. |
 
-CI currently runs `zig build ci` on code changes. Markdown-only changes are ignored by the GitHub workflow, so documentation edits should be checked locally when they mention commands, examples, or behavior.
+`just test`, `just diff`, `just extensions`, `just official`, `just c-api`, and `just ci` are convenience wrappers.
 
-## CLua Oracle
+## Lua 5.5 Reference
 
-The build creates `zig-out/bin/lua5.5` from `.zlua-deps/lua-5.5.0/src`. Test harnesses discover CLua in this order:
+`zig build fetch-lua` downloads source and tests into `.zlua-deps/`; normal builds produce `zig-out/bin/lua5.5`. Harnesses find CLua in this order:
 
 ```text
-explicit --clua option
+--clua
 ZLUA_CLUA
 zig-out/bin/lua5.5
 lua5.5
@@ -28,11 +29,11 @@ lua5.5.0
 lua
 ```
 
-Normal `zig build` and `just` workflows use the downloaded binary, so a system Lua installation is not required.
+A fallback binary is accepted only if it identifies as Lua 5.5.
 
 ## Differential Fixtures
 
-Differential fixtures live under `tests/diff/**/*.lua`. Each fixture can include top-of-file metadata comments parsed by `src/testing/metadata.zig`:
+A fixture under `tests/diff/` may start with metadata comments:
 
 ```lua
 -- expect: pass
@@ -43,132 +44,81 @@ Differential fixtures live under `tests/diff/**/*.lua`. Each fixture can include
 print(({ 10, 20, 30 })[2])
 ```
 
-Supported metadata:
-
 | Key | Values | Default |
 | --- | --- | --- |
 | `expect` | `pass`, `fail`, `skip` | `pass` |
 | `stage` | `lex`, `parse`, `resolve`, `compile`, `runtime`, `stdlib`, `official` | `runtime` |
 | `feature` | Free-form tag | `uncategorized` |
 | `normalize` | `none`, `paths` | `none` |
-| `reason` | Free-form explanation | empty |
-| `issue` | Free-form issue reference | empty |
+| `reason`, `issue` | Free-form text | empty |
 
-Stage behavior:
+The first four stages compare load-time acceptance while stopping zlua at the named compiler stage. Runtime-style stages also compare stdout and stderr. Normalization is opt-in and should only remove unstable paths, never semantic differences.
 
-| Stage | CLua action | zlua action | Comparison |
-| --- | --- | --- | --- |
-| `lex` | `loadfile` | Lex source | Exit status, signal, timeout. |
-| `parse` | `loadfile` | Parse source | Exit status, signal, timeout. |
-| `resolve` | `loadfile` | Parse and resolve source | Exit status, signal, timeout. |
-| `compile` | `loadfile` | Parse, resolve, and compile source | Exit status, signal, timeout. |
-| `runtime` | Execute file | Execute source | Exit status, signal, timeout, stdout, stderr. |
-| `stdlib` | Execute file | Execute source | Exit status, signal, timeout, stdout, stderr. |
-| `official` | Execute file | Execute source | Exit status, signal, timeout, stdout, stderr. |
-
-For runtime-style stages, output is normalized only through `src/testing/normalizer.zig` according to fixture metadata. Do not normalize real semantic differences such as wrong values, missing output, extra output, success/failure mismatches, return-count differences, or mutation differences.
-
-Useful differential commands:
+Useful focused runs:
 
 ```sh
-just diff
 just diff tests/diff/runtime/tables.lua
 just diff --stage=parse
-just diff --stage=compile
 just diff --feature=table
 just diff --gc-stress
 just diff --show-clua --show-zlua tests/diff/runtime/errors.lua
 ```
 
-`--bless` and `--update-expected-failures` are accepted for command stability but are currently no-ops. Update fixtures and `tests/fixtures/expected_failures.toml` manually.
+`--bless` and `--update-expected-failures` are accepted but are currently no-ops.
 
-## Expected Failures
+### Expected Failures
 
-Expected failures can be declared inline with `-- expect: fail` or listed in `tests/fixtures/expected_failures.toml`. The harness exits nonzero only when `unexpected_failed` is nonzero.
+Expected failures can be declared in fixture metadata or `tests/fixtures/expected_failures.toml`. They require a reason, and an expected failure that starts passing is reported as a failure so stale entries are removed. The inventory is currently empty.
 
-Current expected-failure policy:
+## Extension Fixtures
 
-| Rule | Reason |
-| --- | --- |
-| Prefer new passing fixtures when behavior is implemented. | Passing fixtures are stronger regression guards. |
-| Expected failures need a reason. | They should describe an intentional gap, not hide unknown breakage. |
-| Remove expected failures as soon as they pass for the right reason. | Avoid stale compatibility status. |
-| Treat “expected failure passed” as a failure. | The registry or fixture expectation is stale. |
+Fixtures under `tests/extensions/` cover zlua additions that cannot be compared with standard Lua, including data formats, `fs`, and string/table helpers. A fixture's expected stdout is stored in `<fixture>.lua.out`; optional `.err` and `.exit` files set stderr and exit status.
 
-At the time this documentation was written, `tests/fixtures/expected_failures.toml` is empty and the default official dashboard passes all per-file cases.
+```sh
+just extensions
+just extensions tests/extensions/string
+just extensions --show-output tests/extensions/fs/basic.lua
+```
 
-## Official Lua 5.5 Suite
+The harness uses safe libraries by default and full libraries for fixtures under `tests/extensions/fs`.
 
-The official tests are downloaded as `.zlua-deps/lua-5.5.0-tests.tar.gz` and extracted under `.zlua-deps/lua-5.5.0-tests`. `tools/fetch-lua.sh` verifies the downloaded archive before extraction.
+## Official Suite
 
-Default behavior:
-
-| Setting | Value |
-| --- | --- |
-| Suite path | `.zlua-deps/lua-5.5.0-tests` |
-| Files | Every top-level `.lua` file except `all.lua` |
-| Mode | `basic` |
-| Basic prelude | `_U=true; _soft=true; _port=true; _nomsg=true; T=nil; ARG=arg` |
-| Build-step memory cap | `256` MiB per child process on Linux; disabled on other platforms |
-| Timeout | Disabled by default unless provided with `--timeout-ms=` |
-
-Useful official commands:
+Downloaded tests live under `.zlua-deps/lua-5.5.0-tests`. The default run uses every top-level `.lua` file except `all.lua` with the basic compatibility prelude.
 
 ```sh
 zig build test-official
-zig build test-official -Dofficial-memory-limit-mb=0
-just official
-just official calls db locals nextvar
+just official calls db locals
 just official --mode=complete strings.lua
+zig build test-official -Dofficial-memory-limit-mb=0
 ```
 
-The harness parses `--mode=internal`, but internal `testC`-enabled CLua/zlua builds are not wired and are skipped.
+The build step applies a 256 MiB child-process cap on Linux by default and no cap elsewhere. Direct harness runs default to no timeout or memory cap. `--mode=internal` is parsed but skipped because `testC` builds are not wired.
 
 ## C API Fixtures
 
-The C API layer builds `zlua-c` from `src/c_api.zig` and installs the downloaded Lua 5.5 headers. The fixture harness compiles each C file under `tests/c-api` twice: once against CLua and once against zlua. A fixture passes when both variants build, run, and produce compatible behavior. See [c-api.md](c-api.md) for supported scope, build/link instructions, and caveats.
-
-Run all C API fixtures:
+`tests/c-api/**/*.c` is compiled twice: once against downloaded Lua 5.5 and once against `zlua-c`. Compatible builds, exit status, stdout, and stderr are required.
 
 ```sh
-zig build c-api
-zig build test-c-api
 zig build ci-c-api
-just c-api
-```
-
-Run a focused fixture or directory:
-
-```sh
 just c-api tests/c-api/stack/stack_manipulation.c
 just c-api tests/c-api/coroutines
 ```
 
-`tests/fixtures/c_api_status.toml` is the public symbol inventory. Valid statuses are checked by the harness, and every public Lua 5.5 C API symbol listed in `src/testing/c_api_runner.zig` must appear in the inventory. A status of `tested-clua-diff` is stronger than `implemented` because it means a fixture has exercised the symbol against both libraries.
+`tests/fixtures/c_api_status.toml` tracks public symbols. `tested-clua-diff` means at least one differential C fixture covers the symbol.
 
-## Embedding Examples
+## Debugging a Failure
 
-Embedding examples live under `examples` and are compiled by `zig build examples`, which is part of `zig build ci`. They function as API smoke tests; [embedding.md](embedding.md) owns the example list and run commands.
-
-## Debugging Failures
-
-Recommended failure workflow:
-
-1. Re-run the narrowest failing fixture with output enabled.
-2. Compare CLua and zlua stdout, stderr, exit code, timeout, and signal.
-3. Add a smaller fixture when the failing official file is too broad.
-4. Fix the implementation against the small fixture.
-5. Re-run the original official or differential target.
-6. Re-run broader checks before finishing.
-
-Useful flags:
+1. Run the narrowest fixture with both outputs visible.
+2. Compare output, exit code, signal, and timeout.
+3. Reduce broad official failures to a small permanent fixture.
+4. Fix and rerun the focused target.
+5. Run `zig build ci` before finishing a shared runtime or API change.
 
 ```sh
-just diff --debug-errors --show-clua --show-zlua path/to/case.lua
-just official --debug-errors --show-clua --show-zlua calls
+just diff --show-clua --show-zlua path/to/case.lua
+just official --show-clua --show-zlua calls
 just c-api --show-build tests/c-api/values/roundtrip.c
 ```
 
-## CI Policy
-
-The compatibility gate is correctness, not speed. `zig build ci` is the aggregate gate for code changes, while benchmarks are intentionally manual diagnostics; see [benchmark.md](benchmark.md).
+Benchmarks are deliberately separate from correctness checks and are not part of `zig build ci`.

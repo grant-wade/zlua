@@ -1,48 +1,29 @@
-# Lua C API Compatibility
+# Lua C API
 
-zlua provides a source-compatible Lua 5.5 C API layer as a static library named `zlua-c`. It is intended for C hosts or fixtures that want Lua 5.5 C API semantics backed by zlua, not for ABI-compatible replacement of an existing system `liblua`.
+zlua provides a source-compatible Lua 5.5 C API as the static library `zlua-c`. It is meant for C code rebuilt against zlua, not as an ABI-compatible replacement for an installed `liblua`.
 
-The Zig-native embedding API remains zlua's main public API. Use `zlua.State` from Zig hosts when you want explicit capabilities, resource limits, typed callbacks, and rooted handles.
+For Zig hosts, `zlua.State` remains the preferred API: it provides typed values, rooted handles, capabilities, and resource limits without C stack discipline.
 
-## Scope
+## Build and Link
 
-The tracked Lua 5.5 public C API symbol inventory lives in `tests/fixtures/c_api_status.toml`. Every listed symbol is currently marked `tested-clua-diff`, which means there is fixture coverage that builds and runs against both the downloaded Lua 5.5 C implementation and `zlua-c`.
-
-Covered areas include:
-
-| Area | Examples |
-| --- | --- |
-| State and stack | `lua_newstate`, `lua_close`, `lua_gettop`, `lua_settop`, `lua_checkstack`, `lua_xmove`. |
-| Value conversion | `lua_type`, `lua_tointegerx`, `lua_tolstring`, `lua_push*`, `lua_rawlen`, `lua_topointer`. |
-| Tables and metatables | `lua_gettable`, `lua_settable`, raw accessors, user values, metatables, refs. |
-| Calls and loading | `lua_callk`, `lua_pcallk`, `lua_load`, `lua_dump`, Lua status codes. |
-| Coroutines | `lua_newthread`, `lua_resume`, `lua_yieldk`, `lua_status`, `lua_closethread`. |
-| Debug API | stack inspection, locals/upvalues, hooks, traceback support. |
-| Auxlib | argument checks, buffers, refs, loaders, `luaL_requiref`, traceback helpers. |
-| Standard-library openers | `luaopen_base`, `luaopen_package`, `luaopen_io`, `luaL_openselectedlibs`, and related openers. |
-
-The exact tested symbol set should be read from `tests/fixtures/c_api_status.toml` when changing or auditing C API behavior.
-
-## Build Artifacts
-
-Build the C API library, installed Lua 5.5 headers, and harness:
+Build the library, Lua headers, and fixture harness:
 
 ```sh
 zig build c-api
 ```
 
-Installed artifacts:
+This installs:
 
-| Artifact | Purpose |
-| --- | --- |
-| `zig-out/lib/libzlua-c.a` | Static zlua C API compatibility library. |
-| `zig-out/include/lua.h` | Lua 5.5 public C API header. |
-| `zig-out/include/lauxlib.h` | Lua 5.5 auxiliary library header. |
-| `zig-out/include/lualib.h` | Lua 5.5 standard-library opener header. |
-| `zig-out/include/luaconf.h` | Lua 5.5 configuration header. |
-| `zig-out/bin/zlua-test-c-api` | Standalone C API differential fixture harness. |
+```text
+zig-out/lib/libzlua-c.a
+zig-out/include/lua.h
+zig-out/include/lauxlib.h
+zig-out/include/lualib.h
+zig-out/include/luaconf.h
+zig-out/bin/zlua-test-c-api
+```
 
-The installed headers are taken from the downloaded Lua 5.5 source tree so C sources can include normal Lua headers:
+The headers come from the downloaded Lua 5.5 source, so normal includes work:
 
 ```c
 #include "lua.h"
@@ -50,9 +31,7 @@ The installed headers are taken from the downloaded Lua 5.5 source tree so C sou
 #include "lualib.h"
 ```
 
-## Linking
-
-The fixture harness links C programs with `zig cc` like this:
+A minimal link command is:
 
 ```sh
 zig cc -std=c99 -Wall -Wextra \
@@ -61,35 +40,28 @@ zig cc -std=c99 -Wall -Wextra \
   -o main
 ```
 
-For application builds, use the same include directory and static library path, adjusted for your build system and target. The C API library is target-specific; rebuild it with the same `-Dtarget` and `-Doptimize` choices expected by the consuming program.
+Rebuild `zlua-c` with the target and optimization settings used by the consuming application.
 
 ## Verification
 
-Run the C API compatibility gate:
+Run the complete C API check or a focused fixture:
 
 ```sh
 zig build ci-c-api
-```
-
-Run a focused fixture or directory:
-
-```sh
 zig build test-c-api -- tests/c-api/stack
 zig build test-c-api -- tests/c-api/coroutines/newthread_resume.c
 ```
 
-The harness compiles each fixture twice, once against the downloaded CLua library and once against `zlua-c`, then compares exit status, stdout, and stderr. It also validates the public symbol inventory before fixture execution.
+Each fixture is compiled against both downloaded Lua 5.5 and `zlua-c`; the harness compares exit status, stdout, and stderr. `tests/fixtures/c_api_status.toml` is the tracked public-symbol inventory and is validated before fixtures run.
 
-## Caveats
+## Boundaries
 
-zlua C API compatibility is practical and fixture-backed, but it has deliberate boundaries:
-
-| Boundary | Meaning |
+| Boundary | What it means |
 | --- | --- |
-| Static library, not ABI drop-in | `zlua-c` is not promised to be binary-compatible with an existing system `liblua` or dynamically loaded native modules. Rebuild C code against the installed headers and static library. |
-| Lua 5.5 target only | zlua targets Lua 5.5 semantics and headers. Multi-version Lua modes and LuaJIT compatibility are non-goals. |
-| zlua binary chunks | `lua_dump` produces zlua binary chunks. PUC Lua `luac` binary chunk compatibility is not a goal. |
-| Dynamic native modules | zlua does not provide LuaRocks/native dynamic module compatibility. Prefer statically linked C hosts or Lua source modules. |
-| Host capabilities differ by entrypoint | The standalone CLI opens full host access by default. Zig embedding defaults are sandboxed. C API states use the C API layer's state creation/open-library behavior and should be tested under the intended host setup. |
+| Static integration | Rebuild C code against zlua's installed headers and library. Existing Lua binaries and dynamic modules are not ABI-compatible by promise. |
+| Lua 5.5 only | Multi-version modes and LuaJIT compatibility are out of scope. |
+| zlua bytecode | `lua_dump` produces zlua chunks, not PUC Lua `luac` chunks. |
+| No native module loader | LuaRocks-style dynamic C modules are not supported. Statically linked hosts and Lua source modules are supported. |
+| Entry-point behavior | The CLI, Zig API, and C API initialize host access differently. Test C hosts with the libraries and services they actually open. |
 
-When changing C API behavior, add or update a C fixture under `tests/c-api`, keep the relevant symbol at `tested-clua-diff`, and run at least the focused fixture plus `zig build ci-c-api`.
+Changes to C behavior should include a focused fixture under `tests/c-api` and keep the affected symbol marked `tested-clua-diff`.

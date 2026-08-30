@@ -1,126 +1,81 @@
 # Development
 
-This document covers day-to-day zlua development conventions: project shape, common commands, source conventions, and local workflow. For the full command reference, see [commands.md](commands.md). For test methodology and detailed harness flags, see [testing.md](testing.md). For benchmark methodology, see [benchmark.md](benchmark.md). For implementation structure, see [architecture.md](architecture.md).
+zlua targets Zig `0.16.0`. The package depends on `zerde`; the build also downloads Lua 5.5 source and official tests into the ignored `.zlua-deps/` directory. A system Lua installation is not required.
 
-## Project Shape
+## Repository Map
 
-zlua is a Zig package targeting Zig `0.16.0`. `build.zig.zon` has no external Zig package dependencies, and CI uses `mlugg/setup-zig@v2` with `version: 0.16.0`.
+| Path | Purpose |
+| --- | --- |
+| `src/root.zig` | Package facade and top-level exports. |
+| `src/api.zig` | Supported Zig embedding API. |
+| `src/frontend/` | Lexer, parser, AST, source spans, and diagnostics. |
+| `src/compile/` | Resolver, bytecode, protos, compiler, and disassembler. |
+| `src/runtime/` | VM, calls, coroutines, GC, host services, and chunks. |
+| `src/stdlib/` | Lua libraries and zlua extensions. |
+| `src/c_api.zig` | Lua 5.5 C API layer. |
+| `src/testing/` | Differential, extension, official, C API, and benchmark harnesses. |
+| `examples/` | Zig embedding examples and API smoke tests. |
+| `tests/` | Lua, C API, extension, and benchmark fixtures. |
 
-The build downloads Lua 5.5 source and official tests into `.zlua-deps/`, which is ignored by Git. The CLua oracle is built from `.zlua-deps/lua-5.5.0/src`; do not assume a system Lua is required.
+Embedding applications should use `zlua.State` from `src/api.zig`. Runtime types are available to zlua itself and its tests but are not a stable host contract.
 
-`zig build ci` is the default CI-equivalent aggregate. See [testing.md](testing.md) for the exact layers it runs and [architecture.md](architecture.md) for the build artifacts behind those layers.
-
-The library facade is `src/root.zig`. It exports `api`, `frontend`, `compile`, `runtime`, `stdlib`, and `testing`, plus top-level embedding aliases like `State`, `Table`, `Function`, and `Context`.
-
-The public Zig embedding API lives in `src/api.zig`. `docs/embedding.md` is the user-facing API document. Embedding hosts should go through `zlua.State`; runtime internals are not a stable embedding contract.
-
-The CLI currently wires directly to `runtime.State` with full host capabilities. Embedding defaults are safer: `.safe` standard libraries and sandboxed host capabilities unless the host grants more.
-
-Runtime and standard-library compatibility are dashboard-driven. Use downloaded CLua behavior and official Lua 5.5 tests as the oracle instead of guessing from docs.
-
-Prefer `build.zig`, `justfile`, CI, and current `src/` behavior when documentation differs.
-
-## Commands
-
-Fetch Lua source and official tests:
+## Everyday Commands
 
 ```sh
-zig build fetch-lua
-just fetch-lua
+zig build                 # build zlua and the Lua 5.5 reference binary
+zig build run -- file.lua # run a script
+zig build test            # Zig tests and freestanding smoke test
+zig build ci              # all correctness checks
+zig build examples        # compile embedding examples
+just diff path/to/test.lua
+just official calls
+just extensions tests/extensions/string
+just c-api tests/c-api/stack
+just bench --category table
 ```
 
-Build zlua and CLua:
+Use `zig build --help` for build steps and `docs/commands.md` for harness flags.
 
-```sh
-zig build
-just build
+## Source Conventions
+
+- Follow the Zig 0.16 `std.Io` model. CLI and test code pass explicit I/O handles rather than relying on process-global helpers.
+- Treat Lua 5.5 `global` declarations and `<const>`/`<close>` attributes as supported language features.
+- Keep imports and commonly used type aliases at file scope.
+- Prefer a small addition to `src/api.zig` over exposing runtime internals.
+- Keep zlua binary chunks internal; they are not a stable ABI or PUC Lua `luac` format.
+- Let downloaded Lua 5.5 behavior and tests decide Lua-visible edge cases.
+
+Prefer:
+
+```zig
+const std = @import("std");
+const Dir = std.Io.Dir;
 ```
 
-Run the CLI through the build runner:
+rather than repeating inline imports or long qualified names throughout a file.
 
-```sh
-zig build run -- --version
-zig build run -- path/to/file.lua
-just run path/to/file.lua
-just version
-```
-
-Run common local checks:
-
-```sh
-zig build ci
-just ci
-zig build test
-just test
-zig build examples
-just example
-```
-
-Use [testing.md](testing.md) for focused differential, official-suite, C API, and failure-debugging commands.
-
-Use [embedding.md](embedding.md) for focused embedding example commands.
-
-Run benchmarks:
-
-```sh
-just bench
-```
-
-Use [benchmark.md](benchmark.md) for focused benchmark runs, report formats, and interpretation.
-
-Format Zig sources:
+### Formatting
 
 ```sh
 just fmt
 ```
 
-`just fmt` formats `build.zig`, `src/*.zig`, `src/testing/*.zig`, and `examples/*.zig`. Run `zig fmt` explicitly for touched nested files under `src/frontend/`, `src/compile/`, `src/runtime/`, `src/stdlib/`, or other paths not covered by the recipe.
+The recipe formats `build.zig`, top-level `src/*.zig`, `src/testing/*.zig`, and `examples/*.zig`. Run `zig fmt` directly for changed files in nested source directories.
 
-## Source Conventions
+## Workflow
 
-Follow the existing Zig 0.16 `std.Io` pattern. CLI and testing code thread explicit `std.Io` values through execution instead of using process-global I/O helpers.
+For a behavior change:
 
-Lua 5.5 `global` declarations and `<const>`/`<close>` attributes are part of the language surface tested by this project. Do not treat them as fixture noise from another Lua version.
+1. Add the smallest Lua fixture, C fixture, Zig test, or embedding example that demonstrates it.
+2. Compare Lua-visible behavior with downloaded Lua 5.5.
+3. Make the narrowest compatible change.
+4. Run the focused test first, then `zig build ci` when the change crosses shared compiler, runtime, GC, stdlib, or API code.
 
-Prefer top-level imports. Avoid inline imports in declarations such as:
-
-```zig
-@import("std").mem.Allocator
-```
-
-Use a top-level import instead:
-
-```zig
-const std = @import("std");
-```
-
-Prefer top-level aliases for imported types that are used throughout a file. For example, use `const Dir = std.Io.Dir;` or `const File = std.Io.File;` near the imports instead of repeating long qualified names at each call site.
-
-Keep public embedding changes in `src/api.zig` unless there is a deliberate API decision to expose something else. Prefer adding a small facade method to exposing runtime internals.
-
-The zlua binary chunk format is zlua-specific. It is not PUC Lua `luac` compatibility and should not be treated as a stable external ABI.
-
-## Development Workflow
-
-For behavior changes:
-
-1. Add or update a Lua fixture, C API fixture, Zig unit test, or embedding example that captures the behavior.
-2. Verify expected behavior against CLua when the behavior is Lua-visible.
-3. Make the smallest implementation change that preserves compatibility.
-4. Run the narrow relevant command first.
-5. Run broader checks before submitting.
-
-When an official test exposes a bug, prefer adding a smaller permanent differential fixture in addition to fixing the official file.
-
-Expected failures should be rare, documented with a reason, and removed as soon as the behavior is implemented.
-
-Benchmarks are diagnostics, not CI gates. Performance changes must preserve differential and official behavior.
+When an official test finds a bug, add a smaller permanent regression fixture when practical. Expected failures need a reason and should be removed as soon as the behavior works. Benchmarks are diagnostics, not correctness gates.
 
 ## Dependency Cache
 
-Lua dependency files are downloaded and extracted by `tools/fetch-lua.sh` into `.zlua-deps/`.
-
-The default URLs can be overridden for local mirrors:
+`tools/fetch-lua.sh` downloads and verifies Lua archives under `.zlua-deps/`. Local mirrors can override the URLs:
 
 ```sh
 ZLUA_LUA_URL=https://example.invalid/lua-5.5.0.tar.gz \
@@ -128,4 +83,4 @@ ZLUA_LUA_TESTS_URL=https://example.invalid/lua-5.5.0-tests.tar.gz \
 zig build fetch-lua
 ```
 
-The fetch script verifies SHA-256 checksums before extraction. If the downloaded archive already exists, it is reused and re-verified.
+Build outputs live under `zig-out/` and `.zig-cache/`.

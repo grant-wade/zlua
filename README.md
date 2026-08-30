@@ -1,14 +1,8 @@
 # zlua
 
-zlua is a source-compatible Lua 5.5 implementation written in Zig. It is built for hosts that want an embeddable Lua runtime with explicit capabilities, while still providing the familiar command-line interpreter, standard libraries, and Lua C API compatibility layer.
+zlua is a source-compatible Lua 5.5 implementation written in Zig. You can use it as a command-line interpreter or embed it in a Zig application with control over what Lua can access.
 
-The project targets Zig `0.16.0`.
-
-## Project Status
-
-zlua is pre-1.0.
-
-The Zig embedding API is the main public surface. Runtime internals, zlua binary chunks, and exact C API support scope are still evolving.
+zlua is pre-1.0 and currently targets Zig `0.16.0`. The Zig embedding API is the main public interface; internals, binary chunks, and C API coverage may still change.
 
 ## Quickstart
 
@@ -79,24 +73,20 @@ Output:
 remaining=0
 ```
 
-The default state opens safe standard libraries with sandboxed host capabilities. Hosts can opt into filesystem, output, clock, process, bytecode, callbacks, userdata, and resource-limit behavior through the API documented in [docs/embedding.md](docs/embedding.md).
+By default, a state opens sandbox-friendly standard libraries. Hosts can opt into filesystem access, output, clocks, processes, bytecode, callbacks, userdata, and resource limits.
 
-## Design Priorities
+## Goals
 
-zlua is compatibility-driven. Its target is the official Lua 5.5 C implementation for parser acceptance, runtime semantics, standard-library behavior, diagnostics, and C API behavior.
+zlua follows the official Lua 5.5 implementation as closely as practical, including parser behavior, runtime semantics, standard libraries, diagnostics, and the C API. It aims to:
 
-The project is designed to be useful in four related ways:
+- Run Lua 5.5 programs from the command line.
+- Make Lua straightforward to embed in Zig.
+- Give hosts explicit control over capabilities and resource limits.
+- Provide useful, test-backed Lua C API compatibility.
 
-- Run Lua 5.5 programs through a standalone command-line interpreter.
-- Embed Lua in Zig with explicit host capabilities, resource limits, callbacks, and userdata.
-- Keep standard-library behavior close to Lua 5.5 while allowing sandboxed embedding defaults.
-- Provide practical, testable Lua C API compatibility where it can be backed by zlua semantics.
+## Common Commands
 
-These priorities are kept honest by building and testing against downloaded Lua 5.5 sources and tests.
-
-## Build, Run, and Test
-
-Build the CLI and downloaded CLua oracle:
+Build the CLI and Lua 5.5 reference binary:
 
 ```sh
 zig build
@@ -114,46 +104,28 @@ Compile the Zig embedding examples:
 zig build examples
 ```
 
-Run the default CI-equivalent local check:
+Run the full check suite:
 
 ```sh
 zig build ci
 ```
 
-For the full command reference, including `just` recipes, `zig build` steps, CLI options, and harness arguments, see [docs/commands.md](docs/commands.md). For focused development, testing, and benchmarking workflows, see [docs/development.md](docs/development.md), [docs/testing.md](docs/testing.md), and [docs/benchmark.md](docs/benchmark.md).
-
 ## Compatibility
 
-Compatibility work is oracle-driven rather than example-driven. The build downloads Lua 5.5 sources and official tests, builds a local `lua5.5`, and uses that binary as the behavioral reference; a system Lua install is not required.
+The build downloads the Lua 5.5 sources and official tests, then builds a local `lua5.5` as a reference. You do not need a system Lua installation.
 
-`zig build ci` is the aggregate gate for the main project surfaces:
+`zig build ci` runs:
 
-| Layer | What it checks |
-| --- | --- |
-| Zig unit tests | Internal data structures, compiler behavior, runtime helpers, and API pieces. |
-| Differential fixtures | Small Lua programs compared against the official Lua 5.5 implementation. |
-| Official dashboard | The upstream Lua 5.5 test suite run against zlua and CLua. |
-| Embedding examples | Public Zig host API behavior. |
-| C API fixtures | Lua C API behavior compared through a separate C-facing harness. |
+- Zig unit tests for the compiler, runtime, and public API.
+- Small Lua programs against both zlua and the official implementation.
+- The upstream Lua 5.5 test suite.
+- Zig embedding examples.
+- C API compatibility tests.
 
-See [docs/testing.md](docs/testing.md) for the full test policy and command reference.
+## More Documentation
 
-## Documentation
-
-Start with [docs/README.md](docs/README.md) for the full documentation index.
-
-| Document | Scope |
-| --- | --- |
-| [Architecture](docs/architecture.md) | How the implementation fits together. |
-| [Commands](docs/commands.md) | `just` recipes, `zig build` steps, CLI options, and harness arguments. |
-| [Development](docs/development.md) | Project shape, commands, source conventions, and local workflow. |
-| [Lua Standard Library and Extensions](docs/stdlib.md) | Lua-visible standard libraries, selection modes, filesystem utilities, and data-format extensions. |
-| [Testing](docs/testing.md) | Test layers, CLua differential fixtures, official dashboard, and C API fixtures. |
-| [Lua C API Compatibility](docs/c-api.md) | Supported C API scope, build/link instructions, caveats, and fixture policy. |
-| [Benchmarking](docs/benchmark.md) | Benchmark harness and current performance methodology. |
-| [Embedding](docs/embedding.md) | Zig-native embedding API. |
-| [Next Steps](docs/next-steps.md) | Remaining hardening, performance, API, and release-documentation work. |
+The [documentation index](docs/README.md) covers embedding, the standard library, commands, testing, architecture, C API compatibility, and development workflows.
 
 ## License
 
-MIT License see [LICENSE](LICENSE).
+zlua is available under the [MIT License](LICENSE).
