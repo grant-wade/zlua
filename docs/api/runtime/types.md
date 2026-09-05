@@ -178,6 +178,7 @@ pub const Value = union(enum) {
     native_coroutine_close,
     native_coroutine_wrap,
     native: NativeFn,
+    api_callback: usize,
 };
 ```
 
@@ -344,7 +345,6 @@ pub const NativeFn = enum {
     fs_path_stem,
     fs_path_is_absolute,
     fs_path_relative,
-    api_callback_dispatch,
 };
 ```
 
@@ -622,6 +622,8 @@ pub const ApiCallbackContext = struct {
     thread: *Thread,
     op: bytecode.Call,
     callback_id: usize,
+    argument_base: usize,
+    parent: ?*ApiCallbackContext,
     user_data: ?*anyopaque,
     function_name: []const u8 = "host callback",
     returns: std.ArrayList(Value) = .empty,

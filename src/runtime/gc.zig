@@ -59,6 +59,7 @@ fn isNativeCallable(value: Value) bool {
         .native_coroutine_close,
         .native_coroutine_wrap,
         .native,
+        .api_callback,
         => true,
         else => false,
     };
@@ -285,6 +286,8 @@ pub fn resetMarks(comptime State: type, self: *State) void {
     for (self.upvalue_allocations.items) |upvalue| upvalue.marked = false;
     for (self.c_upvalue_allocations.items) |upvalue| upvalue.marked = false;
     for (self.thread_allocations.items) |thread| thread.marked = false;
+    var callback = self.active_api_callback;
+    while (callback) |context| : (callback = context.parent) context.thread.marked = false;
     if (self.current_thread) |thread| {
         var active: ?*Thread = thread;
         while (active) |active_thread| : (active = active_thread.resume_parent) {
@@ -296,6 +299,15 @@ pub fn resetMarks(comptime State: type, self: *State) void {
 pub fn markRoots(comptime State: type, self: *State) void {
     if (self.global_table) |table| if (isTrackedTable(State, self, table)) markTable(State, self, table);
     for (self.api_roots.items) |root| markValue(State, self, root);
+    // Native callbacks have no Lua wrapper whose varargs would keep arguments
+    // alive. Reentrant calls may collect while an outer callback is suspended.
+    var callback = self.active_api_callback;
+    while (callback) |context| : (callback = context.parent) {
+        markThread(State, self, context.thread);
+        markStackRange(State, self, context.thread, context.argument_base, context.argCount());
+        for (context.returns.items) |value| markValue(State, self, value);
+        if (context.error_value) |value| markValue(State, self, value);
+    }
     markRuntimeErrorPayload(State, self, self.last_error);
     if (self.current_thread) |thread| markThread(State, self, thread);
     if (self.string_metatable) |metatable| if (isTrackedTable(State, self, metatable)) markTable(State, self, metatable);

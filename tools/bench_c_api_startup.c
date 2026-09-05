@@ -14,11 +14,12 @@
 #include "lauxlib.h"
 #include "lualib.h"
 
-#define PHASE_COUNT 7
+#define PHASE_COUNT 8
 
 enum phase {
   PHASE_NEWSTATE,
   PHASE_OPENLIBS,
+  PHASE_REGISTER,
   PHASE_STARTUP_TOTAL,
   PHASE_LOAD,
   PHASE_CALL,
@@ -27,8 +28,10 @@ enum phase {
 };
 
 static const char *phase_names[PHASE_COUNT] = {
-  "newstate", "openlibs", "startup-total", "load", "call", "close", "first-chunk",
+  "newstate", "openlibs", "register-3", "startup-total", "load", "call", "close", "first-chunk",
 };
+
+static const char *host_chunk = "return host_tag(host_add(host_double(20), 2))";
 
 struct alloc_stats {
   uint64_t allocations;
@@ -130,7 +133,25 @@ static struct metric end_phase(const struct alloc_stats *stats, struct alloc_sna
   return result;
 }
 
-static int run_sample(struct sample *sample) {
+static int host_add(lua_State *L) {
+  lua_Integer lhs = luaL_checkinteger(L, 1);
+  lua_Integer rhs = luaL_checkinteger(L, 2);
+  lua_pushinteger(L, lhs + rhs);
+  return 1;
+}
+
+static int host_double(lua_State *L) {
+  lua_pushinteger(L, luaL_checkinteger(L, 1) * 2);
+  return 1;
+}
+
+static int host_tag(lua_State *L) {
+  lua_pushinteger(L, luaL_checkinteger(L, 1));
+  lua_pushliteral(L, "host-ok");
+  return 2;
+}
+
+static int run_sample(struct sample *sample, int host) {
   struct alloc_stats stats = {0};
   struct alloc_snapshot before;
   uint64_t start;
@@ -148,10 +169,26 @@ static int run_sample(struct sample *sample) {
 
   before = begin_phase(&stats);
   start = now_ns();
-  luaL_openlibs(L);
+  if (host) {
+    luaL_requiref(L, LUA_GNAME, luaopen_base, 1);
+    lua_pop(L, 1);
+  } else {
+    luaL_openlibs(L);
+  }
   elapsed = now_ns() - start;
   sample->phases[PHASE_OPENLIBS] = end_phase(&stats, before, elapsed);
   first_chunk_elapsed += elapsed;
+
+  if (host) {
+    before = begin_phase(&stats);
+    start = now_ns();
+    lua_register(L, "host_add", host_add);
+    lua_register(L, "host_double", host_double);
+    lua_register(L, "host_tag", host_tag);
+    elapsed = now_ns() - start;
+    sample->phases[PHASE_REGISTER] = end_phase(&stats, before, elapsed);
+    first_chunk_elapsed += elapsed;
+  }
 
   sample->phases[PHASE_STARTUP_TOTAL].elapsed_ns = first_chunk_elapsed;
   sample->phases[PHASE_STARTUP_TOTAL].allocations = stats.allocations;
@@ -162,7 +199,7 @@ static int run_sample(struct sample *sample) {
 
   before = begin_phase(&stats);
   start = now_ns();
-  int status = luaL_loadstring(L, "");
+  int status = luaL_loadstring(L, host ? host_chunk : "");
   elapsed = now_ns() - start;
   if (status != LUA_OK) {
     fprintf(stderr, "C API startup benchmark load failed: %s\n", lua_tostring(L, -1));
@@ -174,7 +211,7 @@ static int run_sample(struct sample *sample) {
 
   before = begin_phase(&stats);
   start = now_ns();
-  status = lua_pcall(L, 0, 0, 0);
+  status = lua_pcall(L, 0, host ? 2 : 0, 0);
   elapsed = now_ns() - start;
   if (status != LUA_OK) {
     fprintf(stderr, "C API startup benchmark call failed: %s\n", lua_tostring(L, -1));
@@ -183,6 +220,13 @@ static int run_sample(struct sample *sample) {
   }
   sample->phases[PHASE_CALL] = end_phase(&stats, before, elapsed);
   first_chunk_elapsed += elapsed;
+
+  if (host && (!lua_isinteger(L, -2) || lua_tointeger(L, -2) != 42 ||
+      lua_type(L, -1) != LUA_TSTRING || strcmp(lua_tostring(L, -1), "host-ok") != 0)) {
+    fprintf(stderr, "C API host benchmark returned unexpected results\n");
+    lua_close(L);
+    return 1;
+  }
 
   sample->phases[PHASE_FIRST_CHUNK].elapsed_ns = first_chunk_elapsed;
   sample->phases[PHASE_FIRST_CHUNK].allocations = stats.allocations;
@@ -271,32 +315,38 @@ int main(int argc, char **argv) {
     }
   }
 
-  struct sample ignored;
-  for (size_t i = 0; i < warmup; i++) if (run_sample(&ignored) != 0) return 1;
-
   struct sample *samples = (struct sample *)calloc(iterations, sizeof(*samples));
   if (samples == NULL) return 1;
-  for (size_t i = 0; i < iterations; i++) {
-    if (run_sample(&samples[i]) != 0) {
-      free(samples);
-      return 1;
-    }
-  }
-
   printf("%s startup (ReleaseFast), iterations=%zu, warmup=%zu\n", engine, iterations, warmup);
-  printf("phase           median-ns      p95-ns  alloc  resize  requested-B    live-B    peak-B\n");
-  for (int phase = 0; phase < PHASE_COUNT; phase++) {
-    printf("%-13s %11llu %11llu %6llu %7llu %12llu %9llu %9llu\n",
-      phase_names[phase],
-      (unsigned long long)percentile(samples, iterations, phase, 0, 50),
-      (unsigned long long)percentile(samples, iterations, phase, 0, 95),
-      (unsigned long long)percentile(samples, iterations, phase, 1, 50),
-      (unsigned long long)percentile(samples, iterations, phase, 2, 50),
-      (unsigned long long)percentile(samples, iterations, phase, 3, 50),
-      (unsigned long long)percentile(samples, iterations, phase, 4, 50),
-      (unsigned long long)percentile(samples, iterations, phase, 5, 50));
+  printf("selection     phase           median-ns      p95-ns  alloc  resize  requested-B    live-B    peak-B\n");
+  for (int host = 0; host <= 1; host++) {
+    struct sample ignored;
+    for (size_t i = 0; i < warmup; i++) {
+      if (run_sample(&ignored, host) != 0) {
+        free(samples);
+        return 1;
+      }
+    }
+    for (size_t i = 0; i < iterations; i++) {
+      if (run_sample(&samples[i], host) != 0) {
+        free(samples);
+        return 1;
+      }
+    }
+    for (int phase = 0; phase < PHASE_COUNT; phase++) {
+      if (phase == PHASE_REGISTER && !host) continue;
+      printf("%-13s %-13s %11llu %11llu %6llu %7llu %12llu %9llu %9llu\n",
+        host ? "base+host-3" : "full", phase_names[phase],
+        (unsigned long long)percentile(samples, iterations, phase, 0, 50),
+        (unsigned long long)percentile(samples, iterations, phase, 0, 95),
+        (unsigned long long)percentile(samples, iterations, phase, 1, 50),
+        (unsigned long long)percentile(samples, iterations, phase, 2, 50),
+        (unsigned long long)percentile(samples, iterations, phase, 3, 50),
+        (unsigned long long)percentile(samples, iterations, phase, 4, 50),
+        (unsigned long long)percentile(samples, iterations, phase, 5, 50));
+    }
+    putchar('\n');
   }
-  putchar('\n');
   free(samples);
   return 0;
 }

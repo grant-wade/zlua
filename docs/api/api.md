@@ -1331,7 +1331,7 @@ pub const Function = struct {
 | [deinit](#fn-function-deinit) | `self: *Function` | `void` | Releases this function handle's root. |
 | [call](#fn-function-call) | `self: Function, args: anytype, comptime R: type` | `!R` | Calls the function with tuple arguments and converts the first or tuple result to &#96;R&#96;. |
 | [protectedCall](#fn-function-protectedcall) | `self: Function, args: anytype, comptime R: type` | `!CallResult(R)` | Calls the function and returns Lua failures as an &#96;ErrorRef&#96; instead of &#96;error.LuaError&#96;. |
-| [dumpBytecode](#fn-function-dumpbytecode) | `self: Function, options: BytecodeDumpOptions` | `![]const u8` | Dumps this function to zlua bytecode. |
+| [dumpBytecode](#fn-function-dumpbytecode) | `self: Function, options: BytecodeDumpOptions` | `![]const u8` | Dumps this Lua function to zlua bytecode. Native host callbacks return &#96;error.TypeMismatch&#96;. |
 
 <a id="fn-function-deinit"></a>
 
@@ -1375,7 +1375,7 @@ References: [`Function`](#type-function)
 
 ### Function.dumpBytecode
 
-Dumps this function to zlua bytecode.
+Dumps this Lua function to zlua bytecode. Native host callbacks return `error.TypeMismatch`.
 
 The caller owns the returned slice and must free it with the state's allocator.
 

@@ -290,6 +290,8 @@ defer host_add.deinit();
 try lua.setGlobal("host_add", host_add);
 ```
 
+Registered callbacks are native functions: each registration has a distinct identity, `debug.getinfo` reports `what = "C"`, and there are no Lua upvalues or compiler-generated dispatcher globals. They cannot be dumped with `string.dump`; `Function.dumpBytecode` returns `error.TypeMismatch`. Callback names remain available in argument errors.
+
 Use `ctx.optionalArg` for optional values and `ctx.raise` to raise a Lua error. Argument conversion failures include callback and argument context. Callbacks may also receive rooted `Table` or `Function` handles and must deinitialize them.
 
 For simple functions, `registerTyped` converts parameters and returns automatically:

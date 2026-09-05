@@ -3,7 +3,7 @@
 zlua has two benchmark paths:
 
 - Process benchmarks compare complete Lua programs under downloaded Lua 5.5 and a ReleaseFast zlua CLI.
-- Startup benchmarks measure state creation and a first trivial chunk inside already-running processes.
+- Startup benchmarks measure state creation, a first trivial chunk, and custom host-function registration and calls inside already-running processes.
 
 ## Process Benchmarks
 

@@ -142,6 +142,7 @@ pub const State = struct {
     current_thread: ?*Thread = null,
     api_callback_dispatch: ?ApiCallbackDispatchFn = null,
     api_callback_user_data: ?*anyopaque = null,
+    active_api_callback: ?*ApiCallbackContext = null,
     c_closure_dispatch: ?CClosureDispatchFn = null,
     c_closure_resume_dispatch: ?CClosureResumeDispatchFn = null,
     c_debug_hook_dispatch: ?CDebugHookDispatchFn = null,
@@ -330,6 +331,40 @@ pub const State = struct {
         };
         thread.status = .dead;
         return .{ .success = try self.copyStackSlice(&thread, thread.last_result_base, thread.last_result_count) };
+    }
+
+    pub fn callFunction(self: *State, function: Value, args: []const Value) ![]Value {
+        if (function == .closure) return self.callLoadedClosure(function.closure, args);
+        // Native calls still need a stack frame for arguments, errors, and
+        // reentrant Lua calls, but no compiled wrapper or state-owned proto.
+        var proto = proto_mod.Proto.init(self.allocator);
+        defer proto.deinit();
+        proto.source_name = "=[C]";
+        var closure = Closure{ .proto = &proto, .upvalues = &.{} };
+        var thread = Thread.initRoot(self.allocator, &closure, self.stackValueLimit()) catch |err| switch (err) {
+            error.StackOverflow => return self.fail("stack overflow"),
+            else => return err,
+        };
+        defer thread.deinit(self.allocator);
+        const previous_thread = self.current_thread;
+        self.current_thread = &thread;
+        defer self.current_thread = previous_thread;
+        self.last_error = null;
+        self.last_error_in_close = false;
+        return self.callCollect(&thread, function, args) catch |err| {
+            if (err == error.StackOverflow and self.last_error == null) self.last_error = .{ .diagnostic = "stack overflow" };
+            self.closeFramesTo(&thread, 0, self.currentErrorValue()) catch |close_err| return close_err;
+            return err;
+        };
+    }
+
+    pub fn protectedCallFunction(self: *State, function: Value, args: []const Value) !ProtectedCallResult {
+        if (function == .closure) return self.protectedCallLoadedClosure(function.closure, args);
+        const values = self.callFunction(function, args) catch |err| switch (err) {
+            error.RuntimeError, error.StackOverflow, error.UnsupportedOpcode => return .{ .failure = self.currentErrorValue() },
+            else => return err,
+        };
+        return .{ .success = values };
     }
 
     pub fn executeSourceChunk(self: *State, source: []const u8) !void {
@@ -1324,21 +1359,20 @@ pub const State = struct {
         return coroutine_mod.resumeCClosureDispatch(State, self, thread, args);
     }
 
-    pub fn callApiCallbackDispatch(self: *State, thread: *Thread, op: bytecode.Call) !void {
+    pub fn callApiCallbackDispatch(self: *State, thread: *Thread, op: bytecode.Call, callback_id: usize) !void {
         const dispatch = self.api_callback_dispatch orelse return self.fail("host callback dispatcher unavailable");
-        const id_value = argValue(self, thread, op, 0);
-        const id_integer = toInteger(id_value) orelse return self.failArgumentType("__zlua_api_callback", 1, "integer", id_value);
-        if (id_integer <= 0) return self.failArgumentMessage("__zlua_api_callback", 1, "out of range");
-        const callback_id = std.math.cast(usize, id_integer) orelse return self.failArgumentMessage("__zlua_api_callback", 1, "out of range");
-
         var context = ApiCallbackContext{
             .state = self,
             .thread = thread,
             .op = op,
             .callback_id = callback_id,
+            .argument_base = thread.frames.items[thread.frames.items.len - 1].base + op.base + 1,
+            .parent = self.active_api_callback,
             .user_data = self.api_callback_user_data,
         };
         defer context.deinit();
+        self.active_api_callback = &context;
+        defer self.active_api_callback = context.parent;
 
         dispatch(&context) catch |err| switch (err) {
             error.RuntimeError, error.StackOverflow, error.UnsupportedOpcode => return err,
@@ -2733,6 +2767,7 @@ pub const State = struct {
         switch (callee) {
             .closure => |closure| try self.callClosure(thread, resolved, closure, call_name, call_namewhat),
             .c_closure => |closure| try self.callCClosureDispatch(thread, resolved, closure),
+            .api_callback => |id| try self.callApiCallbackDispatch(thread, resolved, id),
             .native_print => {
                 for (0..resolved.arg_count) |index| {
                     if (index != 0) try self.writeStdout("\t");
@@ -4754,6 +4789,7 @@ fn luaTypeName(value: Value) []const u8 {
         .native_coroutine_close,
         .native_coroutine_wrap,
         .native,
+        .api_callback,
         => "function",
     };
 }
@@ -5076,6 +5112,7 @@ fn hashValue(value: Value) u64 {
         .native_coroutine_close => hashTag(38),
         .native_coroutine_wrap => hashTag(39),
         .native => |payload| hashEnum(40, payload),
+        .api_callback => |id| std.hash.Wyhash.hash(hashTag(41), std.mem.asBytes(&id)),
     };
 }
 
@@ -5143,6 +5180,7 @@ fn isNativeCallable(value: Value) bool {
         .native_coroutine_close,
         .native_coroutine_wrap,
         .native,
+        .api_callback,
         => true,
         else => false,
     };

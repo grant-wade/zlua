@@ -6,10 +6,12 @@ const Timestamp = std.Io.Timestamp;
 const default_iterations: usize = 1000;
 const default_warmup: usize = 100;
 const trivial_chunk = "";
+const host_chunk = "return host_tag(host_add(host_double(20), 2))";
 
 const Selection = struct {
     name: []const u8,
     stdlib: zlua.runtime.StdlibMode,
+    host_functions: bool = false,
 };
 
 const selections = [_]Selection{
@@ -17,6 +19,7 @@ const selections = [_]Selection{
     .{ .name = "base", .stdlib = .base },
     .{ .name = "safe", .stdlib = .safe },
     .{ .name = "full", .stdlib = .full },
+    .{ .name = "base+host-3", .stdlib = .base, .host_functions = true },
 };
 
 const Phase = enum {
@@ -24,6 +27,7 @@ const Phase = enum {
     globals,
     libraries,
     gc_baseline,
+    register,
     startup_total,
     load,
     call,
@@ -36,6 +40,7 @@ const phase_names = [_][]const u8{
     "globals",
     "libraries",
     "gc-baseline",
+    "register-3",
     "startup-total",
     "load",
     "call",
@@ -167,15 +172,16 @@ pub fn main(init: std.process.Init) !void {
     const out = &stdout_writer.interface;
 
     try out.print("native startup (ReleaseFast), iterations={d}, warmup={d}\n", .{ iterations, warmup });
-    try out.print("selection phase           median-ns      p95-ns  alloc  resize  requested-B    live-B    peak-B runtime-B\n", .{});
+    try out.print("selection     phase           median-ns      p95-ns  alloc  resize  requested-B    live-B    peak-B runtime-B\n", .{});
 
     for (selections) |selection| {
         const samples = try init.gpa.alloc(Sample, iterations);
         defer init.gpa.free(samples);
 
-        for (0..warmup) |_| _ = try runSample(init.io, selection.stdlib);
-        for (samples) |*sample| sample.* = try runSample(init.io, selection.stdlib);
+        for (0..warmup) |_| _ = try runSample(init.io, selection);
+        for (samples) |*sample| sample.* = try runSample(init.io, selection);
         for (phase_names, 0..) |phase_name, phase_index| {
+            if (phase_index == @intFromEnum(Phase.register) and !selection.host_functions) continue;
             try printPhase(init.gpa, out, selection.name, phase_name, samples, phase_index);
         }
         try out.writeByte('\n');
@@ -211,7 +217,7 @@ fn positiveUsize(value: []const u8) !usize {
     return parsed;
 }
 
-fn runSample(io: std.Io, selection: zlua.runtime.StdlibMode) !Sample {
+fn runSample(io: std.Io, selection: Selection) !Sample {
     var counter: CountingAllocator = .{ .backing = std.heap.smp_allocator };
     const allocator = counter.allocator();
     var sample: Sample = .{ .phases = @splat(.{}) };
@@ -223,7 +229,22 @@ fn runSample(io: std.Io, selection: zlua.runtime.StdlibMode) !Sample {
         .phase_start = Timestamp.now(io, .awake),
         .phase_before = counter.beginPhase(),
     };
-    var state = try zlua.runtime.State.initWithOptionsObserved(allocator, .{ .stdlib = selection }, &init_observer, InitObserver.observe);
+    // Wrap the observed runtime so host registration uses the embedding API
+    // without losing the individual initialization timings.
+    var api_state: zlua.State = .{
+        .base_allocator = allocator,
+        .raw_state = try zlua.runtime.State.initWithOptionsObserved(allocator, .{ .stdlib = selection.stdlib }, &init_observer, InitObserver.observe),
+    };
+    var alive = true;
+    defer if (alive) api_state.deinit();
+    const state = &api_state.raw_state;
+
+    if (selection.host_functions) {
+        const before = counter.beginPhase();
+        const start = Timestamp.now(io, .awake);
+        try registerHostFunctions(&api_state);
+        sample.phases[@intFromEnum(Phase.register)] = phaseMetric(&counter, before, elapsedSince(io, start), state.allocationStats().bytes);
+    }
 
     const startup_index = @intFromEnum(Phase.startup_total);
     var startup_elapsed: u64 = 0;
@@ -241,15 +262,22 @@ fn runSample(io: std.Io, selection: zlua.runtime.StdlibMode) !Sample {
 
     const load_before = counter.beginPhase();
     const load_start = Timestamp.now(io, .awake);
-    const loaded = try state.loadSourceAsClosure(trivial_chunk);
+    const source = if (selection.host_functions) host_chunk else trivial_chunk;
+    const loaded = try state.loadSourceAsClosure(source);
     const load_elapsed = elapsedSince(io, load_start);
     sample.phases[@intFromEnum(Phase.load)] = phaseMetric(&counter, load_before, load_elapsed, state.allocationStats().bytes);
 
     const call_before = counter.beginPhase();
     const call_start = Timestamp.now(io, .awake);
     const results = try state.callLoadedClosure(loaded.closure, &.{});
-    allocator.free(results);
     const call_elapsed = elapsedSince(io, call_start);
+    const valid = if (selection.host_functions)
+        results.len == 2 and results[0] == .integer and results[0].integer == 42 and
+            results[1] == .string and std.mem.eql(u8, results[1].string, "host-ok")
+    else
+        results.len == 0;
+    allocator.free(results);
+    if (!valid) return error.BenchmarkUnexpectedResult;
     sample.phases[@intFromEnum(Phase.call)] = phaseMetric(&counter, call_before, call_elapsed, state.allocationStats().bytes);
 
     const before_deinit = counter.snapshot();
@@ -267,11 +295,36 @@ fn runSample(io: std.Io, selection: zlua.runtime.StdlibMode) !Sample {
 
     const deinit_before = counter.beginPhase();
     const deinit_start = Timestamp.now(io, .awake);
-    state.deinit();
+    api_state.deinit();
+    alive = false;
     const deinit_elapsed = elapsedSince(io, deinit_start);
     sample.phases[@intFromEnum(Phase.deinit)] = phaseMetric(&counter, deinit_before, deinit_elapsed, 0);
     if (counter.live_bytes != 0) return error.BenchmarkAllocatorLeak;
     return sample;
+}
+
+fn hostAdd(lhs: i64, rhs: i64) i64 {
+    return lhs + rhs;
+}
+
+fn hostDouble(value: i64) i64 {
+    return value * 2;
+}
+
+fn hostTag(ctx: *zlua.Context) !void {
+    try ctx.returnValues(.{ try ctx.arg(0, i64), "host-ok" });
+}
+
+fn registerHostFunctions(state: *zlua.State) !void {
+    var add = try state.registerTyped("host_add", hostAdd);
+    defer add.deinit();
+    try state.setGlobal("host_add", add);
+    var double = try state.registerTyped("host_double", hostDouble);
+    defer double.deinit();
+    try state.setGlobal("host_double", double);
+    var tag = try state.register("host_tag", hostTag);
+    defer tag.deinit();
+    try state.setGlobal("host_tag", tag);
 }
 
 fn elapsedSince(io: std.Io, start: Timestamp) u64 {
@@ -310,7 +363,7 @@ fn printPhase(allocator: std.mem.Allocator, out: *std.Io.Writer, selection: []co
     const live = try percentile(allocator, samples, phase_index, .live_bytes, 50);
     const peak = try percentile(allocator, samples, phase_index, .peak_bytes, 50);
     const runtime_bytes = try percentile(allocator, samples, phase_index, .runtime_bytes, 50);
-    try out.print("{s:<9} {s:<13} {d:>11} {d:>11} {d:>6} {d:>7} {d:>12} {d:>9} {d:>9} {d:>9}\n", .{
+    try out.print("{s:<13} {s:<13} {d:>11} {d:>11} {d:>6} {d:>7} {d:>12} {d:>9} {d:>9} {d:>9}\n", .{
         selection, phase_name, median_ns, p95_ns, allocations, resizes, requested, live, peak, runtime_bytes,
     });
 }

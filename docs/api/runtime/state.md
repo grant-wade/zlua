@@ -506,6 +506,7 @@ pub const State = struct {
     current_thread: ?*Thread = null,
     api_callback_dispatch: ?ApiCallbackDispatchFn = null,
     api_callback_user_data: ?*anyopaque = null,
+    active_api_callback: ?*ApiCallbackContext = null,
     c_closure_dispatch: ?CClosureDispatchFn = null,
     c_closure_resume_dispatch: ?CClosureResumeDispatchFn = null,
     c_debug_hook_dispatch: ?CDebugHookDispatchFn = null,
@@ -547,6 +548,8 @@ pub const State = struct {
 | [execute](#fn-state-execute) | `self: *State, proto: *const proto_mod.Proto` | `!void` |  |
 | [callLoadedClosure](#fn-state-callloadedclosure) | `self: *State, closure: *Closure, args: []const Value` | `![]Value` |  |
 | [protectedCallLoadedClosure](#fn-state-protectedcallloadedclosure) | `self: *State, closure: *Closure, args: []const Value` | `!ProtectedCallResult` |  |
+| [callFunction](#fn-state-callfunction) | `self: *State, function: Value, args: []const Value` | `![]Value` |  |
+| [protectedCallFunction](#fn-state-protectedcallfunction) | `self: *State, function: Value, args: []const Value` | `!ProtectedCallResult` |  |
 | [executeSourceChunk](#fn-state-executesourcechunk) | `self: *State, source: []const u8` | `!void` |  |
 | [executeSourceChunkNamed](#fn-state-executesourcechunknamed) | `self: *State, source: []const u8, source_name: []const u8` | `!void` |  |
 | [runThreadUntil](#fn-state-runthreaduntil) | `self: *State, thread: *Thread, target_frame_count: usize` | `anyerror!void` |  |
@@ -583,7 +586,7 @@ pub const State = struct {
 | [threadWasYielded](#fn-state-threadwasyielded) | `_: *State, target: *Thread` | `bool` |  |
 | [callCClosureDispatch](#fn-state-callcclosuredispatch) | `self: *State, thread: *Thread, op: bytecode.Call, closure: *CClosure` | `!void` |  |
 | [resumeCClosureDispatch](#fn-state-resumecclosuredispatch) | `self: *State, thread: *Thread, args: []const Value` | `!void` |  |
-| [callApiCallbackDispatch](#fn-state-callapicallbackdispatch) | `self: *State, thread: *Thread, op: bytecode.Call` | `!void` |  |
+| [callApiCallbackDispatch](#fn-state-callapicallbackdispatch) | `self: *State, thread: *Thread, op: bytecode.Call, callback_id: usize` | `!void` |  |
 | [readFileAlloc](#fn-state-readfilealloc) | `self: *State, path: []const u8` | `![]const u8` |  |
 | [writeStdout](#fn-state-writestdout) | `self: *State, bytes: []const u8` | `!void` |  |
 | [writeStderr](#fn-state-writestderr) | `self: *State, bytes: []const u8` | `!void` |  |
@@ -878,6 +881,26 @@ pub fn protectedCallLoadedClosure(self: *State, closure: *Closure, args: []const
 ```
 
 References: [`State`](#type-state), [`Closure`](#alias-closure), [`Value`](#alias-value), [`ProtectedCallResult`](#alias-protectedcallresult)
+
+<a id="fn-state-callfunction"></a>
+
+### State.callFunction
+
+```zig
+pub fn callFunction(self: *State, function: Value, args: []const Value) ![]Value
+```
+
+References: [`State`](#type-state), [`Value`](#alias-value)
+
+<a id="fn-state-protectedcallfunction"></a>
+
+### State.protectedCallFunction
+
+```zig
+pub fn protectedCallFunction(self: *State, function: Value, args: []const Value) !ProtectedCallResult
+```
+
+References: [`State`](#type-state), [`Value`](#alias-value), [`ProtectedCallResult`](#alias-protectedcallresult)
 
 <a id="fn-state-executesourcechunk"></a>
 
@@ -1244,7 +1267,7 @@ References: [`State`](#type-state), [`Thread`](#alias-thread), [`Value`](#alias-
 ### State.callApiCallbackDispatch
 
 ```zig
-pub fn callApiCallbackDispatch(self: *State, thread: *Thread, op: bytecode.Call) !void
+pub fn callApiCallbackDispatch(self: *State, thread: *Thread, op: bytecode.Call, callback_id: usize) !void
 ```
 
 References: [`State`](#type-state), [`Thread`](#alias-thread)
