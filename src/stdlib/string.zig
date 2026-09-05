@@ -488,7 +488,7 @@ fn gsubReplacement(state: *State, thread: *Thread, replacement: Value, source: [
                 unreachable;
             },
         },
-        .closure, .gmatch_iterator, .native_print, .native_tostring, .native_getmetatable, .native_setmetatable, .native_rawequal, .native_rawget, .native_rawset, .native_rawlen, .native_next, .native_pairs, .native_ipairs, .native_ipairs_iter, .native_table_create, .native_select, .native_assert, .native_error, .native_pcall, .native_xpcall, .native_collectgarbage, .native_debug_traceback, .native_coroutine_create, .native_coroutine_resume, .native_coroutine_yield, .native_coroutine_status, .native_coroutine_running, .native_coroutine_isyieldable, .native_coroutine_close, .native_coroutine_wrap, .native => blk: {
+        .closure, .api_callback, .gmatch_iterator, .native_print, .native_tostring, .native_getmetatable, .native_setmetatable, .native_rawequal, .native_rawget, .native_rawset, .native_rawlen, .native_next, .native_pairs, .native_ipairs, .native_ipairs_iter, .native_table_create, .native_select, .native_assert, .native_error, .native_pcall, .native_xpcall, .native_collectgarbage, .native_debug_traceback, .native_coroutine_create, .native_coroutine_resume, .native_coroutine_yield, .native_coroutine_status, .native_coroutine_running, .native_coroutine_isyieldable, .native_coroutine_close, .native_coroutine_wrap, .native => blk: {
             var args = std.ArrayList(Value).empty;
             defer args.deinit(state.allocator);
             try appendMatchValues(state, &args, source, matched);
@@ -535,7 +535,7 @@ fn luaTypeName(value: Value) []const u8 {
         .string => "string",
         .table => "table",
         .userdata => "userdata",
-        .closure, .c_closure, .coroutine_wrapper, .gmatch_iterator, .native_print, .native_tostring, .native_getmetatable, .native_setmetatable, .native_rawequal, .native_rawget, .native_rawset, .native_rawlen, .native_next, .native_pairs, .native_ipairs, .native_ipairs_iter, .native_table_create, .native_select, .native_assert, .native_pcall, .native_xpcall, .native_debug_traceback, .native_coroutine_create, .native_coroutine_resume, .native_coroutine_yield, .native_coroutine_status, .native_coroutine_running, .native_coroutine_isyieldable, .native_coroutine_close, .native_collectgarbage, .native_error, .native_coroutine_wrap, .native => "function",
+        .closure, .c_closure, .api_callback, .coroutine_wrapper, .gmatch_iterator, .native_print, .native_tostring, .native_getmetatable, .native_setmetatable, .native_rawequal, .native_rawget, .native_rawset, .native_rawlen, .native_next, .native_pairs, .native_ipairs, .native_ipairs_iter, .native_table_create, .native_select, .native_assert, .native_pcall, .native_xpcall, .native_debug_traceback, .native_coroutine_create, .native_coroutine_resume, .native_coroutine_yield, .native_coroutine_status, .native_coroutine_running, .native_coroutine_isyieldable, .native_coroutine_close, .native_collectgarbage, .native_error, .native_coroutine_wrap, .native => "function",
         .thread => "thread",
     };
 }
@@ -1630,6 +1630,7 @@ fn pointerAddress(value: Value) ?usize {
         .gmatch_iterator => |table| @intFromPtr(table),
         .native_print, .native_tostring, .native_getmetatable, .native_setmetatable, .native_rawequal, .native_rawget, .native_rawset, .native_rawlen, .native_next, .native_pairs, .native_ipairs, .native_ipairs_iter, .native_table_create, .native_select, .native_assert, .native_error, .native_pcall, .native_xpcall, .native_collectgarbage, .native_debug_traceback, .native_coroutine_create, .native_coroutine_resume, .native_coroutine_yield, .native_coroutine_status, .native_coroutine_running, .native_coroutine_isyieldable, .native_coroutine_close, .native_coroutine_wrap => @as(usize, 0x1000) + @as(usize, @intFromEnum(std.meta.activeTag(value))),
         .native => |native| @as(usize, 0x2000) + @as(usize, @intFromEnum(native)),
+        .api_callback => |id| @as(usize, 0x3000) + id,
         else => null,
     };
 }

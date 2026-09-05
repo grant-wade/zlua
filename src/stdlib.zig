@@ -23,6 +23,7 @@ const bytecode = compile.bytecode;
 const State = runtime.State;
 const Thread = runtime.Thread;
 const Value = runtime.Value;
+const TableEntry = @import("runtime/types.zig").TableEntry;
 
 pub const LibrarySelection = union(enum) {
     none,
@@ -176,20 +177,31 @@ const StaticField = struct {
     value: Value,
 };
 
-fn newStaticTable(state: *State, fields: []const StaticField, extra_fields: u32) !Value {
+fn newStaticTable(state: *State, comptime fields: []const StaticField, extra_fields: u32) !Value {
+    const entries = comptime blk: {
+        @setEvalBranchQuota(10000);
+        var entries: [fields.len]TableEntry = undefined;
+        for (fields, 0..) |field, index| {
+            if (field.value == .nil) @compileError("static fields must be non-nil");
+            for (fields[0..index]) |previous| {
+                if (std.mem.eql(u8, field.name, previous.name)) @compileError("duplicate static field: " ++ field.name);
+            }
+            entries[index] = .{ .key = .{ .string = static_strings.get(field.name) }, .value = field.value };
+        }
+        break :blk entries;
+    };
     const value = try state.newTableWithHints(0, @intCast(fields.len + @as(usize, extra_fields)));
-    for (fields) |field| try setStaticField(state, value, field.name, field.value);
+    value.table.entries.appendSliceAssumeCapacity(&entries);
+    for (entries, 0..) |entry, index| value.table.entry_index.putAssumeCapacityNoClobber(entry.key, index);
     return value;
 }
 
-fn setStaticField(state: *State, table_value: Value, name: []const u8, value: Value) !void {
-    const key = static_strings.canonical(name) orelse unreachable;
-    try table_value.table.set(state.allocator, .{ .string = key }, value);
+fn setStaticField(state: *State, table_value: Value, comptime name: []const u8, value: Value) !void {
+    try table_value.table.set(state.allocator, .{ .string = static_strings.get(name) }, value);
 }
 
-fn putStaticGlobal(state: *State, name: []const u8, value: Value) !void {
-    const key = static_strings.canonical(name) orelse unreachable;
-    try state.putGlobal(key, value);
+fn putStaticGlobal(state: *State, comptime name: []const u8, value: Value) !void {
+    try state.putGlobal(static_strings.get(name), value);
 }
 
 pub fn openLibraries(state: *State, selection: LibrarySelection) !void {
@@ -229,7 +241,7 @@ pub fn installGlobalTableWithHint(state: *State, hash_hint: u32) !void {
 fn openBase(state: *State) !void {
     const global_table = state.global_table orelse return error.RuntimeError;
     try putStaticGlobal(state, "_G", .{ .table = global_table });
-    const fields = [_]StaticField{
+    const fields = comptime [_]StaticField{
         .{ .name = "print", .value = .native_print },
         .{ .name = "tostring", .value = .native_tostring },
         .{ .name = "getmetatable", .value = .native_getmetatable },
@@ -253,11 +265,11 @@ fn openBase(state: *State) !void {
         .{ .name = "warn", .value = .{ .native = .warn } },
         .{ .name = "_VERSION", .value = .{ .string = static_strings.get("Lua 5.5") } },
     };
-    for (fields) |field| try putStaticGlobal(state, field.name, field.value);
+    inline for (fields) |field| try putStaticGlobal(state, field.name, field.value);
 }
 
 fn openTable(state: *State) !void {
-    const fields = [_]StaticField{
+    const fields = comptime [_]StaticField{
         .{ .name = "concat", .value = .{ .native = .table_concat } },
         .{ .name = "dedup", .value = .{ .native = .table_dedup } },
         .{ .name = "insert", .value = .{ .native = .table_insert } },
@@ -272,7 +284,7 @@ fn openTable(state: *State) !void {
 }
 
 fn openString(state: *State) !void {
-    const fields = [_]StaticField{
+    const fields = comptime [_]StaticField{
         .{ .name = "byte", .value = .{ .native = .string_byte } },
         .{ .name = "char", .value = .{ .native = .string_char } },
         .{ .name = "dump", .value = .{ .native = .string_dump } },
@@ -297,13 +309,13 @@ fn openString(state: *State) !void {
     const string_lib = try newStaticTable(state, &fields, 0);
     try putStaticGlobal(state, "string", string_lib);
 
-    const metatable_fields = [_]StaticField{.{ .name = "__index", .value = string_lib }};
-    const string_metatable = try newStaticTable(state, &metatable_fields, 0);
+    const string_metatable = try state.newTableWithHints(0, 1);
+    try setStaticField(state, string_metatable, "__index", string_lib);
     state.string_metatable = string_metatable.table;
 }
 
 fn openMath(state: *State) !void {
-    const fields = [_]StaticField{
+    const fields = comptime [_]StaticField{
         .{ .name = "abs", .value = .{ .native = .math_abs } },
         .{ .name = "acos", .value = .{ .native = .math_acos } },
         .{ .name = "asin", .value = .{ .native = .math_asin } },
@@ -338,7 +350,7 @@ fn openMath(state: *State) !void {
 }
 
 fn openUtf8(state: *State) !void {
-    const fields = [_]StaticField{
+    const fields = comptime [_]StaticField{
         .{ .name = "char", .value = .{ .native = .utf8_char } },
         .{ .name = "charpattern", .value = .{ .string = static_strings.get("[\x00-\x7F\xC2-\xFD][\x80-\xBF]*") } },
         .{ .name = "codepoint", .value = .{ .native = .utf8_codepoint } },
@@ -350,7 +362,7 @@ fn openUtf8(state: *State) !void {
 }
 
 fn openCoroutine(state: *State) !void {
-    const fields = [_]StaticField{
+    const fields = comptime [_]StaticField{
         .{ .name = "create", .value = .native_coroutine_create },
         .{ .name = "resume", .value = .native_coroutine_resume },
         .{ .name = "yield", .value = .native_coroutine_yield },
@@ -364,7 +376,7 @@ fn openCoroutine(state: *State) !void {
 }
 
 fn openIo(state: *State) !void {
-    const fields = [_]StaticField{
+    const fields = comptime [_]StaticField{
         .{ .name = "read", .value = .{ .native = .io_read } },
         .{ .name = "write", .value = .{ .native = .io_write } },
         .{ .name = "open", .value = .{ .native = .io_open } },
@@ -389,7 +401,7 @@ fn openIo(state: *State) !void {
 }
 
 fn openOs(state: *State) !void {
-    const fields = [_]StaticField{
+    const fields = comptime [_]StaticField{
         .{ .name = "time", .value = .{ .native = .os_time } },
         .{ .name = "clock", .value = .{ .native = .os_clock } },
         .{ .name = "date", .value = .{ .native = .os_date } },
@@ -405,7 +417,7 @@ fn openOs(state: *State) !void {
 }
 
 fn openDebug(state: *State) !void {
-    const fields = [_]StaticField{
+    const fields = comptime [_]StaticField{
         .{ .name = "traceback", .value = .native_debug_traceback },
         .{ .name = "getinfo", .value = .{ .native = .debug_getinfo } },
         .{ .name = "getupvalue", .value = .{ .native = .debug_getupvalue } },
@@ -425,7 +437,7 @@ fn openDebug(state: *State) !void {
 }
 
 fn openJson(state: *State) !void {
-    const fields = [_]StaticField{
+    const fields = comptime [_]StaticField{
         .{ .name = "read", .value = .{ .native = .json_read } },
         .{ .name = "write", .value = .{ .native = .json_write } },
     };
@@ -435,7 +447,7 @@ fn openJson(state: *State) !void {
 }
 
 fn openToml(state: *State) !void {
-    const fields = [_]StaticField{
+    const fields = comptime [_]StaticField{
         .{ .name = "read", .value = .{ .native = .toml_read } },
         .{ .name = "write", .value = .{ .native = .toml_write } },
     };
@@ -443,7 +455,7 @@ fn openToml(state: *State) !void {
 }
 
 fn openMsgpack(state: *State) !void {
-    const fields = [_]StaticField{
+    const fields = comptime [_]StaticField{
         .{ .name = "read", .value = .{ .native = .msgpack_read } },
         .{ .name = "write", .value = .{ .native = .msgpack_write } },
     };
@@ -453,7 +465,7 @@ fn openMsgpack(state: *State) !void {
 }
 
 fn openCsv(state: *State) !void {
-    const fields = [_]StaticField{
+    const fields = comptime [_]StaticField{
         .{ .name = "read", .value = .{ .native = .csv_read } },
         .{ .name = "write", .value = .{ .native = .csv_write } },
     };
@@ -463,7 +475,7 @@ fn openCsv(state: *State) !void {
 }
 
 fn openFs(state: *State) !void {
-    const fields = [_]StaticField{
+    const fields = comptime [_]StaticField{
         .{ .name = "read", .value = .{ .native = .fs_read } },
         .{ .name = "write", .value = .{ .native = .fs_write } },
         .{ .name = "open", .value = .{ .native = .fs_open } },
@@ -482,7 +494,7 @@ fn openFs(state: *State) !void {
     };
     const fs_lib = try newStaticTable(state, &fields, 1);
 
-    const path_fields = [_]StaticField{
+    const path_fields = comptime [_]StaticField{
         .{ .name = "join", .value = .{ .native = .fs_path_join } },
         .{ .name = "normalize", .value = .{ .native = .fs_path_normalize } },
         .{ .name = "basename", .value = .{ .native = .fs_path_basename } },
@@ -718,7 +730,6 @@ pub fn callNative(state: *State, native: NativeFn, thread: *Thread, op: bytecode
         .fs_path_stem => try fs.pathStem(state, thread, op),
         .fs_path_is_absolute => try fs.pathIsAbsolute(state, thread, op),
         .fs_path_relative => try fs.pathRelative(state, thread, op),
-        .api_callback_dispatch => try state.callApiCallbackDispatch(thread, op),
     }
 }
 
@@ -775,4 +786,40 @@ test {
     _ = msgpack;
     _ = csv;
     _ = fs;
+}
+
+test "bulk library tables retain ordinary lookup, iteration, and mutation" {
+    var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .full });
+    defer state.deinit();
+    try state.executeSourceChunk(
+        \\assert(math.abs(-3) == 3 and math.pi > 3)
+        \\assert(string.upper('abc') == 'ABC' and ('abc'):upper() == 'ABC')
+        \\assert(utf8.charpattern ~= nil and fs.path.separator ~= nil)
+        \\local count = 0
+        \\for k, v in pairs(math) do
+        \\  assert(rawget(math, k) == v)
+        \\  count = count + 1
+        \\end
+        \\assert(count == 29)
+        \\local m = math
+        \\math.abs = nil
+        \\math.pi = 7
+        \\math.extra = 42
+        \\math[1] = 'array'
+        \\assert(m.abs == nil and m.pi == 7 and m.extra == 42 and #m == 1)
+        \\assert(package.loaded.math == m)
+        \\collectgarbage()
+        \\assert(m.extra == 42 and m[1] == 'array')
+    );
+    try openLibraries(&state, .{ .libraries = .{ .math = true } });
+    try state.executeSourceChunk("assert(math.abs(-3) == 3 and math.extra == nil and math.pi > 3)");
+}
+
+test "library initialization releases allocations on failure" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
+        fn check(allocator: std.mem.Allocator) !void {
+            var state = try State.initWithOptions(allocator, .{ .stdlib = .full });
+            defer state.deinit();
+        }
+    }.check, .{});
 }

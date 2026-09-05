@@ -180,6 +180,11 @@ pub fn main(init: std.process.Init) !void {
         }
         try out.writeByte('\n');
     }
+    const callback_samples = try init.gpa.alloc(Sample, iterations);
+    defer init.gpa.free(callback_samples);
+    for (0..warmup) |_| _ = try runCallbackSample(init.io);
+    for (callback_samples) |*sample| sample.* = try runCallbackSample(init.io);
+    try printPhase(init.gpa, out, "host", "register-100", callback_samples, 0);
     try out.flush();
 }
 
@@ -270,6 +275,27 @@ fn runSample(io: std.Io, selection: zlua.runtime.StdlibMode) !Sample {
     state.deinit();
     const deinit_elapsed = elapsedSince(io, deinit_start);
     sample.phases[@intFromEnum(Phase.deinit)] = phaseMetric(&counter, deinit_before, deinit_elapsed, 0);
+    if (counter.live_bytes != 0) return error.BenchmarkAllocatorLeak;
+    return sample;
+}
+
+fn runCallbackSample(io: std.Io) !Sample {
+    var counter: CountingAllocator = .{ .backing = std.heap.smp_allocator };
+    var state = try zlua.State.init(counter.allocator(), .{ .stdlib = .none });
+
+    const before = counter.beginPhase();
+    const start = Timestamp.now(io, .awake);
+    for (0..100) |_| {
+        var function = try state.registerTyped("identity", struct {
+            fn identity(value: i64) i64 {
+                return value;
+            }
+        }.identity);
+        function.deinit();
+    }
+    var sample: Sample = .{ .phases = @splat(.{}) };
+    sample.phases[0] = phaseMetric(&counter, before, elapsedSince(io, start), state.raw_state.allocationStats().bytes);
+    state.deinit();
     if (counter.live_bytes != 0) return error.BenchmarkAllocatorLeak;
     return sample;
 }

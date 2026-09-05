@@ -56,6 +56,7 @@ pub const Value = union(enum) {
     native_coroutine_close,
     native_coroutine_wrap,
     native: NativeFn,
+    api_callback: usize,
 };
 
 pub const NativeFn = enum {
@@ -216,7 +217,6 @@ pub const NativeFn = enum {
     fs_path_stem,
     fs_path_is_absolute,
     fs_path_relative,
-    api_callback_dispatch,
 
     pub fn name(self: NativeFn) []const u8 {
         return switch (self) {
@@ -377,7 +377,6 @@ pub const NativeFn = enum {
             .fs_path_stem => "fs.path.stem",
             .fs_path_is_absolute => "fs.path.is_absolute",
             .fs_path_relative => "fs.path.relative",
-            .api_callback_dispatch => "__zlua_api_callback",
         };
     }
 };
@@ -491,6 +490,8 @@ pub const ApiCallbackContext = struct {
     thread: *Thread,
     op: bytecode.Call,
     callback_id: usize,
+    argument_base: usize,
+    parent: ?*ApiCallbackContext,
     user_data: ?*anyopaque,
     function_name: []const u8 = "host callback",
     returns: std.ArrayList(Value) = .empty,
@@ -501,13 +502,12 @@ pub const ApiCallbackContext = struct {
     }
 
     pub fn argCount(self: *ApiCallbackContext) usize {
-        if (self.op.arg_count == 0) return 0;
-        return self.op.arg_count - 1;
+        return self.op.arg_count;
     }
 
     pub fn callbackArgValue(self: *ApiCallbackContext, index: usize) Value {
-        const raw_index = std.math.cast(u16, index + 1) orelse return .nil;
-        return value_mod.argValue(self.state, self.thread, self.op, raw_index);
+        if (index >= self.op.arg_count) return .nil;
+        return self.thread.stack.items[self.argument_base + index];
     }
 
     pub fn clearReturns(self: *ApiCallbackContext) void {

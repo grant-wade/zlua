@@ -51,6 +51,7 @@ fn isNativeCallable(value: Value) bool {
         .native_coroutine_close,
         .native_coroutine_wrap,
         .native,
+        .api_callback,
         => true,
         else => false,
     };

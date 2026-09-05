@@ -208,6 +208,8 @@ const CTable = struct {
     metatable: ?*CTable = null,
     runtime_peer: ?*runtime.Table = null,
     runtime_root: ?usize = null,
+    synced_to_runtime: usize = 0,
+    synced_from_runtime: usize = 0,
     syncing_to_runtime: bool = false,
     syncing_from_runtime: bool = false,
     marked: bool = false,
@@ -388,6 +390,7 @@ const CState = struct {
     string_index: std.StringHashMap(*CString),
     tables: std.ArrayList(*CTable) = .empty,
     runtime_table_index: std.AutoHashMap(*runtime.Table, *CTable),
+    table_sync_generation: usize = 0,
     userdata: std.ArrayList(*CUserdata) = .empty,
     threads: std.ArrayList(*CThread) = .empty,
     panicf: lua_CFunction = null,
@@ -396,6 +399,20 @@ const CState = struct {
 
     fn allocator(self: *CState) std.mem.Allocator {
         return .{ .ptr = self, .vtable = &lua_allocator_vtable };
+    }
+
+    // A conversion walks a graph, not a tree: aliases must be copied only once
+    // per traversal, but a later traversal must see all intervening mutations.
+    fn beginTableSync(self: *CState, depth: usize) void {
+        if (depth != 0) return;
+        self.table_sync_generation +%= 1;
+        if (self.table_sync_generation == 0) {
+            for (self.tables.items) |table| {
+                table.synced_to_runtime = 0;
+                table.synced_from_runtime = 0;
+            }
+            self.table_sync_generation = 1;
+        }
     }
 
     fn deinitOwnedObjects(self: *CState) void {
@@ -1227,12 +1244,14 @@ fn cToRuntimeValue(state: *CState, value: Value, depth: usize) anyerror!runtime.
 }
 
 fn syncCTableToRuntime(state: *CState, table: *CTable, depth: usize) anyerror!*runtime.Table {
+    state.beginTableSync(depth);
     const runtime_table = table.runtime_peer orelse blk: {
         const created = (try state.runtime_state.newTableWithHints(0, @intCast(table.entries.items.len))).table;
         try linkRuntimeTable(state, created, table);
         break :blk created;
     };
-    if (table.syncing_to_runtime) return runtime_table;
+    if (table.syncing_to_runtime or table.synced_to_runtime == state.table_sync_generation) return runtime_table;
+    table.synced_to_runtime = state.table_sync_generation;
 
     table.syncing_to_runtime = true;
     defer table.syncing_to_runtime = false;
@@ -1272,12 +1291,14 @@ fn runtimeToCValue(state: *CState, value: runtime.Value, depth: usize) anyerror!
 }
 
 fn syncRuntimeTableToC(state: *CState, table: *runtime.Table, depth: usize) anyerror!*CTable {
+    state.beginTableSync(depth);
     const c_table = state.runtime_table_index.get(table) orelse blk: {
         const created = createTable(state, @intCast(table.array.items.len), @intCast(table.entries.items.len)) orelse return error.OutOfMemory;
         try linkRuntimeTable(state, table, created);
         break :blk created;
     };
-    if (c_table.syncing_from_runtime) return c_table;
+    if (c_table.syncing_from_runtime or c_table.synced_from_runtime == state.table_sync_generation) return c_table;
+    c_table.synced_from_runtime = state.table_sync_generation;
 
     c_table.syncing_from_runtime = true;
     defer c_table.syncing_from_runtime = false;
@@ -1285,15 +1306,16 @@ fn syncRuntimeTableToC(state: *CState, table: *runtime.Table, depth: usize) anye
     try c_table.entries.ensureTotalCapacity(state.allocator(), table.array.items.len + table.entries.items.len);
     for (table.array.items, 0..) |item, index| {
         if (item == .nil) continue;
-        try c_table.set(state.allocator(), .{ .integer = @intCast(index + 1) }, try runtimeToCValue(state, item, depth + 1));
+        const value = try runtimeToCValue(state, item, depth + 1);
+        if (value != .nil) c_table.entries.appendAssumeCapacity(.{ .key = .{ .integer = @intCast(index + 1) }, .value = value });
     }
     for (table.entries.items) |entry| {
         if (entry.value == .nil) continue;
-        try c_table.set(
-            state.allocator(),
-            try runtimeToCValue(state, entry.key, depth + 1),
-            try runtimeToCValue(state, entry.value, depth + 1),
-        );
+        const key = normalizeKey(try runtimeToCValue(state, entry.key, depth + 1)) orelse continue;
+        const value = try runtimeToCValue(state, entry.value, depth + 1);
+        // Runtime keys are already unique. Preserve CTable's normalization and
+        // omit values the bridge cannot represent, without searching the prefix.
+        if (value != .nil) c_table.entries.appendAssumeCapacity(.{ .key = key, .value = value });
     }
     c_table.metatable = if (table.metatable) |metatable| try syncRuntimeTableToC(state, metatable, depth + 1) else null;
     return c_table;

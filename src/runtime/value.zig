@@ -60,6 +60,7 @@ pub fn valuesEqual(lhs: Value, rhs: Value) bool {
         .native_coroutine_close => rhs == .native_coroutine_close,
         .native_coroutine_wrap => rhs == .native_coroutine_wrap,
         .native => |native| rhs == .native and rhs.native == native,
+        .api_callback => |id| rhs == .api_callback and rhs.api_callback == id,
     };
 }
 
@@ -106,6 +107,7 @@ pub fn hashValue(value: Value) u64 {
         .native_coroutine_close => hashTag(38),
         .native_coroutine_wrap => hashTag(39),
         .native => |payload| hashEnum(40, payload),
+        .api_callback => |id| std.hash.Wyhash.hash(hashTag(41), std.mem.asBytes(&id)),
     };
 }
 
@@ -286,6 +288,7 @@ pub fn debugValueTypeName(value: Value) []const u8 {
         .native_coroutine_close,
         .native_coroutine_wrap,
         .native,
+        .api_callback,
         => "function",
     };
 }
@@ -480,6 +483,7 @@ pub fn appendValue(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value:
         .native_coroutine_isyieldable => try out.appendSlice(allocator, "function: coroutine.isyieldable"),
         .native_coroutine_close => try out.appendSlice(allocator, "function: coroutine.close"),
         .native_coroutine_wrap => try out.appendSlice(allocator, "function: coroutine.wrap"),
+        .api_callback => |id| try appendFmt(allocator, out, "function: host callback {d}", .{id}),
         .native => |native| {
             try out.appendSlice(allocator, "function: ");
             try out.appendSlice(allocator, native.name());

@@ -91,6 +91,8 @@ The step builds measured components in ReleaseFast and runs:
 2. The zlua C API through `lua_newstate`, `luaL_openlibs`, and a trivial chunk.
 3. Lua 5.5 through the same C source and counting allocator.
 
+The native report also includes `host register-100`: registering 100 typed callbacks in a fresh high-level state with no libraries. State creation and teardown are excluded from that row; each returned handle is released immediately, while registrations remain owned by the state.
+
 Native initialization is split into state containers, global-table setup, library opening, and GC baseline setup. The report also includes load, call, teardown, complete startup, and time through the first successful chunk. C API reports split `newstate`, `openlibs`, load, call, and close.
 
 | Column | Meaning |
