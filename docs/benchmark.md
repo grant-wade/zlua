@@ -91,14 +91,6 @@ The step builds measured components in ReleaseFast and runs:
 2. The zlua C API through `lua_newstate`, `luaL_openlibs`, and a trivial chunk.
 3. Lua 5.5 through the same C source and counting allocator.
 
-All three reports include a complete `base+host-3` startup section with the base library plus three custom host functions:
-
-- `register-3`: register and install `host_add`, `host_double`, and `host_tag` as globals. Native zlua uses the high-level API (two typed callbacks and one `Context` callback); C uses `lua_register`.
-- `load`: compile `return host_tag(host_add(host_double(20), 2))`.
-- `call`: execute that chunk, exercising argument conversion and multiple return values. Every sample checks for `42, "host-ok"` outside the timed call and checks for allocator leaks after teardown.
-
-The host section shows the same initialization, load, call, and teardown phases as the library-only sections, plus registration. `startup-total` includes initialization and registration; `first-chunk` also includes load and call. Native loading and calling use the same runtime entry points as the library-only cases; C uses the Lua stack directly.
-
 Native initialization is split into state containers, global-table setup, library opening, and GC baseline setup. The report also includes load, call, teardown, complete startup, and time through the first successful chunk. C API reports split `newstate`, `openlibs`, load, call, and close.
 
 | Column | Meaning |

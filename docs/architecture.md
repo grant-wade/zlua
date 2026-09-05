@@ -88,7 +88,10 @@ State initialization is planned around the chosen standard libraries:
 1. `stdlib.initHintsWithStdin` predicts global entries, dynamic strings, and tables.
 2. The state reserves its string and table tracking capacity.
 3. The global table is created with the expected hash capacity and installs `_G`.
-4. Selected libraries create their tables with exact capacity hints, copy compile-time entries, and build their hash indexes without duplicate-key searches.
+4. Selected libraries: 
+  a. create their tables with exact capacity hints
+  b. copy compile-time entries
+  c. build their hash indexes without duplicate-key searches.
 5. The initial GC threshold is set after library setup.
 
 Common library names and fixed values live in `src/stdlib/static_strings.zig`. They are process-lifetime strings stored in the executable, so each state can reuse them without allocating or GC-tracking copies. `State.intern` returns the canonical static slice when one exists and uses the per-state interning table for all other strings.
@@ -167,7 +170,7 @@ The memory filesystem normalizes sandbox-relative paths and rejects absolute pat
 
 `src/api.zig` wraps runtime values in typed, rooted handles such as `Table`, `Function`, `Ref`, `Userdata(T)`, `AnyUserdata`, `Value`, and `ErrorRef`. Handles that own a root must be deinitialized by the host.
 
-The API maps options into runtime options, converts values in both directions, binds host callbacks and userdata, exposes module and memory-filesystem helpers, and captures Lua errors. Registered host functions are native values containing state-local callback IDs; registration does not compile or execute Lua wrappers. Active callback contexts root their arguments and pending returns across reentrant calls and collection. Installing a handle into Lua gives Lua its own reference; it does not consume the host handle.
+The API maps options into runtime options, converts values in both directions, binds host callbacks and userdata, exposes module and memory-filesystem helpers, and captures Lua errors. Registered host functions are native values containing state-local callback IDs. Active callback contexts root their arguments and pending returns across reentrant calls and collection. Installing a handle into Lua gives Lua its own reference; it does not consume the host handle.
 
 ### C API
 
@@ -178,7 +181,7 @@ Values that cross the boundary keep stable peers where identity matters:
 - C strings are indexed by content and may cache their runtime string.
 - C tables and runtime tables are linked in both directions.
 - Linked runtime tables stay rooted while used by the C layer.
-- Recursive synchronization uses in-progress guards and per-traversal visitation generations so cycles and aliases survive conversion without repeatedly rebuilding shared tables. Fresh C peers copy normalized, unique runtime entries without linear duplicate-key searches.
+- Recursive synchronization uses in-progress guards and per-traversal visitation generations. 
 - The C global table is linked to the runtime's canonical global table.
 
 This bridge lets loaded Lua closures call through C-created tables without replacing table identity on every conversion. The C layer also implements stack indices, pseudo-indices, `luaL_*` helpers, coroutine continuations, status codes, and C-compatible exports matching the installed Lua headers.
