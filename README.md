@@ -9,7 +9,7 @@ zlua is pre-1.0 and currently targets Zig `0.16.0`. The Zig embedding API is the
 1. Add zlua to your Zig package dependencies:
 
 ```sh
-zig fetch --save git+https://codeberg.org/gron/zlua#v0.4.2
+zig fetch --save git+https://codeberg.org/gron/zlua#v0.4.3
 ```
 
 2. Wire the dependency into your executable in `build.zig`:
