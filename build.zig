@@ -27,7 +27,8 @@ pub fn build(b: *std.Build) void {
     const bench_optimize: std.builtin.OptimizeMode = .ReleaseFast;
     const clua_lib = addCluaLib(b, target, clua_optimize, lua_deps_step, "lua5.5-core");
     const clua_exe = addClua(b, target, clua_optimize, clua_lib);
-    const clua_startup_bench_lib = addCluaLib(b, target, bench_optimize, lua_deps_step, "lua5.5-startup-bench");
+    const clua_bench_lib = addCluaLib(b, target, bench_optimize, lua_deps_step, "lua5.5-bench");
+    const clua_bench_exe = addClua(b, target, bench_optimize, clua_bench_lib);
     b.installArtifact(clua_exe);
 
     const mod = b.addModule("zlua", .{
@@ -111,30 +112,8 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    const native_startup_bench_exe = b.addExecutable(.{
-        .name = "zlua-bench-startup-native",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/test_bench_startup_main.zig"),
-            .target = target,
-            .optimize = bench_optimize,
-            .imports = &.{.{ .name = "zlua", .module = bench_mod }},
-        }),
-    });
     const zlua_c_startup_bench_exe = addCStartupBench(b, target, bench_optimize, zlua_c_startup_bench_lib, "zlua-bench-startup-c-api");
-    const clua_startup_bench_exe = addCStartupBench(b, target, bench_optimize, clua_startup_bench_lib, "clua-bench-startup-c-api");
-
-    const startup_bench_step = b.step("bench-startup", "Benchmark native, zlua C API, and CLua startup in process");
-    const run_native_startup_bench = b.addRunArtifact(native_startup_bench_exe);
-    if (b.args) |args| run_native_startup_bench.addArgs(args);
-    const run_zlua_c_startup_bench = b.addRunArtifact(zlua_c_startup_bench_exe);
-    run_zlua_c_startup_bench.addArg("--engine=zlua-c");
-    if (b.args) |args| run_zlua_c_startup_bench.addArgs(args);
-    run_zlua_c_startup_bench.step.dependOn(&run_native_startup_bench.step);
-    const run_clua_startup_bench = b.addRunArtifact(clua_startup_bench_exe);
-    run_clua_startup_bench.addArg("--engine=clua");
-    if (b.args) |args| run_clua_startup_bench.addArgs(args);
-    run_clua_startup_bench.step.dependOn(&run_zlua_c_startup_bench.step);
-    startup_bench_step.dependOn(&run_clua_startup_bench.step);
+    const clua_startup_bench_exe = addCStartupBench(b, target, bench_optimize, clua_bench_lib, "clua-bench-startup-c-api");
 
     const diff_exe = b.addExecutable(.{
         .name = "zlua-test-diff",
@@ -174,8 +153,8 @@ pub fn build(b: *std.Build) void {
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/test_bench_main.zig"),
             .target = target,
-            .optimize = optimize,
-            .imports = &.{.{ .name = "zlua", .module = mod }},
+            .optimize = bench_optimize,
+            .imports = &.{.{ .name = "zlua", .module = bench_mod }},
         }),
     });
     b.installArtifact(bench_exe);
@@ -197,6 +176,8 @@ pub fn build(b: *std.Build) void {
     c_api_step.dependOn(&install_c_api_exe.step);
 
     const embedding_examples = [_]EmbeddingExample{
+        .{ .key = "snapshot_adversarial", .name = "zlua-embed-snapshot-adversarial", .path = "examples/snapshot_adversarial.zig" },
+        .{ .key = "snapshot_reset", .name = "zlua-embed-snapshot-reset", .path = "examples/snapshot_reset.zig" },
         .{ .key = "run_script", .name = "zlua-embed-run-script", .path = "examples/run_script.zig" },
         .{ .key = "select_libraries", .name = "zlua-embed-select-libraries", .path = "examples/select_libraries.zig" },
         .{ .key = "register_function", .name = "zlua-embed-register-function", .path = "examples/register_function.zig" },
@@ -210,7 +191,7 @@ pub fn build(b: *std.Build) void {
         .{ .key = "preload_module", .name = "zlua-embed-preload-module", .path = "examples/preload_module.zig" },
     };
 
-    const examples_step = b.step("examples", "Compile embedding examples");
+    const examples_step = b.step("examples", "Compile and run all embedding examples, requiring exit code 0");
     const run_example_step = b.step("run-example", "Run embedding examples, or selected examples passed after --");
     for (embedding_examples) |example| {
         const example_exe = b.addExecutable(.{
@@ -222,10 +203,13 @@ pub fn build(b: *std.Build) void {
                 .imports = &.{.{ .name = "zlua", .module = mod }},
             }),
         });
-        examples_step.dependOn(&example_exe.step);
+        const run_example = b.addRunArtifact(example_exe);
+        // Inherit output and run on every invocation, even when compilation
+        // is cached. Run treats nonzero exits and abnormal termination as errors.
+        run_example.stdio = .inherit;
+        examples_step.dependOn(&run_example.step);
 
         if (example_filters.len == 0 or exampleMatchesAny(example, example_filters)) {
-            const run_example = b.addRunArtifact(example_exe);
             run_example_step.dependOn(&run_example.step);
         }
     }
@@ -261,14 +245,20 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| run_official_cmd.addArgs(args);
     run_official_step.dependOn(&run_official_cmd.step);
 
-    const run_bench_step = b.step("run-test-bench", "Run zlua vs CLua benchmark harness");
-    const run_bench_cmd = b.addRunArtifact(bench_exe);
-    run_bench_cmd.addArg("--clua");
-    run_bench_cmd.addArtifactArg(clua_exe);
-    run_bench_cmd.addArg("--zlua");
-    run_bench_cmd.addArtifactArg(bench_zlua_exe);
-    if (b.args) |args| run_bench_cmd.addArgs(args);
-    run_bench_step.dependOn(&run_bench_cmd.step);
+    const bench_step = b.step("bench", "Run all benchmark families sequentially");
+    const run_bench = b.addRunArtifact(bench_exe);
+    run_bench.addArg("--clua");
+    run_bench.addArtifactArg(clua_bench_exe);
+    run_bench.addArg("--zlua");
+    run_bench.addArtifactArg(bench_zlua_exe);
+    run_bench.addArgs(&.{ "--zlua-build=ReleaseFast", "--clua-build=ReleaseFast" });
+    run_bench.addArg("--zlua-c");
+    run_bench.addArtifactArg(zlua_c_startup_bench_exe);
+    run_bench.addArg("--clua-c");
+    run_bench.addArtifactArg(clua_startup_bench_exe);
+    run_bench.addArg("--c-build=ReleaseFast");
+    if (b.args) |args| run_bench.addArgs(args);
+    bench_step.dependOn(&run_bench.step);
 
     const c_api_test_step = b.step("test-c-api", "Run C API differential fixture harness");
     const c_api_test_cmd = b.addRunArtifact(c_api_exe);

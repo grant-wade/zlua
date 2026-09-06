@@ -173,6 +173,7 @@ pub fn coroutineStatus(comptime State: type, self: *State, thread: *Thread, op: 
 }
 
 pub fn coroutineRunning(comptime State: type, self: *State, thread: *Thread, op: bytecode.Call) !void {
+    thread.exposed = true;
     try self.returnValues(thread, op.base, op.return_count, &.{ .{ .thread = thread }, .{ .boolean = thread.is_main } });
 }
 

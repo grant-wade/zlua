@@ -10,6 +10,8 @@ pub const stdlib = @import("stdlib.zig");
 pub const testing = @import("testing.zig");
 
 pub const State = api.State;
+pub const Snapshot = api.Snapshot;
+pub const UserdataSnapshotHooks = api.UserdataSnapshotHooks;
 pub const Options = api.Options;
 pub const Stdlib = api.Stdlib;
 pub const LibrarySet = api.LibrarySet;

@@ -384,6 +384,54 @@ pub const NativeFn = enum {
 pub const UserdataFinalizer = *const fn (*anyopaque, ?*const anyopaque) void;
 pub const UserdataDeinit = *const fn (std.mem.Allocator, *anyopaque) void;
 
+/// Keeps allocator infrastructure alive while shared userdata outlives its VM.
+pub const AllocatorLifetime = struct {
+    references: usize = 1,
+    destroy: *const fn (*AllocatorLifetime) void,
+
+    pub fn retain(self: *AllocatorLifetime) void {
+        self.references += 1;
+    }
+    pub fn release(self: *AllocatorLifetime) void {
+        self.references -= 1;
+        if (self.references == 0) self.destroy(self);
+    }
+};
+
+pub const UserdataSnapshotCopy = *const fn (std.mem.Allocator, *const anyopaque) anyerror!*anyopaque;
+
+/// Payload ownership is separate from the GC-managed Lua wrapper.
+pub const UserdataPayload = struct {
+    allocator: std.mem.Allocator,
+    lifetime: ?*AllocatorLifetime,
+    references: usize = 1,
+    ptr: *anyopaque,
+    finalizer: ?UserdataFinalizer,
+    finalizer_data: ?*const anyopaque,
+    dispose: ?UserdataDeinit,
+    finalized: bool = false,
+    snapshot_copy: ?UserdataSnapshotCopy = null,
+    snapshot_dispose: ?UserdataDeinit = null,
+    is_snapshot_copy: bool = false,
+
+    pub fn finalize(self: *UserdataPayload) void {
+        if (self.references != 1 or self.finalized) return;
+        self.finalized = true;
+        if (self.finalizer) |f| f(self.ptr, self.finalizer_data);
+    }
+
+    pub fn release(self: *UserdataPayload, discard: bool) void {
+        if (self.references == 1 and !(discard and self.is_snapshot_copy)) self.finalize();
+        self.references -= 1;
+        if (self.references != 0) return;
+        const a = self.allocator;
+        const lifetime = self.lifetime;
+        if (self.dispose) |f| f(a, self.ptr);
+        a.destroy(self);
+        if (lifetime) |l| l.release();
+    }
+};
+
 pub const ProtectedCallResult = union(enum) {
     success: []Value,
     failure: Value,
@@ -811,6 +859,7 @@ pub const Table = struct {
 };
 
 pub const Userdata = struct {
+    payload: ?*UserdataPayload = null,
     ptr: *anyopaque,
     type_id: usize,
     type_name: []const u8,
@@ -823,6 +872,8 @@ pub const Userdata = struct {
 };
 
 pub const Thread = struct {
+    /// A Lua value has exposed this thread beyond its current host call.
+    exposed: bool = false,
     stack: std.ArrayList(Value) = .empty,
     frames: std.ArrayList(CallFrame) = .empty,
     yield_values: std.ArrayList(Value) = .empty,

@@ -32,12 +32,19 @@
 //! `takeErrorValue` to inspect it. `Function.protectedCall` returns Lua failures
 //! as `CallResult(R).lua_error` instead.
 //!
+//! `State.snapshot`, `State.reset`, and `Snapshot.clone` provide reusable
+//! in-memory checkpoints between host calls. Reset invalidates prior handles
+//! and borrowed VM slices and pointers. Host capabilities and userdata payloads
+//! without snapshot hooks remain shared. See `docs/embedding.md` for ownership details.
+//!
 //! The lower-level `runtime` module is an implementation detail for zlua itself
 //! and should not be treated as a stable embedding contract.
 
 const std = @import("std");
 const runtime = @import("runtime.zig");
 const stdlib = @import("stdlib.zig");
+const snapshot_runtime = @import("runtime/snapshot.zig");
+const runtime_types = @import("runtime/types.zig");
 
 /// Error set used when an API operation failed because Lua raised a syntax or runtime error.
 pub const Error = error{LuaError};
@@ -56,6 +63,8 @@ pub fn UserdataOptions(comptime T: type) type {
     return struct {
         /// Optional callback run before Lua-owned userdata storage is destroyed.
         finalizer: ?*const fn (*T) void = null,
+        /// Paired copy/dispose hooks for independently owned checkpoint payloads.
+        snapshot: ?UserdataSnapshotHooks(T) = null,
     };
 }
 
@@ -64,6 +73,18 @@ pub fn UserdataPtrOptions(comptime T: type) type {
     return struct {
         /// Optional callback run when the Lua userdata wrapper is finalized.
         finalizer: ?*const fn (*T) void = null,
+        /// Paired copy/dispose hooks for independently owned checkpoint payloads.
+        snapshot: ?UserdataSnapshotHooks(T) = null,
+    };
+}
+
+/// Hooks for copying and disposing of userdata payloads in checkpoints.
+/// Copies must own all nested storage and be independently disposable.
+/// Hooks must not retain VM pointers or reenter snapshot operations.
+pub fn UserdataSnapshotHooks(comptime T: type) type {
+    return struct {
+        copy: *const fn (std.mem.Allocator, *const T) anyerror!*T,
+        dispose: *const fn (std.mem.Allocator, *T) void,
     };
 }
 
@@ -253,10 +274,17 @@ const RegisteredCallback = struct {
 const memory_limit_error_message = "memory limit exceeded";
 
 const MemoryLimitAllocator = struct {
+    lifetime: runtime_types.AllocatorLifetime = .{ .destroy = destroyLifetime },
+
     parent: std.mem.Allocator,
     limit: usize,
     used: usize = 0,
     exceeded: bool = false,
+
+    fn destroyLifetime(lifetime: *runtime_types.AllocatorLifetime) void {
+        const self: *MemoryLimitAllocator = @fieldParentPtr("lifetime", lifetime);
+        self.parent.destroy(self);
+    }
 
     fn init(parent: std.mem.Allocator, limit: usize) MemoryLimitAllocator {
         return .{ .parent = parent, .limit = limit };
@@ -342,7 +370,9 @@ pub const GcStepResult = enum {
 pub const State = struct {
     /// Allocator originally supplied by the host for state-owned storage.
     base_allocator: std.mem.Allocator,
-    /// Optional bounded allocator state used when `Limits.max_memory` is configured.
+    /// Advances on successful reset; handles from prior generations are invalid.
+    generation: u64 = 0,
+    /// Stable allocator infrastructure; unlimited until a memory limit is set.
     memory_limit_allocator: ?*MemoryLimitAllocator = null,
     /// Underlying Lua runtime state.
     raw_state: runtime.State,
@@ -363,18 +393,19 @@ pub const State = struct {
         var memory_limit_allocator: ?*MemoryLimitAllocator = null;
         errdefer if (memory_limit_allocator) |allocator_ptr| state_allocator.destroy(allocator_ptr);
 
-        const runtime_allocator = if (options.limits.max_memory) |limit| blk: {
+        const runtime_allocator = blk: {
             const allocator_ptr = try state_allocator.create(MemoryLimitAllocator);
-            allocator_ptr.* = MemoryLimitAllocator.init(state_allocator, limit);
+            allocator_ptr.* = MemoryLimitAllocator.init(state_allocator, options.limits.max_memory orelse std.math.maxInt(usize));
             memory_limit_allocator = allocator_ptr;
             break :blk allocator_ptr.allocator();
-        } else state_allocator;
+        };
 
         var state = State{
             .base_allocator = state_allocator,
             .memory_limit_allocator = memory_limit_allocator,
             .raw_state = try runtime.State.initWithOptions(runtime_allocator, runtimeOptions(options)),
         };
+        if (memory_limit_allocator) |limit| state.raw_state.allocator_lifetime = &limit.lifetime;
         memory_limit_allocator = null;
         errdefer state.deinit();
 
@@ -398,6 +429,65 @@ pub const State = struct {
         self.callbacks.deinit(state_allocator);
         self.destroyMemoryLimitAllocator();
         self.* = undefined;
+    }
+
+    /// Captures an idle VM, including suspended Lua coroutines.
+    /// Uses `snapshot_allocator` for checkpoint storage. Borrowed host
+    /// capabilities must outlive the checkpoint and states created from it.
+    pub fn snapshot(self: *State, snapshot_allocator: std.mem.Allocator) !Snapshot {
+        return .{ .image = try self.copyImage(snapshot_allocator, snapshot_allocator, null) };
+    }
+
+    /// Atomically restores a checkpoint and invalidates all rooted handles.
+    /// The replacement and live VM both count against the restored memory limit.
+    /// Discarding the old VM does not run Lua `__gc` or `__close` handlers.
+    pub fn reset(self: *State, checkpoint: *const Snapshot) !void {
+        try snapshot_runtime.checkIdle(&self.raw_state);
+        if (self.generation == std.math.maxInt(u64)) return error.GenerationExhausted;
+        self.raw_state.snapshot_busy = true;
+        defer self.raw_state.snapshot_busy = false;
+        const limit = self.memory_limit_allocator;
+        const previous_limit = if (limit) |l| l.limit else 0;
+        const previous_exceeded = if (limit) |l| l.exceeded else false;
+        if (limit) |l| l.limit = checkpoint.image.raw_state.options.max_memory orelse std.math.maxInt(usize);
+        errdefer if (limit) |l| {
+            l.limit = previous_limit;
+            l.exceeded = previous_exceeded;
+        };
+        var replacement = try checkpoint.image.copyImage(self.base_allocator, self.allocator(), self.raw_state.allocator_lifetime);
+        replacement.memory_limit_allocator = limit;
+        replacement.generation = self.generation + 1;
+        self.discardImage();
+        self.* = replacement;
+        self.bindDispatch();
+    }
+
+    fn bindDispatch(self: *State) void {
+        self.raw_state.setApiCallbackDispatch(apiCallbackDispatch, self);
+    }
+
+    fn discardImage(self: *State) void {
+        const a = self.allocator();
+        self.raw_state.discard();
+        self.deinitOwnedMemoryFiles(a);
+        self.memory_files.deinit(a);
+        self.memory_file_owned_contents.deinit(a);
+        self.deinitCallbacks(a);
+        self.callbacks.deinit(a);
+    }
+
+    fn copyImage(self: *const State, base: std.mem.Allocator, a: std.mem.Allocator, lifetime: ?*runtime_types.AllocatorLifetime) !State {
+        var result = State{ .base_allocator = base, .raw_state = try snapshot_runtime.copy(&self.raw_state, a, lifetime, self.last_error_root) };
+        errdefer result.discardImage();
+        if (self.last_error_root != null) result.last_error_root = 0;
+        for (self.callbacks.items) |entry| {
+            const name = try a.dupe(u8, entry.name);
+            errdefer a.free(name);
+            try result.callbacks.append(a, .{ .name = name, .callback = entry.callback });
+        }
+        for (self.memory_files.items) |file| try result.appendMemoryFile(file.path, file.contents, true);
+        if (result.raw_state.options.filesystem == .memory) result.raw_state.options.filesystem = .{ .memory = result.memory_files.items };
+        return result;
     }
 
     /// Returns the allocator used for API-owned allocations returned to the host.
@@ -433,6 +523,7 @@ pub const State = struct {
 
     /// Runs a full garbage collection cycle.
     pub fn collect(self: *State) !void {
+        self.bindDispatch();
         try self.raw_state.collectGarbage();
     }
 
@@ -452,7 +543,7 @@ pub const State = struct {
 
     /// Converts a high-level Lua `Value` to the requested Zig type.
     pub fn read(self: *State, value: Value, comptime T: type) !T {
-        return fromRuntimeValue(self, try value.toRuntime(), T);
+        return fromRuntimeValue(self, try toRuntimeValue(self, value), T);
     }
 
     /// Sets a global variable after converting `value` to a Lua value.
@@ -514,10 +605,12 @@ pub const State = struct {
     /// Allocates Lua-owned userdata storage initialized with `value`.
     pub fn newUserdata(self: *State, comptime T: type, value: T, options: UserdataOptions(T)) !Userdata(T) {
         const ptr = try self.allocator().create(T);
-        errdefer self.allocator().destroy(ptr);
         ptr.* = value;
-
-        const raw = try self.raw_state.newUserdata(ptr, typeId(T), @typeName(T), userdataFinalizer(T, options.finalizer), userdataFinalizerData(T, options.finalizer), userdataDestroy(T));
+        const raw = self.raw_state.newUserdata(ptr, typeId(T), @typeName(T), userdataFinalizer(T, options.finalizer), userdataFinalizerData(T, options.finalizer), userdataDestroy(T)) catch |err| {
+            self.allocator().destroy(ptr);
+            return err;
+        };
+        setUserdataSnapshotHooks(T, raw.userdata, options.snapshot);
         var userdata = try Userdata(T).fromRuntime(self, raw);
         errdefer userdata.deinit();
         try userdata.initMetatable();
@@ -539,6 +632,7 @@ pub const State = struct {
     /// Wraps host-owned storage as Lua userdata without taking ownership of `ptr`.
     pub fn newUserdataPtr(self: *State, comptime T: type, ptr: *T, options: UserdataPtrOptions(T)) !Userdata(T) {
         const raw = try self.raw_state.newUserdata(ptr, typeId(T), @typeName(T), userdataFinalizer(T, options.finalizer), userdataFinalizerData(T, options.finalizer), null);
+        setUserdataSnapshotHooks(T, raw.userdata, options.snapshot);
         var userdata = try Userdata(T).fromRuntime(self, raw);
         errdefer userdata.deinit();
         try userdata.initMetatable();
@@ -662,7 +756,7 @@ pub const State = struct {
     pub fn takeErrorValue(self: *State) ?ErrorRef {
         const index = self.last_error_root orelse return null;
         self.last_error_root = null;
-        return .{ .ref = .{ .state = self, .index = index } };
+        return .{ .ref = .{ .state = self, .generation = self.generation, .index = index } };
     }
 
     fn setLastErrorValue(self: *State, value: runtime.Value) !void {
@@ -681,7 +775,7 @@ pub const State = struct {
     }
 
     fn environmentValue(self: *State, environment: ?Table) !runtime.Value {
-        return if (environment) |table| try table.rawValue() else if (self.raw_state.global_table) |table| .{ .table = table } else self.raw_state.getGlobal("_G");
+        return if (environment) |table| try toRuntimeValue(self, table) else if (self.raw_state.global_table) |table| .{ .table = table } else self.raw_state.getGlobal("_G");
     }
 
     fn loadBuffer(self: *State, source: []const u8, source_name: ?[]const u8, environment: runtime.Value, mode: LoadMode) !runtime.Value {
@@ -729,7 +823,7 @@ pub const State = struct {
 
     fn destroyMemoryLimitAllocator(self: *State) void {
         if (self.memory_limit_allocator) |allocator_ptr| {
-            self.base_allocator.destroy(allocator_ptr);
+            allocator_ptr.lifetime.release();
             self.memory_limit_allocator = null;
         }
     }
@@ -777,27 +871,61 @@ pub const State = struct {
     }
 };
 
+/// Reusable in-memory checkpoint that can outlive its originating state.
+/// Call `deinit` when finished. Host capabilities and userdata payloads
+/// without snapshot hooks remain shared.
+pub const Snapshot = struct {
+    image: State,
+
+    /// Releases the checkpoint and its owned storage.
+    pub fn deinit(self: *Snapshot) void {
+        self.image.discardImage();
+        self.* = undefined;
+    }
+
+    /// Creates an independent state using `state_allocator` and the captured options.
+    pub fn clone(self: *const Snapshot, state_allocator: std.mem.Allocator) !State {
+        var limit: ?*MemoryLimitAllocator = null;
+        {
+            const p = try state_allocator.create(MemoryLimitAllocator);
+            p.* = MemoryLimitAllocator.init(state_allocator, self.image.raw_state.options.max_memory orelse std.math.maxInt(usize));
+            limit = p;
+        }
+        errdefer if (limit) |p| p.lifetime.release();
+        var result = try self.image.copyImage(state_allocator, if (limit) |p| p.allocator() else state_allocator, if (limit) |p| &p.lifetime else null);
+        result.memory_limit_allocator = limit;
+        return result;
+    }
+};
+
 /// Rooted handle to any Lua value.
 pub const Ref = struct {
     state: *State,
     index: usize,
+    generation: u64,
 
     fn fromRuntime(state: *State, raw: runtime.Value) !Ref {
-        return .{ .state = state, .index = try state.raw_state.rootValue(raw) };
+        return .{ .state = state, .generation = state.generation, .index = try state.raw_state.rootValue(raw) };
     }
 
     /// Releases this handle's root.
     pub fn deinit(self: *Ref) void {
-        self.state.raw_state.unrootValue(self.index);
+        if (self.generation == self.state.generation) self.state.raw_state.unrootValue(self.index);
         self.* = undefined;
     }
 
     /// Returns the referenced value as a high-level `Value`.
     pub fn value(self: Ref) !Value {
-        return Value.fromRuntime(self.state, self.rawValue());
+        return Value.fromRuntime(self.state, try self.rawValue());
     }
 
-    fn rawValue(self: Ref) runtime.Value {
+    fn validate(self: Ref, state: *State) !void {
+        if (self.state != state or self.generation != state.generation) return error.InvalidHandle;
+    }
+
+    fn rawValue(self: Ref) !runtime.Value {
+        try self.validate(self.state);
+        self.state.bindDispatch();
         return self.state.raw_state.rootedValue(self.index);
     }
 };
@@ -836,7 +964,7 @@ pub const Table = struct {
     }
 
     fn rawValue(self: Table) !runtime.Value {
-        const raw = self.ref.rawValue();
+        const raw = try self.ref.rawValue();
         if (raw != .table) return error.TypeMismatch;
         return raw;
     }
@@ -863,20 +991,24 @@ pub const Function = struct {
     ///
     /// Lua failures are returned as `error.LuaError` and captured on the state.
     pub fn call(self: Function, args: anytype, comptime R: type) !R {
+        try self.ref.validate(self.ref.state);
+        self.ref.state.bindDispatch();
         const raw_args = try convertArgs(self.ref.state, args);
         defer self.ref.state.allocator().free(raw_args);
 
-        const results = self.ref.state.raw_state.callFunction(self.ref.rawValue(), raw_args) catch |err| return self.ref.state.captureLuaError(err);
+        const results = self.ref.state.raw_state.callFunction(try self.ref.rawValue(), raw_args) catch |err| return self.ref.state.captureLuaError(err);
         defer self.ref.state.allocator().free(results);
         return fromRuntimeResults(self.ref.state, results, R);
     }
 
     /// Calls the function and returns Lua failures as an `ErrorRef` instead of `error.LuaError`.
     pub fn protectedCall(self: Function, args: anytype, comptime R: type) !CallResult(R) {
+        try self.ref.validate(self.ref.state);
+        self.ref.state.bindDispatch();
         const raw_args = try convertArgs(self.ref.state, args);
         defer self.ref.state.allocator().free(raw_args);
 
-        const result = self.ref.state.raw_state.protectedCallFunction(self.ref.rawValue(), raw_args) catch |err| {
+        const result = self.ref.state.raw_state.protectedCallFunction(try self.ref.rawValue(), raw_args) catch |err| {
             if (err == error.OutOfMemory and self.ref.state.takeMemoryLimitExceeded()) {
                 return .{ .lua_error = try self.ref.state.memoryLimitErrorRef() };
             }
@@ -905,7 +1037,7 @@ pub const Function = struct {
     }
 
     fn rawClosure(self: Function) !*runtime.Closure {
-        return switch (self.ref.rawValue()) {
+        return switch (try self.ref.rawValue()) {
             .closure => |closure| closure,
             else => error.TypeMismatch,
         };
@@ -946,6 +1078,7 @@ pub fn Userdata(comptime T: type) type {
         ///
         /// The Zig function's first parameter must be a pointer receiver for `T`.
         pub fn method(self: @This(), name: []const u8, comptime function: anytype) !void {
+            try self.ref.validate(self.ref.state);
             const Wrapper = struct {
                 fn call(ctx: *Context) !void {
                     try callUserdataMethod(T, function, ctx);
@@ -967,7 +1100,7 @@ pub fn Userdata(comptime T: type) type {
                 self.ref.state.raw_state.setTableValue(metatable, index_key, index_value) catch |err| return self.ref.state.captureLuaError(err);
             }
             if (index_value != .table) return error.TypeMismatch;
-            try self.ref.state.raw_state.setTableValue(index_value, .{ .string = try self.ref.state.raw_state.intern(name) }, method_function.ref.rawValue());
+            try self.ref.state.raw_state.setTableValue(index_value, .{ .string = try self.ref.state.raw_state.intern(name) }, try method_function.ref.rawValue());
         }
 
         /// Installs eligible methods declared on `Source`.
@@ -976,6 +1109,7 @@ pub fn Userdata(comptime T: type) type {
         /// installed. Names beginning with `__` are installed as metamethods;
         /// all other eligible names are installed on `__index`.
         pub fn bindMethods(self: @This(), comptime Source: type) !void {
+            try self.ref.validate(self.ref.state);
             if (@typeInfo(Source) != .@"struct") @compileError("bindMethods requires a struct type");
 
             inline for (@typeInfo(Source).@"struct".decls) |decl| {
@@ -992,6 +1126,7 @@ pub fn Userdata(comptime T: type) type {
 
         /// Installs a typed Zig function as a userdata metamethod such as `__close`.
         pub fn metamethod(self: @This(), name: []const u8, comptime function: anytype) !void {
+            try self.ref.validate(self.ref.state);
             const Wrapper = struct {
                 fn call(ctx: *Context) !void {
                     try callUserdataMethod(T, function, ctx);
@@ -1005,7 +1140,7 @@ pub fn Userdata(comptime T: type) type {
             defer metamethod_function.deinit();
 
             const metatable = try self.metatableValue();
-            try self.ref.state.raw_state.setTableValue(metatable, .{ .string = try self.ref.state.raw_state.intern(name) }, metamethod_function.ref.rawValue());
+            try self.ref.state.raw_state.setTableValue(metatable, .{ .string = try self.ref.state.raw_state.intern(name) }, try metamethod_function.ref.rawValue());
         }
 
         fn initMetatable(self: @This()) !void {
@@ -1019,13 +1154,13 @@ pub fn Userdata(comptime T: type) type {
         }
 
         fn rawValue(self: @This()) !runtime.Value {
-            const raw = self.ref.rawValue();
+            const raw = try self.ref.rawValue();
             if (raw != .userdata) return error.TypeMismatch;
             return raw;
         }
 
         fn rawUserdata(self: @This()) !*runtime.Userdata {
-            return switch (self.ref.rawValue()) {
+            return switch (try self.ref.rawValue()) {
                 .userdata => |userdata| userdata,
                 else => error.TypeMismatch,
             };
@@ -1057,7 +1192,7 @@ pub const AnyUserdata = struct {
     }
 
     fn rawValue(self: AnyUserdata) !runtime.Value {
-        const raw = self.ref.rawValue();
+        const raw = try self.ref.rawValue();
         if (raw != .userdata) return error.TypeMismatch;
         return raw;
     }
@@ -1098,7 +1233,7 @@ pub const ErrorRef = struct {
     pub fn message(self: ErrorRef) ![]const u8 {
         var out = std.ArrayList(u8).empty;
         defer out.deinit(self.ref.state.allocator());
-        try runtime.appendValue(self.ref.state.allocator(), &out, self.ref.rawValue());
+        try runtime.appendValue(self.ref.state.allocator(), &out, try self.ref.rawValue());
         return self.ref.state.allocator().dupe(u8, out.items);
     }
 };
@@ -1232,7 +1367,7 @@ pub const Context = struct {
     }
 
     /// Raises a Lua error using `value` as the error object.
-    pub fn raise(self: *Context, value: anytype) error{ LuaError, OutOfMemory } {
+    pub fn raise(self: *Context, value: anytype) error{ LuaError, OutOfMemory, InvalidHandle } {
         const raw_value = toRuntimeValue(self.lua, value) catch |err| return raiseConversionError(err);
         return self.raw.raise(raw_value);
     }
@@ -1254,9 +1389,10 @@ pub const Context = struct {
         };
     }
 
-    fn raiseConversionError(err: anyerror) error{ LuaError, OutOfMemory } {
+    fn raiseConversionError(err: anyerror) error{ LuaError, OutOfMemory, InvalidHandle } {
         return switch (err) {
             error.OutOfMemory => error.OutOfMemory,
+            error.InvalidHandle => error.InvalidHandle,
             else => error.LuaError,
         };
     }
@@ -1562,6 +1698,13 @@ fn typeId(comptime T: type) usize {
     return @intFromPtr(&TypeToken(T).id);
 }
 
+fn setUserdataSnapshotHooks(comptime T: type, raw: *runtime.Userdata, hooks: ?UserdataSnapshotHooks(T)) void {
+    if (hooks) |h| {
+        raw.payload.?.snapshot_copy = @ptrCast(h.copy);
+        raw.payload.?.snapshot_dispose = @ptrCast(h.dispose);
+    }
+}
+
 fn userdataPtr(comptime T: type, raw: *runtime.Userdata) !*T {
     if (raw.type_id != typeId(T)) return error.TypeMismatch;
     return @ptrCast(@alignCast(raw.ptr));
@@ -1633,11 +1776,21 @@ fn convertArgs(state: *State, args: anytype) ![]runtime.Value {
 
 fn toRuntimeValue(state: *State, value: anytype) !runtime.Value {
     const T = @TypeOf(value);
-    if (T == Value) return value.toRuntime();
-    if (T == Ref) return value.rawValue();
-    if (T == Table) return value.rawValue();
-    if (T == Function) return value.ref.rawValue();
-    if (comptime isUserdataHandle(T)) return value.rawValue();
+    if (T == Value) return switch (value) {
+        .table => |v| toRuntimeValue(state, v),
+        .function => |v| toRuntimeValue(state, v),
+        .userdata => |v| toRuntimeValue(state, v),
+        .string => |v| .{ .string = try state.raw_state.intern(v) },
+        else => value.toRuntime(),
+    };
+    if (T == Ref) {
+        try value.validate(state);
+        return value.rawValue();
+    }
+    if (comptime T == Table or T == Function or T == ErrorRef or T == AnyUserdata or isUserdataHandle(T)) {
+        try value.ref.validate(state);
+        return value.ref.rawValue();
+    }
 
     return switch (@typeInfo(T)) {
         .null => .nil,
@@ -4132,4 +4285,40 @@ test "native callbacks work as library callbacks and iterators" {
         \\for i in iterator, 3 do sum = sum + i end
         \\assert(sum == 6)
     , .{});
+}
+
+test "api snapshot graph reset and clone" {
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    try lua.doString("t = {}; t.self = t; t[t] = t; local n = 4; function inc() n = n + 1; return n end; function get() return n end", .{});
+    var stale = try lua.getGlobal("t", Table);
+    defer stale.deinit();
+    var checkpoint = try lua.snapshot(std.testing.allocator);
+    defer checkpoint.deinit();
+    try lua.doString("inc(); t.x = 12", .{});
+    try lua.reset(&checkpoint);
+    try std.testing.expectError(error.InvalidHandle, stale.get("x", Value));
+    try lua.doString("assert(t.self == t and t[t] == t and t.x == nil); assert(inc() == 5 and get() == 5)", .{});
+    var another = try checkpoint.clone(std.testing.allocator);
+    defer another.deinit();
+    try another.doString("assert(get() == 4); assert(inc() == 5)", .{});
+    try lua.reset(&checkpoint);
+    try lua.doString("assert(get() == 4)", .{});
+}
+
+test {
+    _ = @import("testing/api_snapshot_tests.zig");
+}
+
+comptime {
+    @setEvalBranchQuota(1000000);
+    snapshot_runtime.review(State, .{
+        .external = "base_allocator memory_limit_allocator",
+        .rebuilt = "generation last_error_root",
+        .copied = "raw_state memory_files memory_file_owned_contents callbacks",
+    });
+    snapshot_runtime.review(runtime.StateOptions, .{
+        .copied = "stdlib stdin max_memory max_stack_values max_call_frames max_instructions debug_errors trace_vm",
+        .external = "io stdout stderr filesystem environment clock process",
+    });
 }

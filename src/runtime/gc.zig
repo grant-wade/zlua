@@ -698,7 +698,7 @@ pub fn runPendingUserdataFinalizers(comptime State: type, self: *State) void {
         const finalizer = userdata.finalizer orelse continue;
         userdata.marked = true;
         userdata.finalized = true;
-        finalizer(userdata.ptr, userdata.finalizer_data);
+        if (userdata.payload) |payload| payload.finalize() else finalizer(userdata.ptr, userdata.finalizer_data);
         ran_finalizer = true;
     }
     if (!ran_finalizer) return;
@@ -898,7 +898,12 @@ pub fn destroyTable(comptime State: type, self: *State, table: *Table) void {
 }
 
 pub fn destroyUserdata(comptime State: type, self: *State, userdata: *Userdata) void {
-    if (!userdata.finalized) {
+    if (userdata.payload) |payload| {
+        payload.release(self.discarding);
+        self.allocator.destroy(userdata);
+        return;
+    }
+    if (!userdata.finalized and !self.discarding) {
         if (userdata.finalizer) |finalizer| finalizer(userdata.ptr, userdata.finalizer_data);
         userdata.finalized = true;
     }

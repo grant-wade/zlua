@@ -56,9 +56,21 @@
 - [runtime.vm](runtime/vm.md)
 - [runtime.tests](runtime/tests.md)
 - [runtime.internal](runtime/internal.md)
+- [runtime.snapshot](runtime/snapshot.md)
 - [testing](testing.md)
 - [testing.clua](testing/clua.md)
 - [testing.bench_runner](testing/bench_runner.md)
+- [testing.bench.options](testing/bench/options.md)
+- [testing.bench.results](testing/bench/results.md)
+- [testing.bench.stats](testing/bench/stats.md)
+- [testing.bench.report](testing/bench/report.md)
+- [testing.bench.process](testing/bench/process.md)
+- [testing.bench.fixtures](testing/bench/fixtures.md)
+- [testing.bench.legacy_process](testing/bench/legacy_process.md)
+- [testing.bench.startup](testing/bench/startup.md)
+- [testing.bench.allocation](testing/bench/allocation.md)
+- [testing.bench.c_startup](testing/bench/c_startup.md)
+- [testing.bench.snapshots](testing/bench/snapshots.md)
 - [testing.c_api_runner](testing/c_api_runner.md)
 - [testing.fixtures](testing/fixtures.md)
 - [testing.diff_runner](testing/diff_runner.md)
@@ -78,6 +90,8 @@
 ## Aliases
 
 - [State](#alias-state)
+- [Snapshot](#alias-snapshot)
+- [UserdataSnapshotHooks](#alias-userdatasnapshothooks)
 - [Options](#alias-options)
 - [Stdlib](#alias-stdlib)
 - [LibrarySet](#alias-libraryset)
@@ -202,6 +216,26 @@ pub const State = api.State;
 ```
 
 References: [`api.State`](api.md#type-state)
+
+<a id="alias-snapshot"></a>
+
+## Snapshot
+
+```zig
+pub const Snapshot = api.Snapshot;
+```
+
+References: [`api.Snapshot`](api.md#type-snapshot)
+
+<a id="alias-userdatasnapshothooks"></a>
+
+## UserdataSnapshotHooks
+
+```zig
+pub const UserdataSnapshotHooks = api.UserdataSnapshotHooks;
+```
+
+References: [`api.UserdataSnapshotHooks`](api.md#fn-userdatasnapshothooks)
 
 <a id="alias-options"></a>
 

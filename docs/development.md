@@ -26,7 +26,7 @@ zig build                 # build zlua and the Lua 5.5 reference binary
 zig build run -- file.lua # run a script
 zig build test            # Zig tests and freestanding smoke test
 zig build ci              # all correctness checks
-zig build examples        # compile embedding examples
+zig build examples        # compile and run embedding examples
 just diff path/to/test.lua
 just official calls
 just extensions tests/extensions/string

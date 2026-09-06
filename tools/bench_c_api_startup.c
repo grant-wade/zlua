@@ -247,106 +247,49 @@ static int run_sample(struct sample *sample, int host) {
   return 0;
 }
 
-static int compare_u64(const void *lhs, const void *rhs) {
-  uint64_t a = *(const uint64_t *)lhs;
-  uint64_t b = *(const uint64_t *)rhs;
-  return (a > b) - (a < b);
-}
 
-static uint64_t metric_field(const struct metric *metric, int field) {
-  switch (field) {
-    case 0: return metric->elapsed_ns;
-    case 1: return metric->allocations;
-    case 2: return metric->resizes;
-    case 3: return metric->requested_bytes;
-    case 4: return metric->live_bytes;
-    case 5: return metric->peak_bytes;
-    default: abort();
+/* Internal worker protocol: iterations warmup host. The Zig runner owns the CLI
+ * and reporting. Emit all raw samples after measurement, outside the timers. */
+static int parse_count(const char *text, size_t *value) {
+  if (*text == '\0') return 1;
+  size_t result = 0;
+  for (const char *p = text; *p; p++) {
+    if (*p < '0' || *p > '9' || result > (SIZE_MAX - (size_t)(*p - '0')) / 10) return 1;
+    result = result * 10 + (size_t)(*p - '0');
   }
-}
-
-static uint64_t percentile(const struct sample *samples, size_t count, int phase, int field, unsigned percent) {
-  uint64_t *values = (uint64_t *)malloc(count * sizeof(*values));
-  if (values == NULL) abort();
-  for (size_t i = 0; i < count; i++) values[i] = metric_field(&samples[i].phases[phase], field);
-  qsort(values, count, sizeof(*values), compare_u64);
-  size_t rank = (percent * count + 99) / 100;
-  if (rank == 0) rank = 1;
-  uint64_t result = values[rank - 1];
-  free(values);
-  return result;
-}
-
-static size_t parse_size(const char *value, int allow_zero) {
-  char *end = NULL;
-  unsigned long long parsed = strtoull(value, &end, 10);
-  if (value[0] == '\0' || *end != '\0' || (!allow_zero && parsed == 0) || parsed > SIZE_MAX) {
-    fprintf(stderr, "invalid numeric option: %s\n", value);
-    exit(2);
-  }
-  return (size_t)parsed;
+  *value = result;
+  return 0;
 }
 
 int main(int argc, char **argv) {
-  size_t iterations = 1000;
-  size_t warmup = 100;
-  const char *engine = "c-api";
-
-  for (int i = 1; i < argc; i++) {
-    const char *arg = argv[i];
-    if (strcmp(arg, "--engine") == 0) {
-      if (++i >= argc) return 2;
-      engine = argv[i];
-    } else if (strncmp(arg, "--engine=", 9) == 0) {
-      engine = arg + 9;
-    } else if (strcmp(arg, "--iterations") == 0) {
-      if (++i >= argc) return 2;
-      iterations = parse_size(argv[i], 0);
-    } else if (strncmp(arg, "--iterations=", 13) == 0) {
-      iterations = parse_size(arg + 13, 0);
-    } else if (strcmp(arg, "--warmup") == 0) {
-      if (++i >= argc) return 2;
-      warmup = parse_size(argv[i], 1);
-    } else if (strncmp(arg, "--warmup=", 9) == 0) {
-      warmup = parse_size(arg + 9, 1);
-    } else {
-      fprintf(stderr, "unknown option: %s\n", arg);
-      return 2;
-    }
-  }
-
-  struct sample *samples = (struct sample *)calloc(iterations, sizeof(*samples));
+  size_t iterations, warmup, host;
+  if (argc != 4 || parse_count(argv[1], &iterations) || iterations == 0 ||
+      parse_count(argv[2], &warmup) || parse_count(argv[3], &host) || host > 1) return 2;
+  struct sample *samples = calloc(iterations, sizeof(*samples));
   if (samples == NULL) return 1;
-  printf("%s startup (ReleaseFast), iterations=%zu, warmup=%zu\n", engine, iterations, warmup);
-  printf("selection     phase           median-ns      p95-ns  alloc  resize  requested-B    live-B    peak-B\n");
-  for (int host = 0; host <= 1; host++) {
-    struct sample ignored;
-    for (size_t i = 0; i < warmup; i++) {
-      if (run_sample(&ignored, host) != 0) {
-        free(samples);
-        return 1;
-      }
-    }
-    for (size_t i = 0; i < iterations; i++) {
-      if (run_sample(&samples[i], host) != 0) {
-        free(samples);
-        return 1;
-      }
-    }
-    for (int phase = 0; phase < PHASE_COUNT; phase++) {
-      if (phase == PHASE_REGISTER && !host) continue;
-      printf("%-13s %-13s %11llu %11llu %6llu %7llu %12llu %9llu %9llu\n",
-        host ? "base+host-3" : "full", phase_names[phase],
-        (unsigned long long)percentile(samples, iterations, phase, 0, 50),
-        (unsigned long long)percentile(samples, iterations, phase, 0, 95),
-        (unsigned long long)percentile(samples, iterations, phase, 1, 50),
-        (unsigned long long)percentile(samples, iterations, phase, 2, 50),
-        (unsigned long long)percentile(samples, iterations, phase, 3, 50),
-        (unsigned long long)percentile(samples, iterations, phase, 4, 50),
-        (unsigned long long)percentile(samples, iterations, phase, 5, 50));
-    }
-    putchar('\n');
+  struct sample ignored;
+  for (size_t i = 0; i < warmup; i++) {
+    if (run_sample(&ignored, (int)host)) { free(samples); return 1; }
   }
+  for (size_t i = 0; i < iterations; i++) {
+    if (run_sample(&samples[i], (int)host)) { free(samples); return 1; }
+  }
+  printf("{\"protocol_version\":1,\"samples\":[");
+  for (size_t i = 0; i < iterations; i++) {
+    if (i) putchar(',');
+    printf("{\"phases\":{");
+    for (int phase = 0; phase < PHASE_COUNT; phase++) {
+      const struct metric *m = &samples[i].phases[phase];
+      if (phase) putchar(',');
+      printf("\"%s\":{\"elapsed_ns\":%llu,\"allocations\":%llu,\"resizes\":%llu,"
+        "\"requested_bytes\":%llu,\"live_bytes\":%llu,\"peak_bytes\":%llu}",
+        phase_names[phase], (unsigned long long)m->elapsed_ns, (unsigned long long)m->allocations,
+        (unsigned long long)m->resizes, (unsigned long long)m->requested_bytes,
+        (unsigned long long)m->live_bytes, (unsigned long long)m->peak_bytes);
+    }
+    printf("}}");
+  }
+  printf("]}\n");
   free(samples);
-  return 0;
+  return ferror(stdout) ? 1 : 0;
 }

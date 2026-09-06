@@ -56,9 +56,21 @@
 - [runtime.vm](runtime/vm.md)
 - [runtime.tests](runtime/tests.md)
 - [runtime.internal](runtime/internal.md)
+- [runtime.snapshot](runtime/snapshot.md)
 - [testing](testing.md)
 - [testing.clua](testing/clua.md)
 - [testing.bench_runner](testing/bench_runner.md)
+- [testing.bench.options](testing/bench/options.md)
+- [testing.bench.results](testing/bench/results.md)
+- [testing.bench.stats](testing/bench/stats.md)
+- [testing.bench.report](testing/bench/report.md)
+- [testing.bench.process](testing/bench/process.md)
+- [testing.bench.fixtures](testing/bench/fixtures.md)
+- [testing.bench.legacy_process](testing/bench/legacy_process.md)
+- [testing.bench.startup](testing/bench/startup.md)
+- [testing.bench.allocation](testing/bench/allocation.md)
+- [testing.bench.c_startup](testing/bench/c_startup.md)
+- [testing.bench.snapshots](testing/bench/snapshots.md)
 - [testing.c_api_runner](testing/c_api_runner.md)
 - [testing.fixtures](testing/fixtures.md)
 - [testing.diff_runner](testing/diff_runner.md)
@@ -106,6 +118,11 @@ store the last Lua error value on the `State`; use `errorMessage` or
 `takeErrorValue` to inspect it. `Function.protectedCall` returns Lua failures
 as `CallResult(R).lua_error` instead.
 
+`State.snapshot`, `State.reset`, and `Snapshot.clone` provide reusable
+in-memory checkpoints between host calls. Reset invalidates prior handles
+and borrowed VM slices and pointers. Host capabilities and userdata payloads
+without snapshot hooks remain shared. See `docs/embedding.md` for ownership details.
+
 The lower-level `runtime` module is an implementation detail for zlua itself
 and should not be treated as a stable embedding contract.
 
@@ -113,6 +130,7 @@ and should not be treated as a stable embedding contract.
 
 - [UserdataOptions](#fn-userdataoptions)
 - [UserdataPtrOptions](#fn-userdataptroptions)
+- [UserdataSnapshotHooks](#fn-userdatasnapshothooks)
 - [Userdata](#fn-userdata)
 - [CallResult](#fn-callresult)
 - [Tuple](#fn-tuple)
@@ -138,6 +156,7 @@ and should not be treated as a stable embedding contract.
 - [GcBudget](#type-gcbudget)
 - [GcStepResult](#type-gcstepresult)
 - [State](#type-state)
+- [Snapshot](#type-snapshot)
 - [Ref](#type-ref)
 - [Table](#type-table)
 - [Function](#type-function)
@@ -230,6 +249,18 @@ Returns options for `State.newUserdataPtr`, parameterized by the pointed-to Zig 
 
 ```zig
 pub fn UserdataPtrOptions(comptime T: type) type
+```
+
+<a id="fn-userdatasnapshothooks"></a>
+
+## UserdataSnapshotHooks
+
+Hooks for copying and disposing of userdata payloads in checkpoints.
+Copies must own all nested storage and be independently disposable.
+Hooks must not retain VM pointers or reenter snapshot operations.
+
+```zig
+pub fn UserdataSnapshotHooks(comptime T: type) type
 ```
 
 <a id="alias-libraryset"></a>
@@ -566,7 +597,7 @@ pub const Limits = struct {
 
 ## InstructionBudget
 
-Snapshot of the state's cumulative instruction budget.
+[Snapshot](#type-snapshot) of the state's cumulative instruction budget.
 
 ```zig
 pub const InstructionBudget = struct {
@@ -762,7 +793,9 @@ Owns a Lua VM instance and its host-facing API state.
 pub const State = struct {
     /// Allocator originally supplied by the host for state-owned storage.
     base_allocator: std.mem.Allocator,
-    /// Optional bounded allocator state used when `Limits.max_memory` is configured.
+    /// Advances on successful reset; handles from prior generations are invalid.
+    generation: u64 = 0,
+    /// Stable allocator infrastructure; unlimited until a memory limit is set.
     memory_limit_allocator: ?*MemoryLimitAllocator = null,
     /// Underlying Lua runtime state.
     raw_state: runtime.State,
@@ -783,6 +816,8 @@ pub const State = struct {
 | --- | --- | --- | --- |
 | [init](#fn-state-init) | `state_allocator: std.mem.Allocator, options: Options` | `!State` | Creates a new Lua state using &#96;state_allocator&#96; and the supplied options. |
 | [deinit](#fn-state-deinit) | `self: *State` | `void` | Releases all resources owned by the state and invalidates outstanding API handles. |
+| [snapshot](#fn-state-snapshot) | `self: *State, snapshot_allocator: std.mem.Allocator` | `!Snapshot` | Captures an idle VM, including suspended Lua coroutines. Uses &#96;snapshot_allocator&#96; for checkpoint storage. Borrowed host capabilities must outlive the checkpoint and states created from it. |
+| [reset](#fn-state-reset) | `self: *State, checkpoint: *const Snapshot` | `!void` | Atomically restores a checkpoint and invalidates all rooted handles. The replacement and live VM both count against the restored memory limit. Discarding the old VM does not run Lua &#96;__gc&#96; or &#96;__close&#96; handlers. |
 | [allocator](#fn-state-allocator) | `self: *State` | `std.mem.Allocator` | Returns the allocator used for API-owned allocations returned to the host. |
 | [instructionBudget](#fn-state-instructionbudget) | `self: *const State` | `InstructionBudget` | Returns the cumulative instruction budget usage for this state. |
 | [resetInstructionBudget](#fn-state-resetinstructionbudget) | `self: *State` | `void` | Resets the cumulative instruction counter to zero. |
@@ -839,6 +874,34 @@ pub fn deinit(self: *State) void
 ```
 
 References: [`State`](#type-state)
+
+<a id="fn-state-snapshot"></a>
+
+### State.snapshot
+
+Captures an idle VM, including suspended Lua coroutines.
+Uses `snapshot_allocator` for checkpoint storage. Borrowed host
+capabilities must outlive the checkpoint and states created from it.
+
+```zig
+pub fn snapshot(self: *State, snapshot_allocator: std.mem.Allocator) !Snapshot
+```
+
+References: [`State`](#type-state), [`Snapshot`](#type-snapshot)
+
+<a id="fn-state-reset"></a>
+
+### State.reset
+
+Atomically restores a checkpoint and invalidates all rooted handles.
+The replacement and live VM both count against the restored memory limit.
+Discarding the old VM does not run Lua `__gc` or `__close` handlers.
+
+```zig
+pub fn reset(self: *State, checkpoint: *const Snapshot) !void
+```
+
+References: [`State`](#type-state), [`Snapshot`](#type-snapshot)
 
 <a id="fn-state-allocator"></a>
 
@@ -1213,6 +1276,51 @@ pub fn takeErrorValue(self: *State) ?ErrorRef
 
 References: [`State`](#type-state), [`ErrorRef`](#type-errorref)
 
+<a id="type-snapshot"></a>
+
+## Snapshot
+
+Reusable in-memory checkpoint that can outlive its originating state.
+[Call](compile/bytecode.md#type-call) `deinit` when finished. Host capabilities and userdata payloads
+without snapshot hooks remain shared.
+
+```zig
+pub const Snapshot = struct {
+    image: State,
+};
+```
+
+### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [deinit](#fn-snapshot-deinit) | `self: *Snapshot` | `void` | Releases the checkpoint and its owned storage. |
+| [clone](#fn-snapshot-clone) | `self: *const Snapshot, state_allocator: std.mem.Allocator` | `!State` | Creates an independent state using &#96;state_allocator&#96; and the captured options. |
+
+<a id="fn-snapshot-deinit"></a>
+
+### Snapshot.deinit
+
+Releases the checkpoint and its owned storage.
+
+```zig
+pub fn deinit(self: *Snapshot) void
+```
+
+References: [`Snapshot`](#type-snapshot)
+
+<a id="fn-snapshot-clone"></a>
+
+### Snapshot.clone
+
+Creates an independent state using `state_allocator` and the captured options.
+
+```zig
+pub fn clone(self: *const Snapshot, state_allocator: std.mem.Allocator) !State
+```
+
+References: [`Snapshot`](#type-snapshot), [`State`](#type-state)
+
 <a id="type-ref"></a>
 
 ## Ref
@@ -1223,6 +1331,7 @@ Rooted handle to any Lua value.
 pub const Ref = struct {
     state: *State,
     index: usize,
+    generation: u64,
 };
 ```
 
@@ -1657,7 +1766,7 @@ References: [`Context`](#type-context)
 Raises a Lua error using `value` as the error object.
 
 ```zig
-pub fn raise(self: *Context, value: anytype) error{ LuaError, OutOfMemory }
+pub fn raise(self: *Context, value: anytype) error{ LuaError, OutOfMemory, InvalidHandle }
 ```
 
 References: [`Context`](#type-context)

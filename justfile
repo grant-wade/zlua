@@ -74,13 +74,9 @@ official *args:
 c-api *args:
     {{zig}} build --summary all test-c-api -- {{args}}
 
-# Run ReleaseFast zlua vs CLua benchmarks, or one benchmark file/directory.
+# Run the full benchmark suite, or select cases with arguments.
 bench *args:
-    {{zig}} build -Doptimize=ReleaseFast --summary all run-test-bench -- {{args}}
-
-# Benchmark native, zlua C API, and CLua startup without process-launch timing.
-bench-startup *args:
-    {{zig}} build --summary all bench-startup -- {{args}}
+    {{zig}} build --summary all bench -- {{args}}
 
 # Remove build outputs and Zig cache directories.
 clean:

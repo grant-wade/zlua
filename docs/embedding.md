@@ -356,6 +356,65 @@ try lua.setGlobal("counter", counter);
 
 Lua-owned userdata may receive a finalizer through its options. Both forms support typed callback arguments such as `ctx.arg(0, *Counter)`.
 
+## Snapshots
+
+Capture an initialized VM, reset it between requests, or clone it into a new state:
+
+```zig
+var checkpoint = try lua.snapshot(snapshot_allocator);
+defer checkpoint.deinit();
+
+try lua.doString("results = {42}", .{});
+try lua.reset(&checkpoint);
+
+var another = try checkpoint.clone(state_allocator);
+defer another.deinit();
+```
+
+Snapshots copy the VM heap, including suspended Lua coroutines, shared references, module caches, I/O buffers, random state, and GC settings. Reset also restores options, host bindings, and instruction usage. Checkpoints are reusable, can outlive the source state, and have no persistence format.
+
+Snapshot and reset require an idle VM. Active calls, collection, destruction, or recursive snapshot operations return `error.SnapshotBusy`. C compatibility states, C closures or continuations, and untracked runtime objects return `error.SnapshotUnsupported`. Serialize access to each state and checkpoint.
+
+### Reset and Lifetimes
+
+Successful reset invalidates all earlier handles and borrowed VM slices and pointers. Stale handle operations return `error.InvalidHandle`; their `deinit` is harmless. Reacquire objects through globals or modules. Handles from other states are also rejected. Destroy handles before their state.
+
+Reset builds the replacement before discarding the old VM. Allocation or copy failures leave the state, handles, and checkpoint usable. Discard does not run Lua `__gc` or `__close` handlers; run application teardown first if needed. Collection timing and pointer-derived strings may change.
+
+The destination keeps its allocator. Both heaps and temporary copy indexes count against the restored memory limit. Snapshot storage uses `snapshot_allocator` outside that limit; clones use their supplied allocator and inherit the limit. Host-owned results remain freeable through the state allocator while the state lives. Keep backing allocators valid until all allocations, including shared userdata, are released.
+
+### Userdata and Host Bindings
+
+Userdata payloads are shared by default, so payload mutations survive reset. Lua-owned payloads are finalized and freed once the last owner releases them. Borrowed payloads must outlive every referencing state and checkpoint. Synchronize shared payload access and ownership operations.
+
+For independent payload copies, supply paired hooks to `newUserdata` or `newUserdataPtr`:
+
+```zig
+const Counter = struct {
+    value: i64,
+
+    fn copy(allocator: std.mem.Allocator, source: *const @This()) !*@This() {
+        const result = try allocator.create(@This());
+        result.* = source.*;
+        return result;
+    }
+
+    fn dispose(allocator: std.mem.Allocator, value: *@This()) void {
+        allocator.destroy(value);
+    }
+};
+
+var counter = try lua.newUserdata(Counter, .{ .value = 7 }, .{
+    .snapshot = .{ .copy = Counter.copy, .dispose = Counter.dispose },
+});
+defer counter.deinit();
+try lua.setGlobal("counter", counter);
+```
+
+`copy` must own all nested storage using the supplied allocator. `dispose` releases it, including on failed construction or checkpoint destruction. Hooks must not retain source VM pointers or reenter snapshot operations. Capture and discard skip application finalizers; normal finalizers must not free storage owned by `dispose`. Original payloads keep their original ownership rules.
+
+Callbacks and host capabilities remain external bindings and must stay valid. Reset cannot undo host output or external mutations. State-owned memory files, stdin bytes, and captured output are copied.
+
 ## Current Boundaries
 
 - No stable raw runtime wrapper is exposed.
@@ -373,4 +432,4 @@ zig build run-example -- plugin_sandbox
 just example userdata_auto
 ```
 
-Example compilation is part of `zig build ci`.
+Example compilation and execution are part of `zig build ci`.

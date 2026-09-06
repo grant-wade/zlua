@@ -3,7 +3,7 @@
 ## Navigation
 
 - [API Index](README.md)
-- Submodules: [runtime.chunk](runtime/chunk.md), [runtime.types](runtime/types.md), [runtime.value](runtime/value.md), [runtime.execute](runtime/execute.md), [runtime.state](runtime/state.md), [runtime.call](runtime/call.md), [runtime.coroutine](runtime/coroutine.md), [runtime.debug](runtime/debug.md), [runtime.gc](runtime/gc.md), [runtime.host](runtime/host.md), [runtime.vm](runtime/vm.md), [runtime.tests](runtime/tests.md), [runtime.internal](runtime/internal.md)
+- Submodules: [runtime.chunk](runtime/chunk.md), [runtime.types](runtime/types.md), [runtime.value](runtime/value.md), [runtime.execute](runtime/execute.md), [runtime.state](runtime/state.md), [runtime.call](runtime/call.md), [runtime.coroutine](runtime/coroutine.md), [runtime.debug](runtime/debug.md), [runtime.gc](runtime/gc.md), [runtime.host](runtime/host.md), [runtime.vm](runtime/vm.md), [runtime.tests](runtime/tests.md), [runtime.internal](runtime/internal.md), [runtime.snapshot](runtime/snapshot.md)
 
 <details>
 <summary>All documents</summary>
@@ -57,9 +57,21 @@
 - [runtime.vm](runtime/vm.md)
 - [runtime.tests](runtime/tests.md)
 - [runtime.internal](runtime/internal.md)
+- [runtime.snapshot](runtime/snapshot.md)
 - [testing](testing.md)
 - [testing.clua](testing/clua.md)
 - [testing.bench_runner](testing/bench_runner.md)
+- [testing.bench.options](testing/bench/options.md)
+- [testing.bench.results](testing/bench/results.md)
+- [testing.bench.stats](testing/bench/stats.md)
+- [testing.bench.report](testing/bench/report.md)
+- [testing.bench.process](testing/bench/process.md)
+- [testing.bench.fixtures](testing/bench/fixtures.md)
+- [testing.bench.legacy_process](testing/bench/legacy_process.md)
+- [testing.bench.startup](testing/bench/startup.md)
+- [testing.bench.allocation](testing/bench/allocation.md)
+- [testing.bench.c_startup](testing/bench/c_startup.md)
+- [testing.bench.snapshots](testing/bench/snapshots.md)
 - [testing.c_api_runner](testing/c_api_runner.md)
 - [testing.fixtures](testing/fixtures.md)
 - [testing.diff_runner](testing/diff_runner.md)

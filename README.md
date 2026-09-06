@@ -98,10 +98,16 @@ Run a Lua script through the build runner:
 zig build run -- path/to/script.lua
 ```
 
-Compile the Zig embedding examples:
+Compile and run the Zig embedding examples:
 
 ```sh
 zig build examples
+```
+
+Run a specific zlua embedding example:
+
+```sh
+zig build run-example -- snapshot_reset
 ```
 
 Run the full check suite:

@@ -57,9 +57,21 @@
 - [runtime.vm](../runtime/vm.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
+- [runtime.snapshot](../runtime/snapshot.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
 - [testing.bench_runner](../testing/bench_runner.md)
+- [testing.bench.options](../testing/bench/options.md)
+- [testing.bench.results](../testing/bench/results.md)
+- [testing.bench.stats](../testing/bench/stats.md)
+- [testing.bench.report](../testing/bench/report.md)
+- [testing.bench.process](../testing/bench/process.md)
+- [testing.bench.fixtures](../testing/bench/fixtures.md)
+- [testing.bench.legacy_process](../testing/bench/legacy_process.md)
+- [testing.bench.startup](../testing/bench/startup.md)
+- [testing.bench.allocation](../testing/bench/allocation.md)
+- [testing.bench.c_startup](../testing/bench/c_startup.md)
+- [testing.bench.snapshots](../testing/bench/snapshots.md)
 - [testing.c_api_runner](../testing/c_api_runner.md)
 - [testing.fixtures](../testing/fixtures.md)
 - [testing.diff_runner](../testing/diff_runner.md)
@@ -464,6 +476,8 @@ pub const StateOptions = struct {
     clock: ClockCapability = .system,
     process: ProcessCapability = .disabled,
     stdin: []const u8 = "",
+    /// Memory budget retained for embedding API allocator setup and snapshots.
+    /// Direct runtime users must enforce this budget through their allocator.
     max_memory: ?usize = null,
     max_stack_values: ?usize = null,
     max_call_frames: ?usize = null,
@@ -479,6 +493,9 @@ pub const StateOptions = struct {
 
 ```zig
 pub const State = struct {
+    allocator_lifetime: ?*types.AllocatorLifetime = null,
+    snapshot_busy: bool = false,
+    discarding: bool = false,
     allocator: std.mem.Allocator,
     global_table: ?*Table = null,
     strings: std.StringHashMap([]const u8),
@@ -547,6 +564,7 @@ pub const State = struct {
 | [stackValueLimit](#fn-state-stackvaluelimit) | `self: *const State` | `usize` |  |
 | [callFrameLimit](#fn-state-callframelimit) | `self: *const State` | `usize` |  |
 | [fileMetatable](#fn-state-filemetatable) | `state: *State` | `!*Table` |  |
+| [discard](#fn-state-discard) | `self: *State` | `void` |  |
 | [deinit](#fn-state-deinit) | `self: *State` | `void` |  |
 | [execute](#fn-state-execute) | `self: *State, proto: *const proto_mod.Proto` | `!void` |  |
 | [callLoadedClosure](#fn-state-callloadedclosure) | `self: *State, closure: *Closure, args: []const Value` | `![]Value` |  |
@@ -576,7 +594,7 @@ pub const State = struct {
 | [putGlobal](#fn-state-putglobal) | `self: *State, name: []const u8, value: Value` | `!void` |  |
 | [rootValue](#fn-state-rootvalue) | `self: *State, value: Value` | `!usize` |  |
 | [unrootValue](#fn-state-unrootvalue) | `self: *State, index: usize` | `void` |  |
-| [rootedValue](#fn-state-rootedvalue) | `self: *State, index: usize` | `Value` |  |
+| [rootedValue](#fn-state-rootedvalue) | `self: *const State, index: usize` | `Value` |  |
 | [activeRootCount](#fn-state-activerootcount) | `self: State` | `usize` |  |
 | [setApiCallbackDispatch](#fn-state-setapicallbackdispatch) | `self: *State, dispatch: ApiCallbackDispatchFn, user_data: *anyopaque` | `void` |  |
 | [setCClosureDispatch](#fn-state-setcclosuredispatch) | `self: *State, dispatch: CClosureDispatchFn, user_data: *anyopaque` | `void` |  |
@@ -844,6 +862,16 @@ pub fn fileMetatable(state: *State) !*Table
 ```
 
 References: [`State`](#type-state), [`Table`](#alias-table)
+
+<a id="fn-state-discard"></a>
+
+### State.discard
+
+```zig
+pub fn discard(self: *State) void
+```
+
+References: [`State`](#type-state)
 
 <a id="fn-state-deinit"></a>
 
@@ -1140,7 +1168,7 @@ References: [`State`](#type-state)
 ### State.rootedValue
 
 ```zig
-pub fn rootedValue(self: *State, index: usize) Value
+pub fn rootedValue(self: *const State, index: usize) Value
 ```
 
 References: [`State`](#type-state), [`Value`](#alias-value)

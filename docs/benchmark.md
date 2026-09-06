@@ -1,40 +1,44 @@
 # Benchmarking
 
-zlua has two benchmark paths:
+Run the whole suite with `zig build bench` (or `just bench`). It runs these groups sequentially and produces one report:
 
-- Process benchmarks compare complete Lua programs under downloaded Lua 5.5 and a ReleaseFast zlua CLI.
-- Startup benchmarks measure state creation, a first trivial chunk, and custom host-function registration and calls inside already-running processes.
+| Group | Measures |
+| --- | --- |
+| Process | Complete Lua programs under zlua and Lua 5.5, including process launch, compilation, and shutdown. |
+| Startup | State creation, library opening, and the first chunk through the native and C APIs. |
+| Snapshots | Capturing a prepared state, resetting it, and rebuilding an equivalent state. |
 
-## Process Benchmarks
+All benchmarks use ReleaseFast for both zlua and C Lua, including process comparisons and C startup workers, regardless of `-Doptimize`. Startup and snapshot timings exclude process launch. Startup totals sum the measured phases; they are not another independently timed operation.
 
-```sh
-just bench
-just bench --list
-just bench --category table
-just bench table/pairs_iteration --iterations=20
-just bench vm/locals --iterations=20 --no-warmup
-```
-
-Write machine-readable reports with:
+## Running a benchmark
 
 ```sh
-just bench --iterations=20 --json /tmp/zlua-bench.json
-just bench --iterations=20 --csv /tmp/zlua-bench.csv
+zig build bench -- --list
+zig build bench -- table/pairs_iteration --iterations=20
+zig build bench -- startup --iterations=1000 --warmup=100
+zig build bench -- callbacks --verbose
+zig build bench -- --json /tmp/bench.json --csv /tmp/bench.csv
 ```
 
-The recipe runs:
+All groups accept `--list`, selectors, `--iterations`, `--warmup` (or `--no-warmup`), `--verbose`, `--json`, and `--csv`. Options with values also accept `--option=value`. Process selectors match fixture names, paths, or directories. Startup and snapshot selectors match a case, engine, or the paths printed by `--list`.
 
-```sh
-zig build -Doptimize=ReleaseFast --summary all run-test-bench -- <args>
-```
+Process fixtures default to 30 samples per engine and 1 warmup unless their metadata says otherwise. Startup and snapshots default to 1,000 samples and 100 warmups. `--category` selects a process metadata category or the `startup` / `snapshots` group.
 
-Each sample includes process launch, runtime initialization, source loading, compilation, execution, and shutdown. This catches broad regressions but does not isolate VM dispatch, table lookup, GC, or individual library calls.
+## Reading the results
 
-Human output reports min, median, mean, max, standard deviation, and the zlua/Lua 5.5 ratio. JSON and CSV include raw nanosecond samples.
+The main tables show medians and sample counts. For process comparisons, **zlua/Lua below 1 is faster**. For snapshots, **speedup above 1 is faster**. Break-even estimates how many resets recover the capture cost: `ceil(capture / (rebuild - reset))`. A dash means no saving or an unavailable result.
 
-### Fixtures
+Use `--verbose` for phase timings, p95, spread, and allocation details. With very few samples, p95 is usually the maximum; use more samples before drawing conclusions.
 
-Fixtures live under `tests/bench/**/*.lua`. Top-of-file metadata controls a run:
+Allocation counts and bytes are medians across samples. Requested bytes include positive resize growth. Live bytes are storage after the operation; peak includes storage already live at its start. Capture counts the new checkpoint only. Reset and rebuild count VM storage, so reset peak includes the live VM and its replacement. The native runtime column estimates GC objects separately. A dash means unavailable, not zero.
+
+JSON format 2 includes run metadata, raw samples, summaries, and comparisons for every group. Existing process records and their mean-based ratio remain under `benchmarks`. CSV format 2 has one row per operation sample; failed or skipped operations with no samples still get a row. Both formats store nanoseconds and bytes.
+
+Save a baseline, make the change, and repeat the same command on an otherwise idle machine. Look at the samples and spread as well as the ratio. Process runs alternate engine order and check every pair's exit status and output outside the timer.
+
+## Adding a case
+
+Add a Lua fixture under `tests/bench/<category>/` for a complete-program comparison:
 
 ```lua
 -- name: table/array_reads
@@ -44,63 +48,6 @@ Fixtures live under `tests/bench/**/*.lua`. Top-of-file metadata controls a run:
 -- timeout-ms: 60000
 ```
 
-| Key | Default | Notes |
-| --- | --- | --- |
-| `name` | Fixture path | Display name and selector. |
-| `category` | `misc` | Free-form filter. |
-| `iterations` | `5` | Measured process runs. |
-| `warmup` | `1` | Unmeasured runs. |
-| `timeout-ms` | `60000` | Per-process timeout. |
-| `expect` | `pass` | Also accepts `fail` or `skip`; those require `reason`. |
+Without metadata, the name is the fixture path and the category is `misc`. `expect: skip` or `expect: fail` excludes a fixture and requires a `reason`.
 
-Selectors can match a name, path, directory, basename, or basename without `.lua`.
-
-## Performance Workflow
-
-1. Capture a JSON or CSV baseline.
-2. Reproduce the relevant category with enough iterations to see variance.
-3. Profile before changing broad runtime structures.
-4. Preserve or add a fixture for the target path.
-5. Run correctness checks before judging the result.
-6. Capture an after report and compare raw samples as well as summaries.
-
-Typical checks for runtime work:
-
-```sh
-zig build test
-zig build test-diff
-zig build test-extensions
-zig build test-official
-just bench --category <category> --iterations=20 --json /tmp/after.json
-```
-
-
-## Startup Benchmarks
-
-Process launch hides state initialization costs, so startup has a separate in-process benchmark:
-
-```sh
-just bench-startup --iterations=1000 --warmup=100
-# equivalent:
-zig build bench-startup -- --iterations=1000 --warmup=100
-```
-
-The step builds measured components in ReleaseFast and runs:
-
-1. Native zlua with `none`, `base`, `safe`, and `full` library selections.
-2. The zlua C API through `lua_newstate`, `luaL_openlibs`, and a trivial chunk.
-3. Lua 5.5 through the same C source and counting allocator.
-
-Native initialization is split into state containers, global-table setup, library opening, and GC baseline setup. The report also includes load, call, teardown, complete startup, and time through the first successful chunk. C API reports split `newstate`, `openlibs`, load, call, and close.
-
-| Column | Meaning |
-| --- | --- |
-| `median-ns`, `p95-ns` | In-process phase timing; executable launch is excluded. |
-| `alloc`, `resize` | Successful allocator operations. |
-| `requested-B` | New bytes requested, including positive resize growth. |
-| `live-B` | Requested bytes still live after the phase. |
-| `peak-B` | Peak live requested bytes during the phase. |
-| `runtime-B` | Native runtime/GC object estimate. |
-
-The zlua and Lua 5.5 C runs share `tools/bench_c_api_startup.c` and the same allocator instrumentation.
-
+For an in-process case, add it to `src/testing/bench/startup.zig` or `snapshots.zig`. Keep setup and cleanup visibly outside the timer unless they are the operation being measured. Both C engines share `tools/bench_c_api_startup.c`; it returns raw measurements to the same Zig reporter.

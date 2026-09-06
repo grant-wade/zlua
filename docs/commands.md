@@ -9,13 +9,13 @@ zig build                         # build zlua and downloaded Lua 5.5
 zig build run -- script.lua       # run a script
 zig build test                    # Zig tests
 zig build ci                      # all correctness checks
-zig build examples                # compile embedding examples
+zig build examples                # compile and run embedding examples
 just diff path/to/fixture.lua
 just extensions tests/extensions/string
 just official calls
 just c-api tests/c-api/stack
 just bench --category table
-just bench-startup
+just bench
 ```
 
 ## just Recipes
@@ -35,8 +35,7 @@ Most recipes wrap a similarly named build step:
 | `just extensions [args...]` | Run zlua extension fixtures. |
 | `just official [args...]` | Run official tests with debug errors and a 256 MiB Linux child cap. |
 | `just c-api [args...]` | Run C API fixtures. |
-| `just bench [args...]` | Run process benchmarks with ReleaseFast zlua. |
-| `just bench-startup [args...]` | Run native and C API startup benchmarks. |
+| `just bench [args...]` | Run the full benchmark suite, or selected cases. |
 | `just fmt` | Format top-level source, testing, build, and example files. |
 | `just clean` | Remove `zig-out/` and `.zig-cache/`. |
 
@@ -70,8 +69,7 @@ Example filters accept a key, executable name, path, basename, or basename witho
 | `run-test-extensions -- [args...]` | Run the extension harness with filters/options. |
 | `test-official` | Run the complete official-suite dashboard. |
 | `run-test-official -- [args...]` | Run selected official tests or modes. |
-| `run-test-bench -- [args...]` | Run process benchmarks with downloaded Lua 5.5 and ReleaseFast zlua. |
-| `bench-startup -- [args...]` | Run native zlua, zlua C API, and Lua 5.5 startup benchmarks. |
+| `bench -- [args...]` | Run all benchmark groups sequentially with one combined report. |
 | `c-api` | Install `libzlua-c.a`, Lua headers, and the C fixture harness. |
 | `test-c-api -- [args...]` | Compile and compare C fixtures. |
 | `ci-c-api` | Build and test the C API layer. |
@@ -161,17 +159,17 @@ just official [options] [files...]
 | `--show-clua`, `--show-zlua` | Print engine output. |
 | `--debug-errors` | Enable zlua internal diagnostics. |
 
-### Process Benchmarks
+### Benchmarks
 
 ```sh
-zig build run-test-bench -- [options] [selectors...]
+zig build bench -- [options] [selectors...]
 just bench [options] [selectors...]
 ```
 
 | Option | Meaning |
 | --- | --- |
-| `selectors...` | Name, path, directory, basename, or basename without `.lua`. |
-| `--list` | List selected fixtures. |
+| `selectors...` | Group, case, or process fixture name/path. |
+| `--list` | List selected benchmark cases. |
 | `--clua PATH`, `--zlua PATH` | Override executables; `=PATH` forms also work. |
 | `--iterations N` | Override measured runs; must be positive. |
 | `--warmup N`, `--no-warmup` | Override warmup runs. |
@@ -179,13 +177,16 @@ just bench [options] [selectors...]
 | `--category NAME` | Filter metadata category. |
 | `--json PATH`, `--csv PATH` | Write reports. |
 | `--debug-errors` | Enable zlua internal diagnostics. |
+| `--verbose` | Show timing spread, phases, and allocation details. |
 
 The value-taking options above also accept `--name=value` forms.
 
-Startup benchmarks accept only `--iterations N` and `--warmup N` (or inline forms):
+With no selectors, every group runs. You can still narrow a run when needed:
 
 ```sh
-zig build bench-startup -- --iterations=1000 --warmup=100
+zig build bench -- startup --iterations=1000 --warmup=100
+zig build bench -- callbacks --verbose
+zig build bench -- --json /tmp/bench.json
 ```
 
 ### C API

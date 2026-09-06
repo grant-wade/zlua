@@ -57,9 +57,21 @@
 - [runtime.vm](../runtime/vm.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
+- [runtime.snapshot](../runtime/snapshot.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
 - [testing.bench_runner](../testing/bench_runner.md)
+- [testing.bench.options](../testing/bench/options.md)
+- [testing.bench.results](../testing/bench/results.md)
+- [testing.bench.stats](../testing/bench/stats.md)
+- [testing.bench.report](../testing/bench/report.md)
+- [testing.bench.process](../testing/bench/process.md)
+- [testing.bench.fixtures](../testing/bench/fixtures.md)
+- [testing.bench.legacy_process](../testing/bench/legacy_process.md)
+- [testing.bench.startup](../testing/bench/startup.md)
+- [testing.bench.allocation](../testing/bench/allocation.md)
+- [testing.bench.c_startup](../testing/bench/c_startup.md)
+- [testing.bench.snapshots](../testing/bench/snapshots.md)
 - [testing.c_api_runner](../testing/c_api_runner.md)
 - [testing.fixtures](../testing/fixtures.md)
 - [testing.diff_runner](../testing/diff_runner.md)
@@ -76,6 +88,8 @@
 - [RuntimeError](#type-runtimeerror)
 - [Value](#type-value)
 - [NativeFn](#type-nativefn)
+- [AllocatorLifetime](#type-allocatorlifetime)
+- [UserdataPayload](#type-userdatapayload)
 - [ProtectedCallResult](#type-protectedcallresult)
 - [DebugHookEvent](#type-debughookevent)
 - [CDebugHookContext](#type-cdebughookcontext)
@@ -113,6 +127,7 @@
 
 - [UserdataFinalizer](#const-userdatafinalizer)
 - [UserdataDeinit](#const-userdatadeinit)
+- [UserdataSnapshotCopy](#const-userdatasnapshotcopy)
 - [ApiCallbackDispatchFn](#const-apicallbackdispatchfn)
 - [CClosureDispatchFn](#const-cclosuredispatchfn)
 - [CClosureResumeDispatchFn](#const-cclosureresumedispatchfn)
@@ -380,6 +395,103 @@ pub const UserdataFinalizer = *const fn (*anyopaque, ?*const anyopaque) void;
 ```zig
 pub const UserdataDeinit = *const fn (std.mem.Allocator, *anyopaque) void;
 ```
+
+<a id="type-allocatorlifetime"></a>
+
+## AllocatorLifetime
+
+Keeps allocator infrastructure alive while shared userdata outlives its VM.
+
+```zig
+pub const AllocatorLifetime = struct {
+    references: usize = 1,
+    destroy: *const fn (*AllocatorLifetime) void,
+};
+```
+
+### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [retain](#fn-allocatorlifetime-retain) | `self: *AllocatorLifetime` | `void` |  |
+| [release](#fn-allocatorlifetime-release) | `self: *AllocatorLifetime` | `void` |  |
+
+<a id="fn-allocatorlifetime-retain"></a>
+
+### AllocatorLifetime.retain
+
+```zig
+pub fn retain(self: *AllocatorLifetime) void
+```
+
+References: [`AllocatorLifetime`](#type-allocatorlifetime)
+
+<a id="fn-allocatorlifetime-release"></a>
+
+### AllocatorLifetime.release
+
+```zig
+pub fn release(self: *AllocatorLifetime) void
+```
+
+References: [`AllocatorLifetime`](#type-allocatorlifetime)
+
+<a id="const-userdatasnapshotcopy"></a>
+
+## UserdataSnapshotCopy
+
+```zig
+pub const UserdataSnapshotCopy = *const fn (std.mem.Allocator, *const anyopaque) anyerror!*anyopaque;
+```
+
+<a id="type-userdatapayload"></a>
+
+## UserdataPayload
+
+Payload ownership is separate from the GC-managed Lua wrapper.
+
+```zig
+pub const UserdataPayload = struct {
+    allocator: std.mem.Allocator,
+    lifetime: ?*AllocatorLifetime,
+    references: usize = 1,
+    ptr: *anyopaque,
+    finalizer: ?UserdataFinalizer,
+    finalizer_data: ?*const anyopaque,
+    dispose: ?UserdataDeinit,
+    finalized: bool = false,
+    snapshot_copy: ?UserdataSnapshotCopy = null,
+    snapshot_dispose: ?UserdataDeinit = null,
+    is_snapshot_copy: bool = false,
+};
+```
+
+### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [finalize](#fn-userdatapayload-finalize) | `self: *UserdataPayload` | `void` |  |
+| [release](#fn-userdatapayload-release) | `self: *UserdataPayload, discard: bool` | `void` |  |
+
+<a id="fn-userdatapayload-finalize"></a>
+
+### UserdataPayload.finalize
+
+```zig
+pub fn finalize(self: *UserdataPayload) void
+```
+
+References: [`UserdataPayload`](#type-userdatapayload)
+
+<a id="fn-userdatapayload-release"></a>
+
+### UserdataPayload.release
+
+```zig
+pub fn release(self: *UserdataPayload, discard: bool) void
+```
+
+References: [`UserdataPayload`](#type-userdatapayload)
 
 <a id="type-protectedcallresult"></a>
 
@@ -1081,6 +1193,7 @@ References: [`Table`](#type-table)
 
 ```zig
 pub const Userdata = struct {
+    payload: ?*UserdataPayload = null,
     ptr: *anyopaque,
     type_id: usize,
     type_name: []const u8,
@@ -1099,6 +1212,8 @@ pub const Userdata = struct {
 
 ```zig
 pub const Thread = struct {
+    /// A Lua value has exposed this thread beyond its current host call.
+    exposed: bool = false,
     stack: std.ArrayList(Value) = .empty,
     frames: std.ArrayList(CallFrame) = .empty,
     yield_values: std.ArrayList(Value) = .empty,

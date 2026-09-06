@@ -136,7 +136,7 @@ Yielding is continuation-based. Threads retain continuation records for protecte
 The instruction dispatcher lives in `runtime/state.zig`; `runtime/vm.zig` performs cross-cutting limit checks. The VM handles Lua-specific result adjustment, varargs, tail calls, metamethods, to-be-closed unwinding, primitive metatables, debug hooks, and stack overflow guards.
 
 - `max_instructions` is a cumulative state budget that can be queried and reset through the Zig API.
-- `max_memory` combines allocator limits in the embedding API with runtime allocation accounting and conservative GC checks at instruction boundaries.
+- `max_memory` is enforced by the embedding API's bounded allocator. Low-level runtime users must supply their own bounded allocator.
 
 ### Garbage Collection
 

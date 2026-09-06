@@ -105,6 +105,8 @@ pub const StateOptions = struct {
     clock: ClockCapability = .system,
     process: ProcessCapability = .disabled,
     stdin: []const u8 = "",
+    /// Memory budget retained for embedding API allocator setup and snapshots.
+    /// Direct runtime users must enforce this budget through their allocator.
     max_memory: ?usize = null,
     max_stack_values: ?usize = null,
     max_call_frames: ?usize = null,
@@ -114,6 +116,9 @@ pub const StateOptions = struct {
 };
 
 pub const State = struct {
+    allocator_lifetime: ?*types.AllocatorLifetime = null,
+    snapshot_busy: bool = false,
+    discarding: bool = false,
     allocator: std.mem.Allocator,
     global_table: ?*Table = null,
     strings: std.StringHashMap([]const u8),
@@ -244,7 +249,13 @@ pub const State = struct {
         return metatable;
     }
 
+    pub fn discard(self: *State) void {
+        self.discarding = true;
+        self.deinit();
+    }
+
     pub fn deinit(self: *State) void {
+        self.snapshot_busy = true;
         self.stdout.deinit(self.allocator);
         self.stderr.deinit(self.allocator);
         self.strings.deinit();
@@ -256,7 +267,12 @@ pub const State = struct {
         for (self.upvalue_allocations.items) |upvalue| self.allocator.destroy(upvalue);
         for (self.c_upvalue_allocations.items) |upvalue| self.allocator.destroy(upvalue);
         for (self.userdata_allocations.items) |userdata| self.destroyUserdata(userdata);
-        for (self.table_allocations.items) |table| self.destroyTable(table);
+        for (self.table_allocations.items) |table| {
+            if (self.discarding) {
+                table.deinit(self.allocator);
+                self.allocator.destroy(table);
+            } else self.destroyTable(table);
+        }
         for (self.proto_allocations.items) |proto| {
             proto.deinit();
             self.allocator.destroy(proto);
@@ -281,48 +297,93 @@ pub const State = struct {
         try self.executeClosure(try self.newRootClosure(proto));
     }
 
+    // Host frames must have stable identities when coroutine.running() exposes
+    // them to Lua. Unexposed threads are released immediately after the call.
+    fn newHostThread(self: *State, closure: *Closure) !*Thread {
+        const thread = try self.allocator.create(Thread);
+        errdefer self.allocator.destroy(thread);
+        thread.* = try Thread.initRoot(self.allocator, closure, self.stackValueLimit());
+        errdefer thread.deinit(self.allocator);
+        try self.thread_allocations.append(self.allocator, thread);
+        self.noteAllocation(@sizeOf(Thread));
+        return thread;
+    }
+
+    fn retireHostThread(self: *State, thread: *Thread) void {
+        self.closeUpvalues(thread, 0);
+        if (!thread.exposed) {
+            for (self.thread_allocations.items, 0..) |tracked, index| {
+                if (tracked == thread) {
+                    _ = self.thread_allocations.swapRemove(index);
+                    break;
+                }
+            }
+            self.noteAllocationFreed(@sizeOf(Thread));
+            self.destroyThread(thread);
+            return;
+        }
+        // Drop completed execution storage, including native wrapper prototypes
+        // borrowed from the host stack. Keep the observable thread and its hook.
+        const retained = Thread{
+            .marked = thread.marked,
+            .exposed = true,
+            .is_main = true,
+            .started = true,
+            .status = .dead,
+            .hook = thread.hook,
+            .hook_call = thread.hook_call,
+            .hook_line = thread.hook_line,
+            .hook_return = thread.hook_return,
+            .hook_count = thread.hook_count,
+            .hook_count_remaining = thread.hook_count_remaining,
+            .error_traceback = thread.error_traceback,
+        };
+        thread.deinit(self.allocator);
+        thread.* = retained;
+    }
+
     pub fn callLoadedClosure(self: *State, closure: *Closure, args: []const Value) ![]Value {
-        var thread = Thread.initRoot(self.allocator, closure, self.stackValueLimit()) catch |err| switch (err) {
+        const thread = self.newHostThread(closure) catch |err| switch (err) {
             error.StackOverflow => return self.fail("stack overflow"),
             else => return err,
         };
-        defer thread.deinit(self.allocator);
-        try self.setRootThreadArgs(&thread, args);
+        defer self.retireHostThread(thread);
+        try self.setRootThreadArgs(thread, args);
         thread.frames.items[0].return_count = bytecode.multret_count;
         const previous_thread = self.current_thread;
-        self.current_thread = &thread;
+        self.current_thread = thread;
         defer self.current_thread = previous_thread;
-        self.runThreadUntil(&thread, 0) catch |err| {
+        self.runThreadUntil(thread, 0) catch |err| {
             if (err == error.StackOverflow and self.last_error == null) self.last_error = .{ .diagnostic = "stack overflow" };
-            if (self.options.debug_errors and isRuntimeError(err)) self.appendUnhandledErrorDebugDump(&thread, err) catch {};
-            self.closeFramesTo(&thread, 0, self.currentErrorValue()) catch |close_err| return close_err;
+            if (self.options.debug_errors and isRuntimeError(err)) self.appendUnhandledErrorDebugDump(thread, err) catch {};
+            self.closeFramesTo(thread, 0, self.currentErrorValue()) catch |close_err| return close_err;
             thread.status = .dead;
             return err;
         };
         thread.status = .dead;
-        return self.copyStackSlice(&thread, thread.last_result_base, thread.last_result_count);
+        return self.copyStackSlice(thread, thread.last_result_base, thread.last_result_count);
     }
 
     pub fn protectedCallLoadedClosure(self: *State, closure: *Closure, args: []const Value) !ProtectedCallResult {
-        var thread = Thread.initRoot(self.allocator, closure, self.stackValueLimit()) catch |err| switch (err) {
+        const thread = self.newHostThread(closure) catch |err| switch (err) {
             error.StackOverflow => return .{ .failure = .{ .string = try self.intern("stack overflow") } },
             else => return err,
         };
-        defer thread.deinit(self.allocator);
-        try self.setRootThreadArgs(&thread, args);
+        defer self.retireHostThread(thread);
+        try self.setRootThreadArgs(thread, args);
         thread.frames.items[0].return_count = bytecode.multret_count;
         const previous_thread = self.current_thread;
-        self.current_thread = &thread;
+        self.current_thread = thread;
         defer self.current_thread = previous_thread;
 
         self.last_error = null;
         self.last_error_in_close = false;
-        self.runThreadUntil(&thread, 0) catch |err| switch (err) {
+        self.runThreadUntil(thread, 0) catch |err| switch (err) {
             error.RuntimeError, error.StackOverflow, error.UnsupportedOpcode => {
                 if (err == error.StackOverflow and self.last_error == null) self.last_error = .{ .diagnostic = "stack overflow" };
-                if (self.options.debug_errors) self.appendUnhandledErrorDebugDump(&thread, err) catch {};
+                if (self.options.debug_errors) self.appendUnhandledErrorDebugDump(thread, err) catch {};
                 var failure = self.currentErrorValue();
-                self.closeFramesTo(&thread, 0, failure) catch |close_err| switch (close_err) {
+                self.closeFramesTo(thread, 0, failure) catch |close_err| switch (close_err) {
                     error.RuntimeError, error.StackOverflow, error.UnsupportedOpcode => failure = self.currentErrorValue(),
                     else => return close_err,
                 };
@@ -332,7 +393,7 @@ pub const State = struct {
             else => return err,
         };
         thread.status = .dead;
-        return .{ .success = try self.copyStackSlice(&thread, thread.last_result_base, thread.last_result_count) };
+        return .{ .success = try self.copyStackSlice(thread, thread.last_result_base, thread.last_result_count) };
     }
 
     pub fn callFunction(self: *State, function: Value, args: []const Value) ![]Value {
@@ -343,19 +404,19 @@ pub const State = struct {
         defer proto.deinit();
         proto.source_name = "=[C]";
         var closure = Closure{ .proto = &proto, .upvalues = &.{} };
-        var thread = Thread.initRoot(self.allocator, &closure, self.stackValueLimit()) catch |err| switch (err) {
+        const thread = self.newHostThread(&closure) catch |err| switch (err) {
             error.StackOverflow => return self.fail("stack overflow"),
             else => return err,
         };
-        defer thread.deinit(self.allocator);
+        defer self.retireHostThread(thread);
         const previous_thread = self.current_thread;
-        self.current_thread = &thread;
+        self.current_thread = thread;
         defer self.current_thread = previous_thread;
         self.last_error = null;
         self.last_error_in_close = false;
-        return self.callCollect(&thread, function, args) catch |err| {
+        return self.callCollect(thread, function, args) catch |err| {
             if (err == error.StackOverflow and self.last_error == null) self.last_error = .{ .diagnostic = "stack overflow" };
-            self.closeFramesTo(&thread, 0, self.currentErrorValue()) catch |close_err| return close_err;
+            self.closeFramesTo(thread, 0, self.currentErrorValue()) catch |close_err| return close_err;
             return err;
         };
     }
@@ -380,18 +441,18 @@ pub const State = struct {
     }
 
     fn executeClosure(self: *State, closure: *Closure) !void {
-        var thread = Thread.initRoot(self.allocator, closure, self.stackValueLimit()) catch |err| switch (err) {
+        const thread = self.newHostThread(closure) catch |err| switch (err) {
             error.StackOverflow => return self.fail("stack overflow"),
             else => return err,
         };
-        defer thread.deinit(self.allocator);
+        defer self.retireHostThread(thread);
         const previous_thread = self.current_thread;
-        self.current_thread = &thread;
+        self.current_thread = thread;
         defer self.current_thread = previous_thread;
-        self.runThreadUntil(&thread, 0) catch |err| {
+        self.runThreadUntil(thread, 0) catch |err| {
             if (err == error.StackOverflow and self.last_error == null) self.last_error = .{ .diagnostic = "stack overflow" };
-            if (self.options.debug_errors and isRuntimeError(err)) self.appendUnhandledErrorDebugDump(&thread, err) catch {};
-            self.closeFramesTo(&thread, 0, self.currentErrorValue()) catch |close_err| return close_err;
+            if (self.options.debug_errors and isRuntimeError(err)) self.appendUnhandledErrorDebugDump(thread, err) catch {};
+            self.closeFramesTo(thread, 0, self.currentErrorValue()) catch |close_err| return close_err;
             thread.status = .dead;
             return err;
         };
@@ -670,7 +731,7 @@ pub const State = struct {
 
     fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bool {
         if (thread.frames.items.len <= target_frame_count) return false;
-        if (self.options.max_instructions != null or self.options.max_memory != null or self.options.trace_vm) return false;
+        if (self.options.max_instructions != null or self.options.trace_vm) return false;
         if (self.collect_after_instruction) return false;
         if (thread.hook != .nil and (thread.hook_line or thread.hook_count != 0 or thread.hook_running)) return false;
         if (self.gc_running and self.shouldRunAutoGc()) return false;
@@ -1264,7 +1325,7 @@ pub const State = struct {
         if (index < self.api_roots.items.len) self.api_roots.items[index] = .nil;
     }
 
-    pub fn rootedValue(self: *State, index: usize) Value {
+    pub fn rootedValue(self: *const State, index: usize) Value {
         if (index >= self.api_roots.items.len) return .nil;
         return self.api_roots.items[index];
     }
@@ -2134,7 +2195,12 @@ pub const State = struct {
             .finalizer_data = finalizer_data,
             .deinit_fn = deinit_fn,
         };
+        const payload = try self.allocator.create(types.UserdataPayload);
+        errdefer self.allocator.destroy(payload);
+        payload.* = .{ .allocator = self.allocator, .lifetime = self.allocator_lifetime, .ptr = ptr, .finalizer = finalizer, .finalizer_data = finalizer_data, .dispose = deinit_fn };
         try self.userdata_allocations.append(self.allocator, userdata);
+        if (payload.lifetime) |l| l.retain();
+        userdata.payload = payload;
         self.noteAllocation(@sizeOf(Userdata));
         return .{ .userdata = userdata };
     }
