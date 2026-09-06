@@ -3,7 +3,7 @@
 ## Navigation
 
 - [API Index](README.md)
-- Submodules: [testing.process](testing/process.md), [testing.clua](testing/clua.md), [testing.bench_runner](testing/bench_runner.md), [testing.c_api_runner](testing/c_api_runner.md), [testing.diff_runner](testing/diff_runner.md), [testing.expected_failures](testing/expected_failures.md), [testing.metadata](testing/metadata.md), [testing.normalizer](testing/normalizer.md), [testing.extension_runner](testing/extension_runner.md), [testing.official_suite](testing/official_suite.md)
+- Submodules: [testing.process](testing/process.md), [testing.clua](testing/clua.md), [testing.bench_runner](testing/bench_runner.md), [testing.c_api_runner](testing/c_api_runner.md), [testing.fixtures](testing/fixtures.md), [testing.diff_runner](testing/diff_runner.md), [testing.expected_failures](testing/expected_failures.md), [testing.metadata](testing/metadata.md), [testing.normalizer](testing/normalizer.md), [testing.extension_runner](testing/extension_runner.md), [testing.official_suite](testing/official_suite.md)
 
 <details>
 <summary>All documents</summary>
@@ -61,6 +61,7 @@
 - [testing.clua](testing/clua.md)
 - [testing.bench_runner](testing/bench_runner.md)
 - [testing.c_api_runner](testing/c_api_runner.md)
+- [testing.fixtures](testing/fixtures.md)
 - [testing.diff_runner](testing/diff_runner.md)
 - [testing.expected_failures](testing/expected_failures.md)
 - [testing.metadata](testing/metadata.md)

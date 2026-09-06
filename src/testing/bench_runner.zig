@@ -90,6 +90,20 @@ const EngineReport = struct {
     exit_code: ?u8 = null,
     signal: ?u32 = null,
     timed_out: bool = false,
+
+    pub fn jsonStringify(self: EngineReport, json: *std.json.Stringify) !void {
+        try json.write(.{
+            .samples_ns = self.samples_ns,
+            .min_ns = self.stats.min_ns,
+            .median_ns = self.stats.median_ns,
+            .mean_ns = self.stats.mean_ns,
+            .max_ns = self.stats.max_ns,
+            .stddev_ns = self.stats.stddev_ns,
+            .exit_code = self.exit_code,
+            .signal = self.signal,
+            .timed_out = self.timed_out,
+        });
+    }
 };
 
 const BenchmarkReport = struct {
@@ -103,6 +117,25 @@ const BenchmarkReport = struct {
     timeout_ms: u64 = 0,
     clua: EngineReport = .{},
     zlua: EngineReport = .{},
+
+    pub fn jsonStringify(self: BenchmarkReport, json: *std.json.Stringify) !void {
+        try json.write(.{
+            .path = self.path,
+            .name = self.name,
+            .category = self.category,
+            .status = self.status,
+            .iterations = self.iterations,
+            .warmup = self.warmup,
+            .timeout_ms = self.timeout_ms,
+            .ratio_zlua_clua_millionths = if (self.status == .benchmarked)
+                @as(?u64, ratioMillionths(self.zlua.stats.mean_ns, self.clua.stats.mean_ns))
+            else
+                null,
+            .reason = self.reason,
+            .clua = self.clua,
+            .zlua = self.zlua,
+        });
+    }
 
     fn deinit(self: *BenchmarkReport, allocator: std.mem.Allocator) void {
         allocator.free(self.clua.samples_ns);
@@ -355,10 +388,7 @@ fn parseMetadata(source: []const u8) !ParsedMetadata {
 }
 
 fn parseExpect(value: []const u8) !Expect {
-    inline for (@typeInfo(Expect).@"enum".fields) |field| {
-        if (std.mem.eql(u8, value, field.name)) return @field(Expect, field.name);
-    }
-    return error.InvalidMetadataValue;
+    return std.meta.stringToEnum(Expect, value) orelse error.InvalidMetadataValue;
 }
 
 fn resolveSelectors(
@@ -1054,116 +1084,15 @@ fn writeJsonReport(allocator: std.mem.Allocator, io: std.Io, path: []const u8, r
 }
 
 fn appendJsonReport(allocator: std.mem.Allocator, out: *std.ArrayList(u8), reports: []const BenchmarkReport, counts: Counts) !void {
-    try out.appendSlice(allocator,
-        \\{
-        \\  "format_version": 1,
-        \\  "counts": {
-        \\
-    );
-    try appendFmt(allocator, out,
-        \\    "benchmarked": {d},
-        \\    "skipped": {d},
-        \\    "failed": {d},
-        \\    "timed_out": {d}
-        \\  }},
-        \\  "benchmarks": [
-        \\
-    , .{ counts.benchmarked, counts.skipped, counts.failed, counts.timed_out });
-
-    for (reports, 0..) |report, index| {
-        if (index != 0) try out.appendSlice(allocator, ",\n");
-        try out.appendSlice(allocator, "    {\n");
-        try out.appendSlice(allocator, "      \"path\": ");
-        try appendJsonString(allocator, out, report.path);
-        try out.appendSlice(allocator, ",\n      \"name\": ");
-        try appendJsonString(allocator, out, report.name);
-        try out.appendSlice(allocator, ",\n      \"category\": ");
-        try appendJsonString(allocator, out, report.category);
-        try appendFmt(allocator, out,
-            \\,
-            \\      "status": "{s}",
-            \\      "iterations": {d},
-            \\      "warmup": {d},
-            \\      "timeout_ms": {d},
-            \\      "ratio_zlua_clua_millionths": 
-        , .{ @tagName(report.status), report.iterations, report.warmup, report.timeout_ms });
-        try appendReportRatioJson(allocator, out, report);
-        try out.appendSlice(allocator, ",\n      \"reason\": ");
-        try appendJsonString(allocator, out, report.reason);
-        try out.appendSlice(allocator, ",\n      \"clua\": ");
-        try appendEngineJson(allocator, out, report.clua);
-        try out.appendSlice(allocator, ",\n      \"zlua\": ");
-        try appendEngineJson(allocator, out, report.zlua);
-        try out.appendSlice(allocator, "\n    }");
-    }
-
-    try out.appendSlice(allocator, "\n  ]\n}\n");
-}
-
-fn appendReportRatioJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), report: BenchmarkReport) !void {
-    if (report.status != .benchmarked) {
-        try out.appendSlice(allocator, "null");
-        return;
-    }
-    try appendFmt(allocator, out, "{d}", .{ratioMillionths(report.zlua.stats.mean_ns, report.clua.stats.mean_ns)});
-}
-
-fn appendEngineJson(allocator: std.mem.Allocator, out: *std.ArrayList(u8), engine: EngineReport) !void {
-    try out.appendSlice(allocator, "{\n        \"samples_ns\": [");
-    for (engine.samples_ns, 0..) |sample, index| {
-        if (index != 0) try out.appendSlice(allocator, ", ");
-        try appendFmt(allocator, out, "{d}", .{sample});
-    }
-    try appendFmt(allocator, out,
-        \\],
-        \\        "min_ns": {d},
-        \\        "median_ns": {d},
-        \\        "mean_ns": {d},
-        \\        "max_ns": {d},
-        \\        "stddev_ns": {d},
-        \\        "exit_code": 
-    , .{ engine.stats.min_ns, engine.stats.median_ns, engine.stats.mean_ns, engine.stats.max_ns, engine.stats.stddev_ns });
-    try appendOptionalU8Json(allocator, out, engine.exit_code);
-    try out.appendSlice(allocator, ",\n        \"signal\": ");
-    try appendOptionalU32Json(allocator, out, engine.signal);
-    try appendFmt(allocator, out, ",\n        \"timed_out\": {s}\n      }}", .{if (engine.timed_out) "true" else "false"});
-}
-
-fn appendOptionalU8Json(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: ?u8) !void {
-    if (value) |number| {
-        try appendFmt(allocator, out, "{d}", .{number});
-    } else {
-        try out.appendSlice(allocator, "null");
-    }
-}
-
-fn appendOptionalU32Json(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: ?u32) !void {
-    if (value) |number| {
-        try appendFmt(allocator, out, "{d}", .{number});
-    } else {
-        try out.appendSlice(allocator, "null");
-    }
-}
-
-fn appendJsonString(allocator: std.mem.Allocator, out: *std.ArrayList(u8), text: []const u8) !void {
-    try out.append(allocator, '"');
-    for (text) |byte| {
-        switch (byte) {
-            '"' => try out.appendSlice(allocator, "\\\""),
-            '\\' => try out.appendSlice(allocator, "\\\\"),
-            '\n' => try out.appendSlice(allocator, "\\n"),
-            '\r' => try out.appendSlice(allocator, "\\r"),
-            '\t' => try out.appendSlice(allocator, "\\t"),
-            else => {
-                if (byte < 0x20) {
-                    try appendFmt(allocator, out, "\\u00{x:0>2}", .{byte});
-                } else {
-                    try out.append(allocator, byte);
-                }
-            },
-        }
-    }
-    try out.append(allocator, '"');
+    var writer = std.Io.Writer.Allocating.init(allocator);
+    defer writer.deinit();
+    try std.json.Stringify.value(.{
+        .format_version = 1,
+        .counts = counts,
+        .benchmarks = reports,
+    }, .{ .whitespace = .indent_2 }, &writer.writer);
+    try out.appendSlice(allocator, writer.written());
+    try out.append(allocator, '\n');
 }
 
 fn writeCsvReport(allocator: std.mem.Allocator, io: std.Io, path: []const u8, reports: []const BenchmarkReport) !void {
@@ -1181,7 +1110,7 @@ fn appendCsvReport(allocator: std.mem.Allocator, out: *std.ArrayList(u8), report
         try appendCsvField(allocator, out, report.name);
         try out.append(allocator, ',');
         try appendCsvField(allocator, out, report.category);
-        try appendFmt(allocator, out, ",{s},{d},{d},{d},{d},{d},{d},{d},{d},{d},{d},{d},{d},{d},", .{
+        try out.print(allocator, ",{s},{d},{d},{d},{d},{d},{d},{d},{d},{d},{d},{d},{d},{d},", .{
             @tagName(report.status),
             report.iterations,
             report.warmup,
@@ -1204,7 +1133,7 @@ fn appendCsvReport(allocator: std.mem.Allocator, out: *std.ArrayList(u8), report
         try appendOptionalU8Csv(allocator, out, report.clua.exit_code);
         try out.append(allocator, ',');
         try appendOptionalU8Csv(allocator, out, report.zlua.exit_code);
-        try appendFmt(allocator, out, ",{s},{s},", .{ if (report.clua.timed_out) "true" else "false", if (report.zlua.timed_out) "true" else "false" });
+        try out.print(allocator, ",{s},{s},", .{ if (report.clua.timed_out) "true" else "false", if (report.zlua.timed_out) "true" else "false" });
         try appendCsvField(allocator, out, report.reason);
         try out.append(allocator, '\n');
     }
@@ -1225,7 +1154,7 @@ fn appendCsvField(allocator: std.mem.Allocator, out: *std.ArrayList(u8), text: [
 }
 
 fn appendOptionalU8Csv(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: ?u8) !void {
-    if (value) |number| try appendFmt(allocator, out, "{d}", .{number});
+    if (value) |number| try out.print(allocator, "{d}", .{number});
 }
 
 fn appendRatioDecimal(allocator: std.mem.Allocator, out: *std.ArrayList(u8), millionths: u64) !void {
@@ -1233,13 +1162,7 @@ fn appendRatioDecimal(allocator: std.mem.Allocator, out: *std.ArrayList(u8), mil
         try out.appendSlice(allocator, "inf");
         return;
     }
-    try appendFmt(allocator, out, "{d}.{d:0>6}", .{ millionths / 1_000_000, millionths % 1_000_000 });
-}
-
-fn appendFmt(allocator: std.mem.Allocator, out: *std.ArrayList(u8), comptime fmt: []const u8, args: anytype) !void {
-    const text = try std.fmt.allocPrint(allocator, fmt, args);
-    defer allocator.free(text);
-    try out.appendSlice(allocator, text);
+    try out.print(allocator, "{d}.{d:0>6}", .{ millionths / 1_000_000, millionths % 1_000_000 });
 }
 
 fn lessThanBenchmarkPath(_: void, lhs: Benchmark, rhs: Benchmark) bool {
@@ -1323,10 +1246,46 @@ test "json report includes raw samples and metrics" {
     defer out.deinit(std.testing.allocator);
     try appendJsonReport(std.testing.allocator, &out, &reports, .{ .benchmarked = 1 });
 
-    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"samples_ns\": [100, 200]") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"median_ns\": 150") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"stddev_ns\": 100") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.items, "\"ratio_zlua_clua_millionths\": 2666666") != null);
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, out.items, .{});
+    defer parsed.deinit();
+    const report = parsed.value.object.get("benchmarks").?.array.items[0].object;
+    const clua_engine = report.get("clua").?.object;
+    const zlua_engine = report.get("zlua").?.object;
+    const samples = clua_engine.get("samples_ns").?.array.items;
+    try std.testing.expectEqual(@as(usize, 2), samples.len);
+    try std.testing.expectEqual(@as(i64, 100), samples[0].integer);
+    try std.testing.expectEqual(@as(i64, 200), samples[1].integer);
+    try std.testing.expectEqual(@as(i64, 150), clua_engine.get("median_ns").?.integer);
+    try std.testing.expectEqual(@as(i64, 100), zlua_engine.get("stddev_ns").?.integer);
+    try std.testing.expectEqual(@as(i64, 2666666), report.get("ratio_zlua_clua_millionths").?.integer);
+    try std.testing.expectEqual(@as(i64, 1), parsed.value.object.get("format_version").?.integer);
+    try std.testing.expectEqual(@as(i64, 1), parsed.value.object.get("counts").?.object.get("benchmarked").?.integer);
+}
+
+test "json report preserves escaped strings and null results" {
+    const reports = [_]BenchmarkReport{.{
+        .path = "a\\b\"c\n\x01.lua",
+        .name = "example",
+        .category = "vm",
+        .status = .skipped,
+        .reason = "not ready\t yet",
+        .zlua = .{ .signal = 9, .timed_out = true },
+    }};
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+    try appendJsonReport(std.testing.allocator, &out, &reports, .{ .skipped = 1 });
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, out.items, .{});
+    defer parsed.deinit();
+    const report = parsed.value.object.get("benchmarks").?.array.items[0].object;
+    try std.testing.expectEqualStrings(reports[0].path, report.get("path").?.string);
+    try std.testing.expectEqualStrings(reports[0].reason, report.get("reason").?.string);
+    try std.testing.expectEqualStrings("skipped", report.get("status").?.string);
+    try std.testing.expect(report.get("ratio_zlua_clua_millionths").? == .null);
+    const engine = report.get("zlua").?.object;
+    try std.testing.expect(engine.get("exit_code").? == .null);
+    try std.testing.expectEqual(@as(i64, 9), engine.get("signal").?.integer);
+    try std.testing.expect(engine.get("timed_out").?.bool);
+    try std.testing.expectEqual(@as(usize, 0), engine.get("samples_ns").?.array.items.len);
 }
 
 test "csv report escapes fields and includes metrics" {

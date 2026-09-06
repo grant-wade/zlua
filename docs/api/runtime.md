@@ -61,6 +61,7 @@
 - [testing.clua](testing/clua.md)
 - [testing.bench_runner](testing/bench_runner.md)
 - [testing.c_api_runner](testing/c_api_runner.md)
+- [testing.fixtures](testing/fixtures.md)
 - [testing.diff_runner](testing/diff_runner.md)
 - [testing.expected_failures](testing/expected_failures.md)
 - [testing.metadata](testing/metadata.md)

@@ -1669,7 +1669,7 @@ const PackItem = struct {
 
 const pack_max_size: usize = 16;
 const native_max_align: usize = 8;
-const pack_max_result_len: usize = @intCast(std.math.maxInt(i64));
+const pack_max_result_len: usize = @min(std.math.maxInt(usize), std.math.maxInt(i64));
 
 fn nativeEndian() Endian {
     return switch (@import("builtin").target.cpu.arch.endian()) {

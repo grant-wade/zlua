@@ -122,6 +122,8 @@ pub const State = struct {
     table_allocations: std.ArrayList(*Table) = .empty,
     table_allocation_index: PointerAllocationIndex,
     table_metatable_head: ?*Table = null,
+    table_finalizer_head: ?*Table = null,
+    table_pending_finalizer_head: ?*Table = null,
     table_metatable_count: usize = 0,
     userdata_allocations: std.ArrayList(*Userdata) = .empty,
     closure_allocations: std.ArrayList(*Closure) = .empty,

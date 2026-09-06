@@ -1,4 +1,5 @@
 const std = @import("std");
+const fixtures = @import("fixtures.zig");
 const builtin = @import("builtin");
 
 const process = @import("process.zig");
@@ -229,7 +230,7 @@ pub fn runCli(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8
         for (tests.items) |path| allocator.free(path);
         tests.deinit(allocator);
     }
-    try discoverTests(allocator, io, options.path, &tests);
+    try fixtures.discoverTests(allocator, io, options.path, ".c", &tests);
     std.mem.sort([]u8, tests.items, {}, lessThanString);
 
     var counts: Counts = .{};
@@ -343,24 +344,6 @@ fn knownSymbol(name: []const u8) bool {
         if (std.mem.eql(u8, name, symbol)) return true;
     }
     return false;
-}
-
-fn discoverTests(allocator: std.mem.Allocator, io: std.Io, root: []const u8, tests: *std.ArrayList([]u8)) !void {
-    var dir = Dir.cwd().openDir(io, root, .{ .iterate = true }) catch |err| switch (err) {
-        error.NotDir => {
-            if (std.mem.endsWith(u8, root, ".c")) try tests.append(allocator, try allocator.dupe(u8, root));
-            return;
-        },
-        else => return err,
-    };
-    defer dir.close(io);
-
-    var walker = try dir.walk(allocator);
-    defer walker.deinit();
-    while (try walker.next(io)) |entry| {
-        if (entry.kind != .file or !std.mem.endsWith(u8, entry.path, ".c")) continue;
-        try tests.append(allocator, try std.fs.path.join(allocator, &.{ root, entry.path }));
-    }
 }
 
 fn runOne(allocator: std.mem.Allocator, io: std.Io, out: anytype, path: []const u8, options: Options, counts: *Counts) !void {

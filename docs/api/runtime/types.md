@@ -61,6 +61,7 @@
 - [testing.clua](../testing/clua.md)
 - [testing.bench_runner](../testing/bench_runner.md)
 - [testing.c_api_runner](../testing/c_api_runner.md)
+- [testing.fixtures](../testing/fixtures.md)
 - [testing.diff_runner](../testing/diff_runner.md)
 - [testing.expected_failures](../testing/expected_failures.md)
 - [testing.metadata](../testing/metadata.md)
@@ -965,7 +966,8 @@ pub const Table = struct {
     metatable_next: ?*Table = null,
     counts_for_gc_count: bool = true,
     marked: bool = false,
-    finalized: bool = false,
+    finalizer_registered: bool = false,
+    finalizer_next: ?*Table = null,
 };
 ```
 

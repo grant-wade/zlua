@@ -235,6 +235,8 @@ test "collectgarbage runs table finalizers before sweeping" {
         \\do
         \\  local dead = setmetatable({ name = "dead" }, {
         \\    __gc = function(self)
+        \\      local info = debug.getinfo(1)
+        \\      assert(info.namewhat == "metamethod" and info.name == "__gc")
         \\      print("gc-final", self.name)
         \\    end,
         \\  })

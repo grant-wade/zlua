@@ -253,9 +253,7 @@ pub fn collectGarbageWithFinalizersMode(comptime State: type, self: *State, thre
         convergeEphemerons(State, self);
         clearWeakValues(State, self);
     }
-    if (self.table_metatable_count != 0) {
-        try runPendingFinalizers(State, self, thread);
-    }
+    prepareTableFinalizers(State, self, thread);
     runPendingUserdataFinalizers(State, self);
     if (hasWeakTables(State, self)) clearWeakTables(State, self);
     clearDeadHashKeys(State, self);
@@ -265,6 +263,7 @@ pub fn collectGarbageWithFinalizersMode(comptime State: type, self: *State, thre
     sweepStrings(State, self);
     sweepUserdata(State, self);
     sweepTables(State, self);
+    try runPendingFinalizers(State, self, thread);
     resetAutoGcThreshold(State, self);
 }
 
@@ -641,50 +640,55 @@ pub fn writeBarrier(comptime State: type, self: *State, parent_marked: bool, chi
     markValue(State, self, child);
 }
 
+fn prepareTableFinalizers(comptime State: type, self: *State, thread: ?*Thread) void {
+    // Select the entire batch before marking: finalizable objects can refer
+    // to each other, and callbacks can change metatables or register again.
+    var tail = &self.table_pending_finalizer_head;
+    while (tail.*) |table| tail = &table.finalizer_next;
+    var link = &self.table_finalizer_head;
+    while (link.*) |table| {
+        if (table.marked or thread == null) {
+            link = &table.finalizer_next;
+        } else {
+            link.* = table.finalizer_next;
+            tail.* = table;
+            tail = &table.finalizer_next;
+        }
+    }
+    tail.* = null;
+    var current = self.table_pending_finalizer_head;
+    while (current) |table| : (current = table.finalizer_next) markTable(State, self, table);
+    // Without an execution thread, keep registrations alive for a later GC.
+    if (thread == null) {
+        current = self.table_finalizer_head;
+        while (current) |table| : (current = table.finalizer_next) markTable(State, self, table);
+    }
+    convergeEphemerons(State, self);
+    clearWeakTables(State, self);
+}
+
 pub fn runPendingFinalizers(comptime State: type, self: *State, thread: ?*Thread) !void {
     const active_thread = thread orelse return;
-    var ran_finalizer = false;
-    var current = self.table_metatable_head;
-    while (current) |table| {
-        current = table.metatable_next;
-        if (table.marked or table.finalized) continue;
+    while (self.table_pending_finalizer_head) |table| {
+        self.table_pending_finalizer_head = table.finalizer_next;
+        table.finalizer_next = null;
+        table.finalizer_registered = false;
         const metatable = table.metatable orelse continue;
         const finalizer = metatable.get(.{ .string = "__gc" });
         if (finalizer == .nil) continue;
-        if (weakMode(State, self, metatable).values and valueIsWeaklyCleared(State, self, finalizer)) continue;
-        if (!callableValue(State, self, finalizer)) continue;
-        markTable(State, self, table);
-        table.finalized = true;
-        convergeEphemerons(State, self);
-        clearWeakValues(State, self);
-        clearWeakTables(State, self);
-        {
-            const saved_stack_len = active_thread.stack.items.len;
-            const saved_last_result_base = active_thread.last_result_base;
-            const saved_last_result_count = active_thread.last_result_count;
-            defer {
-                active_thread.stack.items.len = saved_stack_len;
-                active_thread.last_result_base = saved_last_result_base;
-                active_thread.last_result_count = saved_last_result_count;
-            }
-            const previous_name = active_thread.next_call_name;
-            const previous_namewhat = active_thread.next_call_namewhat;
-            active_thread.next_call_name = "__gc";
-            active_thread.next_call_namewhat = "metamethod";
-            defer {
-                active_thread.next_call_name = previous_name;
-                active_thread.next_call_namewhat = previous_namewhat;
-            }
-            _ = try self.callOneResult(active_thread, finalizer, &.{.{ .table = table }});
-            try self.runThreadUntil(active_thread, active_thread.frames.items.len);
+        const previous_name = active_thread.next_call_name;
+        const previous_namewhat = active_thread.next_call_namewhat;
+        active_thread.next_call_name = "__gc";
+        active_thread.next_call_namewhat = "metamethod";
+        active_thread.native_call_depth += 1;
+        defer {
+            active_thread.next_call_name = previous_name;
+            active_thread.next_call_namewhat = previous_namewhat;
+            active_thread.native_call_depth -= 1;
         }
-        ran_finalizer = true;
+        const result = try self.protectedCall(active_thread, finalizer, &.{.{ .table = table }});
+        value_mod.freeProtectedResult(self.allocator, result);
     }
-    if (!ran_finalizer) return;
-    resetMarks(State, self);
-    markRoots(State, self);
-    convergeEphemerons(State, self);
-    clearWeakValues(State, self);
 }
 
 pub fn runPendingUserdataFinalizers(comptime State: type, self: *State) void {
@@ -698,7 +702,6 @@ pub fn runPendingUserdataFinalizers(comptime State: type, self: *State) void {
         ran_finalizer = true;
     }
     if (!ran_finalizer) return;
-    resetMarks(State, self);
     markRoots(State, self);
     convergeEphemerons(State, self);
     clearWeakValues(State, self);
@@ -947,6 +950,15 @@ pub fn allocationStats(comptime State: type, self: State) RuntimeAllocationStats
 
 pub fn noteTableMetatableChanged(comptime State: type, self: *State, table: *Table, old_has_metatable: bool) void {
     if (!isTrackedTable(State, self, table)) return;
+    if (!table.finalizer_registered) {
+        if (table.metatable) |metatable| {
+            if (metatable.get(.{ .string = "__gc" }) != .nil) {
+                table.finalizer_registered = true;
+                table.finalizer_next = self.table_finalizer_head;
+                self.table_finalizer_head = table;
+            }
+        }
+    }
     const new_has_metatable = table.metatable != null;
     if (old_has_metatable == new_has_metatable) return;
     if (new_has_metatable) {

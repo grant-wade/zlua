@@ -25,8 +25,8 @@ pub fn build(b: *std.Build) void {
 
     const clua_optimize: std.builtin.OptimizeMode = .ReleaseSafe;
     const bench_optimize: std.builtin.OptimizeMode = .ReleaseFast;
-    const clua_exe = addClua(b, target, clua_optimize, lua_deps_step);
     const clua_lib = addCluaLib(b, target, clua_optimize, lua_deps_step, "lua5.5-core");
+    const clua_exe = addClua(b, target, clua_optimize, clua_lib);
     const clua_startup_bench_lib = addCluaLib(b, target, bench_optimize, lua_deps_step, "lua5.5-startup-bench");
     b.installArtifact(clua_exe);
 
@@ -320,6 +320,37 @@ pub fn build(b: *std.Build) void {
     }
     test_step.dependOn(freestanding_test_step);
 
+    const wasm_target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .freestanding });
+    const wasm_zerde = b.dependency("zerde", .{ .target = wasm_target, .optimize = optimize });
+    const wasm_mod = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = wasm_target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "zerde", .module = wasm_zerde.module("zerde") }},
+    });
+    const wasm_test = b.addExecutable(.{
+        .name = "zlua-test-wasm",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/test_freestanding_main.zig"),
+            .target = wasm_target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "zlua", .module = wasm_mod }},
+        }),
+    });
+    wasm_test.entry = .disabled;
+    wasm_test.rdynamic = true;
+    wasm_test.stack_size = 4 * 1024 * 1024;
+    test_step.dependOn(&wasm_test.step);
+    const run_wasm_test = b.addSystemCommand(&.{
+        "node",
+        "-e",
+        \\WebAssembly.instantiate(require('node:fs').readFileSync(process.argv[1]), {})
+        \\  .then(({instance}) => { require('node:assert/strict').equal(instance.exports.smoke(), 1); })
+        \\  .catch(error => { console.error(error); process.exitCode = 1; });
+    });
+    run_wasm_test.addArtifactArg(wasm_test);
+    b.step("test-wasm", "Run the freestanding smoke test in wasm32 (Node.js)").dependOn(&run_wasm_test.step);
+
     const diff_step = b.step("test-diff", "Run CLua differential tests");
     const diff_cmd = b.addRunArtifact(diff_exe);
     diff_cmd.step.dependOn(b.getInstallStep());
@@ -415,68 +446,25 @@ fn addClua(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
-    lua_deps_step: *std.Build.Step,
+    clua_lib: *std.Build.Step.Compile,
 ) *std.Build.Step.Compile {
-    const lua_sources = [_][]const u8{
-        "lapi.c",
-        "lauxlib.c",
-        "lbaselib.c",
-        "lcode.c",
-        "lcorolib.c",
-        "lctype.c",
-        "ldblib.c",
-        "ldebug.c",
-        "ldo.c",
-        "ldump.c",
-        "lfunc.c",
-        "lgc.c",
-        "linit.c",
-        "liolib.c",
-        "llex.c",
-        "lmathlib.c",
-        "lmem.c",
-        "loadlib.c",
-        "lobject.c",
-        "lopcodes.c",
-        "loslib.c",
-        "lparser.c",
-        "lstate.c",
-        "lstring.c",
-        "lstrlib.c",
-        "ltable.c",
-        "ltablib.c",
-        "ltm.c",
-        "lua.c",
-        "lundump.c",
-        "lutf8lib.c",
-        "lvm.c",
-        "lzio.c",
-    };
-
     const clua_mod = b.createModule(.{
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
-    const clua_cflags = cluaCFlags(target);
-
     clua_mod.addCSourceFiles(.{
         .root = b.path(lua_source_root),
-        .files = &lua_sources,
-        .flags = clua_cflags,
+        .files = &.{"lua.c"},
+        .flags = cluaCFlags(target),
     });
-    if (target.result.os.tag != .windows) {
-        clua_mod.linkSystemLibrary("m", .{});
-    }
-    if (target.result.os.tag == .linux) {
-        clua_mod.linkSystemLibrary("dl", .{});
-    }
+    clua_mod.linkLibrary(clua_lib);
 
     const exe = b.addExecutable(.{
         .name = "lua5.5",
         .root_module = clua_mod,
     });
-    exe.step.dependOn(lua_deps_step);
+    exe.step.dependOn(&clua_lib.step);
     return exe;
 }
 

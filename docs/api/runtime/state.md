@@ -61,6 +61,7 @@
 - [testing.clua](../testing/clua.md)
 - [testing.bench_runner](../testing/bench_runner.md)
 - [testing.c_api_runner](../testing/c_api_runner.md)
+- [testing.fixtures](../testing/fixtures.md)
 - [testing.diff_runner](../testing/diff_runner.md)
 - [testing.expected_failures](../testing/expected_failures.md)
 - [testing.metadata](../testing/metadata.md)
@@ -486,6 +487,8 @@ pub const State = struct {
     table_allocations: std.ArrayList(*Table) = .empty,
     table_allocation_index: PointerAllocationIndex,
     table_metatable_head: ?*Table = null,
+    table_finalizer_head: ?*Table = null,
+    table_pending_finalizer_head: ?*Table = null,
     table_metatable_count: usize = 0,
     userdata_allocations: std.ArrayList(*Userdata) = .empty,
     closure_allocations: std.ArrayList(*Closure) = .empty,

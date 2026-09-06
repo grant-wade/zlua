@@ -673,7 +673,8 @@ pub const Table = struct {
     metatable_next: ?*Table = null,
     counts_for_gc_count: bool = true,
     marked: bool = false,
-    finalized: bool = false,
+    finalizer_registered: bool = false,
+    finalizer_next: ?*Table = null,
 
     pub fn init(allocator: std.mem.Allocator, array_hint: u32, hash_hint: u32) !Table {
         var table = Table{ .entry_index = TableEntryIndex.init(allocator) };

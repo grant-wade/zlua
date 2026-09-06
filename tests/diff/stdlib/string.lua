@@ -24,3 +24,11 @@ local packed = string.pack("<i4I2", -2, 258)
 print(#packed)
 print(string.unpack("<i4I2", packed))
 print(string.packsize("<i4I2"))
+
+-- packsize checks length arithmetic without allocating enormous strings.
+local size_limit = string.packsize('T') == 4 and 0xffffffff or math.maxinteger
+local halves = 'c' .. (size_limit // 2) .. 'c' .. (size_limit // 2)
+assert(string.packsize(halves) == size_limit - 1)
+assert(string.packsize(halves .. 'x') == size_limit)
+assert(not pcall(string.packsize, halves .. 'xx'))
+assert(not pcall(string.packsize, 'c' .. size_limit .. '0'))

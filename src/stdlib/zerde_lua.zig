@@ -6,7 +6,7 @@ const State = runtime.State;
 const Value = runtime.Value;
 const Table = runtime.Table;
 
-const max_zerde_table_len = @as(usize, @intCast(std.math.maxInt(i64)));
+const max_zerde_table_len: usize = @min(std.math.maxInt(usize), std.math.maxInt(i64));
 
 pub fn ensureSupportTables(state: *State) !void {
     if (state.zerde_null == null) {

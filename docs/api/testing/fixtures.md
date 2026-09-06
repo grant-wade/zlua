@@ -1,9 +1,9 @@
-# stdlib.base
+# testing.fixtures
 
 ## Navigation
 
 - [API Index](../README.md)
-- Parent: [stdlib](../stdlib.md)
+- Parent: [testing](../testing.md)
 
 <details>
 <summary>All documents</summary>
@@ -73,40 +73,13 @@
 
 ## Functions
 
-- [load](#fn-load)
-- [typeValue](#fn-typevalue)
-- [tonumber](#fn-tonumber)
-- [warn](#fn-warn)
+- [discoverTests](#fn-discovertests)
 
-<a id="fn-load"></a>
+<a id="fn-discovertests"></a>
 
-## load
+## discoverTests
 
 ```zig
-pub fn load(state: *State, thread: *Thread, op: bytecode.Call) !void
-```
-
-<a id="fn-typevalue"></a>
-
-## typeValue
-
-```zig
-pub fn typeValue(state: *State, thread: *Thread, op: bytecode.Call) !void
-```
-
-<a id="fn-tonumber"></a>
-
-## tonumber
-
-```zig
-pub fn tonumber(state: *State, thread: *Thread, op: bytecode.Call) !void
-```
-
-<a id="fn-warn"></a>
-
-## warn
-
-```zig
-pub fn warn(state: *State, thread: *Thread, op: bytecode.Call) !void
+pub fn discoverTests(allocator: std.mem.Allocator, io: std.Io, root: []const u8, suffix: []const u8, tests: *std.ArrayList([]u8)) !void
 ```
 

@@ -6,7 +6,8 @@ Lua-visible behavior is checked against the official Lua 5.5 C implementation bu
 
 | Layer | Command | Covers |
 | --- | --- | --- |
-| Zig tests | `zig build test` | Library, CLI, runtime, API, test utilities, and the freestanding smoke build. |
+| Zig tests | `zig build test` | Library, CLI, runtime, API, test utilities, and x86_64/wasm32 freestanding smoke builds. |
+| WASM smoke | `zig build test-wasm` | Runs the freestanding custom-host profile in wasm32 using Node.js. |
 | Embedding examples | `zig build examples` | Compiles every program under `examples/`. |
 | Differential fixtures | `zig build test-diff` | Runs `tests/diff/**/*.lua` under Lua 5.5 and zlua. |
 | Extension fixtures | `zig build test-extensions` | Checks zlua-only libraries and functions against checked-in output. |

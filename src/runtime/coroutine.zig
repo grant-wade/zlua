@@ -193,15 +193,6 @@ pub fn coroutineClose(comptime State: type, self: *State, thread: *Thread, op: b
         try self.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = true }});
         return;
     }
-    if (target.status == .dead) {
-        if (target.close_error_value) |error_value| {
-            target.close_error_value = null;
-            try self.returnValues(thread, op.base, op.return_count, &.{ .{ .boolean = false }, error_value });
-        } else {
-            try self.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = true }});
-        }
-        return;
-    }
     if (target.status == .running and target != thread) return self.fail("cannot close a running coroutine");
 
     const closes_self = target == thread and target.status == .running;
@@ -235,7 +226,13 @@ pub fn callCoroutineWrapperWithArgs(comptime State: type, self: *State, thread: 
     defer freeCoroutineResumeResult(self.allocator, result);
     switch (result) {
         .success => |values| try self.returnValues(thread, base, return_count, values),
-        .failure => |error_value| return self.throwValue(error_value),
+        .failure => |error_value| {
+            const failure = if (target.status == .dead)
+                (try closeCoroutine(State, self, target, null)) orelse error_value
+            else
+                error_value;
+            return self.throwValue(failure);
+        },
     }
 }
 
@@ -268,15 +265,16 @@ pub fn closeCoroutine(comptime State: type, self: *State, target: *Thread, error
         self.current_thread = previous_thread;
     }
 
-    self.closeFramesTo(target, 0, error_value) catch |err| switch (err) {
+    const failure = error_value orelse target.close_error_value;
+    defer target.close_error_value = null;
+    self.closeFramesTo(target, 0, failure) catch |err| switch (err) {
         error.RuntimeError, error.StackOverflow, error.UnsupportedOpcode => return self.currentErrorValue(),
         else => {
             target.status = previous_status;
             return err;
         },
     };
-    target.close_error_value = null;
-    return null;
+    return failure;
 }
 
 pub fn resumeCoroutine(comptime State: type, self: *State, target: *Thread, args: []const Value) !CoroutineResumeResult {
@@ -324,12 +322,10 @@ pub fn resumeCoroutine(comptime State: type, self: *State, target: *Thread, args
                     else => return continuation_err,
                 };
                 if (completed) continue;
-                var final_error = error_value;
                 target.error_traceback = try self.snapshotCoroutineErrorTraceback(target);
-                if (try closeCoroutine(State, self, target, final_error)) |close_error_value| final_error = close_error_value;
-                target.close_error_value = final_error;
+                target.close_error_value = error_value;
                 target.status = .dead;
-                return .{ .failure = final_error };
+                return .{ .failure = error_value };
             },
             else => return err,
         };

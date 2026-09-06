@@ -181,7 +181,7 @@ Values that cross the boundary keep stable peers where identity matters:
 - C strings are indexed by content and may cache their runtime string.
 - C tables and runtime tables are linked in both directions.
 - Linked runtime tables stay rooted while used by the C layer.
-- Recursive synchronization uses in-progress guards and per-traversal visitation generations. 
+- Recursive synchronization uses in-progress guards and per-traversal visitation generations.
 - The C global table is linked to the runtime's canonical global table.
 
 This bridge lets loaded Lua closures call through C-created tables without replacing table identity on every conversion. The C layer also implements stack indices, pseudo-indices, `luaL_*` helpers, coroutine continuations, status codes, and C-compatible exports matching the installed Lua headers.

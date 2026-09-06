@@ -1,4 +1,5 @@
 const std = @import("std");
+const fixtures = @import("fixtures.zig");
 const process = @import("process.zig");
 
 const Dir = std.Io.Dir;
@@ -46,7 +47,7 @@ pub fn runCli(
         for (tests.items) |path| allocator.free(path);
         tests.deinit(allocator);
     }
-    try discoverTests(allocator, io, options.path, &tests);
+    try fixtures.discoverTests(allocator, io, options.path, ".lua", &tests);
     std.mem.sort([]u8, tests.items, {}, lessThanString);
 
     var buffer: [8192]u8 = undefined;
@@ -95,25 +96,6 @@ fn parseArgs(args: []const []const u8) !Options {
         }
     }
     return options;
-}
-
-fn discoverTests(allocator: std.mem.Allocator, io: std.Io, root: []const u8, tests: *std.ArrayList([]u8)) !void {
-    var dir = Dir.cwd().openDir(io, root, .{ .iterate = true }) catch |err| switch (err) {
-        error.NotDir => {
-            if (std.mem.endsWith(u8, root, ".lua")) try tests.append(allocator, try allocator.dupe(u8, root));
-            return;
-        },
-        else => return err,
-    };
-    defer dir.close(io);
-
-    var walker = try dir.walk(allocator);
-    defer walker.deinit();
-
-    while (try walker.next(io)) |entry| {
-        if (entry.kind != .file or !std.mem.endsWith(u8, entry.path, ".lua")) continue;
-        try tests.append(allocator, try std.fs.path.join(allocator, &.{ root, entry.path }));
-    }
 }
 
 fn runOne(

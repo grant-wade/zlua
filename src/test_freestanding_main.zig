@@ -9,6 +9,11 @@ export fn _start() noreturn {
     exit(0);
 }
 
+export fn smoke() bool {
+    run() catch return false;
+    return true;
+}
+
 fn run() !void {
     var fixed = std.heap.FixedBufferAllocator.init(&heap_buffer);
     var host = Host{
@@ -61,6 +66,12 @@ fn run() !void {
         \\assert(table.concat(t, ',') == '1,2,3')
         \\assert(string.reverse('abc') == 'cba')
         \\assert(string.pack('>I2', 0x1234) == string.char(0x12, 0x34))
+        \\local size_limit = string.packsize('T') == 4 and 0xffffffff or math.maxinteger
+        \\local halves = 'c' .. (size_limit // 2) .. 'c' .. (size_limit // 2)
+        \\assert(string.packsize(halves) == size_limit - 1)
+        \\assert(string.packsize(halves .. 'x') == size_limit)
+        \\assert(not pcall(string.packsize, halves .. 'xx'))
+        \\assert(not pcall(string.packsize, 'c' .. size_limit .. '0'))
         \\assert(math.max(1, 5, 3) == 5)
         \\assert(utf8.len('hello') == 5)
         \\
@@ -82,6 +93,11 @@ fn run() !void {
         \\assert(csv_value[1].name == 'Ada' and csv_value[2].age == csv.null)
         \\local msgpack_value = msgpack.read(msgpack.write({ name = 'Ada', ok = true }))
         \\assert(msgpack_value.name == 'Ada' and msgpack_value.ok == true)
+        \\assert(not pcall(msgpack.write, { [0xffffffff] = true }))
+        \\assert(not pcall(msgpack.write, { [0x100000000] = true }))
+        \\local sequence = msgpack.read(msgpack.write({ 1, false, 'three', msgpack.null }))
+        \\assert(#sequence == 4 and sequence[1] == 1 and sequence[2] == false)
+        \\assert(sequence[3] == 'three' and sequence[4] == msgpack.null)
         \\
         \\assert(os.getenv('KERNEL_ENV') == 'present')
         \\assert(os.time() == 123456)
@@ -179,6 +195,7 @@ const Host = struct {
 };
 
 fn exit(code: u8) noreturn {
+    if (comptime builtin.target.cpu.arch == .wasm32) @trap();
     if (comptime builtin.target.cpu.arch != .x86_64) @compileError("freestanding smoke test uses x86_64 Linux syscall ABI");
 
     asm volatile ("syscall"

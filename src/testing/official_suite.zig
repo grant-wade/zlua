@@ -155,10 +155,7 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !Options {
 }
 
 fn parseMode(value: []const u8) !Mode {
-    inline for (@typeInfo(Mode).@"enum".fields) |field| {
-        if (std.mem.eql(u8, value, field.name)) return @field(Mode, field.name);
-    }
-    return error.InvalidMode;
+    return std.meta.stringToEnum(Mode, value) orelse error.InvalidMode;
 }
 
 fn runIndividualSuite(

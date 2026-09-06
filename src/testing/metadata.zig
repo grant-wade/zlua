@@ -44,12 +44,7 @@ pub fn parse(source: []const u8) !Metadata {
 }
 
 fn parseEnum(comptime T: type, value: []const u8) !T {
-    inline for (@typeInfo(T).@"enum".fields) |field| {
-        if (std.mem.eql(u8, value, field.name)) {
-            return @field(T, field.name);
-        }
-    }
-    return error.InvalidMetadataValue;
+    return std.meta.stringToEnum(T, value) orelse error.InvalidMetadataValue;
 }
 
 pub fn parseStage(value: []const u8) !Stage {
