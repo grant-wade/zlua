@@ -373,7 +373,39 @@ defer another.deinit();
 
 Capture copies the VM heap, including suspended Lua coroutines, shared references, module caches, I/O buffers, random state, and GC settings. Clones share immutable checkpoint bytecode while keeping mutable closures, caches, and other VM objects private. Capture establishes an active baseline on the source, and clone establishes it on the new worker. Reset also restores options, host bindings, and instruction usage. Checkpoints are reusable, can outlive the source state, and have no persistence format.
 
-Snapshot and reset require an idle VM. Active calls, collection, destruction, or recursive snapshot operations return `error.SnapshotBusy`. Untracked runtime objects return `error.SnapshotUnsupported`. Serialize access to each state and checkpoint.
+Snapshot and reset require an idle VM. Active calls, collection, destruction, or recursive snapshot operations return `error.SnapshotBusy`. Untracked runtime objects return `error.SnapshotUnsupported`. Externally serialize every `State`, including reset and its rollback journal. Reset's atomic failure guarantee does not make a state concurrently usable.
+
+Independently owned `Snapshot` handles can share one immutable backing and clone concurrently into independent mutable VMs. Obtain each additional handle with `checkpoint.retain()` and move it to its owner. Externally serialize each individual handle against mutation or `deinit`; `deinit()` consumes only that handle. An arbitrary bit copy is not an ownership retain. Keep a live owned handle throughout clone, retain, or reset using that handle.
+
+For example, with a thread-safe allocator `a` that outlives the joined workers:
+
+```zig
+const Worker = struct {
+    fn run(owned: zlua.Snapshot, allocator: std.mem.Allocator) void {
+        var checkpoint = owned; // ownership moved from the spawning thread
+        defer checkpoint.deinit();
+        var vm = checkpoint.clone(allocator) catch return;
+        defer vm.deinit();
+        vm.doString("result = 42", .{}) catch return;
+        vm.reset(&checkpoint) catch return;
+    }
+};
+var checkpoint = try lua.snapshot(a);
+defer checkpoint.deinit();
+var threads: [4]std.Thread = undefined;
+var started: usize = 0;
+defer for (threads[0..started]) |thread| thread.join();
+for (&threads) |*thread| {
+    var owned = checkpoint.retain();
+    thread.* = std.Thread.spawn(.{}, Worker.run, .{ owned, a }) catch |err| {
+        owned.deinit();
+        return err;
+    };
+    started += 1; // the worker now owns the retained handle
+}
+```
+
+The source state and original handle can also be destroyed before the workers finish.
 
 ### Reset and Lifetimes
 
@@ -383,11 +415,13 @@ Reset to the active baseline restores dirty objects and releases private allocat
 
 The destination keeps its allocator. Rollback records, retained worker storage, private copies, and new allocations count against the worker memory limit. During snapshot switching, the live graph and its replacement both count against the restored limit. Retained storage is not a Lua GC root: weak reachability and normal finalization still operate on the live graph. The GC byte estimate counts live Lua objects, so it can be smaller than allocator usage while rollback storage is retained. Snapshot storage uses `snapshot_allocator`; with a separate allocator it is outside the worker limit. Passing `state.allocator()` charges checkpoint storage to that state’s limit and retains its allocator infrastructure. Clones use their supplied allocator and inherit the captured limit. Host-owned results remain freeable through the state allocator while the state lives.
 
-Successful capture, clone, and reset retain the checkpoint as the state’s baseline. A worker also retains the owner of its borrowed bytecode independently, so capturing a modified worker does not invalidate its existing functions. `Snapshot.deinit` releases the public wrapper; backing storage is freed only after the last retaining state releases it. Keep `snapshot_allocator` valid for that entire lifetime, including after the wrapper is destroyed. An arena used for checkpoint storage must not be reset while a retaining state exists. Keep backing allocators valid until all allocations, including shared userdata, are released.
+Successful capture, clone, and reset retain the checkpoint as the state’s baseline. A worker also retains the owner of its borrowed bytecode independently, so capturing a modified worker does not invalidate its existing functions. `Snapshot.deinit` releases the public wrapper; backing storage is freed only after the last retaining state or handle releases it. Keep `snapshot_allocator` valid for that entire lifetime, including after the wrapper is destroyed. An arena used for checkpoint storage must not be reset while a retaining state exists. Keep backing allocators valid until all allocations, including shared userdata, are released.
+
+Final backing, userdata, and retained allocator infrastructure destruction may run on any participating owner thread. Allocators for these objects must support the allocation/free calls that overlap across those threads, including freeing on a thread other than the allocating thread. Choose a thread-safe allocator or provide allocator-level synchronization when sharing it; a thread-confined arena alone does not provide that synchronization. Worker-local allocators need no additional synchronization unless their storage is shared or exported. zlua's retained memory-limit allocator supports concurrent frees from shared owners, but allocation/resize and state operations through `state.allocator()` remain with the state owner. Its underlying allocator must satisfy the same cross-thread lifetime requirements. There is no owner-thread deferred reclamation.
 
 ### Userdata and Host Bindings
 
-Userdata payloads are shared by default, so payload mutations survive reset. Lua-owned payloads are finalized and freed once the last owner releases them. Borrowed payloads must outlive every referencing state and checkpoint. Synchronize shared payload access and ownership operations.
+Userdata payloads are shared by default, so payload mutations survive reset. Lua-owned payloads are finalized and freed once the last owner releases them. Borrowed payloads must outlive every referencing state and checkpoint. zlua synchronizes shared payload lifetime accounting and finalizes/disposes each payload at most once. Embedders still synchronize mutable host payload access and external resource ownership.
 
 For independent payload copies, supply paired hooks to `newUserdata` or `newUserdataPtr`:
 
@@ -413,7 +447,7 @@ defer counter.deinit();
 try lua.setGlobal("counter", counter);
 ```
 
-`copy` must own all nested storage using the supplied allocator. `dispose` releases it, including on failed construction or checkpoint destruction. Hooks must not retain source VM pointers or reenter snapshot operations. Capture and discard skip application finalizers; normal finalizers must not free storage owned by `dispose`. Eager payloads (the default) keep their original ownership rules and invoke the copy hook on every reset.
+`copy` must own all nested storage using the supplied allocator. `dispose` releases it, including on failed construction or checkpoint destruction. Hooks must not retain source VM pointers or reenter snapshot operations. Concurrent clone/reset operations on different workers can invoke `copy` on the same pristine payload simultaneously. Such hooks must permit concurrent source reads and synchronize any shared counters or host resources. `dispose` and finalizers can run on different owner threads and must support that usage; zlua does not serialize host hooks. Capture and discard skip application finalizers; normal finalizers must not free storage owned by `dispose`. Eager payloads (the default) keep their original ownership rules and invoke the copy hook on every reset.
 
 To track an owned payload through scoped access, set `.tracking = .scoped`:
 

@@ -82,6 +82,9 @@ pub fn UserdataPtrOptions(comptime T: type) type {
 /// Hooks for copying and disposing of userdata payloads in checkpoints.
 /// Copies must own all nested storage and be independently disposable.
 /// Hooks must not retain VM pointers or reenter snapshot operations.
+/// Concurrent snapshot clones may call copy on the same pristine payload at
+/// once; hooks and shared host resources must support their participating threads.
+/// Disposal/finalization can run on whichever thread releases the last owner.
 pub fn UserdataSnapshotHooks(comptime T: type) type {
     return struct {
         copy: *const fn (std.mem.Allocator, *const T) anyerror!*T,
@@ -281,7 +284,10 @@ const MemoryLimitAllocator = struct {
 
     parent: std.mem.Allocator,
     limit: usize,
-    used: usize = 0,
+    // Only the State owner allocates/resizes and changes limit/exceeded. Shared
+    // payload/backing destruction may free concurrently through this allocator.
+    // Relaxed accounting suffices: lifetime release publishes object contents.
+    used: std.atomic.Value(usize) = .init(0),
     exceeded: bool = false,
 
     fn destroyLifetime(lifetime: *runtime_types.AllocatorLifetime) void {
@@ -298,7 +304,7 @@ const MemoryLimitAllocator = struct {
     }
 
     fn canGrow(self: *const MemoryLimitAllocator, amount: usize) bool {
-        return amount <= self.limit -| self.used;
+        return amount <= self.limit -| self.used.load(.monotonic);
     }
 
     fn deny(self: *MemoryLimitAllocator) ?[*]u8 {
@@ -317,7 +323,7 @@ const MemoryLimitAllocator = struct {
         const self: *MemoryLimitAllocator = @ptrCast(@alignCast(ctx));
         if (!self.canGrow(len)) return self.deny();
         const ptr = self.parent.rawAlloc(len, alignment, ret_addr) orelse return null;
-        self.used += len;
+        _ = self.used.fetchAdd(len, .monotonic);
         return ptr;
     }
 
@@ -329,9 +335,9 @@ const MemoryLimitAllocator = struct {
         }
         if (!self.parent.rawResize(memory, alignment, new_len, ret_addr)) return false;
         if (new_len > memory.len) {
-            self.used += new_len - memory.len;
+            _ = self.used.fetchAdd(new_len - memory.len, .monotonic);
         } else {
-            self.used -= @min(self.used, memory.len - new_len);
+            _ = self.used.fetchSub(memory.len - new_len, .monotonic);
         }
         return true;
     }
@@ -341,16 +347,16 @@ const MemoryLimitAllocator = struct {
         if (new_len > memory.len and !self.canGrow(new_len - memory.len)) return self.deny();
         const ptr = self.parent.rawRemap(memory, alignment, new_len, ret_addr) orelse return null;
         if (new_len > memory.len) {
-            self.used += new_len - memory.len;
+            _ = self.used.fetchAdd(new_len - memory.len, .monotonic);
         } else {
-            self.used -= @min(self.used, memory.len - new_len);
+            _ = self.used.fetchSub(memory.len - new_len, .monotonic);
         }
         return ptr;
     }
 
     fn free(ctx: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
         const self: *MemoryLimitAllocator = @ptrCast(@alignCast(ctx));
-        self.used -= @min(self.used, memory.len);
+        _ = self.used.fetchSub(memory.len, .monotonic);
         self.parent.rawFree(memory, alignment, ret_addr);
     }
 };
@@ -468,6 +474,7 @@ pub const State = struct {
     /// The active baseline rolls back dirty objects and private allocations.
     /// Unchanged baselines without eager resource hooks allocate nothing.
     /// Switching snapshots prepares a graph copy before replacing the VM.
+    /// Atomic failure semantics do not make State concurrently usable.
     /// Rollback skips Lua `__gc` and `__close` handlers.
     pub fn reset(self: *State, checkpoint: *const Snapshot) !void {
         if (self.baseline == checkpoint.backing and self.raw_state.rollback != null) {
@@ -514,7 +521,7 @@ pub const State = struct {
             l.limit = previous_limit;
             l.exceeded = previous_exceeded;
         };
-        var replacement = try checkpoint.backing.image.copyImageWithProtos(self.base_allocator, self.allocator(), self.raw_state.allocator_lifetime, true);
+        var replacement = try checkpoint.backing.image.copyFrozenImage(self.base_allocator, self.allocator(), self.raw_state.allocator_lifetime);
         errdefer replacement.discardImage();
         try replacement.installRollback(&checkpoint.backing.image.raw_state);
         replacement.memory_limit_allocator = limit;
@@ -586,12 +593,18 @@ pub const State = struct {
         if (self.immutable_owner) |owner| owner.release();
     }
 
-    fn copyImage(self: *const State, base: std.mem.Allocator, a: std.mem.Allocator, lifetime: ?*runtime_types.AllocatorLifetime) !State {
-        return self.copyImageWithProtos(base, a, lifetime, false);
+    fn copyImage(self: *State, base: std.mem.Allocator, a: std.mem.Allocator, lifetime: ?*runtime_types.AllocatorLifetime) !State {
+        const raw = try snapshot_runtime.copy(&self.raw_state, a, lifetime, self.last_error_root);
+        return self.copyImageMetadata(base, a, raw);
     }
 
-    fn copyImageWithProtos(self: *const State, base: std.mem.Allocator, a: std.mem.Allocator, lifetime: ?*runtime_types.AllocatorLifetime, borrow_protos: bool) !State {
-        var result = State{ .base_allocator = base, .raw_state = try snapshot_runtime.copyWithProtos(&self.raw_state, a, lifetime, self.last_error_root, borrow_protos) };
+    fn copyFrozenImage(self: *const State, base: std.mem.Allocator, a: std.mem.Allocator, lifetime: ?*runtime_types.AllocatorLifetime) !State {
+        const raw = try snapshot_runtime.copyFrozen(&self.raw_state, a, lifetime, self.last_error_root);
+        return self.copyImageMetadata(base, a, raw);
+    }
+
+    fn copyImageMetadata(self: *const State, base: std.mem.Allocator, a: std.mem.Allocator, raw: runtime.State) !State {
+        var result = State{ .base_allocator = base, .raw_state = raw };
         errdefer result.discardImage();
         if (self.last_error_root != null) result.last_error_root = 0;
         for (self.callbacks.items) |entry| {
@@ -1044,17 +1057,20 @@ const RollbackMetadata = struct {
 const SnapshotBacking = struct {
     allocator: std.mem.Allocator,
     lifetime: ?*runtime_types.AllocatorLifetime = null,
-    references: usize = 1,
+    references: std.atomic.Value(usize) = .init(1),
     image: State,
 
     fn retain(self: *const SnapshotBacking) void {
-        @constCast(self).references += 1;
+        const previous = @constCast(self).references.fetchAdd(1, .monotonic);
+        std.debug.assert(previous != 0 and previous != std.math.maxInt(usize));
     }
 
     fn release(self: *const SnapshotBacking) void {
         const mutable = @constCast(self);
-        mutable.references -= 1;
-        if (mutable.references != 0) return;
+        // Acquire pairs with prior releases before destroying the immutable graph.
+        const previous = mutable.references.fetchSub(1, .acq_rel);
+        std.debug.assert(previous != 0);
+        if (previous != 1) return;
         const allocator = mutable.allocator;
         const lifetime = mutable.lifetime;
         mutable.image.discardImage();
@@ -1064,12 +1080,23 @@ const SnapshotBacking = struct {
 };
 
 /// Reusable immutable checkpoint, retained independently by source and workers.
-/// The snapshot allocator must outlive all states retaining this checkpoint.
-/// Hookless userdata and host capabilities remain shared.
+/// Independently retained handles may clone concurrently. Externally serialize
+/// each handle against mutation/deinit; a bit copy does not retain ownership.
+/// Each State and its rollback journal remain single-owner/external-serialization.
+/// Backing and shared payload allocators must outlive every owner and support
+/// frees on the final owner's thread, including concurrent frees when shared.
+/// Hookless userdata and host capabilities retain host synchronization needs.
 pub const Snapshot = struct {
     backing: *const SnapshotBacking,
 
-    /// Releases this wrapper; storage is freed after the final retaining state.
+    /// Returns a separately owned handle. Move it to another thread; ordinary
+    /// bit copies do not retain ownership. The caller must hold a live handle.
+    pub fn retain(self: *const Snapshot) Snapshot {
+        self.backing.retain();
+        return .{ .backing = self.backing };
+    }
+
+    /// Releases only this wrapper; storage is freed after the final owner.
     pub fn deinit(self: *Snapshot) void {
         self.backing.release();
         self.* = undefined;
@@ -1084,7 +1111,7 @@ pub const Snapshot = struct {
             limit = p;
         }
         errdefer if (limit) |p| p.lifetime.release();
-        var result = try self.backing.image.copyImageWithProtos(state_allocator, if (limit) |p| p.allocator() else state_allocator, if (limit) |p| &p.lifetime else null, true);
+        var result = try self.backing.image.copyFrozenImage(state_allocator, if (limit) |p| p.allocator() else state_allocator, if (limit) |p| &p.lifetime else null);
         errdefer result.discardImage();
         try result.installRollback(&self.backing.image.raw_state);
         result.memory_limit_allocator = limit;
@@ -4621,4 +4648,57 @@ comptime {
         .copied = "stdlib stdin max_memory max_stack_values max_call_frames max_instructions debug_errors trace_vm",
         .external = "io stdout stderr filesystem environment clock process",
     });
+}
+
+test "retained allocator accounts for concurrent shared frees while owner allocates" {
+    if (@import("builtin").single_threaded or @import("builtin").target.cpu.arch.isWasm()) return error.SkipZigTest;
+    const Worker = struct {
+        allocator: std.mem.Allocator,
+        blocks: [128][]u8,
+        start: *std.atomic.Value(bool),
+        fn run(self: *@This()) void {
+            while (!self.start.load(.acquire)) std.atomic.spinLoopHint();
+            for (self.blocks) |block| self.allocator.free(block);
+        }
+    };
+    var limit = MemoryLimitAllocator.init(std.testing.allocator, 1024 * 1024);
+    const allocator = limit.allocator();
+    var start: std.atomic.Value(bool) = .init(false);
+    var workers: [4]Worker = undefined;
+    var allocated: usize = 0;
+    errdefer for (0..allocated) |i| allocator.free(workers[i / 128].blocks[i % 128]);
+    for (&workers) |*worker| {
+        worker.allocator = allocator;
+        worker.start = &start;
+        for (&worker.blocks) |*block| {
+            block.* = try allocator.alloc(u8, 64);
+            allocated += 1;
+        }
+    }
+    var threads: [4]std.Thread = undefined;
+    var spawned: usize = 0;
+    var joined = false;
+    defer if (!joined) {
+        start.store(true, .release);
+        for (threads[0..spawned]) |thread| thread.join();
+        for (workers[spawned..]) |worker| for (worker.blocks) |block| allocator.free(block);
+    };
+    allocated = 0; // cleanup ownership transferred to workers/defer
+    for (&threads, &workers) |*thread, *worker| {
+        thread.* = try std.Thread.spawn(.{}, Worker.run, .{worker});
+        spawned += 1;
+    }
+    start.store(true, .release);
+    for (0..512) |_| {
+        var block = try allocator.alloc(u8, 32);
+        block = allocator.realloc(block, 96) catch |err| {
+            allocator.free(block);
+            return err;
+        };
+        allocator.free(block);
+    }
+    for (threads) |thread| thread.join();
+    joined = true;
+    try std.testing.expectEqual(@as(usize, 0), limit.used.load(.monotonic));
+    try std.testing.expect(!limit.exceeded);
 }

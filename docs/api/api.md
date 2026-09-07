@@ -258,6 +258,9 @@ pub fn UserdataPtrOptions(comptime T: type) type
 Hooks for copying and disposing of userdata payloads in checkpoints.
 Copies must own all nested storage and be independently disposable.
 Hooks must not retain VM pointers or reenter snapshot operations.
+Concurrent snapshot clones may call copy on the same pristine payload at
+once; hooks and shared host resources must support their participating threads.
+Disposal/finalization can run on whichever thread releases the last owner.
 
 ```zig
 pub fn UserdataSnapshotHooks(comptime T: type) type
@@ -822,7 +825,7 @@ pub const State = struct {
 | [init](#fn-state-init) | `state_allocator: std.mem.Allocator, options: Options` | `!State` | Creates a new Lua state using &#96;state_allocator&#96; and the supplied options. |
 | [deinit](#fn-state-deinit) | `self: *State` | `void` | Releases all resources owned by the state and invalidates outstanding API handles. |
 | [snapshot](#fn-state-snapshot) | `self: *State, snapshot_allocator: std.mem.Allocator` | `!Snapshot` | Captures an idle VM, including suspended Lua coroutines. Uses &#96;snapshot_allocator&#96; for checkpoint storage. Borrowed host capabilities must outlive the checkpoint and states created from it. The source retains the baseline after the public wrapper is destroyed; keep the snapshot allocator valid until all retaining states release it. |
-| [reset](#fn-state-reset) | `self: *State, checkpoint: *const Snapshot` | `!void` | Atomically restores a checkpoint and invalidates all rooted handles. The active baseline rolls back dirty objects and private allocations. Unchanged baselines without eager resource hooks allocate nothing. Switching snapshots prepares a graph copy before replacing the VM. Rollback skips Lua &#96;__gc&#96; and &#96;__close&#96; handlers. |
+| [reset](#fn-state-reset) | `self: *State, checkpoint: *const Snapshot` | `!void` | Atomically restores a checkpoint and invalidates all rooted handles. The active baseline rolls back dirty objects and private allocations. Unchanged baselines without eager resource hooks allocate nothing. Switching snapshots prepares a graph copy before replacing the VM. Atomic failure semantics do not make State concurrently usable. Rollback skips Lua &#96;__gc&#96; and &#96;__close&#96; handlers. |
 | [allocator](#fn-state-allocator) | `self: *State` | `std.mem.Allocator` | Returns the allocator used for API-owned allocations returned to the host. |
 | [instructionBudget](#fn-state-instructionbudget) | `self: *const State` | `InstructionBudget` | Returns the cumulative instruction budget usage for this state. |
 | [resetInstructionBudget](#fn-state-resetinstructionbudget) | `self: *State` | `void` | Resets the cumulative instruction counter to zero. |
@@ -904,6 +907,7 @@ Atomically restores a checkpoint and invalidates all rooted handles.
 The active baseline rolls back dirty objects and private allocations.
 Unchanged baselines without eager resource hooks allocate nothing.
 Switching snapshots prepares a graph copy before replacing the VM.
+Atomic failure semantics do not make [State](#type-state) concurrently usable.
 Rollback skips Lua `__gc` and `__close` handlers.
 
 ```zig
@@ -1290,8 +1294,12 @@ References: [`State`](#type-state), [`ErrorRef`](#type-errorref)
 ## Snapshot
 
 Reusable immutable checkpoint, retained independently by source and workers.
-The snapshot allocator must outlive all states retaining this checkpoint.
-Hookless userdata and host capabilities remain shared.
+Independently retained handles may clone concurrently. Externally serialize
+each handle against mutation/deinit; a bit copy does not retain ownership.
+Each [State](#type-state) and its rollback journal remain single-owner/external-serialization.
+Backing and shared payload allocators must outlive every owner and support
+frees on the final owner's thread, including concurrent frees when shared.
+Hookless userdata and host capabilities retain host synchronization needs.
 
 ```zig
 pub const Snapshot = struct {
@@ -1303,14 +1311,28 @@ pub const Snapshot = struct {
 
 | Name | Parameters | Return Type | Description |
 | --- | --- | --- | --- |
-| [deinit](#fn-snapshot-deinit) | `self: *Snapshot` | `void` | Releases this wrapper; storage is freed after the final retaining state. |
+| [retain](#fn-snapshot-retain) | `self: *const Snapshot` | `Snapshot` | Returns a separately owned handle. Move it to another thread; ordinary bit copies do not retain ownership. The caller must hold a live handle. |
+| [deinit](#fn-snapshot-deinit) | `self: *Snapshot` | `void` | Releases only this wrapper; storage is freed after the final owner. |
 | [clone](#fn-snapshot-clone) | `self: *const Snapshot, state_allocator: std.mem.Allocator` | `!State` | Creates an independent state using &#96;state_allocator&#96; and the captured options. |
+
+<a id="fn-snapshot-retain"></a>
+
+### Snapshot.retain
+
+Returns a separately owned handle. [Move](compile/bytecode.md#type-move) it to another thread; ordinary
+bit copies do not retain ownership. The caller must hold a live handle.
+
+```zig
+pub fn retain(self: *const Snapshot) Snapshot
+```
+
+References: [`Snapshot`](#type-snapshot)
 
 <a id="fn-snapshot-deinit"></a>
 
 ### Snapshot.deinit
 
-Releases this wrapper; storage is freed after the final retaining state.
+Releases only this wrapper; storage is freed after the final owner.
 
 ```zig
 pub fn deinit(self: *Snapshot) void

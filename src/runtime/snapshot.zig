@@ -19,15 +19,20 @@ pub fn checkIdle(source: *const State) !void {
 
 /// `error_root` is the only host API root retained. All application handles must
 /// be reacquired. The caller owns destination allocator infrastructure.
-pub fn copy(source: *const State, allocator: std.mem.Allocator, lifetime: ?*types.AllocatorLifetime, error_root: ?usize) !State {
-    return copyWithProtos(source, allocator, lifetime, error_root, false);
+pub fn copy(source: *State, allocator: std.mem.Allocator, lifetime: ?*types.AllocatorLifetime, error_root: ?usize) !State {
+    try checkIdle(source);
+    source.snapshot_busy = true;
+    defer source.snapshot_busy = false;
+    return copyGraph(source, allocator, lifetime, error_root, false);
 }
 
-/// Caller must retain the immutable source image until destination destruction.
-pub fn copyWithProtos(source: *const State, allocator: std.mem.Allocator, lifetime: ?*types.AllocatorLifetime, error_root: ?usize, borrow_protos: bool) !State {
-    try checkIdle(source);
-    @constCast(source).snapshot_busy = true;
-    defer @constCast(source).snapshot_busy = false;
+/// The source must be an idle, immutable backing image retained until destination
+/// destruction. Concurrent readers never write source VM metadata.
+pub fn copyFrozen(source: *const State, allocator: std.mem.Allocator, lifetime: ?*types.AllocatorLifetime, error_root: ?usize) !State {
+    return copyGraph(source, allocator, lifetime, error_root, true);
+}
+
+fn copyGraph(source: *const State, allocator: std.mem.Allocator, lifetime: ?*types.AllocatorLifetime, error_root: ?usize, borrow_protos: bool) !State {
     var destination = State{
         .allocator = allocator,
         .allocator_lifetime = lifetime,
@@ -304,18 +309,24 @@ const Copier = struct {
             const payload = try a.create(types.UserdataPayload);
             errdefer a.destroy(payload);
             const ptr = try f(a, p.ptr);
-            payload.* = p.*;
-            payload.allocator = a;
-            payload.lifetime = self.destination.allocator_lifetime;
+            payload.* = .{
+                .allocator = a,
+                .lifetime = self.destination.allocator_lifetime,
+                .ptr = ptr,
+                .finalizer = p.finalizer,
+                .finalizer_data = p.finalizer_data,
+                .dispose = p.snapshot_dispose,
+                .finalized = p.finalized,
+                .snapshot_copy = p.snapshot_copy,
+                .snapshot_dispose = p.snapshot_dispose,
+                .snapshot_tracking = p.snapshot_tracking,
+                .is_snapshot_copy = true,
+            };
             if (payload.lifetime) |l| l.retain();
-            payload.references = 1;
-            payload.ptr = ptr;
-            payload.dispose = p.snapshot_dispose;
-            payload.is_snapshot_copy = true;
             new.payload = payload;
             new.ptr = ptr;
         } else {
-            p.references += 1;
+            p.retain();
             new.payload = p;
             new.ptr = p.ptr;
         }

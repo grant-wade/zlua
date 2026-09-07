@@ -392,10 +392,13 @@ pub const UserdataDeinit = *const fn (std.mem.Allocator, *anyopaque) void;
 ## AllocatorLifetime
 
 Keeps allocator infrastructure alive while shared userdata outlives its VM.
+Shared allocator infrastructure can outlive its State and be destroyed by
+any retaining thread. Retain requires an existing owned reference; acq_rel
+release publishes prior accesses and acquires them before final destruction.
 
 ```zig
 pub const AllocatorLifetime = struct {
-    references: usize = 1,
+    references: std.atomic.Value(usize) = .init(1),
     destroy: *const fn (*AllocatorLifetime) void,
 };
 ```
@@ -445,7 +448,7 @@ Payload ownership is separate from the GC-managed Lua wrapper.
 pub const UserdataPayload = struct {
     allocator: std.mem.Allocator,
     lifetime: ?*AllocatorLifetime,
-    references: usize = 1,
+    references: std.atomic.Value(usize) = .init(1),
     ptr: *anyopaque,
     finalizer: ?UserdataFinalizer,
     finalizer_data: ?*const anyopaque,
@@ -462,8 +465,19 @@ pub const UserdataPayload = struct {
 
 | Name | Parameters | Return Type | Description |
 | --- | --- | --- | --- |
+| [retain](#fn-userdatapayload-retain) | `self: *UserdataPayload` | `void` |  |
 | [finalize](#fn-userdatapayload-finalize) | `self: *UserdataPayload` | `void` |  |
 | [release](#fn-userdatapayload-release) | `self: *UserdataPayload, discard: bool` | `void` |  |
+
+<a id="fn-userdatapayload-retain"></a>
+
+### UserdataPayload.retain
+
+```zig
+pub fn retain(self: *UserdataPayload) void
+```
+
+References: [`UserdataPayload`](#type-userdatapayload)
 
 <a id="fn-userdatapayload-finalize"></a>
 

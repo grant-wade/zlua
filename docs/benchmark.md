@@ -34,6 +34,8 @@ Allocation counts and bytes are medians across samples. Requested bytes include 
 
 JSON format 2 includes run metadata, raw samples, summaries, and comparisons for every group. Existing process records and their mean-based ratio remain under `benchmarks`. CSV format 2 has one row per operation sample; failed or skipped operations with no samples still get a row. Both formats store nanoseconds and bytes.
 
+The [concurrent snapshot sharing report](benchmark-snapshot-sharing.md) records the lifetime-atomics change, its validation, and before/after timings.
+
 Save a baseline, make the change, and repeat the same command on an otherwise idle machine. Look at the samples and spread as well as the ratio. Process runs alternate engine order and check every pair's exit status and output outside the timer.
 
 ## Snapshot reset measurements

@@ -935,3 +935,241 @@ test "recapture retains error names when callback containers detach" {
     defer lua.allocator().free(restored);
     try std.testing.expectEqualStrings(message, restored);
 }
+
+const concurrent_workers = 4;
+const concurrent_iterations = 32;
+const AtomicCount = std.atomic.Value(usize);
+
+const ConcurrentCounters = struct {
+    start: std.atomic.Value(bool) = .init(false),
+    copies: AtomicCount = .init(0),
+    disposals: AtomicCount = .init(0),
+    finals: AtomicCount = .init(0),
+    arrived: AtomicCount = .init(0),
+    failed: AtomicCount = .init(0),
+    image: ?*const @import("../runtime/state.zig").State = null,
+};
+
+const ConcurrentPayload = struct {
+    counters: *ConcurrentCounters,
+    value: usize = 17,
+
+    fn finalize(self: *@This()) void {
+        _ = self.counters.finals.fetchAdd(1, .monotonic);
+    }
+
+    fn copy(allocator: std.mem.Allocator, self: *const @This()) !*@This() {
+        const counters = self.counters;
+        if (counters.image) |image| {
+            // Every hook invocation observes the pristine image, even while
+            // other readers are inside their copy hooks. Live capture is guarded.
+            try std.testing.expect(!image.snapshot_busy);
+            const arrival = counters.arrived.fetchAdd(1, .acq_rel);
+            if (arrival < concurrent_workers) {
+                // Force the first clones to overlap. Failed clone attempts also
+                // unblock the barrier, so a regression reports rather than hangs.
+                while (counters.arrived.load(.acquire) + counters.failed.load(.acquire) < concurrent_workers)
+                    std.atomic.spinLoopHint();
+            }
+        }
+        const result = try allocator.create(@This());
+        result.* = .{ .counters = counters, .value = self.value };
+        _ = counters.copies.fetchAdd(1, .monotonic);
+        return result;
+    }
+
+    fn dispose(allocator: std.mem.Allocator, self: *@This()) void {
+        _ = self.counters.disposals.fetchAdd(1, .monotonic);
+        allocator.destroy(self);
+    }
+};
+
+const ConcurrentWorker = struct {
+    checkpoint: api.Snapshot,
+    counters: *ConcurrentCounters,
+    shared: *ConcurrentPayload,
+    wrapper_first: bool,
+    failure: ?anyerror = null,
+
+    fn run(self: *@This()) void {
+        while (!self.counters.start.load(.acquire)) std.atomic.spinLoopHint();
+        self.work() catch |err| {
+            self.failure = err;
+            _ = self.counters.failed.fetchAdd(1, .release);
+        };
+    }
+
+    fn work(self: *@This()) !void {
+        var owned = true;
+        defer if (owned) self.checkpoint.deinit();
+        for (0..concurrent_iterations) |iteration| {
+            // Retain/release on the same backing also races other owners here.
+            var local = self.checkpoint.retain();
+            var local_owned = true;
+            defer if (local_owned) local.deinit();
+            var worker = try local.clone(a);
+            defer worker.deinit();
+            try worker.doString(
+                \\assert(t.self == t and t.n == 7 and read() == 10)
+                \\assert(require('m') == m and m.n == 23)
+                \\assert(coroutine.status(co) == 'suspended')
+                \\t.n = 99; bump(); m.n = 90
+                \\local ok, n = coroutine.resume(co, 5); assert(ok and n == 15)
+            , .{});
+            try worker.reset(&local);
+            try worker.doString(
+                \\assert(t.self == t and t.n == 7 and read() == 10)
+                \\assert(require('m') == m and m.n == 23)
+                \\local ok, n = coroutine.resume(co, 2); assert(ok and n == 12)
+            , .{});
+            var shared = try worker.getGlobal("shared", api.Userdata(ConcurrentPayload));
+            defer shared.deinit();
+            try std.testing.expectEqual(self.shared, try shared.ptr());
+            try std.testing.expectEqual(@as(usize, 17), (try shared.ptr()).value);
+            try std.testing.expectEqual(@as(usize, 0), self.counters.finals.load(.acquire));
+            if (iteration + 1 == concurrent_iterations and self.wrapper_first) {
+                self.checkpoint.deinit();
+                owned = false;
+                local.deinit();
+                local_owned = false;
+            }
+        }
+        // Exercise the frozen-copy path when switching an unrelated live state.
+        if (owned) {
+            var other = try api.State.init(a, .{});
+            defer other.deinit();
+            try other.reset(&self.checkpoint);
+            try other.doString("assert(t.n == 7 and read() == 10 and require('m').n == 23)", .{});
+            self.checkpoint.deinit();
+            owned = false;
+        }
+    }
+};
+
+test "retained snapshots concurrently clone reset and release immutable backing and userdata" {
+    if (@import("builtin").single_threaded or @import("builtin").target.cpu.arch.isWasm()) return error.SkipZigTest;
+    var counters: ConcurrentCounters = .{};
+    var source = try api.State.init(a, .{ .stdlib = .full });
+    var source_owned = true;
+    defer if (source_owned) source.deinit();
+    try source.addMemoryFile("m.lua", "return {n = 23}");
+    try source.doString(
+        \\t = {n = 7}; t.self = t; m = require('m')
+        \\local n = 10; function read() return n end; function bump() n = n + 1 end
+        \\co = coroutine.create(function() local x = coroutine.yield(); return 10 + x end)
+        \\assert(coroutine.resume(co))
+    , .{});
+    var shared = try source.newUserdata(ConcurrentPayload, .{ .counters = &counters }, .{ .finalizer = ConcurrentPayload.finalize });
+    const shared_ptr = try shared.ptr();
+    try source.setGlobal("shared", shared);
+    shared.deinit();
+    var hooked = try source.newUserdata(ConcurrentPayload, .{ .counters = &counters }, .{ .snapshot = .{ .copy = ConcurrentPayload.copy, .dispose = ConcurrentPayload.dispose } });
+    try source.setGlobal("hooked", hooked);
+    hooked.deinit();
+    // Both backing and hookless storage retain the source allocator. Its final
+    // destruction must happen on a worker, after the source State is gone.
+    var checkpoint = try source.snapshot(source.allocator());
+    var checkpoint_owned = true;
+    defer if (checkpoint_owned) checkpoint.deinit();
+    counters.image = &checkpoint.backing.image.raw_state;
+    var contexts: [concurrent_workers]ConcurrentWorker = undefined;
+    for (&contexts, 0..) |*context, i| context.* = .{
+        .checkpoint = checkpoint.retain(),
+        .counters = &counters,
+        .shared = shared_ptr,
+        .wrapper_first = i % 2 == 0,
+    };
+    var threads: [concurrent_workers]std.Thread = undefined;
+    var spawned: usize = 0;
+    var joined = false;
+    defer if (!joined) {
+        // Also makes partial thread-spawn failure safe.
+        for (contexts[spawned..]) |*context| context.checkpoint.deinit();
+        _ = counters.failed.fetchAdd(concurrent_workers - spawned, .release);
+        counters.start.store(true, .release);
+        for (threads[0..spawned]) |thread| thread.join();
+    };
+    for (&threads, &contexts) |*thread, *context| {
+        thread.* = try std.Thread.spawn(.{}, ConcurrentWorker.run, .{context});
+        spawned += 1;
+    }
+    checkpoint.deinit();
+    checkpoint_owned = false;
+    source.deinit();
+    source_owned = false;
+    counters.start.store(true, .release);
+    for (threads) |thread| thread.join();
+    joined = true;
+    for (contexts) |context| if (context.failure) |err| return err;
+    try std.testing.expectEqual(@as(usize, 1), counters.finals.load(.acquire));
+    const expected = 1 + 2 * concurrent_workers * concurrent_iterations + concurrent_workers / 2;
+    try std.testing.expectEqual(@as(usize, expected), counters.copies.load(.acquire));
+    try std.testing.expectEqual(counters.copies.load(.acquire), counters.disposals.load(.acquire));
+}
+
+test "simultaneous final hookless payload releases finalize dispose and destroy allocator once" {
+    if (@import("builtin").single_threaded or @import("builtin").target.cpu.arch.isWasm()) return error.SkipZigTest;
+    const types = @import("../runtime/types.zig");
+    const Lifetime = struct {
+        lifetime: types.AllocatorLifetime = .{ .destroy = destroy },
+        destroyed: *AtomicCount,
+        fn destroy(lifetime: *types.AllocatorLifetime) void {
+            const self: *@This() = @fieldParentPtr("lifetime", lifetime);
+            _ = self.destroyed.fetchAdd(1, .monotonic);
+            a.destroy(self);
+        }
+    };
+    const Worker = struct {
+        fn finalize(ptr: *anyopaque, _: ?*const anyopaque) void {
+            ConcurrentPayload.finalize(@ptrCast(@alignCast(ptr)));
+        }
+        fn dispose(allocator: std.mem.Allocator, ptr: *anyopaque) void {
+            ConcurrentPayload.dispose(allocator, @ptrCast(@alignCast(ptr)));
+        }
+        fn run(payload: *types.UserdataPayload, gate: *std.atomic.Value(bool)) void {
+            while (!gate.load(.acquire)) std.atomic.spinLoopHint();
+            payload.release(false);
+        }
+    };
+    var counters: ConcurrentCounters = .{};
+    var destroyed: AtomicCount = .init(0);
+    for (0..64) |_| {
+        var gate: std.atomic.Value(bool) = .init(false);
+        const lifetime = try a.create(Lifetime);
+        lifetime.* = .{ .destroyed = &destroyed };
+        const value = try a.create(ConcurrentPayload);
+        value.* = .{ .counters = &counters };
+        const payload = try a.create(types.UserdataPayload);
+        payload.* = .{
+            .allocator = a,
+            .lifetime = &lifetime.lifetime,
+            .ptr = value,
+            .finalizer = Worker.finalize,
+            .finalizer_data = null,
+            .dispose = Worker.dispose,
+        };
+        var threads: [concurrent_workers]std.Thread = undefined;
+        var spawned: usize = 0;
+        defer {
+            gate.store(true, .release);
+            for (threads[0..spawned]) |thread| thread.join();
+        }
+        // Transfer a reference to each thread, then release the initial owner.
+        for (&threads) |*thread| {
+            payload.retain();
+            thread.* = std.Thread.spawn(.{}, Worker.run, .{ payload, &gate }) catch |err| {
+                payload.release(false);
+                payload.release(false);
+                return err;
+            };
+            spawned += 1;
+        }
+        payload.release(false);
+        gate.store(true, .release);
+        for (threads) |thread| thread.join();
+        spawned = 0;
+    }
+    try std.testing.expectEqual(@as(usize, 64), counters.finals.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 64), counters.disposals.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 64), destroyed.load(.acquire));
+}

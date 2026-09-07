@@ -93,7 +93,7 @@ shells are registered before references are populated, preserving identity.
 - [checkIdleFast](#fn-checkidlefast)
 - [checkIdle](#fn-checkidle)
 - [copy](#fn-copy)
-- [copyWithProtos](#fn-copywithprotos)
+- [copyFrozen](#fn-copyfrozen)
 - [review](#fn-review)
 
 <a id="fn-checkidlefast"></a>
@@ -120,17 +120,18 @@ pub fn checkIdle(source: *const State) !void
 be reacquired. The caller owns destination allocator infrastructure.
 
 ```zig
-pub fn copy(source: *const State, allocator: std.mem.Allocator, lifetime: ?*types.AllocatorLifetime, error_root: ?usize) !State
+pub fn copy(source: *State, allocator: std.mem.Allocator, lifetime: ?*types.AllocatorLifetime, error_root: ?usize) !State
 ```
 
-<a id="fn-copywithprotos"></a>
+<a id="fn-copyfrozen"></a>
 
-## copyWithProtos
+## copyFrozen
 
-Caller must retain the immutable source image until destination destruction.
+The source must be an idle, immutable backing image retained until destination
+destruction. Concurrent readers never write source VM metadata.
 
 ```zig
-pub fn copyWithProtos(source: *const State, allocator: std.mem.Allocator, lifetime: ?*types.AllocatorLifetime, error_root: ?usize, borrow_protos: bool) !State
+pub fn copyFrozen(source: *const State, allocator: std.mem.Allocator, lifetime: ?*types.AllocatorLifetime, error_root: ?usize) !State
 ```
 
 <a id="fn-review"></a>

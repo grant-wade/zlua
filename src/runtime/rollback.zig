@@ -116,17 +116,24 @@ pub fn copyPayload(a: std.mem.Allocator, lifetime: ?*types.AllocatorLifetime, p:
     const result = try a.create(types.UserdataPayload);
     errdefer a.destroy(result);
     const ptr = try p.snapshot_copy.?(a, p.ptr);
-    result.* = p.*;
-    result.ptr = ptr;
-    result.allocator = a;
-    result.lifetime = lifetime;
+    result.* = .{
+        .allocator = a,
+        .lifetime = lifetime,
+        .ptr = ptr,
+        .finalizer = p.finalizer,
+        .finalizer_data = p.finalizer_data,
+        .dispose = p.snapshot_dispose,
+        .finalized = p.finalized,
+        .snapshot_copy = p.snapshot_copy,
+        .snapshot_dispose = p.snapshot_dispose,
+        .snapshot_tracking = p.snapshot_tracking,
+        .is_snapshot_copy = true,
+    };
     if (lifetime) |l| l.retain();
-    result.references = 1;
-    result.dispose = p.snapshot_dispose;
-    result.is_snapshot_copy = true;
     return result;
 }
 
+/// Single-owner mutable rollback state; snapshot sharing does not synchronize it.
 pub const Journal = struct {
     allocator: std.mem.Allocator,
     saved: State,
@@ -163,7 +170,7 @@ pub const Journal = struct {
             if (p.snapshot_copy != null and p.snapshot_tracking == .eager) {
                 try self.eager.append(a, record);
                 record.pristine = original.payload.?;
-                record.pristine.?.references += 1;
+                record.pristine.?.retain();
             }
         }
         return self;

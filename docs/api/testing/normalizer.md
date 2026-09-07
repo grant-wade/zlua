@@ -86,6 +86,7 @@
 ## Functions
 
 - [normalizeText](#fn-normalizetext)
+- [textEqual](#fn-textequal)
 
 <a id="fn-normalizetext"></a>
 
@@ -98,5 +99,13 @@ pub fn normalizeText(
     mode: metadata.Normalize,
     cwd: []const u8,
 ) ![]u8
+```
+
+<a id="fn-textequal"></a>
+
+## textEqual
+
+```zig
+pub fn textEqual(lhs: []const u8, rhs: []const u8) bool
 ```
 

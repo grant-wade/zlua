@@ -162,6 +162,8 @@ pub fn copyPayload(a: std.mem.Allocator, lifetime: ?*types.AllocatorLifetime, p:
 
 ## Journal
 
+Single-owner mutable rollback state; snapshot sharing does not synchronize it.
+
 ```zig
 pub const Journal = struct {
     allocator: std.mem.Allocator,
