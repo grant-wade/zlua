@@ -115,7 +115,7 @@ pub const Metric = struct {
 pub const MemoryScope = enum {
     unavailable,
     vm,
-    checkpoint,
+    snapshot,
     new_state,
 };
 ```

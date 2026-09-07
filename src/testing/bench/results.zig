@@ -10,7 +10,7 @@ pub const Metric = struct {
     peak_bytes: ?u64 = null,
     runtime_bytes: ?u64 = null,
 };
-pub const MemoryScope = enum { unavailable, vm, checkpoint, new_state };
+pub const MemoryScope = enum { unavailable, vm, snapshot, new_state };
 pub const Status = enum { benchmarked, skipped, failed, timed_out };
 
 pub const BenchmarkResult = struct {

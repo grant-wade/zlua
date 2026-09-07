@@ -32,8 +32,8 @@
 //! `takeErrorValue` to inspect it. `Function.protectedCall` returns Lua failures
 //! as `CallResult(R).lua_error` instead.
 //!
-//! `State.snapshot`, `State.reset`, and `Snapshot.clone` provide reusable
-//! in-memory checkpoints between host calls. Reset invalidates prior handles
+//! `State.snapshot`, `State.reset`, and `Snapshot.newState` provide reusable
+//! in-memory snapshots between host calls. Reset invalidates prior handles
 //! and borrowed VM slices and pointers. Host capabilities and userdata payloads
 //! without snapshot hooks remain shared. See `docs/embedding.md` for ownership details.
 //!
@@ -64,7 +64,7 @@ pub fn UserdataOptions(comptime T: type) type {
     return struct {
         /// Optional callback run before Lua-owned userdata storage is destroyed.
         finalizer: ?*const fn (*T) void = null,
-        /// Paired copy/dispose hooks for independently owned checkpoint payloads.
+        /// Paired copy/dispose hooks for independently owned snapshot payloads.
         snapshot: ?UserdataSnapshotHooks(T) = null,
     };
 }
@@ -74,15 +74,15 @@ pub fn UserdataPtrOptions(comptime T: type) type {
     return struct {
         /// Optional callback run when the Lua userdata wrapper is finalized.
         finalizer: ?*const fn (*T) void = null,
-        /// Paired copy/dispose hooks for independently owned checkpoint payloads.
+        /// Paired copy/dispose hooks for independently owned snapshot payloads.
         snapshot: ?UserdataSnapshotHooks(T) = null,
     };
 }
 
-/// Hooks for copying and disposing of userdata payloads in checkpoints.
+/// Hooks for copying and disposing of userdata payloads in snapshots.
 /// Copies must own all nested storage and be independently disposable.
 /// Hooks must not retain VM pointers or reenter snapshot operations.
-/// Concurrent snapshot clones may call copy on the same pristine payload at
+/// Concurrent calls to Snapshot.newState may call copy on the same pristine payload at
 /// once; hooks and shared host resources must support their participating threads.
 /// Disposal/finalization can run on whichever thread releases the last owner.
 pub fn UserdataSnapshotHooks(comptime T: type) type {
@@ -381,7 +381,7 @@ pub const State = struct {
     base_allocator: std.mem.Allocator,
     /// Advances on successful reset; handles from prior generations are invalid.
     generation: u64 = 0,
-    /// Retained identity of the last successfully captured or restored checkpoint.
+    /// Retained backing of this State's active baseline; null before capture.
     baseline: ?*const SnapshotBacking = null,
     /// Owner of borrowed bytecode; capture may replace the active baseline.
     immutable_owner: ?*const SnapshotBacking = null,
@@ -448,9 +448,10 @@ pub const State = struct {
         self.* = undefined;
     }
 
-    /// Captures an idle VM, including suspended Lua coroutines.
-    /// Uses `snapshot_allocator` for checkpoint storage. Borrowed host
-    /// capabilities must outlive the checkpoint and states created from it.
+    /// Captures an idle VM, including suspended Lua coroutines, and installs a new baseline.
+    /// Earlier Snapshots remain independently usable; reset restores only the new baseline.
+    /// Uses `snapshot_allocator` for snapshot storage. Borrowed host
+    /// capabilities must outlive the snapshot and states created from it.
     /// The source retains the baseline after the public wrapper is destroyed;
     /// keep the snapshot allocator valid until all retaining states release it.
     pub fn snapshot(self: *State, snapshot_allocator: std.mem.Allocator) !Snapshot {
@@ -470,68 +471,42 @@ pub const State = struct {
         return .{ .backing = backing };
     }
 
-    /// Atomically restores a checkpoint and invalidates all rooted handles.
-    /// The active baseline rolls back dirty objects and private allocations.
+    /// Incrementally restores this State's active baseline and invalidates prior handles.
+    /// Returns `error.NoSnapshot` until capture installs a baseline.
     /// Unchanged baselines without eager resource hooks allocate nothing.
-    /// Switching snapshots prepares a graph copy before replacing the VM.
+    /// Fallible eager userdata copies are prepared before rollback commits.
     /// Atomic failure semantics do not make State concurrently usable.
     /// Rollback skips Lua `__gc` and `__close` handlers.
-    pub fn reset(self: *State, checkpoint: *const Snapshot) !void {
-        if (self.baseline == checkpoint.backing and self.raw_state.rollback != null) {
-            try snapshot_runtime.checkIdleFast(&self.raw_state);
-            if (self.generation == std.math.maxInt(u64)) return error.GenerationExhausted;
-            self.raw_state.snapshot_busy = true;
-            defer self.raw_state.snapshot_busy = false;
-            const limit = self.memory_limit_allocator;
-            const previous_limit = if (limit) |l| l.limit else 0;
-            const previous_exceeded = if (limit) |l| l.exceeded else false;
-            if (limit) |l| l.limit = checkpoint.backing.image.raw_state.options.max_memory orelse std.math.maxInt(usize);
-            errdefer if (limit) |l| {
-                l.limit = previous_limit;
-                l.exceeded = previous_exceeded;
-            };
-            const journal = self.raw_state.rollback.?;
-            const prepared = try journal.prepareReset();
-            defer self.allocator().free(prepared);
-            const metadata = &self.rollback_metadata.?;
-            metadata.restore(self);
-            journal.reset(&self.raw_state, prepared);
-            self.last_error_root = null;
-            if (metadata.error_value) |value| {
-                self.raw_state.api_roots.appendAssumeCapacity(value);
-                self.last_error_root = 0;
-            }
-            if (limit) |l| {
-                l.limit = self.raw_state.options.max_memory orelse std.math.maxInt(usize);
-                l.exceeded = false;
-            }
-            self.generation += 1;
-            self.bindDispatch();
-            return;
-        }
-        try snapshot_runtime.checkIdle(&self.raw_state);
+    pub fn reset(self: *State) !void {
+        const baseline = self.baseline orelse return error.NoSnapshot;
+        const journal = self.raw_state.rollback orelse return error.NoSnapshot;
+        const metadata = if (self.rollback_metadata) |*value| value else return error.NoSnapshot;
+        try snapshot_runtime.checkIdleFast(&self.raw_state);
         if (self.generation == std.math.maxInt(u64)) return error.GenerationExhausted;
         self.raw_state.snapshot_busy = true;
         defer self.raw_state.snapshot_busy = false;
         const limit = self.memory_limit_allocator;
         const previous_limit = if (limit) |l| l.limit else 0;
         const previous_exceeded = if (limit) |l| l.exceeded else false;
-        if (limit) |l| l.limit = checkpoint.backing.image.raw_state.options.max_memory orelse std.math.maxInt(usize);
+        if (limit) |l| l.limit = baseline.image.raw_state.options.max_memory orelse std.math.maxInt(usize);
         errdefer if (limit) |l| {
             l.limit = previous_limit;
             l.exceeded = previous_exceeded;
         };
-        var replacement = try checkpoint.backing.image.copyFrozenImage(self.base_allocator, self.allocator(), self.raw_state.allocator_lifetime);
-        errdefer replacement.discardImage();
-        try replacement.installRollback(&checkpoint.backing.image.raw_state);
-        replacement.memory_limit_allocator = limit;
-        replacement.generation = self.generation + 1;
-        checkpoint.backing.retain();
-        replacement.baseline = checkpoint.backing;
-        checkpoint.backing.retain();
-        replacement.immutable_owner = checkpoint.backing;
-        self.discardImage();
-        self.* = replacement;
+        const prepared = try journal.prepareReset();
+        defer self.allocator().free(prepared);
+        metadata.restore(self);
+        journal.reset(&self.raw_state, prepared);
+        self.last_error_root = null;
+        if (metadata.error_value) |value| {
+            self.raw_state.api_roots.appendAssumeCapacity(value);
+            self.last_error_root = 0;
+        }
+        if (limit) |l| {
+            l.limit = self.raw_state.options.max_memory orelse std.math.maxInt(usize);
+            l.exceeded = false;
+        }
+        self.generation += 1;
         self.bindDispatch();
     }
 
@@ -1079,8 +1054,8 @@ const SnapshotBacking = struct {
     }
 };
 
-/// Reusable immutable checkpoint, retained independently by source and workers.
-/// Independently retained handles may clone concurrently. Externally serialize
+/// Reusable immutable snapshot, retained independently by source and workers.
+/// Independently retained handles may call `newState` concurrently. Externally serialize
 /// each handle against mutation/deinit; a bit copy does not retain ownership.
 /// Each State and its rollback journal remain single-owner/external-serialization.
 /// Backing and shared payload allocators must outlive every owner and support
@@ -1102,8 +1077,10 @@ pub const Snapshot = struct {
         self.* = undefined;
     }
 
-    /// Creates an independent state using `state_allocator` and the captured options.
-    pub fn clone(self: *const Snapshot, state_allocator: std.mem.Allocator) !State {
+    /// Creates an independent mutable State with this Snapshot as its baseline.
+    /// Uses `state_allocator` and the captured options; retains backing and bytecode
+    /// ownership so the public Snapshot handle may be released before reset.
+    pub fn newState(self: *const Snapshot, state_allocator: std.mem.Allocator) !State {
         var limit: ?*MemoryLimitAllocator = null;
         {
             const p = try state_allocator.create(MemoryLimitAllocator);
@@ -4614,22 +4591,22 @@ test "native callbacks work as library callbacks and iterators" {
     , .{});
 }
 
-test "api snapshot graph reset and clone" {
+test "api snapshot graph rollback and newState" {
     var lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
     try lua.doString("t = {}; t.self = t; t[t] = t; local n = 4; function inc() n = n + 1; return n end; function get() return n end", .{});
     var stale = try lua.getGlobal("t", Table);
     defer stale.deinit();
-    var checkpoint = try lua.snapshot(std.testing.allocator);
-    defer checkpoint.deinit();
+    var snapshot = try lua.snapshot(std.testing.allocator);
+    defer snapshot.deinit();
     try lua.doString("inc(); t.x = 12", .{});
-    try lua.reset(&checkpoint);
+    try lua.reset();
     try std.testing.expectError(error.InvalidHandle, stale.get("x", Value));
     try lua.doString("assert(t.self == t and t[t] == t and t.x == nil); assert(inc() == 5 and get() == 5)", .{});
-    var another = try checkpoint.clone(std.testing.allocator);
+    var another = try snapshot.newState(std.testing.allocator);
     defer another.deinit();
     try another.doString("assert(get() == 4); assert(inc() == 5)", .{});
-    try lua.reset(&checkpoint);
+    try lua.reset();
     try lua.doString("assert(get() == 4)", .{});
 }
 

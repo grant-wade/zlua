@@ -358,45 +358,75 @@ Lua-owned userdata may receive a finalizer through its options. Both forms suppo
 
 ## Snapshots
 
-Capture an initialized VM, reset it between requests, or clone it into a new state:
+Configure a State, capture an immutable Snapshot, and create independent workers:
 
 ```zig
-var checkpoint = try lua.snapshot(snapshot_allocator);
-defer checkpoint.deinit();
+var snapshot = try lua.snapshot(snapshot_allocator);
+defer snapshot.deinit();
 
-try lua.doString("results = {42}", .{});
-try lua.reset(&checkpoint);
-
-var another = try checkpoint.clone(state_allocator);
-defer another.deinit();
+var worker = try snapshot.newState(worker_allocator);
+defer worker.deinit();
+try worker.doString("results = {42}", .{});
+try worker.reset();
 ```
 
-Capture copies the VM heap, including suspended Lua coroutines, shared references, module caches, I/O buffers, random state, and GC settings. Clones share immutable checkpoint bytecode while keeping mutable closures, caches, and other VM objects private. Capture establishes an active baseline on the source, and clone establishes it on the new worker. Reset also restores options, host bindings, and instruction usage. Checkpoints are reusable, can outlive the source state, and have no persistence format.
+```text
+configure State
+    ↓
+State.snapshot()
+    ↓
+immutable Snapshot
+    ↓
+Snapshot.newState() ─── Snapshot.newState() ─── ...
+    ↓
+independent worker
+    ↓
+work
+    ↓
+State.reset()
+    ↓
+same worker, restored to its own baseline
+```
+
+Capture copies the VM heap, including suspended Lua coroutines, shared references, module caches, I/O buffers, random state, and GC settings. Workers share immutable Snapshot bytecode while keeping mutable closures, caches, and other VM objects private. Capture establishes the source State's active baseline; `newState()` establishes that same baseline on the new worker. Reset restores options, host bindings, and instruction usage. Snapshots are reusable, can outlive the source State, and have no persistence format.
+
+A fresh State has no baseline: `reset()` returns `error.NoSnapshot` until `snapshot()` succeeds. Each State resets only to its own baseline. Capturing the State again installs a newer baseline; older Snapshots remain usable with `newState()`. Reset needs no public Snapshot handle: the State retains its baseline even after all public handles are destroyed.
+
+To switch templates, construct a replacement State before releasing the old one. If construction fails, the old State remains usable:
+
+```zig
+const replacement = try other_snapshot.newState(allocator);
+old.deinit();
+old = replacement;
+```
 
 Snapshot and reset require an idle VM. Active calls, collection, destruction, or recursive snapshot operations return `error.SnapshotBusy`. Untracked runtime objects return `error.SnapshotUnsupported`. Externally serialize every `State`, including reset and its rollback journal. Reset's atomic failure guarantee does not make a state concurrently usable.
 
-Independently owned `Snapshot` handles can share one immutable backing and clone concurrently into independent mutable VMs. Obtain each additional handle with `checkpoint.retain()` and move it to its owner. Externally serialize each individual handle against mutation or `deinit`; `deinit()` consumes only that handle. An arbitrary bit copy is not an ownership retain. Keep a live owned handle throughout clone, retain, or reset using that handle.
+Independently owned `Snapshot` handles can share one immutable backing and call `newState()` concurrently to create independent mutable VMs. Obtain each additional handle with `snapshot.retain()` and move it to its owner. Externally serialize each individual handle against mutation or `deinit`; `deinit()` consumes only that handle. An arbitrary bit copy is not an ownership retain. Keep a live owned handle throughout `newState()` or `retain()`. Each State resets only itself and retains its own baseline.
 
 For example, with a thread-safe allocator `a` that outlives the joined workers:
 
 ```zig
 const Worker = struct {
     fn run(owned: zlua.Snapshot, allocator: std.mem.Allocator) void {
-        var checkpoint = owned; // ownership moved from the spawning thread
-        defer checkpoint.deinit();
-        var vm = checkpoint.clone(allocator) catch return;
+        var snapshot = owned; // ownership moved from the spawning thread
+        var vm = snapshot.newState(allocator) catch {
+            snapshot.deinit();
+            return;
+        };
+        snapshot.deinit(); // vm now retains its own baseline
         defer vm.deinit();
         vm.doString("result = 42", .{}) catch return;
-        vm.reset(&checkpoint) catch return;
+        vm.reset() catch return;
     }
 };
-var checkpoint = try lua.snapshot(a);
-defer checkpoint.deinit();
+var snapshot = try lua.snapshot(a);
+defer snapshot.deinit();
 var threads: [4]std.Thread = undefined;
 var started: usize = 0;
 defer for (threads[0..started]) |thread| thread.join();
 for (&threads) |*thread| {
-    var owned = checkpoint.retain();
+    var owned = snapshot.retain();
     thread.* = std.Thread.spawn(.{}, Worker.run, .{ owned, a }) catch |err| {
         owned.deinit();
         return err;
@@ -411,17 +441,17 @@ The source state and original handle can also be destroyed before the workers fi
 
 Successful reset invalidates all earlier handles and borrowed VM slices and pointers. Stale handle operations return `error.InvalidHandle`; their `deinit` is harmless. Reacquire objects through globals or modules. Handles from other states are also rejected. Destroy handles before their state.
 
-Reset to the active baseline restores dirty objects and releases private allocations. Tables, closures, upvalues, and threads keep their worker-local addresses. First writes copy whole-object storage; reset swaps back the original storage. An unchanged baseline with no eager userdata hooks resets without allocations or a heap traversal. Switching snapshots uses the atomic graph-copy path and establishes the selected baseline. All fallible eager-resource replacements are prepared before committing rollback; failure leaves the current state, handles, and baseline usable. Discard does not run Lua `__gc` or `__close` handlers; run application teardown first if needed. Collection timing and pointer-derived strings may change.
+Reset to the active baseline restores dirty objects and releases private allocations. Tables, closures, upvalues, and threads keep their worker-local addresses. First writes copy whole-object storage; reset swaps back the original storage. An unchanged baseline with no eager userdata hooks resets without allocations or a heap traversal. All fallible eager-resource replacements are prepared before committing rollback; failure leaves the current state, handles, and baseline usable. Discard does not run Lua `__gc` or `__close` handlers; run application teardown first if needed. Collection timing and pointer-derived strings may change.
 
-The destination keeps its allocator. Rollback records, retained worker storage, private copies, and new allocations count against the worker memory limit. During snapshot switching, the live graph and its replacement both count against the restored limit. Retained storage is not a Lua GC root: weak reachability and normal finalization still operate on the live graph. The GC byte estimate counts live Lua objects, so it can be smaller than allocator usage while rollback storage is retained. Snapshot storage uses `snapshot_allocator`; with a separate allocator it is outside the worker limit. Passing `state.allocator()` charges checkpoint storage to that state’s limit and retains its allocator infrastructure. Clones use their supplied allocator and inherit the captured limit. Host-owned results remain freeable through the state allocator while the state lives.
+The destination keeps its allocator. Rollback records, retained worker storage, private copies, and new allocations count against the worker memory limit. Retained storage is not a Lua GC root: weak reachability and normal finalization still operate on the live graph. The GC byte estimate counts live Lua objects, so it can be smaller than allocator usage while rollback storage is retained. Snapshot storage uses `snapshot_allocator`; with a separate allocator it is outside the worker limit. Passing `state.allocator()` charges snapshot storage to that state’s limit and retains its allocator infrastructure. Workers use their supplied allocator and inherit the captured limit. Host-owned results remain freeable through the state allocator while the state lives.
 
-Successful capture, clone, and reset retain the checkpoint as the state’s baseline. A worker also retains the owner of its borrowed bytecode independently, so capturing a modified worker does not invalidate its existing functions. `Snapshot.deinit` releases the public wrapper; backing storage is freed only after the last retaining state or handle releases it. Keep `snapshot_allocator` valid for that entire lifetime, including after the wrapper is destroyed. An arena used for checkpoint storage must not be reset while a retaining state exists. Keep backing allocators valid until all allocations, including shared userdata, are released.
+Successful capture and `newState()` retain the Snapshot backing as the State’s baseline. Reset uses that retained baseline without changing ownership. A worker also retains the owner of its borrowed bytecode independently, so capturing a modified worker does not invalidate its existing functions. `Snapshot.deinit` releases the public wrapper; backing storage is freed only after the last retaining state or handle releases it. Keep `snapshot_allocator` valid for that entire lifetime, including after the wrapper is destroyed. An arena used for snapshot storage must not be reset while a retaining state exists. Keep backing allocators valid until all allocations, including shared userdata, are released.
 
 Final backing, userdata, and retained allocator infrastructure destruction may run on any participating owner thread. Allocators for these objects must support the allocation/free calls that overlap across those threads, including freeing on a thread other than the allocating thread. Choose a thread-safe allocator or provide allocator-level synchronization when sharing it; a thread-confined arena alone does not provide that synchronization. Worker-local allocators need no additional synchronization unless their storage is shared or exported. zlua's retained memory-limit allocator supports concurrent frees from shared owners, but allocation/resize and state operations through `state.allocator()` remain with the state owner. Its underlying allocator must satisfy the same cross-thread lifetime requirements. There is no owner-thread deferred reclamation.
 
 ### Userdata and Host Bindings
 
-Userdata payloads are shared by default, so payload mutations survive reset. Lua-owned payloads are finalized and freed once the last owner releases them. Borrowed payloads must outlive every referencing state and checkpoint. zlua synchronizes shared payload lifetime accounting and finalizes/disposes each payload at most once. Embedders still synchronize mutable host payload access and external resource ownership.
+Userdata payloads are shared by default, so payload mutations survive reset. Lua-owned payloads are finalized and freed once the last owner releases them. Borrowed payloads must outlive every referencing state and snapshot. zlua synchronizes shared payload lifetime accounting and finalizes/disposes each payload at most once. Embedders still synchronize mutable host payload access and external resource ownership.
 
 For independent payload copies, supply paired hooks to `newUserdata` or `newUserdataPtr`:
 
@@ -447,7 +477,7 @@ defer counter.deinit();
 try lua.setGlobal("counter", counter);
 ```
 
-`copy` must own all nested storage using the supplied allocator. `dispose` releases it, including on failed construction or checkpoint destruction. Hooks must not retain source VM pointers or reenter snapshot operations. Concurrent clone/reset operations on different workers can invoke `copy` on the same pristine payload simultaneously. Such hooks must permit concurrent source reads and synchronize any shared counters or host resources. `dispose` and finalizers can run on different owner threads and must support that usage; zlua does not serialize host hooks. Capture and discard skip application finalizers; normal finalizers must not free storage owned by `dispose`. Eager payloads (the default) keep their original ownership rules and invoke the copy hook on every reset.
+`copy` must own all nested storage using the supplied allocator. `dispose` releases it, including on failed construction or snapshot destruction. Hooks must not retain source VM pointers or reenter snapshot operations. Concurrent `newState()`/reset operations on different workers can invoke `copy` on the same pristine payload simultaneously. Such hooks must permit concurrent source reads and synchronize any shared counters or host resources. `dispose` and finalizers can run on different owner threads and must support that usage; zlua does not serialize host hooks. Capture and discard skip application finalizers; normal finalizers must not free storage owned by `dispose`. Eager payloads (the default) keep their original ownership rules and invoke the copy hook on every reset.
 
 To track an owned payload through scoped access, set `.tracking = .scoped`:
 

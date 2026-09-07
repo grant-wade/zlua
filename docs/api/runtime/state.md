@@ -435,7 +435,7 @@ pub const State = struct {
     upvalue_allocations: std.ArrayList(*Upvalue) = .empty,
     thread_allocations: std.ArrayList(*Thread) = .empty,
     proto_allocations: std.ArrayList(*proto_mod.Proto) = .empty,
-    /// Prefix owned by the API state's retained immutable checkpoint.
+    /// Prefix owned by the API state's retained immutable snapshot.
     borrowed_proto_count: usize = 0,
     source_allocations: std.ArrayList([]const u8) = .empty,
     api_roots: std.ArrayList(Value) = .empty,

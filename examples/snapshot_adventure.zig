@@ -49,14 +49,14 @@ pub fn main() !void {
     , .{ .name = "=adventure" });
 
     // Capture after initialization, with the adventure paused at its choice.
-    var checkpoint = try lua.snapshot(allocator);
-    defer checkpoint.deinit();
+    var snapshot = try lua.snapshot(allocator);
+    defer snapshot.deinit();
 
     // These Zig values survive resets: keep only the winning choice and score.
     var best_choice: []const u8 = "";
     var best_score: i64 = -1;
     for ([_][]const u8{ "fight", "sneak", "bargain" }) |choice| {
-        try lua.reset(&checkpoint);
+        try lua.reset();
         const score = try explore(&lua, choice);
         if (score > best_score) {
             best_choice = choice;
@@ -66,7 +66,7 @@ pub fn main() !void {
 
     // Discard the last trial and leave the VM in the winning future.
     std.debug.print("\nReplay winner (HP + gold = {d}):\n", .{best_score});
-    try lua.reset(&checkpoint);
+    try lua.reset();
     if (try explore(&lua, best_choice) != best_score) return error.ReplayMismatch;
 }
 

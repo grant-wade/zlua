@@ -11,9 +11,11 @@ pub fn main(init: std.process.Init) !void {
     defer if (lua) |*state| state.deinit();
 
     const capture_start = Timestamp.now(init.io, .awake);
-    var checkpoint = try lua.?.snapshot(allocator);
-    defer checkpoint.deinit();
+    var snapshot = try lua.?.snapshot(allocator);
+    defer snapshot.deinit();
     const capture_ns = elapsed(init.io, capture_start);
+    var worker = try snapshot.newState(allocator);
+    defer worker.deinit();
 
     var reset_samples: [iterations]u64 = undefined;
     var rebuild_samples: [iterations]u64 = undefined;
@@ -22,10 +24,10 @@ pub fn main(init: std.process.Init) !void {
         // with identical initialized state and run the same request, untimed.
         for (0..2) |j| {
             const reset = (i + j) % 2 == 0;
-            try call(&lua.?, "request");
+            try call(if (reset) &worker else &lua.?, "request");
             const start = Timestamp.now(init.io, .awake);
             if (reset) {
-                try lua.?.reset(&checkpoint);
+                try worker.reset();
             } else {
                 lua.?.deinit();
                 lua = null; // Keep cleanup safe if initialization fails.
@@ -33,7 +35,7 @@ pub fn main(init: std.process.Init) !void {
             }
             const ns = elapsed(init.io, start);
             // Reacquire handles after reset; previous handles are invalidated.
-            try call(&lua.?, "verify_baseline");
+            try call(if (reset) &worker else &lua.?, "verify_baseline");
             if (i >= warmup) {
                 if (reset) reset_samples[i - warmup] = ns else rebuild_samples[i - warmup] = ns;
             }

@@ -6,7 +6,7 @@ Run the whole suite with `zig build bench` (or `just bench`). It runs these grou
 | --- | --- |
 | Process | Complete Lua programs under zlua and Lua 5.5, including process launch, compilation, and shutdown. |
 | Startup | State creation, library opening, and the first chunk through the native Zig API and upstream Lua’s C API. |
-| Snapshots | Capture, clone, first-work mutation, reset-only, no-op reset, full work/reset cycles, and equivalent rebuild. |
+| Snapshots | Capture, new State creation (`new_state`), first-work mutation, reset-only, no-op reset, full work/reset cycles, and equivalent rebuild. |
 
 All benchmarks use ReleaseFast for both zlua and C Lua, including process comparisons and C startup workers, regardless of `-Doptimize`. Startup and snapshot timings exclude process launch. Startup totals sum the measured phases; they are not another independently timed operation.
 
@@ -30,11 +30,9 @@ The main tables show medians and sample counts. For process comparisons, **zlua/
 
 Use `--verbose` for phase timings, p95, spread, and allocation details. With very few samples, p95 is usually the maximum; use more samples before drawing conclusions.
 
-Allocation counts and bytes are medians across samples. Requested bytes include positive resize growth. Live bytes are storage after the operation; peak includes storage already live at its start. Capture counts the new checkpoint only. Clone counts the new worker only, excluding retained checkpoint storage. Reset and rebuild count VM storage, including retained rollback storage. Snapshot switching can require both graphs; active-baseline reset uses storage swaps. Worker journal storage created during capture appears in subsequent VM live totals. The native runtime column estimates GC objects separately. A dash means unavailable, not zero.
+Allocation counts and bytes are medians across samples. Requested bytes include positive resize growth. Live bytes are storage after the operation; peak includes storage already live at its start. Capture counts the new snapshot only. `new_state` counts the new worker only, excluding retained snapshot storage. Reset and rebuild count VM storage, including retained rollback storage. Reset restores the State’s own baseline using storage swaps. Worker journal storage created during capture appears in subsequent VM live totals. The native runtime column estimates GC objects separately. A dash means unavailable, not zero.
 
 JSON format 2 includes run metadata, raw samples, summaries, and comparisons for every group. Existing process records and their mean-based ratio remain under `benchmarks`. CSV format 2 has one row per operation sample; failed or skipped operations with no samples still get a row. Both formats store nanoseconds and bytes.
-
-The [concurrent snapshot sharing report](benchmark-snapshot-sharing.md) records the lifetime-atomics change, its validation, and before/after timings.
 
 Save a baseline, make the change, and repeat the same command on an otherwise idle machine. Look at the samples and spread as well as the ratio. Process runs alternate engine order and check every pair's exit status and output outside the timer.
 
