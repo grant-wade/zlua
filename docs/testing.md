@@ -108,7 +108,9 @@ just official --mode=complete strings.lua
 zig build test-official -Dofficial-memory-limit-mb=0
 ```
 
-The build step applies a 256 MiB child-process cap on Linux by default and no cap elsewhere. Direct harness runs default to no timeout or memory cap. `--mode=internal` is parsed but skipped because `testC` builds are not wired.
+The build step applies a 256 MiB child-process cap on Linux by default and no cap elsewhere. It also limits each child to 120 seconds (`-Dofficial-timeout-ms=0` disables this). The allocator-exhaustion test `heavy.lua` is skipped on macOS and Windows because the harness cannot cap child memory there. The `files.lua` prelude emulates `/dev/full` on those platforms and maps `/dev/null` to `NUL` on Windows. Direct harness runs default to no timeout or memory cap. `--mode=internal` is parsed but skipped because `testC` builds are not wired.
+
+Differential and extension output comparisons treat CRLF and LF as equivalent; lone carriage returns, spaces, and missing final newlines remain significant. Fixtures normalize platform-dependent paths explicitly where they print or assert them.
 
 ## Debugging a Failure
 

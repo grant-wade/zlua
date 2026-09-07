@@ -8,7 +8,7 @@ assert(fs.write(root .. "/skip/deep/b.txt", "b"))
 local walker = assert(fs.walk(root))
 local seen = {}
 for entry in walker do
-  seen[entry.path:sub(#root + 2)] = true
+  seen[(entry.path:sub(#root + 2):gsub("\\", "/"))] = true
   if entry.name == "skip" then assert(walker:skip()) end
 end
 assert(seen["keep"] and seen["keep/deep"] and seen["keep/deep/a.txt"])

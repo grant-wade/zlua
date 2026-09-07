@@ -24,7 +24,7 @@ const Runner = enum { clua, zlua };
 
 const official_basic_prelude = "_U=true; _soft=true; _port=true; _nomsg=true; T=nil; ARG=arg";
 const official_complete_prelude = "T=rawget(_G, 'T'); ARG=arg";
-const official_macos_files_prelude =
+const official_portable_files_prelude =
     \\do
     \\  local output = io.output
     \\  local flush = io.flush
@@ -36,6 +36,7 @@ const official_macos_files_prelude =
     \\  io.output = function(filename)
     \\    if filename == nil then return full or output() end
     \\    if filename == "/dev/full" then full = fake_full; return fake_full end
+    \\    if filename == "/dev/null" and package.config:sub(1, 1) == "\\" then filename = "NUL" end
     \\    full = nil
     \\    return output(filename)
     \\  end
@@ -193,6 +194,8 @@ fn runIndividualSuite(
             continue;
         }
 
+        try out.print("running {s}\n", .{std.fs.path.basename(file)});
+        try out.flush();
         var clua_result = try runOfficialFile(allocator, io, clua_exe, file, options, .clua);
         defer clua_result.deinit(allocator);
         var zlua_result = try runOfficialFile(allocator, io, zlua_exe, file, options, .zlua);
@@ -223,10 +226,21 @@ fn runIndividualSuite(
 }
 
 fn platformSkipReason(file: []const u8) ?[]const u8 {
-    if (builtin.os.tag == .macos and std.mem.eql(u8, std.fs.path.basename(file), "heavy.lua")) {
-        return "requires a recoverable allocator ENOMEM; macOS has no supported per-process memory cap";
+    return skipReasonForOs(builtin.os.tag, std.fs.path.basename(file));
+}
+
+fn skipReasonForOs(os: std.Target.Os.Tag, filename: []const u8) ?[]const u8 {
+    if ((os == .macos or os == .windows) and std.mem.eql(u8, filename, "heavy.lua")) {
+        return "requires a recoverable allocator ENOMEM; this harness has no supported per-process memory cap on this platform";
     }
     return null;
+}
+
+test "allocator exhaustion requires a platform with a child memory cap" {
+    try std.testing.expect(skipReasonForOs(.windows, "heavy.lua") != null);
+    try std.testing.expect(skipReasonForOs(.macos, "heavy.lua") != null);
+    try std.testing.expect(skipReasonForOs(.linux, "heavy.lua") == null);
+    try std.testing.expect(skipReasonForOs(.windows, "files.lua") == null);
 }
 
 fn collectOfficialFiles(allocator: std.mem.Allocator, io: std.Io, options: Options, files: *std.ArrayList([]u8)) !void {
@@ -285,8 +299,8 @@ fn runOfficialFile(
     const script_arg = try std.fmt.allocPrint(allocator, "./{s}", .{std.fs.path.basename(file)});
     defer allocator.free(script_arg);
     try argv.appendSlice(allocator, &.{ "-e", prelude });
-    if (builtin.os.tag == .macos and std.mem.eql(u8, std.fs.path.basename(file), "files.lua")) {
-        try argv.appendSlice(allocator, &.{ "-e", official_macos_files_prelude });
+    if ((builtin.os.tag == .macos or builtin.os.tag == .windows) and std.mem.eql(u8, std.fs.path.basename(file), "files.lua")) {
+        try argv.appendSlice(allocator, &.{ "-e", official_portable_files_prelude });
     }
     try argv.append(allocator, script_arg);
     return process.runProcess(allocator, io, argv.items, .{
