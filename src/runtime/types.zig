@@ -458,6 +458,38 @@ pub const ProtectedCallResult = union(enum) {
 };
 
 pub const ApiCallbackDispatchFn = *const fn (*ApiCallbackContext) anyerror!void;
+/// Stores small callback results inline. GC visits each callback’s results through items().
+/// Contains no self pointers.
+pub const CallbackReturns = struct {
+    inline_values: [4]Value = undefined,
+    inline_len: usize = 0,
+    spill: std.ArrayList(Value) = .empty,
+
+    pub fn items(self: *const CallbackReturns) []const Value {
+        return if (self.spill.capacity != 0) self.spill.items else self.inline_values[0..self.inline_len];
+    }
+    pub fn deinit(self: *CallbackReturns, allocator: std.mem.Allocator) void {
+        self.spill.deinit(allocator);
+    }
+    pub fn clearRetainingCapacity(self: *CallbackReturns) void {
+        self.inline_len = 0;
+        self.spill.clearRetainingCapacity();
+    }
+    pub fn append(self: *CallbackReturns, allocator: std.mem.Allocator, value: Value) !void {
+        if (self.spill.capacity == 0) {
+            if (self.inline_len < self.inline_values.len) {
+                self.inline_values[self.inline_len] = value;
+                self.inline_len += 1;
+                return;
+            }
+            // On failure, keep all inline results intact and visible to GC.
+            try self.spill.ensureTotalCapacity(allocator, self.inline_len + 1);
+            self.spill.appendSliceAssumeCapacity(self.inline_values[0..self.inline_len]);
+        }
+        try self.spill.append(allocator, value);
+    }
+};
+
 pub const ApiCallbackContext = struct {
     state: *State,
     thread: *Thread,
@@ -467,7 +499,7 @@ pub const ApiCallbackContext = struct {
     parent: ?*ApiCallbackContext,
     user_data: ?*anyopaque,
     function_name: []const u8 = "host callback",
-    returns: std.ArrayList(Value) = .empty,
+    returns: CallbackReturns = .{},
     error_value: ?Value = null,
 
     pub fn deinit(self: *ApiCallbackContext) void {
@@ -548,6 +580,7 @@ pub const ProtectedContinuationKind = enum {
 };
 
 pub const ProtectedContinuation = struct {
+    order: usize,
     context: ProtectedCallContext,
     base: bytecode.Register,
     return_count: u16,
@@ -560,6 +593,14 @@ pub const GenericForContinuation = struct {
     frame_count: usize,
     op: bytecode.GenericFor,
     jump_on_nil: bool,
+};
+
+pub const PairsContinuation = struct {
+    order: usize = 0,
+    frame_count: usize,
+    source_base: usize,
+    base: bytecode.Register,
+    return_count: u16,
 };
 
 pub const BranchContinuation = struct {
@@ -808,6 +849,8 @@ pub const Thread = struct {
     yield_values: std.ArrayList(Value) = .empty,
     protected_continuations: std.ArrayList(ProtectedContinuation) = .empty,
     generic_for_continuations: std.ArrayList(GenericForContinuation) = .empty,
+    pairs_continuations: std.ArrayList(PairsContinuation) = .empty,
+    continuation_order: usize = 0,
     tail_call_continuations: std.ArrayList(TailCallContinuation) = .empty,
     call_one_continuations: std.ArrayList(CallOneContinuation) = .empty,
     open_upvalues: ?*Upvalue = null,
@@ -871,6 +914,7 @@ pub const Thread = struct {
         self.yield_values.deinit(allocator);
         self.protected_continuations.deinit(allocator);
         self.generic_for_continuations.deinit(allocator);
+        self.pairs_continuations.deinit(allocator);
         self.tail_call_continuations.deinit(allocator);
         self.call_one_continuations.deinit(allocator);
         self.frames.deinit(allocator);

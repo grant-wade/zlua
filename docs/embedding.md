@@ -274,6 +274,10 @@ try host.set("version", 1);
 try lua.preloadModule("host", host);
 ```
 
+`Table.rawGet(key, T)` and `Table.rawNext(previous_key)` bypass metamethods. Start traversal with `null` or `Value.nil`, deinitialize each returned `Entry`, and avoid structural changes during traversal.
+
+`Table.getMetatable()` returns a rooted handle even when `__metatable` protects the table. `Table.identity()` returns a state-local token valid while the table is rooted, until reset.
+
 ## Host Callbacks
 
 `register` exposes the `Context` API:
@@ -305,6 +309,8 @@ var clamp_fn = try lua.registerTyped("clamp", clamp);
 defer clamp_fn.deinit();
 try lua.setGlobal("clamp", clamp_fn);
 ```
+
+`Context.callNonYielding(function, args, R)` calls Lua on the callback’s coroutine using its current instruction budget. Yielding is forbidden. Lua errors propagate unchanged after cleanup, including `__close`; completed effects remain. `Context.threadIdentity()` returns a coroutine token valid only during the callback and invalidated by reset.
 
 ## Calling and Errors
 
@@ -355,6 +361,30 @@ try lua.setGlobal("counter", counter);
 `newUserdataAuto` and `newUserdataPtrAuto` bind public functions whose first parameter is `*T` or `*const T`. Names beginning with `__` become metamethods; other methods go on `__index`. `registerUserdataInitializerWith` creates a typed Lua constructor that returns auto-bound userdata.
 
 Lua-owned userdata may receive a finalizer through its options. Both forms support typed callback arguments such as `ctx.arg(0, *Counter)`.
+
+Pass `.metatable = table` to `newUserdata` or `newUserdataPtr` to share a metatable from the same state. Install its methods before sharing it. Failed construction leaves finalizer responsibility with the host.
+
+Userdata equality uses `__eq`; `rawequal` compares wrapper identity. `AnyUserdata.as(T)` checks the payload type and returns a new rooted handle.
+
+Use `__pairs` for custom iteration. It returns an iterator, state, initial key, and optional closing value. `ipairs` uses `__index` to read integer keys from 1 until the first `nil`:
+
+```zig
+const Sequence = struct {
+    values: [3]i64,
+
+    pub fn __index(self: *const @This(), index: i64) ?i64 {
+        if (index < 1 or index > self.values.len) return null;
+        return self.values[@intCast(index - 1)];
+    }
+};
+
+var sequence = try lua.newUserdataAuto(Sequence, .{ .values = .{ 10, 20, 30 } }, .{});
+defer sequence.deinit();
+try lua.setGlobal("sequence", sequence);
+try lua.doString("for i, value in ipairs(sequence) do print(i, value) end", .{});
+```
+
+With `newUserdata`, register the method explicitly: `try sequence.metamethod("__index", Sequence.__index);`. Auto-binding also supports public `__pairs` methods with a pointer receiver. Lua `__pairs` functions can yield; `__index` calls from `ipairs` cannot. Zig fields are not enumerated automatically.
 
 ## Snapshots
 

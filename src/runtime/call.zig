@@ -183,7 +183,9 @@ pub fn runProtectedCall(comptime State: type, self: *State, thread: *Thread, con
 }
 
 pub fn pushProtectedContinuation(comptime State: type, self: *State, thread: *Thread, context: ProtectedCallContext, base: bytecode.Register, return_count: u16, kind: ProtectedContinuationKind, handler: Value, handler_depth: usize) !void {
+    thread.continuation_order += 1;
     try thread.protected_continuations.append(self.allocator, .{
+        .order = thread.continuation_order,
         .context = context,
         .base = base,
         .return_count = return_count,
@@ -228,6 +230,16 @@ pub fn completeReadyProtectedContinuation(comptime State: type, self: *State, th
 pub fn completeProtectedContinuationError(comptime State: type, self: *State, thread: *Thread, error_value: Value) !bool {
     const index = errorProtectedContinuationIndex(thread) orelse return false;
     const continuation = thread.protected_continuations.items[index];
+    // Drop pairs calls abandoned by this handler. A native protected __pairs
+    // can share its frame depth with an outer pairs call, which must survive.
+    var pairs_index = thread.pairs_continuations.items.len;
+    while (pairs_index > 0) {
+        pairs_index -= 1;
+        const pending = thread.pairs_continuations.items[pairs_index];
+        if (pending.frame_count == continuation.context.frame_count and pending.order < continuation.order) {
+            _ = thread.pairs_continuations.orderedRemove(pairs_index);
+        }
+    }
     const failure = try self.restoreProtectedCall(thread, continuation.context, error_value);
     _ = thread.protected_continuations.orderedRemove(index);
     try returnProtectedContinuationFailure(State, self, thread, continuation, failure);

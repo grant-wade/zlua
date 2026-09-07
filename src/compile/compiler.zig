@@ -322,7 +322,11 @@ const FunctionCompiler = struct {
         const mark = self.registerMark();
         const closure_reg = try self.allocReg();
         const child = try self.compileFunctionBody(decl.body, decl.name.method != null, functionDeclDebugName(decl.name));
-        const child_index = try self.proto.addChild(child);
+        const child_index = self.proto.addChild(child) catch |err| {
+            child.deinit();
+            self.allocator.destroy(child);
+            return err;
+        };
         self.current_line = decl.body.end_line;
         _ = try self.emit(.{ .closure = .{ .dest = closure_reg, .proto = child_index } });
 
@@ -351,7 +355,11 @@ const FunctionCompiler = struct {
     fn compileLocalFunctionDecl(self: *FunctionCompiler, decl: ast.LocalFunctionDecl) anyerror!void {
         const register = try self.declareLocal(decl.name.name);
         const child = try self.compileFunctionBody(decl.body, false, decl.name.name);
-        const child_index = try self.proto.addChild(child);
+        const child_index = self.proto.addChild(child) catch |err| {
+            child.deinit();
+            self.allocator.destroy(child);
+            return err;
+        };
         self.current_line = decl.body.end_line;
         _ = try self.emit(.{ .closure = .{ .dest = register, .proto = child_index } });
     }
@@ -476,6 +484,9 @@ const FunctionCompiler = struct {
         _ = try self.declareLocalAt("(for state)", base + 1, false);
         const close_register = try self.declareLocalAt("(for state)", base + 3, true);
         _ = try self.emit(.{ .check_close = close_register });
+        // Iterator setup can yield before it produces a closing value. Activate
+        // the closing local only once check_close has actually run.
+        self.proto.locals.items[self.locals.items[self.locals.items.len - 1].debug_index].start_pc = self.proto.pc();
         for (stmt.names) |name| _ = try self.declareLocal(name.name);
 
         const loop_start = self.proto.pc();
@@ -634,7 +645,11 @@ const FunctionCompiler = struct {
 
     fn compileFunctionLiteral(self: *FunctionCompiler, body: ast.FunctionBody, dest: bytecode.Register, debug_name: ?[]const u8) !void {
         const child = try self.compileFunctionBody(body, false, debug_name);
-        const child_index = try self.proto.addChild(child);
+        const child_index = self.proto.addChild(child) catch |err| {
+            child.deinit();
+            self.allocator.destroy(child);
+            return err;
+        };
         self.current_line = body.end_line;
         _ = try self.emit(.{ .closure = .{ .dest = dest, .proto = child_index } });
     }
@@ -1599,4 +1614,22 @@ test "lowers comparison conditions to direct branch" {
 
     try std.testing.expect(found_compare_branch);
     try std.testing.expect(!found_test_op);
+}
+
+test "compiler child ownership survives every allocation failure for all function forms" {
+    const allocator = std.testing.allocator;
+    for ([_][]const u8{
+        "function outer(x) return function() return x end end",
+        "local function outer(x) local function inner() return x end; return inner end",
+        "return function(x) return function() return x end end",
+    }) |source| {
+        var tree = try frontend.parse(allocator, source);
+        defer tree.deinit();
+        try std.testing.checkAllAllocationFailures(allocator, struct {
+            fn run(failing: std.mem.Allocator, parsed: *const ast.Ast) !void {
+                var proto = try compile(failing, parsed);
+                defer proto.deinit();
+            }
+        }.run, .{&tree});
+    }
 }

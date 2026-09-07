@@ -62,6 +62,9 @@ pub const ConversionError = error{
 /// Returns options for `State.newUserdata`, parameterized by the stored Zig type.
 pub fn UserdataOptions(comptime T: type) type {
     return struct {
+        /// Reuse this state's metatable instead of allocating default tables.
+        /// Install methods before sharing it.
+        metatable: ?Table = null,
         /// Optional callback run before Lua-owned userdata storage is destroyed.
         finalizer: ?*const fn (*T) void = null,
         /// Paired copy/dispose hooks for independently owned snapshot payloads.
@@ -72,6 +75,8 @@ pub fn UserdataOptions(comptime T: type) type {
 /// Returns options for `State.newUserdataPtr`, parameterized by the pointed-to Zig type.
 pub fn UserdataPtrOptions(comptime T: type) type {
     return struct {
+        /// Reuse this state's metatable instead of allocating default tables.
+        metatable: ?Table = null,
         /// Optional callback run when the Lua userdata wrapper is finalized.
         finalizer: ?*const fn (*T) void = null,
         /// Paired copy/dispose hooks for independently owned snapshot payloads.
@@ -706,16 +711,24 @@ pub const State = struct {
 
     /// Allocates Lua-owned userdata storage initialized with `value`.
     pub fn newUserdata(self: *State, comptime T: type, value: T, options: UserdataOptions(T)) !Userdata(T) {
+        const metatable = if (options.metatable) |table| blk: {
+            try table.ref.validate(self);
+            break :blk (try table.rawValue()).table;
+        } else null;
         const ptr = try self.allocator().create(T);
         ptr.* = value;
-        const raw = self.raw_state.newUserdata(ptr, typeId(T), @typeName(T), userdataFinalizer(T, options.finalizer), userdataFinalizerData(T, options.finalizer), userdataDestroy(T)) catch |err| {
+        const raw = self.raw_state.newUserdata(ptr, typeId(T), @typeName(T), null, null, userdataDestroy(T)) catch |err| {
             self.allocator().destroy(ptr);
             return err;
         };
-        setUserdataSnapshotHooks(T, raw.userdata, options.snapshot);
         var userdata = try Userdata(T).fromRuntime(self, raw);
         errdefer userdata.deinit();
-        try userdata.initMetatable();
+        if (metatable) |table| raw.userdata.metatable = table else try userdata.initMetatable();
+        raw.userdata.finalizer = userdataFinalizer(T, options.finalizer);
+        raw.userdata.finalizer_data = userdataFinalizerData(T, options.finalizer);
+        raw.userdata.payload.?.finalizer = raw.userdata.finalizer;
+        raw.userdata.payload.?.finalizer_data = raw.userdata.finalizer_data;
+        setUserdataSnapshotHooks(T, raw.userdata, options.snapshot);
         return userdata;
     }
 
@@ -734,11 +747,19 @@ pub const State = struct {
     /// Wraps host-owned storage as Lua userdata without taking ownership of `ptr`.
     pub fn newUserdataPtr(self: *State, comptime T: type, ptr: *T, options: UserdataPtrOptions(T)) !Userdata(T) {
         if (options.snapshot) |hooks| if (hooks.tracking == .scoped) return error.ScopedAccessRequiresOwnedUserdata;
-        const raw = try self.raw_state.newUserdata(ptr, typeId(T), @typeName(T), userdataFinalizer(T, options.finalizer), userdataFinalizerData(T, options.finalizer), null);
-        setUserdataSnapshotHooks(T, raw.userdata, options.snapshot);
+        const metatable = if (options.metatable) |table| blk: {
+            try table.ref.validate(self);
+            break :blk (try table.rawValue()).table;
+        } else null;
+        const raw = try self.raw_state.newUserdata(ptr, typeId(T), @typeName(T), null, null, null);
         var userdata = try Userdata(T).fromRuntime(self, raw);
         errdefer userdata.deinit();
-        try userdata.initMetatable();
+        if (metatable) |table| raw.userdata.metatable = table else try userdata.initMetatable();
+        raw.userdata.finalizer = userdataFinalizer(T, options.finalizer);
+        raw.userdata.finalizer_data = userdataFinalizerData(T, options.finalizer);
+        raw.userdata.payload.?.finalizer = raw.userdata.finalizer;
+        raw.userdata.payload.?.finalizer_data = raw.userdata.finalizer_data;
+        setUserdataSnapshotHooks(T, raw.userdata, options.snapshot);
         return userdata;
     }
 
@@ -1165,6 +1186,44 @@ pub const Table = struct {
         self.ref.state.raw_state.setTableValue(raw, raw_key, raw_value) catch |err| return self.ref.state.captureLuaError(err);
     }
 
+    /// Returns a state-local token, valid while rooted and until reset.
+    /// The token does not retain the table and must not be dereferenced.
+    pub fn identity(self: Table) !usize {
+        return @intFromPtr((try self.rawValue()).table);
+    }
+
+    /// Returns the metatable, ignoring __metatable. Deinitialize the returned handle.
+    pub fn getMetatable(self: Table) !?Table {
+        const meta = (try self.rawValue()).table.metatable orelse return null;
+        return try Table.fromRuntime(self.ref.state, .{ .table = meta });
+    }
+
+    /// Reads an entry without invoking __index.
+    pub fn rawGet(self: Table, key: anytype, comptime T: type) !T {
+        const raw = try self.rawValue();
+        return fromRuntimeValue(self.ref.state, raw.table.get(try toRuntimeValue(self.ref.state, key)), T);
+    }
+
+    pub const Entry = struct {
+        key: Value,
+        value: Value,
+        pub fn deinit(self: *Entry) void {
+            self.key.deinit();
+            self.value.deinit();
+        }
+    };
+
+    /// Iterates without metamethods. Start with null or Value.nil, then pass the previous key.
+    /// Deinitialize each entry and avoid structural changes during traversal.
+    pub fn rawNext(self: Table, key: anytype) !?Entry {
+        const raw = try self.rawValue();
+        const pair = raw.table.next(try toRuntimeValue(self.ref.state, key)) catch |err| return self.ref.state.captureLuaError(err);
+        if (pair[0] == .nil) return null;
+        var owned_key = try Value.fromRuntime(self.ref.state, pair[0]);
+        errdefer owned_key.deinit();
+        return .{ .key = owned_key, .value = try Value.fromRuntime(self.ref.state, pair[1]) };
+    }
+
     fn rawValue(self: Table) !runtime.Value {
         const raw = try self.ref.rawValue();
         if (raw != .table) return error.TypeMismatch;
@@ -1420,6 +1479,11 @@ pub const AnyUserdata = struct {
         self.* = undefined;
     }
 
+    /// Returns a new rooted handle after checking the payload type.
+    pub fn as(self: AnyUserdata, comptime T: type) !Userdata(T) {
+        return Userdata(T).fromRuntime(self.ref.state, try self.rawValue());
+    }
+
     fn rawValue(self: AnyUserdata) !runtime.Value {
         const raw = try self.ref.rawValue();
         if (raw != .userdata) return error.TypeMismatch;
@@ -1599,6 +1663,30 @@ pub const Context = struct {
     pub fn raise(self: *Context, value: anytype) error{ LuaError, OutOfMemory, InvalidHandle } {
         const raw_value = toRuntimeValue(self.lua, value) catch |err| return raiseConversionError(err);
         return self.raw.raise(raw_value);
+    }
+
+    /// Returns a coroutine token valid only during this callback and until reset.
+    pub fn threadIdentity(self: *Context) usize {
+        return @intFromPtr(self.raw.thread);
+    }
+
+    /// Calls Lua on this callback's coroutine with its current budget; yielding is forbidden.
+    /// Lua errors propagate unchanged after cleanup, including __close. Completed effects remain.
+    pub fn callNonYielding(self: *Context, function: Function, args: anytype, comptime R: type) !R {
+        try function.ref.validate(self.lua);
+        self.lua.bindDispatch();
+        const raw_args = try convertArgs(self.lua, args);
+        defer self.lua.allocator().free(raw_args);
+        self.raw.thread.native_call_depth += 1;
+        defer self.raw.thread.native_call_depth -= 1;
+        const result = try self.raw.state.protectedCall(self.raw.thread, try function.ref.rawValue(), raw_args);
+        return switch (result) {
+            .success => |values| blk: {
+                defer self.lua.allocator().free(values);
+                break :blk try fromRuntimeResults(self.lua, values, R);
+            },
+            .failure => |value| self.raw.raise(value),
+        };
     }
 
     fn argConversionError(self: *Context, index: usize, comptime T: type, raw: runtime.Value, err: anyerror) anyerror {
@@ -4678,4 +4766,129 @@ test "retained allocator accounts for concurrent shared frees while owner alloca
     joined = true;
     try std.testing.expectEqual(@as(usize, 0), limit.used.load(.monotonic));
     try std.testing.expect(!limit.exceeded);
+}
+
+test "api userdata pairs and ipairs use explicit and automatic metamethods" {
+    const Sequence = struct {
+        values: [4]?bool,
+        fail: bool = false,
+
+        pub fn __index(self: *const @This(), ctx: *Context, index: i64) !?bool {
+            if (self.fail) return ctx.raise("index failed");
+            if (index < 1 or index > self.values.len) return null;
+            return self.values[@intCast(index - 1)];
+        }
+
+        pub fn __pairs(self: *const @This(), ctx: *Context) !std.meta.Tuple(&.{ Ref, Table }) {
+            if (self.fail) return ctx.raise("pairs failed");
+            var table = try ctx.state().createTable(.{});
+            errdefer table.deinit();
+            for (self.values, 1..) |value, index| try table.set(index, value);
+            return .{ try ctx.state().getGlobal("next", Ref), table };
+        }
+    };
+    var lua = try State.init(std.testing.allocator, .{ .stdlib = .full });
+    defer lua.deinit();
+    for ([_]bool{ false, true }) |automatic| {
+        for ([_][4]?bool{
+            .{ null, null, null, null },
+            .{ false, true, null, null },
+            .{ true, null, false, null },
+        }) |values| {
+            const payload: Sequence = .{ .values = values };
+            var sequence = if (automatic)
+                try lua.newUserdataAuto(Sequence, payload, .{})
+            else
+                try lua.newUserdata(Sequence, payload, .{});
+            defer sequence.deinit();
+            if (!automatic) {
+                try sequence.metamethod("__index", Sequence.__index);
+                try sequence.metamethod("__pairs", Sequence.__pairs);
+            }
+            try lua.setGlobal("sequence", sequence);
+            var expected = try lua.createTable(.{});
+            defer expected.deinit();
+            for (values, 1..) |value, index| try expected.set(index, value);
+            try lua.setGlobal("expected", expected);
+            try lua.doString(
+                \\assert(type(sequence) == 'userdata')
+                \\assert(select('#', pairs(sequence)) == 4)
+                \\local found = {}
+                \\for k, v in pairs(sequence) do assert(v == expected[k]); found[k] = v end
+                \\for k, v in pairs(expected) do assert(found[k] == v) end
+                \\local iter, state, key = ipairs(sequence)
+                \\assert(state == sequence and key == 0)
+                \\local count = 0
+                \\for k, v in ipairs(sequence) do
+                \\  count = count + 1
+                \\  assert(k == count and v == expected[k])
+                \\  local direct_k, direct_v = iter(state, key)
+                \\  assert(direct_k == k and direct_v == v)
+                \\  key = k
+                \\end
+                \\assert(expected[count + 1] == nil)
+                \\assert(select('#', iter(state, key)) == 1 and iter(state, key) == nil)
+            , .{});
+        }
+    }
+    var failing = try lua.newUserdataAuto(Sequence, .{ .values = .{null} ** 4, .fail = true }, .{});
+    defer failing.deinit();
+    try lua.setGlobal("failing", failing);
+    try lua.doString(
+        \\local ok, err = pcall(pairs, failing)
+        \\assert(not ok and err == 'pairs failed', tostring(err))
+        \\ok, err = pcall(function() for k, v in pairs(failing) do end end)
+        \\assert(not ok and err == 'pairs failed', tostring(err))
+        \\local iter, state, key = ipairs(failing)
+        \\ok, err = pcall(iter, state, key)
+        \\assert(not ok and err == 'index failed', tostring(err))
+        \\ok, err = pcall(function() for k, v in ipairs(failing) do end end)
+        \\assert(not ok and err == 'index failed', tostring(err))
+    , .{});
+}
+
+test "api userdata table index and Lua iteration metamethods" {
+    var lua = try State.init(std.testing.allocator, .{ .stdlib = .full });
+    defer lua.deinit();
+    var userdata = try lua.newUserdata(u8, 0, .{});
+    defer userdata.deinit();
+    try lua.setGlobal("userdata", userdata);
+    try lua.doString(
+        \\local mt = getmetatable(userdata)
+        \\mt.__index = {false, 22, [4] = 44}
+        \\local count = 0
+        \\for k, v in ipairs(userdata) do count = count + 1; assert(v == mt.__index[k]) end
+        \\assert(count == 2)
+        \\local iter, state, key = ipairs(userdata)
+        \\assert(iter(state, 0) == 1 and select(2, iter(state, 0)) == false)
+        \\assert(select('#', iter(state, 2)) == 1 and iter(state, 2) == nil)
+        \\assert(not pcall(function() for k, v in pairs(userdata) do end end))
+        \\mt.__pairs = function(self)
+        \\  assert(self == userdata)
+        \\  coroutine.yield('pairs setup')
+        \\  return next, mt.__index, nil, nil, 'discarded'
+        \\end
+        \\local co = coroutine.create(function()
+        \\  local count = 0
+        \\  for k, v in pairs(userdata) do count = count + 1 end
+        \\  return count
+        \\end)
+        \\local ok, value = coroutine.resume(co)
+        \\assert(ok and value == 'pairs setup')
+        \\ok, value = coroutine.resume(co)
+        \\assert(ok and value == 3)
+        \\mt.__index = function() return coroutine.yield('forbidden') end
+        \\for _, direct in ipairs({false, true}) do
+        \\  co = coroutine.create(function()
+        \\    if direct then return iter(userdata, 0) end
+        \\    for k, v in ipairs(userdata) do end
+        \\  end)
+        \\  ok, value = coroutine.resume(co)
+        \\  assert(not ok and type(value) == 'string')
+        \\end
+    , .{});
+}
+
+test {
+    _ = @import("testing/api_host_tests.zig");
 }
