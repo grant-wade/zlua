@@ -3580,6 +3580,7 @@ test "fs extension supports memory filesystem directory utilities" {
         \\assert(fs ~= nil and require('fs') == fs)
         \\local entries = assert(fs.list('seed'))
         \\assert(#entries == 1 and entries[1].name == 'sub' and entries[1].kind == 'directory')
+        \\assert(entries[1].path == 'seed/sub')
         \\assert(fs.stat('seed/sub/a.txt').size == 5)
         \\assert(fs.mkdir('work/deep', { parents = true }))
         \\assert(fs.write('work/deep/data.bin', 'abc'))
@@ -3610,6 +3611,12 @@ test "fs host directory capability confines paths to borrowed root" {
         \\assert(fs.mkdir('inside/deep', { parents = true }))
         \\assert(fs.write('inside/deep/value.txt', 'rooted'))
         \\assert(fs.read('inside/deep/value.txt') == 'rooted')
+        \\local seen = {}
+        \\for entry in fs.walk('inside') do seen[entry.path] = entry.kind end
+        \\assert(seen['inside/deep'] == 'directory' and seen['inside/deep/value.txt'] == 'file')
+        \\assert(fs.copy('inside', 'copied', { recursive = true }))
+        \\assert(fs.read('copied/deep/value.txt') == 'rooted')
+        \\assert(fs.remove('copied', { recursive = true }))
         \\local escaped, escape_err = fs.write('../escape.txt', 'bad')
         \\assert(escaped == nil and escape_err.code == 'invalid_path')
         \\local absolute, absolute_err = fs.stat('/tmp')

@@ -112,6 +112,8 @@ The build step applies a 256 MiB child-process cap on Linux by default and no ca
 
 Differential and extension output comparisons treat CRLF and LF as equivalent; lone carriage returns, spaces, and missing final newlines remain significant. Fixtures normalize platform-dependent paths explicitly where they print or assert them.
 
+CI covers Linux and macOS on x64 and ARM64, plus Windows x64. Windows ARM64 is currently excluded because of Zig compiler and C runtime failures.
+
 ## Debugging a Failure
 
 1. Run the narrowest fixture with both outputs visible.
