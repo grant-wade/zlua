@@ -31,6 +31,7 @@
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
 - [runtime.state](../runtime/state.md)
+- [runtime.rollback](../runtime/rollback.md)
 - [runtime.call](../runtime/call.md)
 - [runtime.coroutine](../runtime/coroutine.md)
 - [runtime.debug](../runtime/debug.md)
@@ -89,9 +90,19 @@ shells are registered before references are populated, preserving identity.
 
 ## Functions
 
+- [checkIdleFast](#fn-checkidlefast)
 - [checkIdle](#fn-checkidle)
 - [copy](#fn-copy)
+- [copyFrozen](#fn-copyfrozen)
 - [review](#fn-review)
+
+<a id="fn-checkidlefast"></a>
+
+## checkIdleFast
+
+```zig
+pub fn checkIdleFast(source: *const State) !void
+```
 
 <a id="fn-checkidle"></a>
 
@@ -109,7 +120,18 @@ pub fn checkIdle(source: *const State) !void
 be reacquired. The caller owns destination allocator infrastructure.
 
 ```zig
-pub fn copy(source: *const State, allocator: std.mem.Allocator, lifetime: ?*types.AllocatorLifetime, error_root: ?usize) !State
+pub fn copy(source: *State, allocator: std.mem.Allocator, lifetime: ?*types.AllocatorLifetime, error_root: ?usize) !State
+```
+
+<a id="fn-copyfrozen"></a>
+
+## copyFrozen
+
+The source must be an idle, immutable backing image retained until destination
+destruction. Concurrent readers never write source VM metadata.
+
+```zig
+pub fn copyFrozen(source: *const State, allocator: std.mem.Allocator, lifetime: ?*types.AllocatorLifetime, error_root: ?usize) !State
 ```
 
 <a id="fn-review"></a>

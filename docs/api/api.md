@@ -30,6 +30,7 @@
 - [runtime.execute](runtime/execute.md)
 - [testing.process](testing/process.md)
 - [runtime.state](runtime/state.md)
+- [runtime.rollback](runtime/rollback.md)
 - [runtime.call](runtime/call.md)
 - [runtime.coroutine](runtime/coroutine.md)
 - [runtime.debug](runtime/debug.md)
@@ -117,8 +118,8 @@ store the last Lua error value on the `State`; use `errorMessage` or
 `takeErrorValue` to inspect it. `Function.protectedCall` returns Lua failures
 as `CallResult(R).lua_error` instead.
 
-`State.snapshot`, `State.reset`, and `Snapshot.clone` provide reusable
-in-memory checkpoints between host calls. Reset invalidates prior handles
+`State.snapshot`, `State.reset`, and `Snapshot.newState` provide reusable
+in-memory snapshots between host calls. Reset invalidates prior handles
 and borrowed VM slices and pointers. Host capabilities and userdata payloads
 without snapshot hooks remain shared. See `docs/embedding.md` for ownership details.
 
@@ -254,9 +255,12 @@ pub fn UserdataPtrOptions(comptime T: type) type
 
 ## UserdataSnapshotHooks
 
-Hooks for copying and disposing of userdata payloads in checkpoints.
+Hooks for copying and disposing of userdata payloads in snapshots.
 Copies must own all nested storage and be independently disposable.
 Hooks must not retain VM pointers or reenter snapshot operations.
+Concurrent calls to [Snapshot.newState](#fn-snapshot-newstate) may call copy on the same pristine payload at
+once; hooks and shared host resources must support their participating threads.
+Disposal/finalization can run on whichever thread releases the last owner.
 
 ```zig
 pub fn UserdataSnapshotHooks(comptime T: type) type
@@ -794,6 +798,11 @@ pub const State = struct {
     base_allocator: std.mem.Allocator,
     /// Advances on successful reset; handles from prior generations are invalid.
     generation: u64 = 0,
+    /// Retained backing of this State's active baseline; null before capture.
+    baseline: ?*const SnapshotBacking = null,
+    /// Owner of borrowed bytecode; capture may replace the active baseline.
+    immutable_owner: ?*const SnapshotBacking = null,
+    rollback_metadata: ?RollbackMetadata = null,
     /// Stable allocator infrastructure; unlimited until a memory limit is set.
     memory_limit_allocator: ?*MemoryLimitAllocator = null,
     /// Underlying Lua runtime state.
@@ -815,8 +824,8 @@ pub const State = struct {
 | --- | --- | --- | --- |
 | [init](#fn-state-init) | `state_allocator: std.mem.Allocator, options: Options` | `!State` | Creates a new Lua state using &#96;state_allocator&#96; and the supplied options. |
 | [deinit](#fn-state-deinit) | `self: *State` | `void` | Releases all resources owned by the state and invalidates outstanding API handles. |
-| [snapshot](#fn-state-snapshot) | `self: *State, snapshot_allocator: std.mem.Allocator` | `!Snapshot` | Captures an idle VM, including suspended Lua coroutines. Uses &#96;snapshot_allocator&#96; for checkpoint storage. Borrowed host capabilities must outlive the checkpoint and states created from it. |
-| [reset](#fn-state-reset) | `self: *State, checkpoint: *const Snapshot` | `!void` | Atomically restores a checkpoint and invalidates all rooted handles. The replacement and live VM both count against the restored memory limit. Discarding the old VM does not run Lua &#96;__gc&#96; or &#96;__close&#96; handlers. |
+| [snapshot](#fn-state-snapshot) | `self: *State, snapshot_allocator: std.mem.Allocator` | `!Snapshot` | Captures an idle VM, including suspended Lua coroutines, and installs a new baseline. Earlier Snapshots remain independently usable; reset restores only the new baseline. Uses &#96;snapshot_allocator&#96; for snapshot storage. Borrowed host capabilities must outlive the snapshot and states created from it. The source retains the baseline after the public wrapper is destroyed; keep the snapshot allocator valid until all retaining states release it. |
+| [reset](#fn-state-reset) | `self: *State` | `!void` | Incrementally restores this State's active baseline and invalidates prior handles. Returns &#96;error.NoSnapshot&#96; until capture installs a baseline. Unchanged baselines without eager resource hooks allocate nothing. Fallible eager userdata copies are prepared before rollback commits. Atomic failure semantics do not make State concurrently usable. Rollback skips Lua &#96;__gc&#96; and &#96;__close&#96; handlers. |
 | [allocator](#fn-state-allocator) | `self: *State` | `std.mem.Allocator` | Returns the allocator used for API-owned allocations returned to the host. |
 | [instructionBudget](#fn-state-instructionbudget) | `self: *const State` | `InstructionBudget` | Returns the cumulative instruction budget usage for this state. |
 | [resetInstructionBudget](#fn-state-resetinstructionbudget) | `self: *State` | `void` | Resets the cumulative instruction counter to zero. |
@@ -878,9 +887,12 @@ References: [`State`](#type-state)
 
 ### State.snapshot
 
-Captures an idle VM, including suspended Lua coroutines.
-Uses `snapshot_allocator` for checkpoint storage. Borrowed host
-capabilities must outlive the checkpoint and states created from it.
+Captures an idle VM, including suspended Lua coroutines, and installs a new baseline.
+Earlier Snapshots remain independently usable; reset restores only the new baseline.
+Uses `snapshot_allocator` for snapshot storage. Borrowed host
+capabilities must outlive the snapshot and states created from it.
+The source retains the baseline after the public wrapper is destroyed;
+keep the snapshot allocator valid until all retaining states release it.
 
 ```zig
 pub fn snapshot(self: *State, snapshot_allocator: std.mem.Allocator) !Snapshot
@@ -892,15 +904,18 @@ References: [`State`](#type-state), [`Snapshot`](#type-snapshot)
 
 ### State.reset
 
-Atomically restores a checkpoint and invalidates all rooted handles.
-The replacement and live VM both count against the restored memory limit.
-Discarding the old VM does not run Lua `__gc` or `__close` handlers.
+Incrementally restores this [State](#type-state)'s active baseline and invalidates prior handles.
+Returns `error.NoSnapshot` until capture installs a baseline.
+Unchanged baselines without eager resource hooks allocate nothing.
+Fallible eager userdata copies are prepared before rollback commits.
+Atomic failure semantics do not make [State](#type-state) concurrently usable.
+Rollback skips Lua `__gc` and `__close` handlers.
 
 ```zig
-pub fn reset(self: *State, checkpoint: *const Snapshot) !void
+pub fn reset(self: *State) !void
 ```
 
-References: [`State`](#type-state), [`Snapshot`](#type-snapshot)
+References: [`State`](#type-state)
 
 <a id="fn-state-allocator"></a>
 
@@ -1279,13 +1294,17 @@ References: [`State`](#type-state), [`ErrorRef`](#type-errorref)
 
 ## Snapshot
 
-Reusable in-memory checkpoint that can outlive its originating state.
-[Call](compile/bytecode.md#type-call) `deinit` when finished. Host capabilities and userdata payloads
-without snapshot hooks remain shared.
+Reusable immutable snapshot, retained independently by source and workers.
+Independently retained handles may call `newState` concurrently. Externally serialize
+each handle against mutation/deinit; a bit copy does not retain ownership.
+Each [State](#type-state) and its rollback journal remain single-owner/external-serialization.
+Backing and shared payload allocators must outlive every owner and support
+frees on the final owner's thread, including concurrent frees when shared.
+Hookless userdata and host capabilities retain host synchronization needs.
 
 ```zig
 pub const Snapshot = struct {
-    image: State,
+    backing: *const SnapshotBacking,
 };
 ```
 
@@ -1293,14 +1312,28 @@ pub const Snapshot = struct {
 
 | Name | Parameters | Return Type | Description |
 | --- | --- | --- | --- |
-| [deinit](#fn-snapshot-deinit) | `self: *Snapshot` | `void` | Releases the checkpoint and its owned storage. |
-| [clone](#fn-snapshot-clone) | `self: *const Snapshot, state_allocator: std.mem.Allocator` | `!State` | Creates an independent state using &#96;state_allocator&#96; and the captured options. |
+| [retain](#fn-snapshot-retain) | `self: *const Snapshot` | `Snapshot` | Returns a separately owned handle. Move it to another thread; ordinary bit copies do not retain ownership. The caller must hold a live handle. |
+| [deinit](#fn-snapshot-deinit) | `self: *Snapshot` | `void` | Releases only this wrapper; storage is freed after the final owner. |
+| [newState](#fn-snapshot-newstate) | `self: *const Snapshot, state_allocator: std.mem.Allocator` | `!State` | Creates an independent mutable State with this Snapshot as its baseline. Uses &#96;state_allocator&#96; and the captured options; retains backing and bytecode ownership so the public Snapshot handle may be released before reset. |
+
+<a id="fn-snapshot-retain"></a>
+
+### Snapshot.retain
+
+Returns a separately owned handle. [Move](compile/bytecode.md#type-move) it to another thread; ordinary
+bit copies do not retain ownership. The caller must hold a live handle.
+
+```zig
+pub fn retain(self: *const Snapshot) Snapshot
+```
+
+References: [`Snapshot`](#type-snapshot)
 
 <a id="fn-snapshot-deinit"></a>
 
 ### Snapshot.deinit
 
-Releases the checkpoint and its owned storage.
+Releases only this wrapper; storage is freed after the final owner.
 
 ```zig
 pub fn deinit(self: *Snapshot) void
@@ -1308,14 +1341,16 @@ pub fn deinit(self: *Snapshot) void
 
 References: [`Snapshot`](#type-snapshot)
 
-<a id="fn-snapshot-clone"></a>
+<a id="fn-snapshot-newstate"></a>
 
-### Snapshot.clone
+### Snapshot.newState
 
-Creates an independent state using `state_allocator` and the captured options.
+Creates an independent mutable [State](#type-state) with this [Snapshot](#type-snapshot) as its baseline.
+Uses `state_allocator` and the captured options; retains backing and bytecode
+ownership so the public [Snapshot](#type-snapshot) handle may be released before reset.
 
 ```zig
-pub fn clone(self: *const Snapshot, state_allocator: std.mem.Allocator) !State
+pub fn newState(self: *const Snapshot, state_allocator: std.mem.Allocator) !State
 ```
 
 References: [`Snapshot`](#type-snapshot), [`State`](#type-state)

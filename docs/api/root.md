@@ -30,6 +30,7 @@
 - [runtime.execute](runtime/execute.md)
 - [testing.process](testing/process.md)
 - [runtime.state](runtime/state.md)
+- [runtime.rollback](runtime/rollback.md)
 - [runtime.call](runtime/call.md)
 - [runtime.coroutine](runtime/coroutine.md)
 - [runtime.debug](runtime/debug.md)

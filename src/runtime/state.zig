@@ -1,4 +1,5 @@
 const std = @import("std");
+const rollback_mod = @import("rollback.zig");
 const builtin = @import("builtin");
 const compile = @import("../compile.zig");
 const call_mod = @import("call.zig");
@@ -107,6 +108,10 @@ pub const StateOptions = struct {
 };
 
 pub const State = struct {
+    rollback: ?*rollback_mod.Journal = null,
+    userdata_scope: ?*types.UserdataScope = null,
+    /// Includes direct interpreter entry, nested calls, and suspended host callbacks.
+    execution_depth: usize = 0,
     allocator_lifetime: ?*types.AllocatorLifetime = null,
     snapshot_busy: bool = false,
     discarding: bool = false,
@@ -126,6 +131,8 @@ pub const State = struct {
     upvalue_allocations: std.ArrayList(*Upvalue) = .empty,
     thread_allocations: std.ArrayList(*Thread) = .empty,
     proto_allocations: std.ArrayList(*proto_mod.Proto) = .empty,
+    /// Prefix owned by the API state's retained immutable snapshot.
+    borrowed_proto_count: usize = 0,
     source_allocations: std.ArrayList([]const u8) = .empty,
     api_roots: std.ArrayList(Value) = .empty,
     stdout: std.ArrayList(u8) = .empty,
@@ -159,6 +166,12 @@ pub const State = struct {
     conservative_gc_depth: usize = 0,
     random_state: [4]u64 = .{ 0x123456789abcdef0, 0xff, 0xfedcba9876543210, 0 },
     instruction_count: u64 = 0,
+
+    pub fn registerAllocation(self: *State, comptime field: []const u8, item: anytype) !void {
+        if (self.rollback) |journal| try journal.prepareAllocation(self);
+        try @field(self, field).append(self.allocator, item);
+        if (self.rollback) |journal| journal.allocated(field, item);
+    }
 
     pub fn init(allocator: std.mem.Allocator) !State {
         return initWithOptions(allocator, .{});
@@ -240,6 +253,7 @@ pub const State = struct {
     }
 
     pub fn deinit(self: *State) void {
+        if (self.rollback) |journal| journal.abandon(self);
         self.snapshot_busy = true;
         self.stdout.deinit(self.allocator);
         self.stderr.deinit(self.allocator);
@@ -256,7 +270,7 @@ pub const State = struct {
                 self.allocator.destroy(table);
             } else self.destroyTable(table);
         }
-        for (self.proto_allocations.items) |proto| {
+        for (self.proto_allocations.items[self.borrowed_proto_count..]) |proto| {
             proto.deinit();
             self.allocator.destroy(proto);
         }
@@ -285,7 +299,7 @@ pub const State = struct {
         errdefer self.allocator.destroy(thread);
         thread.* = try Thread.initRoot(self.allocator, closure, self.stackValueLimit());
         errdefer thread.deinit(self.allocator);
-        try self.thread_allocations.append(self.allocator, thread);
+        try self.registerAllocation("thread_allocations", thread);
         self.noteAllocation(@sizeOf(Thread));
         return thread;
     }
@@ -441,6 +455,9 @@ pub const State = struct {
     }
 
     pub fn runThreadUntil(self: *State, thread: *Thread, target_frame_count: usize) anyerror!void {
+        self.execution_depth += 1;
+        defer self.execution_depth -= 1;
+        try rollback_mod.threadWritable(thread);
         while (thread.frames.items.len > target_frame_count) {
             if (thread.pending_unwind_error != null and thread.frames.items.len == thread.pending_unwind_resume_frame_count) {
                 const error_value = thread.pending_unwind_error.?;
@@ -695,7 +712,7 @@ pub const State = struct {
                 .tfor_loop => |op| try self.jumpThread(thread, op.offset, false),
                 .closure => |op| stack[base + op.dest] = try self.newClosure(thread, proto.children.items[op.proto]),
                 .get_upvalue => |op| stack[base + op.register] = self.readUpvalue(thread, op.upvalue),
-                .set_upvalue => |op| self.writeUpvalue(thread, op.upvalue, stack[base + op.register]),
+                .set_upvalue => |op| try self.writeUpvalue(thread, op.upvalue, stack[base + op.register]),
                 .close => |register| if (thread.open_upvalues != null) self.closeUpvalues(thread, base + register),
                 .check_close => |register| try self.checkToBeClosedRegister(thread, register),
                 .close_tbc => |register| try self.closeToBeClosedRegister(thread, register, null),
@@ -966,6 +983,7 @@ pub const State = struct {
         if (table_value != .table) return false;
         const index = arrayIndex(key_value) orelse return false;
         const table = table_value.table;
+        if (table.rollback) |record| if (!record.header.detached) return false;
         if (index <= table.array.items.len) {
             const slot = &table.array.items[index - 1];
             if (slot.* == .nil and table.metatable != null) return false;
@@ -985,6 +1003,7 @@ pub const State = struct {
         if (self.is_collecting) return false;
         if (table_value != .table or key != .string) return false;
         const table = table_value.table;
+        if (table.rollback) |record| if (!record.header.detached) return false;
         const index = table.entry_index.get(key) orelse return false;
         const slot = &table.entries.items[index].value;
         if (slot.* == .nil and table.metatable != null) return false;
@@ -997,6 +1016,7 @@ pub const State = struct {
         const index: usize = index_u32;
         const key_value = Value{ .integer = @intCast(index_u32) };
         const table = table_value.table;
+        try rollback_mod.tableWritable(table);
         if (index <= table.array.items.len) {
             const slot = &table.array.items[index - 1];
             if (slot.* != .nil or table.metatable == null) {
@@ -1029,6 +1049,7 @@ pub const State = struct {
     }
 
     fn setTableArrayRawIndex(self: *State, table: *Table, index_u32: u32, value: Value) !void {
+        try rollback_mod.tableWritable(table);
         const index: usize = index_u32;
         const key = Value{ .integer = @intCast(index_u32) };
         if (index <= table.array.items.len) {
@@ -1061,6 +1082,7 @@ pub const State = struct {
     fn fastTableKnownKeySet(self: *State, table_value: Value, key: Value, value: Value) !bool {
         if (table_value != .table) return false;
         const table = table_value.table;
+        if (table.rollback != null and table.get(key) != .nil) try rollback_mod.tableWritable(table);
         if (table.setExistingNonNil(key, value)) {
             self.writeTableBarrier(table, key, value);
             return true;
@@ -1182,6 +1204,7 @@ pub const State = struct {
     }
 
     pub fn setThreadHook(self: *State, target: *Thread, hook: Value, mask: []const u8, count: u32) void {
+        rollback_mod.touch(target);
         _ = self;
         target.hook = hook;
         target.hook_call = false;
@@ -1368,11 +1391,13 @@ pub const State = struct {
     }
 
     pub fn writeStdout(self: *State, bytes: []const u8) !void {
+        if (self.rollback) |journal| try journal.outputWritable(self);
         try self.stdout.appendSlice(self.allocator, bytes);
         if (self.options.stdout) |writer| try writer.writeAll(bytes);
     }
 
     pub fn writeStderr(self: *State, bytes: []const u8) !void {
+        if (self.rollback) |journal| try journal.outputWritable(self);
         try self.stderr.appendSlice(self.allocator, bytes);
         if (self.options.stderr) |writer| try writer.writeAll(bytes);
     }
@@ -1830,10 +1855,13 @@ pub const State = struct {
             error.OutOfMemory => return err,
             else => return self.failLoadDiagnostic(source_name, source, diagnostic, "cannot compile source"),
         };
-        if (source_name) |name| try setProtoSourceName(proto, name);
         errdefer proto.deinit();
-        try self.proto_allocations.append(self.allocator, proto);
-        errdefer _ = self.proto_allocations.pop();
+        if (source_name) |name| try setProtoSourceName(proto, name);
+        try self.registerAllocation("proto_allocations", proto);
+        errdefer {
+            const removed = self.proto_allocations.pop().?;
+            if (self.rollback) |journal| journal.freed(@intFromPtr(removed));
+        }
         return .{ .closure = try self.newRootClosureWithEnv(proto, environment) };
     }
 
@@ -1858,7 +1886,11 @@ pub const State = struct {
             self.allocator.destroy(proto);
         }
         if (reader.pos != source.len) return self.fail("bad binary chunk");
-        try self.proto_allocations.append(self.allocator, proto);
+        try self.registerAllocation("proto_allocations", proto);
+        errdefer {
+            _ = self.proto_allocations.pop();
+            if (self.rollback) |journal| journal.freed(@intFromPtr(proto));
+        }
         return self.newDumpedClosure(proto, environment, stripped_debug);
     }
 
@@ -1872,7 +1904,7 @@ pub const State = struct {
         const allocated_source_name = if (source_name == null) try std.fmt.allocPrint(self.allocator, "@{s}", .{path}) else null;
         defer if (allocated_source_name) |name| self.allocator.free(name);
         const closure = try self.loadSourceAsClosureNamed(source, source_name orelse allocated_source_name.?);
-        try self.source_allocations.append(self.allocator, source);
+        try self.registerAllocation("source_allocations", source);
         return closure;
     }
 
@@ -1912,6 +1944,8 @@ pub const State = struct {
     }
 
     fn closureConstant(self: *State, closure: *Closure, index: bytecode.ConstantIndex) !Value {
+        if (closure.constants) |cache| if (cache[index]) |value| return value;
+        try rollback_mod.closureWritable(closure);
         if (closure.constants == null) closure.constants = try self.allocateConstantCache(closure.proto);
         const constants = closure.constants.?;
         if (constants[index] == null) constants[index] = try self.loadConstant(closure.proto.constants.items[index]);
@@ -1937,8 +1971,11 @@ pub const State = struct {
     pub fn allocateString(self: *State, bytes: []const u8) ![]const u8 {
         const allocated = try self.allocator.dupe(u8, bytes);
         errdefer self.allocator.free(allocated);
-        try self.string_allocations.append(self.allocator, .{ .bytes = allocated });
-        errdefer _ = self.string_allocations.pop();
+        try self.registerAllocation("string_allocations", StringAllocation{ .bytes = allocated });
+        errdefer {
+            const removed = self.string_allocations.pop().?;
+            if (self.rollback) |journal| journal.freed(@intFromPtr(removed.bytes.ptr));
+        }
         if (allocated.len != 0) try self.string_allocation_index.put(@intFromPtr(allocated.ptr), self.string_allocations.items.len - 1);
         self.noteAllocation(@sizeOf(StringAllocation) + allocated.len);
         return allocated;
@@ -2067,8 +2104,11 @@ pub const State = struct {
         errdefer self.allocator.destroy(table);
         table.* = try Table.init(self.allocator, array_hint, hash_hint);
         errdefer table.deinit(self.allocator);
-        try self.table_allocations.append(self.allocator, table);
-        errdefer _ = self.table_allocations.pop();
+        try self.registerAllocation("table_allocations", table);
+        errdefer {
+            const removed = self.table_allocations.pop().?;
+            if (self.rollback) |journal| journal.freed(@intFromPtr(removed));
+        }
         try self.table_allocation_index.put(@intFromPtr(table), self.table_allocations.items.len - 1);
         self.noteAllocation(tableGcBytes(table));
         return .{ .table = table };
@@ -2088,7 +2128,7 @@ pub const State = struct {
         const payload = try self.allocator.create(types.UserdataPayload);
         errdefer self.allocator.destroy(payload);
         payload.* = .{ .allocator = self.allocator, .lifetime = self.allocator_lifetime, .ptr = ptr, .finalizer = finalizer, .finalizer_data = finalizer_data, .dispose = deinit_fn };
-        try self.userdata_allocations.append(self.allocator, userdata);
+        try self.registerAllocation("userdata_allocations", userdata);
         if (payload.lifetime) |l| l.retain();
         userdata.payload = payload;
         self.noteAllocation(@sizeOf(Userdata));
@@ -2115,7 +2155,7 @@ pub const State = struct {
                 .closed = if (std.mem.eql(u8, desc.name, "_ENV")) environment else .nil,
                 .is_open = false,
             };
-            try self.upvalue_allocations.append(self.allocator, upvalue);
+            try self.registerAllocation("upvalue_allocations", upvalue);
             self.noteAllocation(@sizeOf(Upvalue));
             upvalues[index] = upvalue;
         }
@@ -2123,7 +2163,7 @@ pub const State = struct {
         const closure = try self.allocator.create(Closure);
         errdefer self.allocator.destroy(closure);
         closure.* = .{ .proto = proto, .upvalues = upvalues };
-        try self.closure_allocations.append(self.allocator, closure);
+        try self.registerAllocation("closure_allocations", closure);
         self.noteAllocation(@sizeOf(Closure));
         return closure;
     }
@@ -2148,15 +2188,15 @@ pub const State = struct {
                 .closed = if (std.mem.eql(u8, desc.name, "_ENV")) environment else .nil,
                 .is_open = false,
             };
-            try self.upvalue_allocations.append(self.allocator, upvalue);
+            try self.registerAllocation("upvalue_allocations", upvalue);
             self.noteAllocation(@sizeOf(Upvalue));
             upvalues[index] = upvalue;
         }
 
         const closure = try self.allocator.create(Closure);
         closure.* = .{ .proto = proto, .upvalues = upvalues, .stripped_debug = stripped_debug };
-        errdefer self.destroyClosure(closure);
-        try self.closure_allocations.append(self.allocator, closure);
+        errdefer self.allocator.destroy(closure);
+        try self.registerAllocation("closure_allocations", closure);
         self.noteAllocation(@sizeOf(Closure));
         return .{ .closure = closure };
     }
@@ -2174,8 +2214,8 @@ pub const State = struct {
 
         const closure = try self.allocator.create(Closure);
         closure.* = .{ .proto = proto, .upvalues = upvalues, .stripped_debug = parent.closure.stripped_debug };
-        errdefer self.destroyClosure(closure);
-        try self.closure_allocations.append(self.allocator, closure);
+        errdefer self.allocator.destroy(closure);
+        try self.registerAllocation("closure_allocations", closure);
         self.noteAllocation(@sizeOf(Closure));
         return .{ .closure = closure };
     }
@@ -2189,7 +2229,7 @@ pub const State = struct {
         const upvalue = try self.allocator.create(Upvalue);
         errdefer self.allocator.destroy(upvalue);
         upvalue.* = .{ .owner = thread, .stack_index = stack_index, .next = thread.open_upvalues };
-        try self.upvalue_allocations.append(self.allocator, upvalue);
+        try self.registerAllocation("upvalue_allocations", upvalue);
         self.noteAllocation(@sizeOf(Upvalue));
         thread.open_upvalues = upvalue;
         return upvalue;
@@ -2202,10 +2242,12 @@ pub const State = struct {
         return if (upvalue.is_open) upvalue.owner.stack.items[upvalue.stack_index] else upvalue.closed;
     }
 
-    fn writeUpvalue(self: *State, thread: *Thread, index: bytecode.UpvalueIndex, value: Value) void {
+    fn writeUpvalue(self: *State, thread: *Thread, index: bytecode.UpvalueIndex, value: Value) !void {
         const frame = thread.frames.items[thread.frames.items.len - 1];
         const upvalue = frame.closure.upvalues[index];
+        rollback_mod.touch(upvalue);
         if (upvalue.is_open) {
+            try rollback_mod.threadWritable(upvalue.owner);
             upvalue.owner.stack.items[upvalue.stack_index] = value;
         } else {
             upvalue.closed = value;
@@ -2220,10 +2262,13 @@ pub const State = struct {
         while (current) |upvalue| {
             const next = upvalue.next;
             if (upvalue.is_open and upvalue.stack_index >= first_stack_index) {
+                rollback_mod.touch(upvalue);
+                rollback_mod.touch(thread);
                 upvalue.closed = thread.stack.items[upvalue.stack_index];
                 upvalue.is_open = false;
                 upvalue.next = null;
                 if (previous) |prev| {
+                    rollback_mod.touch(prev);
                     prev.next = next;
                 } else {
                     thread.open_upvalues = next;
@@ -2573,6 +2618,7 @@ pub const State = struct {
 
         if (table_value == .table) {
             const table = table_value.table;
+            if (table.rollback != null and table.get(key) != .nil) try rollback_mod.tableWritable(table);
             if (table.setExistingNonNil(key, value)) {
                 self.writeTableBarrier(table, key, value);
                 return;
@@ -2604,6 +2650,7 @@ pub const State = struct {
 
         if (table_value == .table) {
             const table = table_value.table;
+            if (table.rollback != null and table.get(key) != .nil) try rollback_mod.tableWritable(table);
             if (table.setExistingNonNil(key, value)) {
                 self.writeTableBarrier(table, key, value);
                 return;
@@ -3029,6 +3076,7 @@ pub const State = struct {
                 if (metatable) |mt| self.writeBarrier(table.marked, .{ .table = mt });
             },
             .userdata => |userdata| {
+                rollback_mod.touch(userdata);
                 userdata.metatable = metatable;
                 if (metatable) |mt| self.writeBarrier(userdata.marked, .{ .table = mt });
             },
@@ -3055,6 +3103,7 @@ pub const State = struct {
     }
 
     pub fn setTableMetatableRaw(self: *State, table: *Table, metatable: ?*Table) void {
+        rollback_mod.touch(table);
         const old_has_metatable = table.metatable != null;
         table.metatable = metatable;
         self.noteTableMetatableChanged(table, old_has_metatable);
@@ -3549,6 +3598,7 @@ pub const State = struct {
     fn fastSetListRaw(self: *State, thread: *Thread, table_value: Value, source_start: usize, count: usize, start_index_u32: u32) !bool {
         if (table_value != .table or start_index_u32 == 0) return false;
         const table = table_value.table;
+        try rollback_mod.tableWritable(table);
         if (table.metatable != null) return false;
 
         const start_index: usize = start_index_u32;
@@ -3873,10 +3923,12 @@ pub const State = struct {
     }
 
     pub fn closeCoroutine(self: *State, target: *Thread, error_value: ?Value) !?Value {
+        try rollback_mod.threadWritable(target);
         return coroutine_mod.closeCoroutine(State, self, target, error_value);
     }
 
     pub fn resumeCoroutine(self: *State, target: *Thread, args: []const Value) !CoroutineResumeResult {
+        try rollback_mod.threadWritable(target);
         return coroutine_mod.resumeCoroutine(State, self, target, args);
     }
 

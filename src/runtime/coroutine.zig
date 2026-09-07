@@ -193,12 +193,13 @@ pub fn newCoroutineThread(comptime State: type, self: *State, entry: Value) !*Th
     errdefer self.allocator.destroy(thread);
     thread.* = Thread.initCoroutine(entry);
     errdefer thread.deinit(self.allocator);
-    try self.thread_allocations.append(self.allocator, thread);
+    try self.registerAllocation("thread_allocations", thread);
     self.noteAllocation(@sizeOf(Thread));
     return thread;
 }
 
 pub fn closeCoroutine(comptime State: type, self: *State, target: *Thread, error_value: ?Value) !?Value {
+    try @import("rollback.zig").threadWritable(target);
     if (self.coroutine_close_depth >= self.callFrameLimit()) return .{ .string = try self.intern("C stack overflow") };
     self.coroutine_close_depth += 1;
     defer self.coroutine_close_depth -= 1;
@@ -230,6 +231,7 @@ pub fn closeCoroutine(comptime State: type, self: *State, target: *Thread, error
 }
 
 pub fn resumeCoroutine(comptime State: type, self: *State, target: *Thread, args: []const Value) !CoroutineResumeResult {
+    try @import("rollback.zig").threadWritable(target);
     if (target.is_main) return .{ .failure = .{ .string = try self.intern("cannot resume main coroutine") } };
     if (target.status == .dead) return .{ .failure = .{ .string = try self.intern("cannot resume dead coroutine") } };
     if (target.status != .suspended) return .{ .failure = .{ .string = try self.intern("cannot resume non-suspended coroutine") } };
@@ -246,6 +248,7 @@ pub fn resumeCoroutine(comptime State: type, self: *State, target: *Thread, args
     self.current_thread = target;
     target.resume_parent = parent;
     target.status = .running;
+    errdefer target.status = .dead;
     defer {
         self.current_thread = previous_thread;
         target.resume_parent = previous_parent;
@@ -294,6 +297,7 @@ pub fn resumeCoroutine(comptime State: type, self: *State, target: *Thread, args
 }
 
 pub fn startCoroutine(comptime State: type, self: *State, target: *Thread, args: []const Value) !void {
+    try @import("rollback.zig").threadWritable(target);
     const closure, const arg_count = switch (target.entry) {
         .closure => |closure| blk: {
             try target.ensureStack(self.allocator, 1 + args.len, self.stackValueLimit());
@@ -329,19 +333,24 @@ pub fn callableEntryClosure(comptime State: type, self: *State) !*Closure {
     _ = try proto.emit(.{ .vararg = .{ .dest = 1, .count = bytecode.multret_count } }, 0);
     _ = try proto.emit(.{ .call = .{ .base = 0, .arg_count = bytecode.multret_count, .return_count = bytecode.multret_count } }, 0);
     _ = try proto.emit(.{ .ret = .{ .first = 0, .count = bytecode.multret_count } }, 0);
-    try self.proto_allocations.append(self.allocator, proto);
+    try self.registerAllocation("proto_allocations", proto);
+    errdefer {
+        _ = self.proto_allocations.pop();
+        if (self.rollback) |journal| journal.freed(@intFromPtr(proto));
+    }
 
     const upvalues = try self.allocator.alloc(*Upvalue, 0);
     errdefer self.allocator.free(upvalues);
     const closure = try self.allocator.create(Closure);
     closure.* = .{ .proto = proto, .upvalues = upvalues };
-    errdefer self.destroyClosure(closure);
-    try self.closure_allocations.append(self.allocator, closure);
+    errdefer self.allocator.destroy(closure);
+    try self.registerAllocation("closure_allocations", closure);
     self.noteAllocation(@sizeOf(Closure));
     return closure;
 }
 
 pub fn setCoroutineResumeValues(comptime State: type, self: *State, target: *Thread, args: []const Value) !void {
+    try @import("rollback.zig").threadWritable(target);
     const actual_count = try self.resolveReturnCount(target.yield_result_count, args.len);
     try target.ensureStack(self.allocator, target.yield_result_base + actual_count, self.stackValueLimit());
     for (0..actual_count) |index| {

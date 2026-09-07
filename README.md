@@ -9,7 +9,7 @@ zlua is pre-1.0 and currently targets Zig `0.16.0`. The Zig embedding API is the
 1. Add zlua to your Zig package dependencies:
 
 ```sh
-zig fetch --save git+https://github.com/grant-wade/zlua#v0.5.1
+zig fetch --save git+https://github.com/grant-wade/zlua#v0.5.2
 ```
 
 2. Wire the dependency into your executable in `build.zig`:
@@ -75,6 +75,23 @@ remaining=0
 
 By default, a state opens sandbox-friendly standard libraries. Hosts can opt into filesystem access, output, clocks, processes, bytecode, callbacks, userdata, and resource limits.
 
+## Snapshots
+
+Configure a State once, capture an immutable Snapshot, then create independent workers:
+
+```zig
+var snapshot = try lua.snapshot(allocator);
+defer snapshot.deinit();
+var worker = try snapshot.newState(allocator);
+defer worker.deinit();
+try worker.doString("result = 42", .{});
+try worker.reset();
+```
+
+Each State retains its own baseline and can reset after the public Snapshot handle is released. A fresh State returns `error.NoSnapshot` from reset. Capturing again establishes a new baseline; older Snapshots remain usable. Use `snapshot.retain()` to transfer independent ownership to another thread. Retained handles may call `newState()` concurrently; each State remains externally serialized.
+
+To use another template, create a replacement with `other_snapshot.newState(allocator)`, then destroy and replace the old State. See [snapshot ownership, concurrency, and userdata](docs/embedding.md#snapshots) for allocator lifetimes and host synchronization requirements.
+
 ## Goals
 
 zlua follows the official Lua 5.5 implementation as closely as practical, including parser behavior, runtime semantics, standard libraries, and diagnostics. It aims to:
@@ -107,6 +124,7 @@ Run a specific zlua embedding example:
 
 ```sh
 zig build run-example -- snapshot_reset
+zig build run-example -- snapshot_adventure
 ```
 
 Run the full check suite:

@@ -1,4 +1,5 @@
 const std = @import("std");
+const rollback = @import("rollback.zig");
 const compile = @import("../compile.zig");
 const types = @import("types.zig");
 const value_mod = @import("value.zig");
@@ -211,6 +212,7 @@ pub fn collectGarbageWithFinalizers(comptime State: type, self: *State, thread: 
 
 pub fn collectGarbageWithFinalizersMode(comptime State: type, self: *State, thread: ?*Thread, mark_all_stack_registers: bool) !void {
     if (self.is_collecting) return;
+    if (self.rollback) |journal| try journal.prepareCollection(self);
     self.is_collecting = true;
     const previous_mark_all = self.mark_all_stack_registers;
     self.mark_all_stack_registers = mark_all_stack_registers;
@@ -221,6 +223,12 @@ pub fn collectGarbageWithFinalizersMode(comptime State: type, self: *State, thre
 
     resetMarks(State, self);
     markRoots(State, self);
+    if (self.rollback != null) {
+        try prepareRollbackTableWrites(State, self);
+        for (self.userdata_allocations.items) |userdata| {
+            if (!userdata.marked and !userdata.finalized and userdata.finalizer != null) try rollback.userdataWritable(userdata);
+        }
+    }
     if (hasWeakTables(State, self)) {
         convergeEphemerons(State, self);
         clearWeakValues(State, self);
@@ -266,6 +274,8 @@ pub fn resetMarks(comptime State: type, self: *State) void {
 }
 
 pub fn markRoots(comptime State: type, self: *State) void {
+    var scope = self.userdata_scope;
+    while (scope) |active| : (scope = active.previous) markUserdata(State, self, active.userdata);
     if (self.global_table) |table| if (isTrackedTable(State, self, table)) markTable(State, self, table);
     for (self.api_roots.items) |root| markValue(State, self, root);
     // Native callbacks have no Lua wrapper whose varargs would keep arguments
@@ -521,6 +531,30 @@ pub fn valueIsCollectableUnmarked(comptime State: type, self: *State, value: Val
     };
 }
 
+fn prepareRollbackTableWrites(comptime State: type, self: *State) !void {
+    for (self.table_allocations.items) |table| {
+        if (!table.marked or table.rollback == null) continue;
+        const weak = weakMode(State, self, table);
+        var changed = false;
+        if (weak.values) for (table.array.items) |value| {
+            if (valueIsWeaklyCleared(State, self, value)) {
+                changed = true;
+                break;
+            }
+        };
+        if (!changed) for (table.entries.items) |entry| {
+            if ((weak.values and valueIsWeaklyCleared(State, self, entry.value)) or
+                (weak.keys and valueIsWeaklyCleared(State, self, entry.key)) or
+                (entry.value == .nil and valueIsCollectableUnmarked(State, self, entry.key)))
+            {
+                changed = true;
+                break;
+            }
+        };
+        if (changed) try rollback.tableWritable(table);
+    }
+}
+
 pub fn clearWeakValues(comptime State: type, self: *State) void {
     var current = self.table_metatable_head;
     while (current) |table| : (current = table.metatable_next) {
@@ -652,6 +686,7 @@ pub fn runPendingUserdataFinalizers(comptime State: type, self: *State) void {
     for (self.userdata_allocations.items) |userdata| {
         if (userdata.marked or userdata.finalized) continue;
         const finalizer = userdata.finalizer orelse continue;
+        rollback.touch(userdata);
         userdata.marked = true;
         userdata.finalized = true;
         if (userdata.payload) |payload| payload.finalize() else finalizer(userdata.ptr, userdata.finalizer_data);
@@ -680,7 +715,8 @@ pub fn sweepStrings(comptime State: type, self: *State) void {
             if (interned.ptr == allocation.bytes.ptr and interned.len == allocation.bytes.len) _ = self.strings.remove(allocation.bytes);
         }
         if (allocation.bytes.len != 0) _ = self.string_allocation_index.remove(@intFromPtr(allocation.bytes.ptr));
-        self.allocator.free(allocation.bytes);
+        const retained = if (self.rollback) |journal| journal.keepString(allocation.bytes) else false;
+        if (!retained) self.allocator.free(allocation.bytes);
         const moved_index = self.string_allocations.items.len - 1;
         _ = self.string_allocations.swapRemove(index);
         if (index < moved_index) {
@@ -743,7 +779,10 @@ pub fn sweepUpvalues(comptime State: type, self: *State) void {
             index += 1;
             continue;
         }
-        self.allocator.destroy(upvalue);
+        if (!rollback.retainCollected(upvalue)) {
+            if (self.rollback) |journal| journal.freed(@intFromPtr(upvalue));
+            self.allocator.destroy(upvalue);
+        }
         _ = self.upvalue_allocations.swapRemove(index);
     }
 }
@@ -805,15 +844,20 @@ pub fn isTrackedUpvalue(comptime State: type, self: *State, upvalue: *Upvalue) b
 }
 
 pub fn destroyTable(comptime State: type, self: *State, table: *Table) void {
+    rollback.touch(table);
     if (table.metatable != null) {
         unlinkTableMetatable(State, self, table);
         self.table_metatable_count -= 1;
     }
+    if (rollback.retainCollected(table)) return;
+    if (self.rollback) |journal| journal.freed(@intFromPtr(table));
     table.deinit(self.allocator);
     self.allocator.destroy(table);
 }
 
 pub fn destroyUserdata(comptime State: type, self: *State, userdata: *Userdata) void {
+    if (rollback.retainCollected(userdata)) return;
+    if (self.rollback) |journal| journal.freed(@intFromPtr(userdata));
     if (userdata.payload) |payload| {
         payload.release(self.discarding);
         self.allocator.destroy(userdata);
@@ -828,12 +872,16 @@ pub fn destroyUserdata(comptime State: type, self: *State, userdata: *Userdata) 
 }
 
 pub fn destroyClosure(comptime State: type, self: *State, closure: *Closure) void {
+    if (rollback.retainCollected(closure)) return;
+    if (self.rollback) |journal| journal.freed(@intFromPtr(closure));
     if (closure.constants) |constants| self.allocator.free(constants);
     if (closure.upvalues.len != 0) self.allocator.free(closure.upvalues);
     self.allocator.destroy(closure);
 }
 
 pub fn destroyThread(comptime State: type, self: *State, thread: *Thread) void {
+    if (rollback.retainCollected(thread)) return;
+    if (self.rollback) |journal| journal.freed(@intFromPtr(thread));
     thread.deinit(self.allocator);
     self.allocator.destroy(thread);
 }
@@ -863,6 +911,7 @@ pub fn allocationStats(comptime State: type, self: State) RuntimeAllocationStats
 }
 
 pub fn noteTableMetatableChanged(comptime State: type, self: *State, table: *Table, old_has_metatable: bool) void {
+    rollback.touch(table);
     if (!isTrackedTable(State, self, table)) return;
     if (!table.finalizer_registered) {
         if (table.metatable) |metatable| {
@@ -878,7 +927,10 @@ pub fn noteTableMetatableChanged(comptime State: type, self: *State, table: *Tab
     if (new_has_metatable) {
         table.metatable_prev = null;
         table.metatable_next = self.table_metatable_head;
-        if (self.table_metatable_head) |head| head.metatable_prev = table;
+        if (self.table_metatable_head) |head| {
+            rollback.touch(head);
+            head.metatable_prev = table;
+        }
         self.table_metatable_head = table;
         self.table_metatable_count += 1;
     } else {
@@ -888,12 +940,17 @@ pub fn noteTableMetatableChanged(comptime State: type, self: *State, table: *Tab
 }
 
 pub fn unlinkTableMetatable(comptime State: type, self: *State, table: *Table) void {
+    rollback.touch(table);
     if (table.metatable_prev) |prev| {
+        rollback.touch(prev);
         prev.metatable_next = table.metatable_next;
     } else if (self.table_metatable_head == table) {
         self.table_metatable_head = table.metatable_next;
     }
-    if (table.metatable_next) |next| next.metatable_prev = table.metatable_prev;
+    if (table.metatable_next) |next| {
+        rollback.touch(next);
+        next.metatable_prev = table.metatable_prev;
+    }
     table.metatable_prev = null;
     table.metatable_next = null;
 }

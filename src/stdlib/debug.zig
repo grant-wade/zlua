@@ -172,7 +172,7 @@ pub fn setupvalue(state: *State, thread: *Thread, op: bytecode.Call) !void {
         try state.returnValues(thread, op.base, op.return_count, &.{.nil});
         return;
     };
-    writeUpvalue(upvalue, runtime.argValue(state, thread, op, 2));
+    try writeUpvalue(upvalue, runtime.argValue(state, thread, op, 2));
     const name = if (target.closure.stripped_debug) "(no name)" else target.closure.proto.upvalues.items[index].name;
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(name) }});
 }
@@ -203,6 +203,7 @@ pub fn upvaluejoin(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const second_index = upvalueIndex(runtime.argValue(state, thread, op, 3)) orelse return state.failArgumentMessage("debug.upvaluejoin", 4, "invalid upvalue index");
     const replacement = getClosureUpvalue(second, second_index) orelse return state.failArgumentMessage("debug.upvaluejoin", 3, "invalid upvalue index");
     if (first != .closure or first_index >= first.closure.upvalues.len) return state.failArgumentMessage("debug.upvaluejoin", 1, "invalid upvalue index");
+    try @import("../runtime/rollback.zig").closureWritable(first.closure);
     first.closure.upvalues[first_index] = replacement;
     try state.returnValues(thread, op.base, op.return_count, &.{});
 }
@@ -284,6 +285,7 @@ pub fn setlocal(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const index = runtime.toInteger(runtime.argValue(state, thread, op, level_arg_index + 1)) orelse return state.failArgumentMessage("debug.setlocal", level_arg_index + 2, "index expected");
     const value = runtime.argValue(state, thread, op, level_arg_index + 2);
     const frame_index = frameIndexAtLevel(local_thread, level) orelse return state.failArgumentMessage("debug.setlocal", level_arg_index + 1, "level out of range");
+    try @import("../runtime/rollback.zig").threadWritable(local_thread);
     const frame = &local_thread.frames.items[frame_index];
     if (index < 0) {
         const vararg_index: usize = @intCast(-index - 1);
@@ -523,8 +525,10 @@ fn readUpvalue(upvalue: *runtime.Upvalue) Value {
     return if (upvalue.is_open) upvalue.owner.stack.items[upvalue.stack_index] else upvalue.closed;
 }
 
-fn writeUpvalue(upvalue: *runtime.Upvalue, value: Value) void {
+fn writeUpvalue(upvalue: *runtime.Upvalue, value: Value) !void {
+    @import("../runtime/rollback.zig").touch(upvalue);
     if (upvalue.is_open) {
+        try @import("../runtime/rollback.zig").threadWritable(upvalue.owner);
         upvalue.owner.stack.items[upvalue.stack_index] = value;
     } else {
         upvalue.closed = value;

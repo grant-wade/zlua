@@ -20,8 +20,8 @@ pub fn main() !void {
         \\end)
         \\assert(coroutine.resume(co))
     , .{});
-    var checkpoint = try lua.snapshot(allocator);
-    defer checkpoint.deinit();
+    var snapshot = try lua.snapshot(allocator);
+    defer snapshot.deinit();
 
     for (0..20) |_| {
         // Even handles acquired before an attack must be revoked by reset.
@@ -58,7 +58,7 @@ pub fn main() !void {
         var old_error = lua.takeErrorValue() orelse return error.MissingError;
         defer old_error.deinit();
 
-        try lua.reset(&checkpoint);
+        try lua.reset();
 
         // Force fresh root allocations before trying the stale handles: an
         // old root index must not grant access to a new generation's object.
@@ -99,20 +99,20 @@ pub fn main() !void {
             \\assert(ok and secret == 'baseline')
         , .{});
         // Restore the suspended baseline for the next attack round.
-        try lua.reset(&checkpoint);
+        try lua.reset();
     }
     std.debug.print("PASS: 20 rounds of stale-handle, root-reuse, closure, coroutine, module, weak-table and metatable probes\n", .{});
 
-    var clone = try checkpoint.clone(allocator);
-    defer clone.deinit();
+    var worker = try snapshot.newState(allocator);
+    defer worker.deinit();
     var foreign = try lua.getGlobal("box", zlua.Table);
     defer foreign.deinit();
-    try rejected(error.InvalidHandle, clone.setGlobal("foreign", foreign));
-    try clone.doString("box.secret = 'clone-only'", .{});
+    try rejected(error.InvalidHandle, worker.setGlobal("foreign", foreign));
+    try worker.doString("box.secret = 'worker-only'", .{});
     try lua.doString("assert(box.secret == 'baseline')", .{});
-    try clone.reset(&checkpoint);
-    try clone.doString("assert(box.secret == 'baseline')", .{});
-    std.debug.print("PASS: cross-state handle injection rejected; clone mutations isolated\n", .{});
+    try worker.reset();
+    try worker.doString("assert(box.secret == 'baseline')", .{});
+    std.debug.print("PASS: cross-state handle injection rejected; worker mutations isolated\n", .{});
     try userdataBoundary(allocator);
 }
 
@@ -129,7 +129,7 @@ const Payload = struct {
 };
 
 fn userdataBoundary(allocator: std.mem.Allocator) !void {
-    // Host-owned storage outlives both the state and checkpoint.
+    // Host-owned storage outlives both the state and snapshot.
     var backing = Payload{ .value = 7 };
     var lua = try zlua.State.init(allocator, .{});
     defer lua.deinit();
@@ -141,10 +141,10 @@ fn userdataBoundary(allocator: std.mem.Allocator) !void {
     });
     defer copied.deinit();
     try lua.setGlobal("copied", copied);
-    var checkpoint = try lua.snapshot(allocator);
-    defer checkpoint.deinit();
+    var snapshot = try lua.snapshot(allocator);
+    defer snapshot.deinit();
     backing.value = 99;
-    try lua.reset(&checkpoint);
+    try lua.reset();
     try rejected(error.InvalidHandle, shared.ptr());
     try rejected(error.InvalidHandle, copied.ptr());
     var current_shared = try lua.getGlobal("shared", zlua.Userdata(Payload));

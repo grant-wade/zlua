@@ -384,16 +384,21 @@ pub const UserdataFinalizer = *const fn (*anyopaque, ?*const anyopaque) void;
 pub const UserdataDeinit = *const fn (std.mem.Allocator, *anyopaque) void;
 
 /// Keeps allocator infrastructure alive while shared userdata outlives its VM.
+/// Shared allocator infrastructure can outlive its State and be destroyed by
+/// any retaining thread. Retain requires an existing owned reference; acq_rel
+/// release publishes prior accesses and acquires them before final destruction.
 pub const AllocatorLifetime = struct {
-    references: usize = 1,
+    references: std.atomic.Value(usize) = .init(1),
     destroy: *const fn (*AllocatorLifetime) void,
 
     pub fn retain(self: *AllocatorLifetime) void {
-        self.references += 1;
+        const previous = self.references.fetchAdd(1, .monotonic);
+        std.debug.assert(previous != 0 and previous != std.math.maxInt(usize));
     }
     pub fn release(self: *AllocatorLifetime) void {
-        self.references -= 1;
-        if (self.references == 0) self.destroy(self);
+        const previous = self.references.fetchSub(1, .acq_rel);
+        std.debug.assert(previous != 0);
+        if (previous == 1) self.destroy(self);
     }
 };
 
@@ -403,26 +408,42 @@ pub const UserdataSnapshotCopy = *const fn (std.mem.Allocator, *const anyopaque)
 pub const UserdataPayload = struct {
     allocator: std.mem.Allocator,
     lifetime: ?*AllocatorLifetime,
-    references: usize = 1,
+    references: std.atomic.Value(usize) = .init(1),
     ptr: *anyopaque,
     finalizer: ?UserdataFinalizer,
     finalizer_data: ?*const anyopaque,
     dispose: ?UserdataDeinit,
     finalized: bool = false,
     snapshot_copy: ?UserdataSnapshotCopy = null,
+    snapshot_tracking: enum { eager, scoped } = .eager,
     snapshot_dispose: ?UserdataDeinit = null,
     is_snapshot_copy: bool = false,
 
+    pub fn retain(self: *UserdataPayload) void {
+        const previous = self.references.fetchAdd(1, .monotonic);
+        std.debug.assert(previous != 0 and previous != std.math.maxInt(usize));
+    }
+
     pub fn finalize(self: *UserdataPayload) void {
-        if (self.references != 1 or self.finalized) return;
+        // A sole owner cannot race another legitimate retain. Acquire observes
+        // earlier releases before accessing the non-atomic finalization flag.
+        if (self.references.load(.acquire) != 1) return;
+        self.finalizeOwned();
+    }
+
+    fn finalizeOwned(self: *UserdataPayload) void {
+        if (self.finalized) return;
         self.finalized = true;
         if (self.finalizer) |f| f(self.ptr, self.finalizer_data);
     }
 
     pub fn release(self: *UserdataPayload, discard: bool) void {
-        if (self.references == 1 and !(discard and self.is_snapshot_copy)) self.finalize();
-        self.references -= 1;
-        if (self.references != 0) return;
+        // Elect the final owner before finalizing: simultaneous releases must
+        // neither miss finalization nor access storage after another frees it.
+        const previous = self.references.fetchSub(1, .acq_rel);
+        std.debug.assert(previous != 0);
+        if (previous != 1) return;
+        if (!(discard and self.is_snapshot_copy)) self.finalizeOwned();
         const a = self.allocator;
         const lifetime = self.lifetime;
         if (self.dispose) |f| f(a, self.ptr);
@@ -572,6 +593,7 @@ pub const CoroutineResumeResult = union(enum) {
 };
 
 pub const Closure = struct {
+    rollback: ?*@import("rollback.zig").Record(Closure) = null,
     proto: *const proto_mod.Proto,
     upvalues: []*Upvalue,
     constants: ?[]?Value = null,
@@ -580,6 +602,7 @@ pub const Closure = struct {
 };
 
 pub const Upvalue = struct {
+    rollback: ?*@import("rollback.zig").Record(Upvalue) = null,
     owner: *Thread,
     stack_index: usize,
     closed: Value = .nil,
@@ -606,6 +629,7 @@ const ValueHashContext = struct {
 };
 
 pub const Table = struct {
+    rollback: ?*@import("rollback.zig").Record(Table) = null,
     array: std.ArrayList(Value) = .empty,
     entries: std.ArrayList(TableEntry) = .empty,
     entry_index: TableEntryIndex,
@@ -642,6 +666,7 @@ pub const Table = struct {
     }
 
     pub fn set(self: *Table, allocator: std.mem.Allocator, key: Value, value: Value) !void {
+        try @import("rollback.zig").tableWritable(self);
         if (value_mod.arrayIndex(key)) |index| {
             if (index <= self.array.items.len) {
                 self.array.items[index - 1] = value;
@@ -677,6 +702,7 @@ pub const Table = struct {
     }
 
     pub fn setExistingNonNil(self: *Table, key: Value, value: Value) bool {
+        if (self.rollback) |record| if (!record.header.detached) return false;
         if (value_mod.arrayIndex(key)) |index| {
             if (index <= self.array.items.len and self.array.items[index - 1] != .nil) {
                 self.array.items[index - 1] = value;
@@ -751,7 +777,16 @@ pub const Table = struct {
     }
 };
 
+pub const UserdataScope = struct {
+    userdata: *Userdata,
+    readonly: bool,
+    previous: ?*UserdataScope,
+};
+
 pub const Userdata = struct {
+    scope_readers: usize = 0,
+    scope_writers: usize = 0,
+    rollback: ?*@import("rollback.zig").Record(Userdata) = null,
     payload: ?*UserdataPayload = null,
     ptr: *anyopaque,
     type_id: usize,
@@ -765,6 +800,7 @@ pub const Userdata = struct {
 };
 
 pub const Thread = struct {
+    rollback: ?*@import("rollback.zig").Record(Thread) = null,
     /// A Lua value has exposed this thread beyond its current host call.
     exposed: bool = false,
     stack: std.ArrayList(Value) = .empty,

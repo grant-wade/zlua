@@ -31,6 +31,7 @@
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
 - [runtime.state](../runtime/state.md)
+- [runtime.rollback](../runtime/rollback.md)
 - [runtime.call](../runtime/call.md)
 - [runtime.coroutine](../runtime/coroutine.md)
 - [runtime.debug](../runtime/debug.md)
@@ -411,6 +412,10 @@ pub const StateOptions = struct {
 
 ```zig
 pub const State = struct {
+    rollback: ?*rollback_mod.Journal = null,
+    userdata_scope: ?*types.UserdataScope = null,
+    /// Includes direct interpreter entry, nested calls, and suspended host callbacks.
+    execution_depth: usize = 0,
     allocator_lifetime: ?*types.AllocatorLifetime = null,
     snapshot_busy: bool = false,
     discarding: bool = false,
@@ -430,6 +435,8 @@ pub const State = struct {
     upvalue_allocations: std.ArrayList(*Upvalue) = .empty,
     thread_allocations: std.ArrayList(*Thread) = .empty,
     proto_allocations: std.ArrayList(*proto_mod.Proto) = .empty,
+    /// Prefix owned by the API state's retained immutable snapshot.
+    borrowed_proto_count: usize = 0,
     source_allocations: std.ArrayList([]const u8) = .empty,
     api_roots: std.ArrayList(Value) = .empty,
     stdout: std.ArrayList(u8) = .empty,
@@ -470,6 +477,7 @@ pub const State = struct {
 
 | Name | Parameters | Return Type | Description |
 | --- | --- | --- | --- |
+| [registerAllocation](#fn-state-registerallocation) | `self: *State, comptime field: []const u8, item: anytype` | `!void` |  |
 | [init](#fn-state-init) | `allocator: std.mem.Allocator` | `!State` |  |
 | [initWithOptions](#fn-state-initwithoptions) | `allocator: std.mem.Allocator, options: StateOptions` | `!State` |  |
 | [initWithOptionsObserved](#fn-state-initwithoptionsobserved) | `allocator: std.mem.Allocator,         options: StateOptions,         observer_context: anytype,         comptime observe: anytype,` | `!State` |  |
@@ -686,6 +694,16 @@ pub const State = struct {
 | [failValue](#fn-state-failvalue) | `self: *State, value: Value` | `RuntimeError` |  |
 | [throwValue](#fn-state-throwvalue) | `self: *State, value: Value` | `RuntimeError` |  |
 | [currentErrorValue](#fn-state-currenterrorvalue) | `self: *State` | `Value` |  |
+
+<a id="fn-state-registerallocation"></a>
+
+### State.registerAllocation
+
+```zig
+pub fn registerAllocation(self: *State, comptime field: []const u8, item: anytype) !void
+```
+
+References: [`State`](#type-state)
 
 <a id="fn-state-init"></a>
 

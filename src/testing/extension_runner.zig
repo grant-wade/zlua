@@ -1,6 +1,7 @@
 const std = @import("std");
 const fixtures = @import("fixtures.zig");
 const process = @import("process.zig");
+const normalizer = @import("normalizer.zig");
 
 const Dir = std.Io.Dir;
 const File = std.Io.File;
@@ -117,7 +118,7 @@ fn runOne(
     defer result.deinit(allocator);
 
     const passed = !result.timed_out and result.signal == null and result.exit_code == expected.exit_code and
-        std.mem.eql(u8, result.stdout, expected.stdout) and std.mem.eql(u8, result.stderr, expected.stderr);
+        normalizer.textEqual(result.stdout, expected.stdout) and normalizer.textEqual(result.stderr, expected.stderr);
 
     if (passed) {
         counts.passed += 1;
@@ -165,10 +166,10 @@ fn readExpectedExit(allocator: std.mem.Allocator, io: std.Io, path: []const u8) 
 fn printDiff(out: anytype, expected: Expected, actual: process.ProcessResult) !void {
     try out.print("  expected exit={d}\n", .{expected.exit_code});
     try out.print("  actual exit={?} timeout={} signal={?}\n", .{ actual.exit_code, actual.timed_out, actual.signal });
-    if (!std.mem.eql(u8, expected.stdout, actual.stdout)) {
+    if (!normalizer.textEqual(expected.stdout, actual.stdout)) {
         try out.print("--- expected stdout\n{s}\n+++ actual stdout\n{s}\n", .{ expected.stdout, actual.stdout });
     }
-    if (!std.mem.eql(u8, expected.stderr, actual.stderr)) {
+    if (!normalizer.textEqual(expected.stderr, actual.stderr)) {
         try out.print("--- expected stderr\n{s}\n+++ actual stderr\n{s}\n", .{ expected.stderr, actual.stderr });
     }
 }

@@ -14,6 +14,7 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
     const default_official_memory_limit_mb: u64 = if (b.graph.host.result.os.tag == .linux) 256 else 0;
     const official_memory_limit_mb = b.option(u64, "official-memory-limit-mb", "Memory cap per official-suite child process in MiB (0 disables; Linux only)") orelse default_official_memory_limit_mb;
+    const official_timeout_ms = b.option(u64, "official-timeout-ms", "Timeout per official-suite child process in milliseconds (0 disables)") orelse 120_000;
     const example_filters = b.args orelse &[_][]const u8{};
 
     const lua_deps_step = addFetchLuaStep(b);
@@ -132,6 +133,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(bench_exe);
 
     const embedding_examples = [_]EmbeddingExample{
+        .{ .key = "snapshot_adventure", .name = "zlua-embed-snapshot-adventure", .path = "examples/snapshot_adventure.zig" },
         .{ .key = "snapshot_adversarial", .name = "zlua-embed-snapshot-adversarial", .path = "examples/snapshot_adversarial.zig" },
         .{ .key = "snapshot_reset", .name = "zlua-embed-snapshot-reset", .path = "examples/snapshot_reset.zig" },
         .{ .key = "run_script", .name = "zlua-embed-run-script", .path = "examples/run_script.zig" },
@@ -298,6 +300,7 @@ pub fn build(b: *std.Build) void {
     official_cmd.addArtifactArg(clua_exe);
     official_cmd.addArg("--zlua");
     official_cmd.addArtifactArg(exe);
+    official_cmd.addArg(b.fmt("--timeout-ms={d}", .{official_timeout_ms}));
     if (official_memory_limit_mb != 0) {
         official_cmd.addArg(b.fmt("--memory-limit-mb={d}", .{official_memory_limit_mb}));
     }

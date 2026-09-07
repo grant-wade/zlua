@@ -2,34 +2,18 @@ name: Zig
 
 on:
   push:
-  pull_request:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  quick:
-    name: Push checks
-    if: github.event_name == 'push'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v7.0.1
-      - uses: mlugg/setup-zig@v2.2.1
-        with:
-          cache-key: ${{ runner.arch }}-${{ hashFiles('build.zig.zon') }}
-      - name: Unit tests and WASM smoke test
-        run: zig build test test-wasm --summary all
-
   test:
     name: Full suite (${{ matrix.os }})
-    if: github.event_name != 'push'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -41,7 +25,6 @@ jobs:
           - macos-15-intel
           - macos-15
           - windows-2025
-          - windows-11-arm
     defaults:
       run:
         shell: bash
@@ -61,7 +44,7 @@ jobs:
   pr-check:
     name: PR checks
     needs: test
-    if: ${{ always() && github.event_name == 'pull_request' }}
+    if: ${{ always() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:

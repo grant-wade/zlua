@@ -50,7 +50,7 @@ pub fn loadfile(state: *State, thread: *Thread, op: bytecode.Call) !void {
         };
     };
     if (!binary) {
-        try state.source_allocations.append(state.allocator, source);
+        try state.registerAllocation("source_allocations", source);
         keep_source = true;
     }
     try state.returnValues(thread, op.base, op.return_count, &.{closure});

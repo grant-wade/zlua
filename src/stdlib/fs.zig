@@ -109,7 +109,7 @@ pub fn list(state: *State, thread: *Thread, op: bytecode.Call) !void {
     if (sorted) std.mem.sort(host.DirectoryEntry, entries, {}, lessEntry);
     const result = try state.newTableWithHints(@intCast(entries.len), 0);
     for (entries, 0..) |entry, index| {
-        const full_path = try joinTwo(state.allocator, path, entry.name);
+        const full_path = try joinTwo(state, path, entry.name);
         defer state.allocator.free(full_path);
         try result.table.set(state.allocator, .{ .integer = @intCast(index + 1) }, try entryValue(state, entry, full_path, null));
     }
@@ -123,7 +123,7 @@ pub fn scandir(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const iterator = try newIterator(state, "scan");
     const queue = try state.newTableWithHints(@intCast(entries.len), 0);
     for (entries, 0..) |entry, index| {
-        const full_path = try joinTwo(state.allocator, path, entry.name);
+        const full_path = try joinTwo(state, path, entry.name);
         defer state.allocator.free(full_path);
         try queue.table.set(state.allocator, .{ .integer = @intCast(index + 1) }, try entryValue(state, entry, full_path, 1));
     }
@@ -142,7 +142,7 @@ pub fn walk(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const iterator = try newIterator(state, "walk");
     const queue = try state.newTableWithHints(@intCast(entries.len), 0);
     for (entries, 0..) |entry, index| {
-        const full_path = try joinTwo(state.allocator, path, entry.name);
+        const full_path = try joinTwo(state, path, entry.name);
         defer state.allocator.free(full_path);
         try queue.table.set(state.allocator, .{ .integer = @intCast(index + 1) }, try entryValue(state, entry, full_path, 1));
     }
@@ -371,7 +371,7 @@ fn dirIteratorDelegate(state: *State, thread: *Thread, op: bytecode.Call, recurs
     const iterator = try newIterator(state, if (recursive) "walk" else "scan");
     const queue = try state.newTableWithHints(@intCast(entries.len), 0);
     for (entries, 0..) |entry, index| {
-        const full = try joinTwo(state.allocator, path, entry.name);
+        const full = try joinTwo(state, path, entry.name);
         defer state.allocator.free(full);
         try queue.table.set(state.allocator, .{ .integer = @intCast(index + 1) }, try entryValue(state, entry, full, 1));
     }
@@ -385,7 +385,7 @@ fn dirIteratorDelegate(state: *State, thread: *Thread, op: bytecode.Call, recurs
 pub fn dirOpen(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const dir = try expectDir(state, runtime.argValue(state, thread, op, 0));
     const child = try state.expectArgumentString(thread, op, "fs directory:open", 1);
-    const path = try joinTwo(state.allocator, try dirPath(state, dir), child);
+    const path = try joinTwo(state, try dirPath(state, dir), child);
     defer state.allocator.free(path);
     const mode = if (op.arg_count >= 3 and runtime.argValue(state, thread, op, 2) != .nil) try state.expectArgumentString(thread, op, "fs directory:open", 2) else "r";
     const parsed = io_lib.parseMode(mode) orelse return state.failArgumentMessage("fs directory:open", 3, "invalid mode");
@@ -406,7 +406,7 @@ pub fn dirOpen(state: *State, thread: *Thread, op: bytecode.Call) !void {
 pub fn dirStat(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const dir = try expectDir(state, runtime.argValue(state, thread, op, 0));
     const child = if (op.arg_count >= 2 and runtime.argValue(state, thread, op, 1) != .nil) try state.expectArgumentString(thread, op, "fs directory:stat", 1) else "";
-    const path = if (child.len == 0) try state.allocator.dupe(u8, try dirPath(state, dir)) else try joinTwo(state.allocator, try dirPath(state, dir), child);
+    const path = if (child.len == 0) try state.allocator.dupe(u8, try dirPath(state, dir)) else try joinTwo(state, try dirPath(state, dir), child);
     defer state.allocator.free(path);
     const value = state.fsStat(path, true) catch |err| return returnFailure(state, thread, op, "stat", path, null, err);
     try state.returnValues(thread, op.base, op.return_count, &.{try statValue(state, value)});
@@ -415,7 +415,7 @@ pub fn dirStat(state: *State, thread: *Thread, op: bytecode.Call) !void {
 pub fn dirMkdir(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const dir = try expectDir(state, runtime.argValue(state, thread, op, 0));
     const child = try state.expectArgumentString(thread, op, "fs directory:mkdir", 1);
-    const path = try joinTwo(state.allocator, try dirPath(state, dir), child);
+    const path = try joinTwo(state, try dirPath(state, dir), child);
     defer state.allocator.free(path);
     state.fsMakeDir(path, true) catch |err| return returnFailure(state, thread, op, "mkdir", path, null, err);
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = true }});
@@ -424,7 +424,7 @@ pub fn dirMkdir(state: *State, thread: *Thread, op: bytecode.Call) !void {
 pub fn dirRemove(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const dir = try expectDir(state, runtime.argValue(state, thread, op, 0));
     const child = try state.expectArgumentString(thread, op, "fs directory:remove", 1);
-    const path = try joinTwo(state.allocator, try dirPath(state, dir), child);
+    const path = try joinTwo(state, try dirPath(state, dir), child);
     defer state.allocator.free(path);
     const recursive = op.arg_count >= 3 and runtime.argValue(state, thread, op, 2) == .boolean and runtime.argValue(state, thread, op, 2).boolean;
     state.fsRemovePath(path, recursive) catch |err| return returnFailure(state, thread, op, "remove", path, null, err);
@@ -514,7 +514,7 @@ fn expandPending(state: *State, iterator: *Table) !void {
     const queue = try state.expectTable(iterator.get(.{ .string = "queue" }));
     var count = integerField(iterator, "count") orelse 0;
     for (entries) |entry| {
-        const full = try joinTwo(state.allocator, pending.string, entry.name);
+        const full = try joinTwo(state, pending.string, entry.name);
         defer state.allocator.free(full);
         count += 1;
         try queue.set(state.allocator, .{ .integer = count }, try entryValue(state, entry, full, @intCast(depth + 1)));
@@ -536,9 +536,9 @@ fn copyTree(state: *State, source: []const u8, destination: []const u8, overwrit
     const entries = try state.fsReadDirAlloc(source);
     defer host.deinitDirectoryEntries(state.allocator, entries);
     for (entries) |entry| {
-        const src = try joinTwo(state.allocator, source, entry.name);
+        const src = try joinTwo(state, source, entry.name);
         defer state.allocator.free(src);
-        const dst = try joinTwo(state.allocator, destination, entry.name);
+        const dst = try joinTwo(state, destination, entry.name);
         defer state.allocator.free(dst);
         if (entry.kind == .directory) try copyTree(state, src, dst, overwrite) else try state.fsCopyFile(src, dst, overwrite);
     }
@@ -699,9 +699,14 @@ fn normalizeLexical(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     return out.toOwnedSlice(allocator);
 }
 
-fn joinTwo(allocator: std.mem.Allocator, parent: []const u8, child: []const u8) ![]u8 {
-    if (parent.len == 0 or std.mem.eql(u8, parent, ".")) return allocator.dupe(u8, child);
-    return std.fs.path.join(allocator, &.{ parent, child });
+fn joinTwo(state: *State, parent: []const u8, child: []const u8) ![]u8 {
+    if (parent.len == 0 or std.mem.eql(u8, parent, ".")) return state.allocator.dupe(u8, child);
+    // Memory and rooted capabilities use slash-separated relative paths on
+    // every OS. Native joins would feed backslashes back into their validators.
+    return switch (state.options.filesystem) {
+        .memory, .memory_rw, .host_dir => std.fmt.allocPrint(state.allocator, "{s}/{s}", .{ std.mem.trimEnd(u8, parent, "/"), std.mem.trimStart(u8, child, "/") }),
+        else => std.fs.path.join(state.allocator, &.{ parent, child }),
+    };
 }
 
 fn set(table_value: Value, state: *State, name: []const u8, value: Value) !void {
