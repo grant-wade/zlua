@@ -48,15 +48,46 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: mlugg/setup-zig@v2.2.1
+        if: matrix.os != 'windows-11-arm'
         with:
           cache-key: ${{ runner.arch }}-${{ hashFiles('build.zig.zon') }}
+      # Zig 0.16.0's native Windows ARM compiler crashes before building.
+      # https://codeberg.org/ziglang/zig/issues/31865
+      - name: Install x64 Zig for Windows ARM
+        if: matrix.os == 'windows-11-arm'
+        shell: pwsh
+        run: |
+          $manifest = Get-Content build.zig.zon -Raw
+          $zigVersion = [regex]::Match($manifest, '\.minimum_zig_version\s*=\s*"([^"]+)"').Groups[1].Value
+          if (-not $zigVersion) { throw 'Missing minimum_zig_version' }
+          $index = Invoke-RestMethod https://ziglang.org/download/index.json
+          $archive = $index.$zigVersion.'x86_64-windows'
+          $zipPath = Join-Path $env:RUNNER_TEMP zig.zip
+          $sdkPath = Join-Path $env:RUNNER_TEMP zig-sdk
+          Invoke-WebRequest $archive.tarball -OutFile $zipPath
+          if ((Get-FileHash $zipPath -Algorithm SHA256).Hash -ne $archive.shasum) {
+            throw 'Zig archive checksum mismatch'
+          }
+          Expand-Archive $zipPath -DestinationPath $sdkPath
+          $zigPath = Join-Path $sdkPath "zig-x86_64-windows-$zigVersion"
+          $zigPath | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          & "$zigPath/zig.exe" version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Cache Lua dependencies
         uses: actions/cache@v6.1.0
         with:
           path: .zlua-deps
           key: ${{ runner.os }}-lua-${{ hashFiles('tools/fetch-lua.sh') }}
       - name: Full test suite and WASM smoke test
-        run: zig build ci test-wasm --summary all
+        env:
+          CI_RUNNER_ARCH: ${{ runner.arch }}
+          CI_RUNNER_OS: ${{ runner.os }}
+        run: |
+          args=()
+          if [[ "$CI_RUNNER_OS" == "Windows" && "$CI_RUNNER_ARCH" == "ARM64" ]]; then
+            args+=(-Dtarget=aarch64-windows)
+          fi
+          zig build ci test-wasm --summary all "${args[@]}"
 
   pr-check:
     name: PR checks
