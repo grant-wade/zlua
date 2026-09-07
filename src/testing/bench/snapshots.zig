@@ -11,13 +11,22 @@ const Metric = results.Metric;
 const Timestamp = std.Io.Timestamp;
 const trivial_chunk = "";
 const host_chunk = "return host_tag(host_add(host_double(20), 2))";
-const SnapshotWorkload = enum { bare_library, callbacks, modules, coroutines };
+const SnapshotWorkload = enum { bare_library, callbacks, modules, coroutines, no_op_small, no_op_large, sparse, dense, large_table, gc, resources, scoped_resources };
 
 fn initializeSnapshotWorkload(allocator: std.mem.Allocator, workload: SnapshotWorkload) !zlua.State {
     var lua = try zlua.State.init(allocator, .{});
     errdefer lua.deinit();
     switch (workload) {
         .bare_library => {},
+        .no_op_small => try lua.doString("data = {}; for i=1,16 do data[i] = {value=i} end", .{}),
+        .no_op_large, .sparse, .dense, .gc => try lua.doString("data = {}; for i=1,10000 do data[i] = {value=i} end", .{}),
+        .large_table => try lua.doString("data = {}; for i=1,100000 do data[i] = i end", .{}),
+        .resources, .scoped_resources => {
+            var resource = try lua.newUserdata(Resource, .{}, .{ .snapshot = .{ .copy = Resource.copy, .dispose = Resource.dispose, .tracking = if (workload == .scoped_resources) .scoped else .eager } });
+            defer resource.deinit();
+            try resource.method("increment", Resource.increment);
+            try lua.setGlobal("resource", resource);
+        },
         .callbacks => {
             for (0..128) |i| {
                 var buffer: [32]u8 = undefined;
@@ -59,7 +68,17 @@ fn initializeSnapshotWorkload(allocator: std.mem.Allocator, workload: SnapshotWo
             \\end
         , .{}),
     }
-    try lua.doString("function teardown() temporary = nil end; function work() temporary = {1,2,3} end", .{});
+    try lua.doString("function teardown() temporary = nil end", .{});
+    try lua.doString(switch (workload) {
+        .no_op_small, .no_op_large => "function work() end",
+        .sparse => "function work() data[5000].value = 0 end",
+        .dense => "function work() for i=1,#data do data[i].value = 0 end end",
+        .large_table => "function work() data[50000] = 0 end",
+        .gc => "function work() data = nil; collectgarbage('collect') end",
+        .coroutines => "function work() assert(coroutine.resume(workers[1], 1)) end",
+        .resources, .scoped_resources => "function work() resource:increment() end",
+        else => "function work() temporary = {1,2,3} end",
+    }, .{});
     return lua;
 }
 
@@ -69,7 +88,43 @@ fn snapshotWork(lua: *zlua.State, name: []const u8) !void {
     try function.call(.{}, void);
 }
 
-const Sample = struct { capture: Metric, reset: Metric, rebuild: Metric };
+const Resource = struct {
+    value: usize = 0,
+    fn copy(a: std.mem.Allocator, self: *const Resource) !*Resource {
+        const result = try a.create(Resource);
+        result.* = self.*;
+        return result;
+    }
+    fn dispose(a: std.mem.Allocator, self: *Resource) void {
+        a.destroy(self);
+    }
+    fn increment(self: *Resource) void {
+        self.value += 1;
+    }
+};
+
+const Sample = struct { capture: Metric, clone: Metric, mutation: Metric, reset_only: Metric, noop_reset: Metric, cycle: Metric, reset: Metric, rebuild: Metric };
+
+fn measureClone(io: std.Io, checkpoint: *const zlua.Snapshot, counter: *CountingAllocator) !Metric {
+    const before = counter.beginPhase();
+    const start = Timestamp.now(io, .awake);
+    var clone = try checkpoint.clone(counter.allocator());
+    const elapsed = elapsedSince(io, start);
+    defer clone.deinit();
+    var metric = phaseMetric(counter, before, elapsed, clone.raw_state.allocationStats().bytes);
+    metric.live_bytes = metric.live_bytes.? - before.live_bytes;
+    metric.peak_bytes = metric.peak_bytes.? - before.live_bytes;
+    return metric;
+}
+
+fn measureOperation(io: std.Io, lua: *zlua.State, checkpoint: *const zlua.Snapshot, counter: *CountingAllocator, comptime mutate: bool, comptime reset: bool) !Metric {
+    const before = counter.beginPhase();
+    const start = Timestamp.now(io, .awake);
+    if (mutate) try snapshotWork(lua, "work");
+    if (reset) try lua.reset(checkpoint);
+    const elapsed = elapsedSince(io, start);
+    return phaseMetric(counter, before, elapsed, lua.raw_state.allocationStats().bytes);
+}
 
 fn measureCapture(io: std.Io, lua: *zlua.State, counter: *CountingAllocator) !Metric {
     const before = counter.beginPhase();
@@ -129,13 +184,21 @@ pub fn collect(allocator: std.mem.Allocator, io: std.Io, options: Options, suite
                 .bare_library => "Default libraries and teardown/work functions",
                 .callbacks => "128 host callbacks and configuration values",
                 .modules => "16 loaded modules with tables and mutable closures",
-                .coroutines => "64 suspended Lua workers",
+                .coroutines => "Resume one of 64 suspended Lua workers",
+                .no_op_small => "No mutation with 16 baseline tables",
+                .no_op_large => "No mutation with 10000 baseline tables",
+                .sparse => "One write among 10000 baseline tables",
+                .dense => "Write all 10000 baseline tables",
+                .large_table => "One write to a 100000-entry array",
+                .gc => "Drop and collect 10000 baseline tables",
+                .resources => "Mutate one eager hooked host resource",
+                .scoped_resources => "Mutate one scoped host resource",
             });
             continue;
         }
         collectCase(allocator, io, workload, iterations, warmup, suite) catch |err| {
             if (err == error.OutOfMemory) return err;
-            inline for (.{ "capture", "reset", "rebuild" }) |operation| {
+            inline for (comptime std.meta.fieldNames(Sample)) |operation| {
                 try suite.add(.{
                     .group = "snapshots",
                     .case = name,
@@ -188,11 +251,18 @@ fn collectCase(allocator: std.mem.Allocator, io: std.Io, workload: SnapshotWorkl
     for (0..try std.math.add(usize, iterations, warmup)) |index| {
         var sample: Sample = undefined;
         sample.capture = try measureCapture(io, &lua.?, &checkpoint_counter);
+        sample.clone = try measureClone(io, &checkpoint, &vm_counter);
+        // Restore first so every measured operation uses the same logical baseline.
+        try lua.?.reset(&checkpoint);
+        sample.noop_reset = try measureOperation(io, &lua.?, &checkpoint, &vm_counter, false, true);
+        sample.mutation = try measureOperation(io, &lua.?, &checkpoint, &vm_counter, true, false);
+        sample.reset_only = try measureOperation(io, &lua.?, &checkpoint, &vm_counter, false, true);
+        sample.cycle = try measureOperation(io, &lua.?, &checkpoint, &vm_counter, true, true);
         sample.reset = try measureResetCycle(io, &lua.?, &checkpoint, &vm_counter);
         sample.rebuild = try measureRebuildCycle(io, &lua, workload, &vm_counter);
         if (index >= warmup) samples[index - warmup] = sample;
     }
-    inline for (.{ "capture", "reset", "rebuild" }) |operation| {
+    inline for (comptime std.meta.fieldNames(Sample)) |operation| {
         const metrics = try allocator.alloc(Metric, iterations);
         defer allocator.free(metrics);
         for (samples, metrics) |sample, *metric| metric.* = @field(sample, operation);
@@ -202,11 +272,22 @@ fn collectCase(allocator: std.mem.Allocator, io: std.Io, workload: SnapshotWorkl
             .engine = "native",
             .build_mode = @tagName(@import("builtin").mode),
             .operation = operation,
-            .scope = if (std.mem.eql(u8, operation, "capture")) "Capture only; destruction excluded" else if (std.mem.eql(u8, operation, "reset")) "Teardown and reset" else "Teardown, deinit, and equivalent initialization",
-            .memory_scope = if (std.mem.eql(u8, operation, "capture")) .checkpoint else .vm,
+            .scope = operationScope(operation),
+            .memory_scope = if (std.mem.eql(u8, operation, "capture")) .checkpoint else if (std.mem.eql(u8, operation, "clone")) .new_state else .vm,
             .iterations = iterations,
             .warmup = warmup,
             .samples = metrics,
         });
     }
+}
+
+fn operationScope(comptime operation: []const u8) []const u8 {
+    if (std.mem.eql(u8, operation, "capture")) return "Capture only; destruction excluded";
+    if (std.mem.eql(u8, operation, "clone")) return "Clone only; destruction excluded";
+    if (std.mem.eql(u8, operation, "mutation")) return "Work only, including first writes and call overhead";
+    if (std.mem.eql(u8, operation, "reset_only")) return "Reset only, after work";
+    if (std.mem.eql(u8, operation, "noop_reset")) return "Reset only, without intervening work";
+    if (std.mem.eql(u8, operation, "cycle")) return "Work and reset";
+    if (std.mem.eql(u8, operation, "reset")) return "Teardown and reset";
+    return "Teardown, deinit, and equivalent initialization";
 }

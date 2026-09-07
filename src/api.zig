@@ -43,6 +43,7 @@
 const std = @import("std");
 const runtime = @import("runtime.zig");
 const stdlib = @import("stdlib.zig");
+const rollback_runtime = @import("runtime/rollback.zig");
 const snapshot_runtime = @import("runtime/snapshot.zig");
 const runtime_types = @import("runtime/types.zig");
 
@@ -85,6 +86,8 @@ pub fn UserdataSnapshotHooks(comptime T: type) type {
     return struct {
         copy: *const fn (std.mem.Allocator, *const T) anyerror!*T,
         dispose: *const fn (std.mem.Allocator, *T) void,
+        /// Eager resources copy on every reset; scoped resources copy on first mutable access.
+        tracking: enum { eager, scoped } = .eager,
     };
 }
 
@@ -372,6 +375,11 @@ pub const State = struct {
     base_allocator: std.mem.Allocator,
     /// Advances on successful reset; handles from prior generations are invalid.
     generation: u64 = 0,
+    /// Retained identity of the last successfully captured or restored checkpoint.
+    baseline: ?*const SnapshotBacking = null,
+    /// Owner of borrowed bytecode; capture may replace the active baseline.
+    immutable_owner: ?*const SnapshotBacking = null,
+    rollback_metadata: ?RollbackMetadata = null,
     /// Stable allocator infrastructure; unlimited until a memory limit is set.
     memory_limit_allocator: ?*MemoryLimitAllocator = null,
     /// Underlying Lua runtime state.
@@ -421,6 +429,7 @@ pub const State = struct {
     /// Releases all resources owned by the state and invalidates outstanding API handles.
     pub fn deinit(self: *State) void {
         const state_allocator = self.allocator();
+        self.abandonRollbackMetadata();
         self.raw_state.deinit();
         self.deinitOwnedMemoryFiles(state_allocator);
         self.memory_files.deinit(state_allocator);
@@ -428,20 +437,71 @@ pub const State = struct {
         self.deinitCallbacks(state_allocator);
         self.callbacks.deinit(state_allocator);
         self.destroyMemoryLimitAllocator();
+        if (self.baseline) |baseline| baseline.release();
+        if (self.immutable_owner) |owner| owner.release();
         self.* = undefined;
     }
 
     /// Captures an idle VM, including suspended Lua coroutines.
     /// Uses `snapshot_allocator` for checkpoint storage. Borrowed host
     /// capabilities must outlive the checkpoint and states created from it.
+    /// The source retains the baseline after the public wrapper is destroyed;
+    /// keep the snapshot allocator valid until all retaining states release it.
     pub fn snapshot(self: *State, snapshot_allocator: std.mem.Allocator) !Snapshot {
-        return .{ .image = try self.copyImage(snapshot_allocator, snapshot_allocator, null) };
+        try snapshot_runtime.checkIdle(&self.raw_state);
+        try self.ownSnapshotInputs();
+        const backing = try snapshot_allocator.create(SnapshotBacking);
+        errdefer snapshot_allocator.destroy(backing);
+        const uses_state_allocator = snapshot_allocator.ptr == self.raw_state.allocator.ptr and snapshot_allocator.vtable == self.raw_state.allocator.vtable;
+        const lifetime = if (uses_state_allocator) self.raw_state.allocator_lifetime else null;
+        backing.* = .{ .allocator = snapshot_allocator, .lifetime = lifetime, .image = try self.copyImage(snapshot_allocator, snapshot_allocator, lifetime) };
+        errdefer backing.image.discardImage();
+        try self.installRollback(&backing.image.raw_state);
+        if (lifetime) |owner| owner.retain();
+        backing.retain();
+        if (self.baseline) |previous| previous.release();
+        self.baseline = backing;
+        return .{ .backing = backing };
     }
 
     /// Atomically restores a checkpoint and invalidates all rooted handles.
-    /// The replacement and live VM both count against the restored memory limit.
-    /// Discarding the old VM does not run Lua `__gc` or `__close` handlers.
+    /// The active baseline rolls back dirty objects and private allocations.
+    /// Unchanged baselines without eager resource hooks allocate nothing.
+    /// Switching snapshots prepares a graph copy before replacing the VM.
+    /// Rollback skips Lua `__gc` and `__close` handlers.
     pub fn reset(self: *State, checkpoint: *const Snapshot) !void {
+        if (self.baseline == checkpoint.backing and self.raw_state.rollback != null) {
+            try snapshot_runtime.checkIdleFast(&self.raw_state);
+            if (self.generation == std.math.maxInt(u64)) return error.GenerationExhausted;
+            self.raw_state.snapshot_busy = true;
+            defer self.raw_state.snapshot_busy = false;
+            const limit = self.memory_limit_allocator;
+            const previous_limit = if (limit) |l| l.limit else 0;
+            const previous_exceeded = if (limit) |l| l.exceeded else false;
+            if (limit) |l| l.limit = checkpoint.backing.image.raw_state.options.max_memory orelse std.math.maxInt(usize);
+            errdefer if (limit) |l| {
+                l.limit = previous_limit;
+                l.exceeded = previous_exceeded;
+            };
+            const journal = self.raw_state.rollback.?;
+            const prepared = try journal.prepareReset();
+            defer self.allocator().free(prepared);
+            const metadata = &self.rollback_metadata.?;
+            metadata.restore(self);
+            journal.reset(&self.raw_state, prepared);
+            self.last_error_root = null;
+            if (metadata.error_value) |value| {
+                self.raw_state.api_roots.appendAssumeCapacity(value);
+                self.last_error_root = 0;
+            }
+            if (limit) |l| {
+                l.limit = self.raw_state.options.max_memory orelse std.math.maxInt(usize);
+                l.exceeded = false;
+            }
+            self.generation += 1;
+            self.bindDispatch();
+            return;
+        }
         try snapshot_runtime.checkIdle(&self.raw_state);
         if (self.generation == std.math.maxInt(u64)) return error.GenerationExhausted;
         self.raw_state.snapshot_busy = true;
@@ -449,17 +509,64 @@ pub const State = struct {
         const limit = self.memory_limit_allocator;
         const previous_limit = if (limit) |l| l.limit else 0;
         const previous_exceeded = if (limit) |l| l.exceeded else false;
-        if (limit) |l| l.limit = checkpoint.image.raw_state.options.max_memory orelse std.math.maxInt(usize);
+        if (limit) |l| l.limit = checkpoint.backing.image.raw_state.options.max_memory orelse std.math.maxInt(usize);
         errdefer if (limit) |l| {
             l.limit = previous_limit;
             l.exceeded = previous_exceeded;
         };
-        var replacement = try checkpoint.image.copyImage(self.base_allocator, self.allocator(), self.raw_state.allocator_lifetime);
+        var replacement = try checkpoint.backing.image.copyImageWithProtos(self.base_allocator, self.allocator(), self.raw_state.allocator_lifetime, true);
+        errdefer replacement.discardImage();
+        try replacement.installRollback(&checkpoint.backing.image.raw_state);
         replacement.memory_limit_allocator = limit;
         replacement.generation = self.generation + 1;
+        checkpoint.backing.retain();
+        replacement.baseline = checkpoint.backing;
+        checkpoint.backing.retain();
+        replacement.immutable_owner = checkpoint.backing;
         self.discardImage();
         self.* = replacement;
         self.bindDispatch();
+    }
+
+    fn ownSnapshotInputs(self: *State) !void {
+        const input = self.raw_state.options.stdin;
+        if (input.len != 0) {
+            var owned = false;
+            for (self.raw_state.source_allocations.items) |source| if (source.ptr == input.ptr) {
+                owned = true;
+                break;
+            };
+            if (!owned) {
+                const copy = try self.allocator().dupe(u8, input);
+                errdefer self.allocator().free(copy);
+                try self.raw_state.registerAllocation("source_allocations", copy);
+                self.raw_state.options.stdin = copy;
+            }
+        }
+        for (0..self.memory_files.items.len) |index| {
+            if (self.memory_file_owned_contents.items[index]) continue;
+            try self.writableBindings();
+            const copy = try self.allocator().dupe(u8, self.memory_files.items[index].contents);
+            self.memory_files.items[index].contents = copy;
+            self.memory_file_owned_contents.items[index] = true;
+        }
+    }
+
+    fn installRollback(self: *State, pristine: *const runtime.State) !void {
+        const journal = try rollback_runtime.Journal.create(&self.raw_state, pristine);
+        self.abandonRollbackMetadata();
+        if (self.raw_state.rollback) |previous| previous.abandon(&self.raw_state);
+        self.rollback_metadata = RollbackMetadata.capture(self);
+        journal.attach(&self.raw_state);
+    }
+
+    fn abandonRollbackMetadata(self: *State) void {
+        if (self.rollback_metadata) |*metadata| metadata.abandon(self);
+        self.rollback_metadata = null;
+    }
+
+    fn writableBindings(self: *State) !void {
+        if (self.rollback_metadata) |*metadata| try metadata.detach(self);
     }
 
     fn bindDispatch(self: *State) void {
@@ -468,16 +575,23 @@ pub const State = struct {
 
     fn discardImage(self: *State) void {
         const a = self.allocator();
+        self.abandonRollbackMetadata();
         self.raw_state.discard();
         self.deinitOwnedMemoryFiles(a);
         self.memory_files.deinit(a);
         self.memory_file_owned_contents.deinit(a);
         self.deinitCallbacks(a);
         self.callbacks.deinit(a);
+        if (self.baseline) |baseline| baseline.release();
+        if (self.immutable_owner) |owner| owner.release();
     }
 
     fn copyImage(self: *const State, base: std.mem.Allocator, a: std.mem.Allocator, lifetime: ?*runtime_types.AllocatorLifetime) !State {
-        var result = State{ .base_allocator = base, .raw_state = try snapshot_runtime.copy(&self.raw_state, a, lifetime, self.last_error_root) };
+        return self.copyImageWithProtos(base, a, lifetime, false);
+    }
+
+    fn copyImageWithProtos(self: *const State, base: std.mem.Allocator, a: std.mem.Allocator, lifetime: ?*runtime_types.AllocatorLifetime, borrow_protos: bool) !State {
+        var result = State{ .base_allocator = base, .raw_state = try snapshot_runtime.copyWithProtos(&self.raw_state, a, lifetime, self.last_error_root, borrow_protos) };
         errdefer result.discardImage();
         if (self.last_error_root != null) result.last_error_root = 0;
         for (self.callbacks.items) |entry| {
@@ -631,6 +745,7 @@ pub const State = struct {
 
     /// Wraps host-owned storage as Lua userdata without taking ownership of `ptr`.
     pub fn newUserdataPtr(self: *State, comptime T: type, ptr: *T, options: UserdataPtrOptions(T)) !Userdata(T) {
+        if (options.snapshot) |hooks| if (hooks.tracking == .scoped) return error.ScopedAccessRequiresOwnedUserdata;
         const raw = try self.raw_state.newUserdata(ptr, typeId(T), @typeName(T), userdataFinalizer(T, options.finalizer), userdataFinalizerData(T, options.finalizer), null);
         setUserdataSnapshotHooks(T, raw.userdata, options.snapshot);
         var userdata = try Userdata(T).fromRuntime(self, raw);
@@ -712,7 +827,7 @@ pub const State = struct {
         const source_name = options.name orelse allocated_source_name.?;
         const loaded = self.loadBuffer(source, source_name, environment, options.mode) catch |err| return self.captureLuaError(err);
         if (!looksLikeBinaryChunk(source)) {
-            try self.raw_state.source_allocations.append(self.allocator(), source);
+            try self.raw_state.registerAllocation("source_allocations", source);
             keep_source = true;
         }
         return Function.fromRuntime(self, loaded);
@@ -829,6 +944,7 @@ pub const State = struct {
     }
 
     fn createCallbackFunction(self: *State, name: []const u8, callback: HostFn) !Function {
+        try self.writableBindings();
         self.raw_state.setApiCallbackDispatch(apiCallbackDispatch, self);
         const name_copy = try self.allocator().dupe(u8, name);
         errdefer self.allocator().free(name_copy);
@@ -851,6 +967,7 @@ pub const State = struct {
     }
 
     fn appendMemoryFile(self: *State, path: []const u8, contents: []const u8, owned_contents: bool) !void {
+        try self.writableBindings();
         const normalized_path = try MemoryFilesystem.normalizePathAlloc(self.allocator(), path, MemoryFilesystem.default_max_path_len);
         errdefer self.allocator().free(normalized_path);
         const stored_contents = if (owned_contents) try self.allocator().dupe(u8, contents) else contents;
@@ -871,15 +988,90 @@ pub const State = struct {
     }
 };
 
-/// Reusable in-memory checkpoint that can outlive its originating state.
-/// Call `deinit` when finished. Host capabilities and userdata payloads
-/// without snapshot hooks remain shared.
-pub const Snapshot = struct {
+const RollbackMetadata = struct {
+    files: std.ArrayList(MemoryFile),
+    owned: std.ArrayList(bool),
+    callbacks: std.ArrayList(RegisteredCallback),
+    error_value: ?runtime.Value,
+    detached: bool = false,
+
+    fn capture(state: *State) RollbackMetadata {
+        return .{ .files = state.memory_files, .owned = state.memory_file_owned_contents, .callbacks = state.callbacks, .error_value = if (state.last_error_root) |index| state.raw_state.rootedValue(index) else null };
+    }
+    fn freeContainers(self: *RollbackMetadata, a: std.mem.Allocator) void {
+        self.files.deinit(a);
+        self.owned.deinit(a);
+        self.callbacks.deinit(a);
+    }
+    fn detach(self: *RollbackMetadata, state: *State) !void {
+        if (self.detached) return;
+        const a = state.allocator();
+        var copy = RollbackMetadata{ .files = .empty, .owned = .empty, .callbacks = .empty, .error_value = null };
+        errdefer copy.freeContainers(a);
+        // Existing entries are immutable. Their bytes stay owned by the live
+        // state while only container storage is retained for rollback.
+        try copy.files.appendSlice(a, state.memory_files.items);
+        try copy.owned.appendSlice(a, state.memory_file_owned_contents.items);
+        try copy.callbacks.appendSlice(a, state.callbacks.items);
+        state.memory_files = copy.files;
+        state.memory_file_owned_contents = copy.owned;
+        state.callbacks = copy.callbacks;
+        if (state.raw_state.options.filesystem == .memory) state.raw_state.options.filesystem = .{ .memory = state.memory_files.items };
+        self.detached = true;
+    }
+    fn restore(self: *RollbackMetadata, state: *State) void {
+        if (!self.detached) return;
+        const a = state.allocator();
+        var current = capture(state);
+        for (current.files.items[self.files.items.len..], current.owned.items[self.files.items.len..]) |file, owned| {
+            a.free(file.path);
+            if (owned) a.free(file.contents);
+        }
+        for (current.callbacks.items[self.callbacks.items.len..]) |entry| a.free(entry.name);
+        current.freeContainers(a);
+        state.memory_files = self.files;
+        state.memory_file_owned_contents = self.owned;
+        state.callbacks = self.callbacks;
+        self.detached = false;
+    }
+    fn abandon(self: *RollbackMetadata, state: *State) void {
+        if (self.detached) self.freeContainers(state.allocator());
+    }
+};
+
+// Images are immutable after construction. Public wrappers and states retain
+// this allocation independently; wrapper moves cannot change baseline identity.
+const SnapshotBacking = struct {
+    allocator: std.mem.Allocator,
+    lifetime: ?*runtime_types.AllocatorLifetime = null,
+    references: usize = 1,
     image: State,
 
-    /// Releases the checkpoint and its owned storage.
+    fn retain(self: *const SnapshotBacking) void {
+        @constCast(self).references += 1;
+    }
+
+    fn release(self: *const SnapshotBacking) void {
+        const mutable = @constCast(self);
+        mutable.references -= 1;
+        if (mutable.references != 0) return;
+        const allocator = mutable.allocator;
+        const lifetime = mutable.lifetime;
+        mutable.image.discardImage();
+        allocator.destroy(mutable);
+        if (lifetime) |owner| owner.release();
+    }
+};
+
+/// Reusable immutable checkpoint, retained independently by source and workers.
+/// The snapshot allocator must outlive all states retaining this checkpoint.
+/// Hookless userdata and host capabilities remain shared.
+pub const Snapshot = struct {
+    backing: *const SnapshotBacking,
+
+    /// Releases this wrapper; storage is freed after the final retaining state.
     pub fn deinit(self: *Snapshot) void {
-        self.image.discardImage();
+        self.backing.release();
         self.* = undefined;
     }
 
@@ -888,12 +1080,18 @@ pub const Snapshot = struct {
         var limit: ?*MemoryLimitAllocator = null;
         {
             const p = try state_allocator.create(MemoryLimitAllocator);
-            p.* = MemoryLimitAllocator.init(state_allocator, self.image.raw_state.options.max_memory orelse std.math.maxInt(usize));
+            p.* = MemoryLimitAllocator.init(state_allocator, self.backing.image.raw_state.options.max_memory orelse std.math.maxInt(usize));
             limit = p;
         }
         errdefer if (limit) |p| p.lifetime.release();
-        var result = try self.image.copyImage(state_allocator, if (limit) |p| p.allocator() else state_allocator, if (limit) |p| &p.lifetime else null);
+        var result = try self.backing.image.copyImageWithProtos(state_allocator, if (limit) |p| p.allocator() else state_allocator, if (limit) |p| &p.lifetime else null, true);
+        errdefer result.discardImage();
+        try result.installRollback(&self.backing.image.raw_state);
         result.memory_limit_allocator = limit;
+        self.backing.retain();
+        result.baseline = self.backing;
+        self.backing.retain();
+        result.immutable_owner = self.backing;
         return result;
     }
 };
@@ -1074,6 +1272,32 @@ pub fn Userdata(comptime T: type) type {
             return userdataPtr(T, try self.rawUserdata());
         }
 
+        /// Invokes `callback(payload, context)` with read-only scoped access.
+        /// Neither the payload pointer nor pointers to nested storage may escape.
+        /// Read access forbids mutation of all reachable storage, including slices.
+        pub fn withRead(self: @This(), context: anytype, comptime callback: anytype) !ScopeResult(@TypeOf(callback)) {
+            comptime checkScopeResult(ScopeResult(@TypeOf(callback)));
+            const raw = try self.rawUserdata();
+            var scope: runtime_types.UserdataScope = undefined;
+            try beginUserdataScope(&self.ref.state.raw_state, &scope, raw, true);
+            defer endUserdataScope(&self.ref.state.raw_state, &scope);
+            const pointer: *const T = @ptrCast(@alignCast(raw.ptr));
+            return @call(.auto, callback, .{ pointer, context });
+        }
+
+        /// Invokes `callback(payload, context)` with mutable scoped access.
+        /// First write preserves the baseline before exposing private storage.
+        /// A callback error does not undo writes; reset restores the baseline.
+        pub fn withMut(self: @This(), context: anytype, comptime callback: anytype) !ScopeResult(@TypeOf(callback)) {
+            comptime checkScopeResult(ScopeResult(@TypeOf(callback)));
+            const raw = try self.rawUserdata();
+            var scope: runtime_types.UserdataScope = undefined;
+            try beginUserdataScope(&self.ref.state.raw_state, &scope, raw, false);
+            defer endUserdataScope(&self.ref.state.raw_state, &scope);
+            const pointer: *T = @ptrCast(@alignCast(raw.ptr));
+            return @call(.auto, callback, .{ pointer, context });
+        }
+
         /// Installs a typed Zig method on the userdata `__index` table.
         ///
         /// The Zig function's first parameter must be a pointer receiver for `T`.
@@ -1150,6 +1374,7 @@ pub fn Userdata(comptime T: type) type {
             const index = self.ref.state.raw_state.newTableWithHints(0, 4) catch |err| return self.ref.state.captureLuaError(err);
             try metatable.table.set(self.ref.state.allocator(), .{ .string = try self.ref.state.raw_state.intern("__name") }, .{ .string = try self.ref.state.raw_state.intern(@typeName(T)) });
             try metatable.table.set(self.ref.state.allocator(), .{ .string = try self.ref.state.raw_state.intern("__index") }, index);
+            rollback_runtime.touch(raw);
             raw.metatable = metatable.table;
         }
 
@@ -1491,13 +1716,15 @@ fn callTyped(comptime function: anytype, ctx: *Context) !void {
     if (function_info.is_var_args) @compileError("registerTyped does not support varargs functions");
 
     var args: std.meta.ArgsTuple(SignatureType) = undefined;
+    var scopes: ArgumentScopes(function_info.params.len) = .{};
+    defer scopes.deinit(ctx);
     var lua_arg_index: usize = 0;
     inline for (function_info.params, 0..) |param, index| {
         const Param = param.type orelse @compileError("registerTyped requires typed parameters");
         if (Param == *Context) {
             args[index] = ctx;
         } else {
-            args[index] = try ctx.arg(lua_arg_index, Param);
+            args[index] = try scopes.arg(ctx, lua_arg_index, Param);
             lua_arg_index += 1;
         }
     }
@@ -1550,13 +1777,15 @@ fn callUserdataInitializer(comptime T: type, comptime initializer: anytype, comp
     if (function_info.is_var_args) @compileError("userdata initializers do not support varargs functions");
 
     var args: std.meta.ArgsTuple(SignatureType) = undefined;
+    var scopes: ArgumentScopes(function_info.params.len) = .{};
+    defer scopes.deinit(ctx);
     var lua_arg_index: usize = 0;
     inline for (function_info.params, 0..) |param, index| {
         const Param = param.type orelse @compileError("userdata initializer parameters must be typed");
         if (Param == *Context) {
             args[index] = ctx;
         } else {
-            args[index] = try ctx.arg(lua_arg_index, Param);
+            args[index] = try scopes.arg(ctx, lua_arg_index, Param);
             lua_arg_index += 1;
         }
     }
@@ -1606,14 +1835,16 @@ fn callUserdataMethod(comptime T: type, comptime function: anytype, ctx: *Contex
     if (comptime !isUserdataReceiver(T, Receiver)) @compileError("userdata method receiver must be *T or *const T");
 
     var args: std.meta.ArgsTuple(SignatureType) = undefined;
-    args[0] = try userdataReceiverArg(T, Receiver, ctx);
+    var scopes: ArgumentScopes(function_info.params.len) = .{};
+    defer scopes.deinit(ctx);
+    args[0] = try scopes.arg(ctx, 0, Receiver);
     var lua_arg_index: usize = 1;
     inline for (function_info.params[1..], 1..) |param, index| {
         const Param = param.type orelse @compileError("userdata method parameters must be typed");
         if (Param == *Context) {
             args[index] = ctx;
         } else {
-            args[index] = try ctx.arg(lua_arg_index, Param);
+            args[index] = try scopes.arg(ctx, lua_arg_index, Param);
             lua_arg_index += 1;
         }
     }
@@ -1676,15 +1907,69 @@ fn isMetamethodName(comptime name: []const u8) bool {
     return std.mem.startsWith(u8, name, "__");
 }
 
-fn userdataReceiverArg(comptime T: type, comptime Receiver: type, ctx: *Context) !Receiver {
-    const raw = ctx.raw.callbackArgValue(0);
-    const userdata = switch (raw) {
-        .userdata => |value| value,
-        else => return ctx.argConversionError(0, Receiver, raw, error.TypeMismatch),
-    };
+fn beginUserdataScope(state: *runtime.State, scope: *runtime_types.UserdataScope, userdata: *runtime.Userdata, readonly: bool) !void {
+    if ((readonly and userdata.scope_writers != 0) or (!readonly and userdata.scope_readers != 0)) return error.ScopedAccessConflict;
+    scope.* = .{ .userdata = userdata, .readonly = readonly, .previous = state.userdata_scope };
+    state.userdata_scope = scope;
+    if (readonly) userdata.scope_readers += 1 else userdata.scope_writers += 1;
+    errdefer endUserdataScope(state, scope);
+    if (!readonly) try rollback_runtime.userdataWritable(userdata);
+}
 
-    const ptr = userdataPtr(T, userdata) catch |err| return ctx.argConversionError(0, Receiver, raw, err);
-    return ptr;
+fn endUserdataScope(state: *runtime.State, scope: *runtime_types.UserdataScope) void {
+    std.debug.assert(state.userdata_scope == scope);
+    state.userdata_scope = scope.previous;
+    if (scope.readonly) scope.userdata.scope_readers -= 1 else scope.userdata.scope_writers -= 1;
+}
+
+fn ScopeResult(comptime F: type) type {
+    const CallbackType = if (@typeInfo(F) == .pointer) @typeInfo(F).pointer.child else F;
+    const R = @typeInfo(CallbackType).@"fn".return_type orelse void;
+    return if (@typeInfo(R) == .error_union) @typeInfo(R).error_union.payload else R;
+}
+
+fn checkScopeResult(comptime T: type) void {
+    switch (@typeInfo(T)) {
+        .pointer => @compileError("userdata scope results cannot contain pointers; copy the required value inside the scope"),
+        .optional => |o| checkScopeResult(o.child),
+        .array => |a| checkScopeResult(a.child),
+        .@"struct", .@"union" => inline for (std.meta.fields(T)) |field| checkScopeResult(field.type),
+        else => {},
+    }
+}
+
+fn ArgumentScopes(comptime capacity: usize) type {
+    return struct {
+        entries: [capacity]runtime_types.UserdataScope = undefined,
+        len: usize = 0,
+        fn deinit(self: *@This(), ctx: *Context) void {
+            if (comptime capacity == 0) return;
+            while (self.len != 0) {
+                self.len -= 1;
+                endUserdataScope(&ctx.lua.raw_state, &self.entries[self.len]);
+            }
+        }
+        fn arg(self: *@This(), ctx: *Context, index: usize, comptime T: type) !T {
+            const raw = ctx.raw.callbackArgValue(index);
+            if (comptime @typeInfo(T) == .optional) {
+                if (raw == .nil) return null;
+                return try self.arg(ctx, index, @typeInfo(T).optional.child);
+            }
+            if (comptime @typeInfo(T) == .pointer) {
+                const pointer = @typeInfo(T).pointer;
+                if (comptime pointer.size == .one and @typeInfo(pointer.child) == .@"struct") {
+                    if (raw == .userdata and raw.userdata.type_id == typeId(pointer.child)) {
+                        if (raw.userdata.payload) |p| if (p.snapshot_tracking == .scoped) {
+                            try beginUserdataScope(&ctx.lua.raw_state, &self.entries[self.len], raw.userdata, pointer.is_const);
+                            self.len += 1;
+                        };
+                        return @ptrCast(@alignCast(raw.userdata.ptr));
+                    }
+                }
+            }
+            return ctx.arg(index, T);
+        }
+    };
 }
 
 fn TypeToken(comptime T: type) type {
@@ -1702,11 +1987,19 @@ fn setUserdataSnapshotHooks(comptime T: type, raw: *runtime.Userdata, hooks: ?Us
     if (hooks) |h| {
         raw.payload.?.snapshot_copy = @ptrCast(h.copy);
         raw.payload.?.snapshot_dispose = @ptrCast(h.dispose);
+        raw.payload.?.snapshot_tracking = if (h.tracking == .scoped) .scoped else .eager;
+        if (h.tracking == .scoped) {
+            // Scoped owned storage has one disposal contract for both original
+            // and copied payloads; semantic finalization is separate.
+            raw.payload.?.dispose = @ptrCast(h.dispose);
+            raw.payload.?.is_snapshot_copy = true;
+        }
     }
 }
 
 fn userdataPtr(comptime T: type, raw: *runtime.Userdata) !*T {
     if (raw.type_id != typeId(T)) return error.TypeMismatch;
+    if (raw.payload) |p| if (p.snapshot_tracking == .scoped) return error.ScopedAccessRequired;
     return @ptrCast(@alignCast(raw.ptr));
 }
 
@@ -4313,7 +4606,7 @@ test {
 comptime {
     @setEvalBranchQuota(1000000);
     snapshot_runtime.review(State, .{
-        .external = "base_allocator memory_limit_allocator",
+        .external = "base_allocator memory_limit_allocator baseline immutable_owner rollback_metadata",
         .rebuilt = "generation last_error_root",
         .copied = "raw_state memory_files memory_file_owned_contents callbacks",
     });

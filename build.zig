@@ -176,6 +176,7 @@ pub fn build(b: *std.Build) void {
     c_api_step.dependOn(&install_c_api_exe.step);
 
     const embedding_examples = [_]EmbeddingExample{
+        .{ .key = "snapshot_adventure", .name = "zlua-embed-snapshot-adventure", .path = "examples/snapshot_adventure.zig" },
         .{ .key = "snapshot_adversarial", .name = "zlua-embed-snapshot-adversarial", .path = "examples/snapshot_adversarial.zig" },
         .{ .key = "snapshot_reset", .name = "zlua-embed-snapshot-reset", .path = "examples/snapshot_reset.zig" },
         .{ .key = "run_script", .name = "zlua-embed-run-script", .path = "examples/run_script.zig" },

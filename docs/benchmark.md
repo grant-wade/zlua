@@ -6,7 +6,7 @@ Run the whole suite with `zig build bench` (or `just bench`). It runs these grou
 | --- | --- |
 | Process | Complete Lua programs under zlua and Lua 5.5, including process launch, compilation, and shutdown. |
 | Startup | State creation, library opening, and the first chunk through the native and C APIs. |
-| Snapshots | Capturing a prepared state, resetting it, and rebuilding an equivalent state. |
+| Snapshots | Capture, clone, first-work mutation, reset-only, no-op reset, full work/reset cycles, and equivalent rebuild. |
 
 All benchmarks use ReleaseFast for both zlua and C Lua, including process comparisons and C startup workers, regardless of `-Doptimize`. Startup and snapshot timings exclude process launch. Startup totals sum the measured phases; they are not another independently timed operation.
 
@@ -30,11 +30,22 @@ The main tables show medians and sample counts. For process comparisons, **zlua/
 
 Use `--verbose` for phase timings, p95, spread, and allocation details. With very few samples, p95 is usually the maximum; use more samples before drawing conclusions.
 
-Allocation counts and bytes are medians across samples. Requested bytes include positive resize growth. Live bytes are storage after the operation; peak includes storage already live at its start. Capture counts the new checkpoint only. Reset and rebuild count VM storage, so reset peak includes the live VM and its replacement. The native runtime column estimates GC objects separately. A dash means unavailable, not zero.
+Allocation counts and bytes are medians across samples. Requested bytes include positive resize growth. Live bytes are storage after the operation; peak includes storage already live at its start. Capture counts the new checkpoint only. Clone counts the new worker only, excluding retained checkpoint storage. Reset and rebuild count VM storage, including retained rollback storage. Snapshot switching can require both graphs; active-baseline reset uses storage swaps. Worker journal storage created during capture appears in subsequent VM live totals. The native runtime column estimates GC objects separately. A dash means unavailable, not zero.
 
 JSON format 2 includes run metadata, raw samples, summaries, and comparisons for every group. Existing process records and their mean-based ratio remain under `benchmarks`. CSV format 2 has one row per operation sample; failed or skipped operations with no samples still get a row. Both formats store nanoseconds and bytes.
 
 Save a baseline, make the change, and repeat the same command on an otherwise idle machine. Look at the samples and spread as well as the ratio. Process runs alternate engine order and check every pair's exit status and output outside the timer.
+
+## Snapshot reset measurements
+
+`reset_only` times restoration after the workload; `noop_reset` resets immediately after restoration, with no intervening Lua call or mutation. `mutation` includes the first writes and host-to-Lua call overhead. `cycle` times work plus reset so first-write copying cannot disappear from the reported cost. The existing `reset` operation continues to include teardown for comparison with `rebuild`.
+
+Cases cover small and large unchanged baselines, sparse and dense writes across 10,000 tables, a single write to a 100,000-entry array, suspended coroutine resumes, collection of baseline objects, modules, callbacks, and both eager and scoped resource hooks. `no_op_small` and `no_op_large` expose heap-size scaling in reset time and allocations. No-op reset should allocate nothing for baselines without eager hooks. Sparse reset restores dirty records and cleans private allocations; first writes can copy a whole table or allocation registry, so compare `mutation` and `cycle` as well as `reset_only`.
+
+```sh
+zig build bench -- --family=snapshots --iterations=20 --warmup=3 --verbose
+zig build bench -- no_op_small no_op_large --json /tmp/noop-reset.json
+```
 
 ## Adding a case
 

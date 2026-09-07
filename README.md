@@ -108,6 +108,7 @@ Run a specific zlua embedding example:
 
 ```sh
 zig build run-example -- snapshot_reset
+zig build run-example -- snapshot_adventure
 ```
 
 Run the full check suite:

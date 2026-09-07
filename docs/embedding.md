@@ -371,7 +371,7 @@ var another = try checkpoint.clone(state_allocator);
 defer another.deinit();
 ```
 
-Snapshots copy the VM heap, including suspended Lua coroutines, shared references, module caches, I/O buffers, random state, and GC settings. Reset also restores options, host bindings, and instruction usage. Checkpoints are reusable, can outlive the source state, and have no persistence format.
+Capture copies the VM heap, including suspended Lua coroutines, shared references, module caches, I/O buffers, random state, and GC settings. Clones share immutable checkpoint bytecode while keeping mutable closures, caches, and other VM objects private. Capture establishes an active baseline on the source, and clone establishes it on the new worker. Reset also restores options, host bindings, and instruction usage. Checkpoints are reusable, can outlive the source state, and have no persistence format.
 
 Snapshot and reset require an idle VM. Active calls, collection, destruction, or recursive snapshot operations return `error.SnapshotBusy`. C compatibility states, C closures or continuations, and untracked runtime objects return `error.SnapshotUnsupported`. Serialize access to each state and checkpoint.
 
@@ -379,9 +379,11 @@ Snapshot and reset require an idle VM. Active calls, collection, destruction, or
 
 Successful reset invalidates all earlier handles and borrowed VM slices and pointers. Stale handle operations return `error.InvalidHandle`; their `deinit` is harmless. Reacquire objects through globals or modules. Handles from other states are also rejected. Destroy handles before their state.
 
-Reset builds the replacement before discarding the old VM. Allocation or copy failures leave the state, handles, and checkpoint usable. Discard does not run Lua `__gc` or `__close` handlers; run application teardown first if needed. Collection timing and pointer-derived strings may change.
+Reset to the active baseline restores dirty objects and releases private allocations. Tables, closures, upvalues, and threads keep their worker-local addresses. First writes copy whole-object storage; reset swaps back the original storage. An unchanged baseline with no eager userdata hooks resets without allocations or a heap traversal. Switching snapshots uses the atomic graph-copy path and establishes the selected baseline. All fallible eager-resource replacements are prepared before committing rollback; failure leaves the current state, handles, and baseline usable. Discard does not run Lua `__gc` or `__close` handlers; run application teardown first if needed. Collection timing and pointer-derived strings may change.
 
-The destination keeps its allocator. Both heaps and temporary copy indexes count against the restored memory limit. Snapshot storage uses `snapshot_allocator` outside that limit; clones use their supplied allocator and inherit the limit. Host-owned results remain freeable through the state allocator while the state lives. Keep backing allocators valid until all allocations, including shared userdata, are released.
+The destination keeps its allocator. Rollback records, retained worker storage, private copies, and new allocations count against the worker memory limit. During snapshot switching, the live graph and its replacement both count against the restored limit. Retained storage is not a Lua GC root: weak reachability and normal finalization still operate on the live graph. The GC byte estimate counts live Lua objects, so it can be smaller than allocator usage while rollback storage is retained. Snapshot storage uses `snapshot_allocator`; with a separate allocator it is outside the worker limit. Passing `state.allocator()` charges checkpoint storage to that state’s limit and retains its allocator infrastructure. Clones use their supplied allocator and inherit the captured limit. Host-owned results remain freeable through the state allocator while the state lives.
+
+Successful capture, clone, and reset retain the checkpoint as the state’s baseline. A worker also retains the owner of its borrowed bytecode independently, so capturing a modified worker does not invalidate its existing functions. `Snapshot.deinit` releases the public wrapper; backing storage is freed only after the last retaining state releases it. Keep `snapshot_allocator` valid for that entire lifetime, including after the wrapper is destroyed. An arena used for checkpoint storage must not be reset while a retaining state exists. Keep backing allocators valid until all allocations, including shared userdata, are released.
 
 ### Userdata and Host Bindings
 
@@ -411,9 +413,32 @@ defer counter.deinit();
 try lua.setGlobal("counter", counter);
 ```
 
-`copy` must own all nested storage using the supplied allocator. `dispose` releases it, including on failed construction or checkpoint destruction. Hooks must not retain source VM pointers or reenter snapshot operations. Capture and discard skip application finalizers; normal finalizers must not free storage owned by `dispose`. Original payloads keep their original ownership rules.
+`copy` must own all nested storage using the supplied allocator. `dispose` releases it, including on failed construction or checkpoint destruction. Hooks must not retain source VM pointers or reenter snapshot operations. Capture and discard skip application finalizers; normal finalizers must not free storage owned by `dispose`. Eager payloads (the default) keep their original ownership rules and invoke the copy hook on every reset.
 
-Callbacks and host capabilities remain external bindings and must stay valid. Reset cannot undo host output or external mutations. State-owned memory files, stdin bytes, and captured output are copied.
+To track an owned payload through scoped access, set `.tracking = .scoped`:
+
+```zig
+var tracked = try lua.newUserdata(Counter, .{ .value = 7 }, .{
+    .snapshot = .{ .copy = Counter.copy, .dispose = Counter.dispose, .tracking = .scoped },
+});
+defer tracked.deinit();
+try tracked.withMut(@as(i64, 3), struct {
+    fn add(value: *Counter, amount: i64) void { value.value += amount; }
+}.add);
+const count = try tracked.withRead({}, struct {
+    fn read(value: *const Counter, _: void) i64 { return value.value; }
+}.read);
+```
+
+Callbacks receive `(payload, context)`. Scoped payload pointers, including pointers to nested storage, must not escape the callback. Read scopes forbid mutation of all reachable storage, including slice contents. Scope results must contain no pointers; use caller-owned output storage passed through the context when copying buffers. Overlapping read and write scopes on one payload return `error.ScopedAccessConflict`. Active scopes keep their userdata reachable, and capture or reset during a scope returns `error.SnapshotBusy`.
+
+Typed callbacks and auto-bound methods apply read scopes to `*const T` arguments and mutable scopes to `*T` arguments automatically. Unscoped extraction through `ptr`, `getGlobal(..., *T)`, or `Context.arg(..., *T)` returns `error.ScopedAccessRequired`. Scoped tracking requires owned userdata; `newUserdataPtr` rejects it because external aliases could mutate borrowed storage invisibly.
+
+The first mutable scope copies the payload before exposing writable storage. A failing callback leaves its writes dirty. Reset disposes the private copy and restores pristine storage; unchanged scoped payloads need no reset-time copies. Finalization also preserves pristine storage before invoking the finalizer, so reset never restores the finalized resource instance. For scoped userdata, the supplied `dispose` hook releases both the initial owned payload and hook-created copies, including nested storage. Normal finalizers must not release storage owned by `dispose`.
+
+Callbacks and host capabilities remain external bindings and must stay valid. Reset cannot undo host output or external mutations. Capture takes ownership of copies of borrowed stdin and read-only memory-file bytes on the source. State-owned memory files, input positions, captured output, host bindings, errors, options, and instruction usage are restored. Host-result allocations and reusable host root capacity are separate from managed allocation cleanup.
+
+First writes, allocation-registry detachment, private-allocation cleanup, and eager external resources still have real costs. Use the mutation and full-cycle benchmarks alongside reset-only timings. Runtime setters participate in tracking; direct writes to raw object storage cannot be tracked automatically.
 
 ## Current Boundaries
 

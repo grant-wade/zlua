@@ -31,6 +31,7 @@
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
 - [runtime.state](../runtime/state.md)
+- [runtime.rollback](../runtime/rollback.md)
 - [runtime.call](../runtime/call.md)
 - [runtime.coroutine](../runtime/coroutine.md)
 - [runtime.debug](../runtime/debug.md)
@@ -90,9 +91,19 @@ shells are registered before references are populated, preserving identity.
 
 ## Functions
 
+- [checkIdleFast](#fn-checkidlefast)
 - [checkIdle](#fn-checkidle)
 - [copy](#fn-copy)
+- [copyWithProtos](#fn-copywithprotos)
 - [review](#fn-review)
+
+<a id="fn-checkidlefast"></a>
+
+## checkIdleFast
+
+```zig
+pub fn checkIdleFast(source: *const State) !void
+```
 
 <a id="fn-checkidle"></a>
 
@@ -111,6 +122,16 @@ be reacquired. The caller owns destination allocator infrastructure.
 
 ```zig
 pub fn copy(source: *const State, allocator: std.mem.Allocator, lifetime: ?*types.AllocatorLifetime, error_root: ?usize) !State
+```
+
+<a id="fn-copywithprotos"></a>
+
+## copyWithProtos
+
+Caller must retain the immutable source image until destination destruction.
+
+```zig
+pub fn copyWithProtos(source: *const State, allocator: std.mem.Allocator, lifetime: ?*types.AllocatorLifetime, error_root: ?usize, borrow_protos: bool) !State
 ```
 
 <a id="fn-review"></a>

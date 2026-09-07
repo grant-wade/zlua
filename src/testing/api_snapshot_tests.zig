@@ -158,7 +158,8 @@ test "snapshot hooked payloads are independent and copy failures are atomic" {
     try std.testing.expectEqual(@as(usize, 1), disposals);
     checkpoint.deinit();
     try std.testing.expectEqual(@as(usize, 1), finals);
-    try std.testing.expectEqual(@as(usize, 2), disposals);
+    // The source still retains the checkpoint as its active baseline.
+    try std.testing.expectEqual(@as(usize, 1), disposals);
 }
 
 test "snapshot hookless payload retains allocator and finalizes once in every destruction order" {
@@ -245,6 +246,10 @@ test "snapshot capture and clone allocation failures release every partial graph
         fn run(allocator: std.mem.Allocator, state: *api.State) !void {
             var checkpoint = try state.snapshot(allocator);
             defer checkpoint.deinit();
+            // The source retains its baseline. Release the failing allocator's
+            // storage before the allocator itself leaves scope.
+            var stable = try state.snapshot(a);
+            stable.deinit();
         }
     }.run, .{&lua});
     var checkpoint = try lua.snapshot(a);
@@ -295,12 +300,14 @@ test "snapshot bounded reset requires temporary headroom and keeps host results 
     const message = try lua.errorMessage();
     const original_allocator = lua.allocator();
     defer original_allocator.free(message);
+    lua.raw_state.options.max_memory = 1;
+    var limited = try lua.snapshot(a);
+    defer limited.deinit();
+    lua.raw_state.options.max_memory = 4 * 1024 * 1024;
     var checkpoint = try lua.snapshot(a);
     defer checkpoint.deinit();
-    checkpoint.image.raw_state.options.max_memory = 1;
-    try std.testing.expectError(error.OutOfMemory, lua.reset(&checkpoint));
+    try std.testing.expectError(error.OutOfMemory, lua.reset(&limited));
     try std.testing.expectEqualStrings("owned", try chunk.call(.{}, []const u8));
-    checkpoint.image.raw_state.options.max_memory = 4 * 1024 * 1024;
     try lua.reset(&checkpoint);
     try std.testing.expectEqual(original_allocator.ptr, lua.allocator().ptr);
 }
@@ -370,6 +377,10 @@ test "snapshot userdata copy allocation failures never run application finalizer
         fn run(allocator: std.mem.Allocator, state: *api.State) !void {
             var checkpoint = try state.snapshot(allocator);
             defer checkpoint.deinit();
+            // The source retains its baseline. Release the failing allocator's
+            // storage before the allocator itself leaves scope.
+            var stable = try state.snapshot(a);
+            stable.deinit();
         }
     }.run, .{&lua});
     try std.testing.expectEqual(@as(usize, 0), finals);
@@ -464,4 +475,466 @@ test "snapshot retains native diagnostic strings in suspended live locals" {
     defer checkpoint.deinit();
     try lua.reset(&checkpoint);
     try lua.doString("local ok, msg = coroutine.resume(co); assert(ok and msg == 'filesystem access disabled')", .{});
+}
+
+test "snapshot workers share immutable bytecode but keep closures and caches private" {
+    var source = try api.State.init(a, .{});
+    try source.doString("function f() return 'retained-constant' end", .{});
+    var checkpoint = try source.snapshot(a);
+    source.deinit();
+    var left = try checkpoint.clone(a);
+    defer left.deinit();
+    var right = try checkpoint.clone(a);
+    defer right.deinit();
+    checkpoint.deinit();
+    var lf = try left.getGlobal("f", api.Function);
+    defer lf.deinit();
+    var rf = try right.getGlobal("f", api.Function);
+    defer rf.deinit();
+    const lc = left.raw_state.rootedValue(lf.ref.index).closure;
+    const rc = right.raw_state.rootedValue(rf.ref.index).closure;
+    try std.testing.expect(lc != rc);
+    try std.testing.expectEqual(lc.proto, rc.proto);
+    try std.testing.expectEqualStrings("retained-constant", try lf.call(.{}, []const u8));
+    try std.testing.expectEqualStrings("retained-constant", try rf.call(.{}, []const u8));
+    try std.testing.expect(lc.constants.?.ptr != rc.constants.?.ptr);
+}
+
+test "snapshot recapture preserves old bytecode owner and captures modified worker" {
+    var source = try api.State.init(a, .{});
+    try source.doString("local n = 1; function f() n = n + 1; return n end", .{});
+    var original = try source.snapshot(a);
+    source.deinit();
+    var worker = try original.clone(a);
+    original.deinit();
+    try worker.doString("assert(f() == 2); function g() return f() end", .{});
+    var captured = try worker.snapshot(a);
+    // Capturing changed the baseline, but f still borrows the old bytecode.
+    try worker.doString("assert(g() == 3)", .{});
+    var second = try captured.clone(a);
+    captured.deinit();
+    worker.deinit();
+    defer second.deinit();
+    try second.doString("assert(g() == 3); collectgarbage(); assert(g() == 4)", .{});
+}
+
+test "snapshot retained identity survives wrapper moves switching and destruction orders" {
+    const orders = [_][3]usize{ .{ 0, 1, 2 }, .{ 0, 2, 1 }, .{ 1, 0, 2 }, .{ 1, 2, 0 }, .{ 2, 0, 1 }, .{ 2, 1, 0 } };
+    for (orders) |order| {
+        var source = try api.State.init(a, .{});
+        try source.doString("function f() return 1 end", .{});
+        var first = try source.snapshot(a);
+        var moved = first;
+        first = undefined;
+        var worker = try moved.clone(a);
+        try source.doString("function f() return 2 end", .{});
+        var second = try source.snapshot(a);
+        for (0..4) |_| {
+            try worker.reset(&second);
+            try worker.doString("assert(f() == 2)", .{});
+            try worker.reset(&moved);
+            try worker.doString("assert(f() == 1)", .{});
+        }
+        second.deinit();
+        for (order) |which| switch (which) {
+            0 => source.deinit(),
+            1 => moved.deinit(),
+            2 => worker.deinit(),
+            else => unreachable,
+        };
+    }
+}
+
+test "snapshot using the state allocator retains its accounting infrastructure" {
+    var source = try api.State.init(a, .{});
+    try source.doString("function f() return 42 end", .{});
+    var checkpoint = try source.snapshot(source.allocator());
+    source.deinit();
+    var worker = try checkpoint.clone(a);
+    checkpoint.deinit();
+    defer worker.deinit();
+    try worker.doString("assert(f() == 42)", .{});
+}
+
+test "shared bytecode clone agrees with independent graph copy" {
+    var source = try api.State.init(a, .{ .stdlib = .full });
+    defer source.deinit();
+    try source.doString(
+        \\collectgarbage('stop')
+        \\t = {}; t[t] = t; alias = t
+        \\weak = setmetatable({}, {__mode='v'}); weak[1] = {}
+        \\local n = 5; function f() n = n + 1; return n end
+        \\co = coroutine.create(function() local x = f(); coroutine.yield(x); return f() end)
+        \\assert(coroutine.resume(co))
+    , .{});
+    var checkpoint = try source.snapshot(a);
+    defer checkpoint.deinit();
+    var shared = try checkpoint.clone(a);
+    defer shared.deinit();
+    var copied = api.State{
+        .base_allocator = a,
+        .raw_state = try @import("../runtime/snapshot.zig").copy(&source.raw_state, a, null, null),
+    };
+    defer copied.deinit();
+    const operations = [_][]const u8{
+        "assert(t == alias and t[t] == t); t.changed = f()",
+        "debug.setupvalue(f, 1, 100); local ok, n = coroutine.resume(co); assert(ok); result = n",
+        "collectgarbage(); assert(next(weak) == nil); result = result + f(); print(result, t.changed)",
+    };
+    for (operations) |operation| {
+        try shared.doString(operation, .{});
+        try copied.doString(operation, .{});
+        try std.testing.expectEqualStrings(copied.raw_state.stdout.items, shared.raw_state.stdout.items);
+        try std.testing.expectEqual(copied.instructionBudget().used, shared.instructionBudget().used);
+    }
+}
+
+test "retained snapshots have bounded worker memory over one thousand resets" {
+    const CountingAllocator = @import("bench/allocation.zig").CountingAllocator;
+    var counter = CountingAllocator{ .backing = a };
+    var source = try api.State.init(a, .{});
+    try source.doString("data = {value=1}; function work() data.value=2; extra={data, data} end", .{});
+    var checkpoint = try source.snapshot(a);
+    source.deinit();
+    var worker = try checkpoint.clone(counter.allocator());
+    try worker.reset(&checkpoint);
+    // Host root slots retain capacity independently of managed heap rollback.
+    var warmup = try worker.getGlobal("work", api.Function);
+    try warmup.call(.{}, void);
+    warmup.deinit();
+    try worker.reset(&checkpoint);
+    const baseline_bytes = counter.live_bytes;
+    for (0..1000) |_| {
+        var work = try worker.getGlobal("work", api.Function);
+        try work.call(.{}, void);
+        work.deinit();
+        try worker.reset(&checkpoint);
+        try std.testing.expectEqual(baseline_bytes, counter.live_bytes);
+    }
+    checkpoint.deinit();
+    worker.deinit();
+    try std.testing.expectEqual(@as(u64, 0), counter.live_bytes);
+}
+
+test "incremental no-op reset allocates nothing and visits no heap objects" {
+    const CountingAllocator = @import("bench/allocation.zig").CountingAllocator;
+    for ([_]usize{ 16, 4096 }) |size| {
+        var counter = CountingAllocator{ .backing = a };
+        var lua = try api.State.init(counter.allocator(), .{});
+        defer lua.deinit();
+        const script = try std.fmt.allocPrint(a, "collectgarbage('stop'); data={{}}; for i=1,{d} do data[i]={{i}} end", .{size});
+        defer a.free(script);
+        try lua.doString(script, .{});
+        const identity = lua.raw_state.getGlobal("data").table;
+        var checkpoint = try lua.snapshot(a);
+        defer checkpoint.deinit();
+        const allocations = counter.allocations;
+        const resizes = counter.resizes;
+        for (0..10) |_| {
+            try lua.reset(&checkpoint);
+            try std.testing.expectEqual(allocations, counter.allocations);
+            try std.testing.expectEqual(resizes, counter.resizes);
+            try std.testing.expectEqual(identity, lua.raw_state.getGlobal("data").table);
+            try std.testing.expectEqual(@as(usize, 0), lua.raw_state.rollback.?.last_restored_objects);
+        }
+        const child = identity.get(.{ .integer = 1 }).table;
+        try child.set(lua.allocator(), .{ .integer = 1 }, .{ .integer = 99 });
+        const before_reset = counter.allocations;
+        try lua.reset(&checkpoint);
+        try std.testing.expectEqual(before_reset, counter.allocations);
+        try std.testing.expectEqual(@as(usize, 1), lua.raw_state.rollback.?.last_restored_objects);
+        try std.testing.expectEqual(@as(i64, 1), child.get(.{ .integer = 1 }).integer);
+    }
+}
+
+test "incremental existing writes preserve metamethods aliases keys and debug mutations" {
+    var lua = try api.State.init(a, .{ .stdlib = .full });
+    defer lua.deinit();
+    try lua.doString(
+        \\collectgarbage('stop'); calls = 0
+        \\t = setmetatable({value=1}, {__newindex=function() calls=calls+1 end}); alias=t; keys={[t]=t}
+        \\co=coroutine.create(function(...) local x=7; function f() return x end; coroutine.yield(); return x,... end)
+        \\assert(coroutine.resume(co, 8))
+    , .{});
+    var checkpoint = try lua.snapshot(a);
+    defer checkpoint.deinit();
+    for (0..3) |_| {
+        try lua.doString("t.value=2; t.new=3; assert(calls==1 and alias.value==2 and keys[t]==t); debug.setupvalue(f,1,20); assert(f()==20); assert(coroutine.resume(co))", .{});
+        try lua.reset(&checkpoint);
+        try lua.doString("assert(t.value==1 and calls==0 and f()==7 and coroutine.status(co)=='suspended')", .{});
+    }
+}
+
+const ScopedPayload = struct {
+    value: i64 = 1,
+    copies: *usize,
+    finals: *usize,
+    disposals: *usize,
+    fail: *bool,
+    fn copy(allocator: std.mem.Allocator, self: *const @This()) !*@This() {
+        if (self.fail.*) return error.PayloadCopyFailed;
+        const p = try allocator.create(@This());
+        p.* = self.*;
+        self.copies.* += 1;
+        return p;
+    }
+    fn dispose(allocator: std.mem.Allocator, self: *@This()) void {
+        self.disposals.* += 1;
+        allocator.destroy(self);
+    }
+    fn finalize(self: *@This()) void {
+        self.finals.* += 1;
+        self.value = -100;
+    }
+    pub fn increment(self: *@This(), amount: i64) void {
+        self.value += amount;
+    }
+    pub fn valueOf(self: *const @This()) i64 {
+        return self.value;
+    }
+    fn read(self: *const @This(), _: void) i64 {
+        return self.value;
+    }
+    fn mutate(self: *@This(), amount: i64) void {
+        self.value += amount;
+    }
+    fn mutateFail(self: *@This(), _: void) !void {
+        self.value = 99;
+        return error.CallbackFailed;
+    }
+};
+
+test "scoped userdata copies on first write with atomic failure and unchanged reset" {
+    var copies: usize = 0;
+    var finals: usize = 0;
+    var disposals: usize = 0;
+    var fail = false;
+    var lua = try api.State.init(a, .{});
+    defer lua.deinit();
+    var ud = try lua.newUserdataAuto(ScopedPayload, .{ .copies = &copies, .finals = &finals, .disposals = &disposals, .fail = &fail }, .{ .finalizer = ScopedPayload.finalize, .snapshot = .{ .copy = ScopedPayload.copy, .dispose = ScopedPayload.dispose, .tracking = .scoped } });
+    try lua.setGlobal("u", ud);
+    try std.testing.expectError(error.ScopedAccessRequired, ud.ptr());
+    try std.testing.expectError(error.ScopedAccessRequired, lua.getGlobal("u", *ScopedPayload));
+    var checkpoint = try lua.snapshot(a);
+    defer checkpoint.deinit();
+    const captured_copies = copies;
+    ud.deinit();
+    for (0..3) |_| try lua.reset(&checkpoint);
+    try std.testing.expectEqual(captured_copies, copies);
+    ud = try lua.getGlobal("u", api.Userdata(ScopedPayload));
+    fail = true;
+    try std.testing.expectError(error.PayloadCopyFailed, ud.withMut(@as(i64, 3), ScopedPayload.mutate));
+    try std.testing.expectEqual(@as(i64, 1), try ud.withRead({}, ScopedPayload.read));
+    fail = false;
+    try std.testing.expectError(error.CallbackFailed, ud.withMut({}, ScopedPayload.mutateFail));
+    try ud.withMut(@as(i64, 1), ScopedPayload.mutate);
+    try std.testing.expectEqual(@as(i64, 100), try ud.withRead({}, ScopedPayload.read));
+    try std.testing.expectEqual(captured_copies + 1, copies);
+    ud.deinit();
+    try lua.reset(&checkpoint);
+    try std.testing.expectEqual(captured_copies + 1, copies);
+    try lua.doString("assert(u:valueOf()==1); u:increment(4); assert(u:valueOf()==5)", .{});
+    try std.testing.expectEqual(captured_copies + 2, copies);
+    try lua.reset(&checkpoint);
+    var typed = try lua.registerTyped("increment", struct {
+        fn call(p: *ScopedPayload) void {
+            p.value += 2;
+        }
+    }.call);
+    defer typed.deinit();
+    try lua.setGlobal("increment", typed);
+    try lua.doString("increment(u); assert(u:valueOf()==3)", .{});
+}
+
+test "scoped access blocks snapshots and restores a fresh resource after finalization" {
+    var copies: usize = 0;
+    var finals: usize = 0;
+    var disposals: usize = 0;
+    var fail = false;
+    var lua = try api.State.init(a, .{});
+    defer lua.deinit();
+    var ud = try lua.newUserdata(ScopedPayload, .{ .copies = &copies, .finals = &finals, .disposals = &disposals, .fail = &fail }, .{ .finalizer = ScopedPayload.finalize, .snapshot = .{ .copy = ScopedPayload.copy, .dispose = ScopedPayload.dispose, .tracking = .scoped } });
+    try lua.setGlobal("u", ud);
+    var checkpoint = try lua.snapshot(a);
+    defer checkpoint.deinit();
+    const Context = struct { lua: *api.State, checkpoint: *const api.Snapshot };
+    try ud.withRead(Context{ .lua = &lua, .checkpoint = &checkpoint }, struct {
+        fn call(_: *const ScopedPayload, ctx: Context) !void {
+            try std.testing.expectError(error.SnapshotBusy, ctx.lua.snapshot(a));
+            try std.testing.expectError(error.SnapshotBusy, ctx.lua.reset(ctx.checkpoint));
+        }
+    }.call);
+    ud.deinit();
+    for (0..3) |iteration| {
+        try lua.setGlobal("u", null);
+        try lua.collect();
+        try std.testing.expectEqual(iteration + 1, finals);
+        try lua.reset(&checkpoint);
+        var restored = try lua.getGlobal("u", api.Userdata(ScopedPayload));
+        try std.testing.expectEqual(@as(i64, 1), try restored.withRead({}, ScopedPayload.read));
+        restored.deinit();
+    }
+}
+
+test "first table write allocation failures leave baseline storage and handles intact" {
+    var offset: usize = 0;
+    while (true) : (offset += 1) {
+        var failing = std.testing.FailingAllocator.init(a, .{});
+        var lua = try api.State.init(failing.allocator(), .{ .stdlib = .none });
+        defer lua.deinit();
+        var table = try lua.createTable(.{});
+        defer table.deinit();
+        try table.set(1, 7);
+        try table.set("key", 8);
+        var checkpoint = try lua.snapshot(a);
+        defer checkpoint.deinit();
+        const raw = lua.raw_state.rootedValue(table.ref.index).table;
+        const original = raw.array.items.ptr;
+        failing.fail_index = failing.alloc_index + offset;
+        const result = raw.set(lua.allocator(), .{ .integer = 1 }, .{ .integer = 9 });
+        failing.fail_index = std.math.maxInt(usize);
+        if (result) |_| {
+            try lua.reset(&checkpoint);
+            try std.testing.expectEqual(@as(i64, 7), raw.get(.{ .integer = 1 }).integer);
+            break;
+        } else |err| {
+            try std.testing.expectEqual(error.OutOfMemory, err);
+            try std.testing.expectEqual(original, raw.array.items.ptr);
+            try std.testing.expectEqual(@as(i64, 7), try table.get(1, i64));
+            try std.testing.expectEqual(@as(usize, 0), lua.raw_state.rollback.?.dirty.items.len);
+        }
+    }
+}
+
+test "snapshot freezes borrowed input and memory file bytes on the source" {
+    var input = [_]u8{ 'a', '\n' };
+    var contents = [_]u8{ 'b', '\n' };
+    var lua = try api.State.init(a, .{ .stdlib = .full, .capabilities = .{ .io = .{ .stdin = &input }, .filesystem = .{ .memory = &.{.{ .path = "data", .contents = &contents }} } } });
+    defer lua.deinit();
+    var checkpoint = try lua.snapshot(a);
+    defer checkpoint.deinit();
+    input[0] = 'x';
+    contents[0] = 'y';
+    for (0..2) |_| {
+        try lua.reset(&checkpoint);
+        try lua.doString("assert(io.read('l')=='a'); local f=assert(io.open('data')); assert(f:read('l')=='b'); f:close()", .{});
+    }
+}
+
+test "incremental module loads and native coroutine trampolines are reclaimed" {
+    var lua = try api.State.init(a, .{ .stdlib = .full });
+    defer lua.deinit();
+    try lua.addMemoryFile("fresh.lua", "return {value=42}");
+    try lua.doString("co=coroutine.create(assert)", .{});
+    var checkpoint = try lua.snapshot(a);
+    defer checkpoint.deinit();
+    const sources = lua.raw_state.source_allocations.items.len;
+    const protos = lua.raw_state.proto_allocations.items.len;
+    for (0..3) |_| {
+        try lua.doString("assert(require('fresh').value==42); assert(coroutine.resume(co,true))", .{});
+        try lua.reset(&checkpoint);
+        try std.testing.expectEqual(sources, lua.raw_state.source_allocations.items.len);
+        try std.testing.expectEqual(protos, lua.raw_state.proto_allocations.items.len);
+    }
+}
+
+test "scoped borrowed pointers are rejected and active scopes remain GC roots" {
+    var copies: usize = 0;
+    var finals: usize = 0;
+    var disposals: usize = 0;
+    var fail = false;
+    var payload = ScopedPayload{ .copies = &copies, .finals = &finals, .disposals = &disposals, .fail = &fail };
+    var lua = try api.State.init(a, .{});
+    defer lua.deinit();
+    try std.testing.expectError(error.ScopedAccessRequiresOwnedUserdata, lua.newUserdataPtr(ScopedPayload, &payload, .{ .snapshot = .{ .copy = ScopedPayload.copy, .dispose = ScopedPayload.dispose, .tracking = .scoped } }));
+    var ud = try lua.newUserdata(ScopedPayload, payload, .{ .finalizer = ScopedPayload.finalize, .snapshot = .{ .copy = ScopedPayload.copy, .dispose = ScopedPayload.dispose, .tracking = .scoped } });
+    const Context = struct { lua: *api.State, handle: *api.Userdata(ScopedPayload) };
+    try ud.withRead(Context{ .lua = &lua, .handle = &ud }, struct {
+        fn call(value: *const ScopedPayload, ctx: Context) !void {
+            try std.testing.expectError(error.ScopedAccessConflict, ctx.handle.withMut(@as(i64, 1), ScopedPayload.mutate));
+            ctx.handle.deinit();
+            try ctx.lua.collect();
+            try std.testing.expectEqual(@as(i64, 1), value.value);
+            try std.testing.expectEqual(@as(usize, 0), value.finals.*);
+        }
+    }.call);
+    try lua.collect();
+    try std.testing.expectEqual(@as(usize, 1), finals);
+}
+
+test "incremental reset agrees with graph copy across weak GC and debug vararg writes" {
+    var lua = try api.State.init(a, .{ .stdlib = .full });
+    defer lua.deinit();
+    try lua.doString(
+        \\collectgarbage('stop'); weak=setmetatable({}, {__mode='kv'})
+        \\do local k={}; weak[k]={} end
+        \\co=coroutine.create(function(...) local value=7; coroutine.yield(); return value,... end)
+        \\assert(coroutine.resume(co,11,12))
+    , .{});
+    var checkpoint = try lua.snapshot(a);
+    defer checkpoint.deinit();
+    const operations =
+        \\assert(debug.setlocal(co,1,-1,99)); collectgarbage(); assert(next(weak)==nil)
+        \\local ok, v, a, b=coroutine.resume(co); assert(ok); print(v,a,b)
+    ;
+    for (0..3) |_| {
+        var copied = try checkpoint.clone(a);
+        defer copied.deinit();
+        try lua.doString(operations, .{});
+        try copied.doString(operations, .{});
+        try std.testing.expectEqualStrings(copied.raw_state.stdout.items, lua.raw_state.stdout.items);
+        try lua.reset(&checkpoint);
+        try std.testing.expectEqual(@as(usize, 0), lua.raw_state.stdout.items.len);
+    }
+}
+
+test "journal clone first-write coroutine and GC allocation failures release all storage" {
+    var source = try api.State.init(a, .{ .stdlib = .full });
+    defer source.deinit();
+    try source.doString(
+        \\collectgarbage('stop'); t={1,2,3}; weak=setmetatable({}, {__mode='v'}); weak[1]={}
+        \\co=coroutine.create(function(...) local saved={...}; coroutine.yield(); local f=function() return saved[1] end; t[1]=99; return f() end)
+        \\assert(coroutine.resume(co,5))
+    , .{});
+    var checkpoint = try source.snapshot(a);
+    defer checkpoint.deinit();
+    try std.testing.checkAllAllocationFailures(a, struct {
+        fn run(allocator: std.mem.Allocator, image: *const api.Snapshot) !void {
+            var worker = try image.clone(allocator);
+            defer worker.deinit();
+            const co = worker.raw_state.getGlobal("co").thread;
+            const result = try worker.raw_state.resumeCoroutine(co, &.{});
+            switch (result) {
+                .success => |values| worker.allocator().free(values),
+                .failure => return error.UnexpectedCoroutineFailure,
+            }
+            try worker.raw_state.collectGarbageWithFinalizers(null);
+            try worker.reset(image);
+        }
+    }.run, .{&checkpoint});
+}
+
+test "recapture retains error names when callback containers detach" {
+    var lua = try api.State.init(a, .{});
+    defer lua.deinit();
+    var callback = try lua.registerTyped("expected_bool", struct {
+        fn call(_: bool) void {}
+    }.call);
+    defer callback.deinit();
+    var first = try lua.snapshot(a);
+    defer first.deinit();
+    try std.testing.expectError(error.LuaError, callback.call(.{@as(i64, 1)}, void));
+    var extra = try lua.registerTyped("another", struct {
+        fn call() void {}
+    }.call);
+    defer extra.deinit();
+    var second = try lua.snapshot(a);
+    defer second.deinit();
+    const message = try lua.errorMessage();
+    defer lua.allocator().free(message);
+    try std.testing.expect(std.mem.indexOf(u8, message, "expected_bool") != null);
+    try lua.reset(&second);
+    const restored = try lua.errorMessage();
+    defer lua.allocator().free(restored);
+    try std.testing.expectEqualStrings(message, restored);
 }

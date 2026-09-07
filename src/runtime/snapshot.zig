@@ -6,9 +6,13 @@ const State = @import("state.zig").State;
 const Proto = @import("../compile/proto.zig").Proto;
 const static_strings = @import("../stdlib/static_strings.zig");
 
-pub fn checkIdle(source: *const State) !void {
-    if (source.current_thread != null or source.active_api_callback != null or source.is_collecting or source.snapshot_busy) return error.SnapshotBusy;
+pub fn checkIdleFast(source: *const State) !void {
+    if (source.execution_depth != 0 or source.userdata_scope != null or source.current_thread != null or source.active_api_callback != null or source.is_collecting or source.snapshot_busy) return error.SnapshotBusy;
     if (source.c_closure_dispatch != null or source.c_closure_resume_dispatch != null or source.c_debug_hook_dispatch != null or source.c_closure_user_data != null or source.c_closure_allocations.items.len != 0 or source.c_upvalue_allocations.items.len != 0) return error.SnapshotUnsupported;
+}
+
+pub fn checkIdle(source: *const State) !void {
+    try checkIdleFast(source);
     for (source.thread_allocations.items) |thread| {
         if (thread.pending_c_continuation) return error.SnapshotUnsupported;
         if (thread.status == .running or thread.status == .normal or thread.hook_running or thread.hook_transfer_values.len != 0) return error.SnapshotBusy;
@@ -18,6 +22,11 @@ pub fn checkIdle(source: *const State) !void {
 /// `error_root` is the only host API root retained. All application handles must
 /// be reacquired. The caller owns destination allocator infrastructure.
 pub fn copy(source: *const State, allocator: std.mem.Allocator, lifetime: ?*types.AllocatorLifetime, error_root: ?usize) !State {
+    return copyWithProtos(source, allocator, lifetime, error_root, false);
+}
+
+/// Caller must retain the immutable source image until destination destruction.
+pub fn copyWithProtos(source: *const State, allocator: std.mem.Allocator, lifetime: ?*types.AllocatorLifetime, error_root: ?usize, borrow_protos: bool) !State {
     try checkIdle(source);
     @constCast(source).snapshot_busy = true;
     defer @constCast(source).snapshot_busy = false;
@@ -30,7 +39,7 @@ pub fn copy(source: *const State, allocator: std.mem.Allocator, lifetime: ?*type
         .options = source.options,
     };
     errdefer destination.discard();
-    var copier = Copier{ .destination = &destination, .map = std.AutoHashMap(usize, usize).init(allocator) };
+    var copier = Copier{ .destination = &destination, .borrow_protos = borrow_protos, .map = std.AutoHashMap(usize, usize).init(allocator) };
     defer copier.map.deinit();
     try copier.populate(source, error_root);
     return destination;
@@ -38,6 +47,7 @@ pub fn copy(source: *const State, allocator: std.mem.Allocator, lifetime: ?*type
 
 const Copier = struct {
     destination: *State,
+    borrow_protos: bool = false,
     map: std.AutoHashMap(usize, usize),
 
     fn mapped(self: *Copier, pointer: anytype) !@TypeOf(pointer) {
@@ -126,6 +136,11 @@ const Copier = struct {
         return result;
     }
 
+    fn borrowedProto(self: *Copier, old: *Proto) anyerror!void {
+        try self.map.put(@intFromPtr(old), @intFromPtr(old));
+        for (old.children.items) |child| try self.borrowedProto(child);
+    }
+
     fn proto(self: *Copier, old: *const Proto) anyerror!*Proto {
         const a = self.destination.allocator;
         const new = try a.create(Proto);
@@ -167,7 +182,13 @@ const Copier = struct {
         }
         for (source.source_allocations.items) |bytes| _ = try self.text(bytes);
         try d.proto_allocations.ensureTotalCapacity(a, source.proto_allocations.items.len);
-        for (source.proto_allocations.items) |old| d.proto_allocations.appendAssumeCapacity(try self.proto(old));
+        for (source.proto_allocations.items) |old| {
+            if (self.borrow_protos) {
+                try self.borrowedProto(old);
+                d.proto_allocations.appendAssumeCapacity(old);
+                d.borrowed_proto_count += 1;
+            } else d.proto_allocations.appendAssumeCapacity(try self.proto(old));
+        }
         try self.shells(types.Table, source.table_allocations.items, &d.table_allocations, .{ .entry_index = types.TableEntryIndex.init(a) });
         try self.shells(types.Thread, source.thread_allocations.items, &d.thread_allocations, .{});
         try self.shells(types.Closure, source.closure_allocations.items, &d.closure_allocations, .{ .proto = undefined, .upvalues = &.{} });
@@ -341,17 +362,17 @@ comptime {
     @setEvalBranchQuota(1000000);
     review(State, .{
         .external = "allocator allocator_lifetime options",
-        .rebuilt = "strings string_allocation_index table_allocation_index gc_next_total gc_known_total api_roots",
+        .rebuilt = "borrowed_proto_count strings string_allocation_index table_allocation_index gc_next_total gc_known_total api_roots",
         .remapped = "global_table table_metatable_head table_finalizer_head table_pending_finalizer_head string_metatable number_metatable boolean_metatable nil_metatable file_metatable zerde_null zerde_array_metatable zerde_object_metatable last_error",
         .copied = "string_allocations table_allocations userdata_allocations closure_allocations upvalue_allocations thread_allocations proto_allocations source_allocations stdout stderr table_metatable_count stdin_pos last_error_in_close traceback_error_in_close gc_running gc_mode gc_params random_state instruction_count",
         .unsupported = "c_closure_allocations c_upvalue_allocations c_closure_dispatch c_closure_resume_dispatch c_debug_hook_dispatch c_closure_user_data",
-        .transient = "snapshot_busy discarding current_thread api_callback_dispatch api_callback_user_data active_api_callback coroutine_close_depth is_collecting collect_after_instruction mark_all_stack_registers conservative_gc_depth",
+        .transient = "execution_depth userdata_scope rollback snapshot_busy discarding current_thread api_callback_dispatch api_callback_user_data active_api_callback coroutine_close_depth is_collecting collect_after_instruction mark_all_stack_registers conservative_gc_depth",
     });
     review(types.Thread, .{
         .copied = "exposed stack frames yield_values protected_continuations generic_for_continuations tail_call_continuations call_one_continuations hook_call hook_line hook_return hook_count hook_count_remaining pending_yield_hook_return last_result_base last_result_count last_transfer_base last_transfer_count yield_result_base yield_result_count pending_unwind_resume_frame_count pending_unwind_target_frame_count started is_main closing status",
         .remapped = "open_upvalues hook close_error_value error_traceback pending_unwind_error entry",
         .unsupported = "pending_c_continuation",
-        .transient = "marked hook_running hook_return_name hook_level2_func hook_transfer_index_base hook_transfer_stack_base hook_transfer_count hook_transfer_values next_call_name next_call_namewhat native_call_depth traceback_native_name protected_close_depth resume_parent",
+        .transient = "rollback marked hook_running hook_return_name hook_level2_func hook_transfer_index_base hook_transfer_stack_base hook_transfer_count hook_transfer_values next_call_name next_call_namewhat native_call_depth traceback_native_name protected_close_depth resume_parent",
     });
     review(types.CallFrame, .{
         .copied = "base pc return_start return_count varargs last_hook_line debug_name_override debug_namewhat_override is_tail_call pending_returns",
@@ -362,23 +383,23 @@ comptime {
         .copied = "array entries counts_for_gc_count finalizer_registered",
         .remapped = "metatable metatable_prev metatable_next finalizer_next",
         .rebuilt = "entry_index",
-        .transient = "marked",
+        .transient = "rollback marked",
     });
     review(types.Closure, .{
         .remapped = "proto upvalues constants",
         .copied = "stripped_debug",
-        .transient = "marked",
+        .transient = "rollback marked",
     });
     review(types.Upvalue, .{
         .remapped = "owner closed next",
         .copied = "stack_index is_open",
-        .transient = "marked",
+        .transient = "rollback marked",
     });
     review(types.Userdata, .{
         .external = "ptr type_id finalizer finalizer_data deinit_fn",
         .copied = "type_name finalized",
         .remapped = "metatable payload",
-        .transient = "marked",
+        .transient = "scope_readers scope_writers rollback marked",
     });
     review(Proto, .{
         .rebuilt = "allocator arena",
@@ -393,7 +414,7 @@ comptime {
     review(types.UserdataPayload, .{
         .external = "allocator lifetime ptr finalizer finalizer_data dispose snapshot_copy snapshot_dispose",
         .rebuilt = "references is_snapshot_copy",
-        .copied = "finalized",
+        .copied = "finalized snapshot_tracking",
     });
     review(types.CClosure, .{
         .unsupported = "function_id upvalues marked",

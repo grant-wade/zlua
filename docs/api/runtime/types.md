@@ -31,6 +31,7 @@
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
 - [runtime.state](../runtime/state.md)
+- [runtime.rollback](../runtime/rollback.md)
 - [runtime.call](../runtime/call.md)
 - [runtime.coroutine](../runtime/coroutine.md)
 - [runtime.debug](../runtime/debug.md)
@@ -112,6 +113,7 @@
 - [Upvalue](#type-upvalue)
 - [TableEntry](#type-tableentry)
 - [Table](#type-table)
+- [UserdataScope](#type-userdatascope)
 - [Userdata](#type-userdata)
 - [Thread](#type-thread)
 - [ThreadStatus](#type-threadstatus)
@@ -461,6 +463,7 @@ pub const UserdataPayload = struct {
     dispose: ?UserdataDeinit,
     finalized: bool = false,
     snapshot_copy: ?UserdataSnapshotCopy = null,
+    snapshot_tracking: enum { eager, scoped } = .eager,
     snapshot_dispose: ?UserdataDeinit = null,
     is_snapshot_copy: bool = false,
 };
@@ -997,6 +1000,7 @@ pub const CoroutineResumeResult = union(enum) {
 
 ```zig
 pub const Closure = struct {
+    rollback: ?*@import("rollback.zig").Record(Closure) = null,
     proto: *const proto_mod.Proto,
     upvalues: []*Upvalue,
     constants: ?[]?Value = null,
@@ -1034,6 +1038,7 @@ pub const CUpvalue = struct {
 
 ```zig
 pub const Upvalue = struct {
+    rollback: ?*@import("rollback.zig").Record(Upvalue) = null,
     owner: *Thread,
     stack_index: usize,
     closed: Value = .nil,
@@ -1070,6 +1075,7 @@ References: [`Value`](#type-value)
 
 ```zig
 pub const Table = struct {
+    rollback: ?*@import("rollback.zig").Record(Table) = null,
     array: std.ArrayList(Value) = .empty,
     entries: std.ArrayList(TableEntry) = .empty,
     entry_index: TableEntryIndex,
@@ -1187,12 +1193,27 @@ pub fn removeEntryAt(self: *Table, index: usize) void
 
 References: [`Table`](#type-table)
 
+<a id="type-userdatascope"></a>
+
+## UserdataScope
+
+```zig
+pub const UserdataScope = struct {
+    userdata: *Userdata,
+    readonly: bool,
+    previous: ?*UserdataScope,
+};
+```
+
 <a id="type-userdata"></a>
 
 ## Userdata
 
 ```zig
 pub const Userdata = struct {
+    scope_readers: usize = 0,
+    scope_writers: usize = 0,
+    rollback: ?*@import("rollback.zig").Record(Userdata) = null,
     payload: ?*UserdataPayload = null,
     ptr: *anyopaque,
     type_id: usize,
@@ -1212,6 +1233,7 @@ pub const Userdata = struct {
 
 ```zig
 pub const Thread = struct {
+    rollback: ?*@import("rollback.zig").Record(Thread) = null,
     /// A Lua value has exposed this thread beyond its current host call.
     exposed: bool = false,
     stack: std.ArrayList(Value) = .empty,

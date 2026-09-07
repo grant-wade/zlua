@@ -411,6 +411,7 @@ pub const UserdataPayload = struct {
     dispose: ?UserdataDeinit,
     finalized: bool = false,
     snapshot_copy: ?UserdataSnapshotCopy = null,
+    snapshot_tracking: enum { eager, scoped } = .eager,
     snapshot_dispose: ?UserdataDeinit = null,
     is_snapshot_copy: bool = false,
 
@@ -668,6 +669,7 @@ pub const CoroutineResumeResult = union(enum) {
 };
 
 pub const Closure = struct {
+    rollback: ?*@import("rollback.zig").Record(Closure) = null,
     proto: *const proto_mod.Proto,
     upvalues: []*Upvalue,
     constants: ?[]?Value = null,
@@ -687,6 +689,7 @@ pub const CUpvalue = struct {
 };
 
 pub const Upvalue = struct {
+    rollback: ?*@import("rollback.zig").Record(Upvalue) = null,
     owner: *Thread,
     stack_index: usize,
     closed: Value = .nil,
@@ -713,6 +716,7 @@ const ValueHashContext = struct {
 };
 
 pub const Table = struct {
+    rollback: ?*@import("rollback.zig").Record(Table) = null,
     array: std.ArrayList(Value) = .empty,
     entries: std.ArrayList(TableEntry) = .empty,
     entry_index: TableEntryIndex,
@@ -749,6 +753,7 @@ pub const Table = struct {
     }
 
     pub fn set(self: *Table, allocator: std.mem.Allocator, key: Value, value: Value) !void {
+        try @import("rollback.zig").tableWritable(self);
         if (value_mod.arrayIndex(key)) |index| {
             if (index <= self.array.items.len) {
                 self.array.items[index - 1] = value;
@@ -784,6 +789,7 @@ pub const Table = struct {
     }
 
     pub fn setExistingNonNil(self: *Table, key: Value, value: Value) bool {
+        if (self.rollback) |record| if (!record.header.detached) return false;
         if (value_mod.arrayIndex(key)) |index| {
             if (index <= self.array.items.len and self.array.items[index - 1] != .nil) {
                 self.array.items[index - 1] = value;
@@ -858,7 +864,16 @@ pub const Table = struct {
     }
 };
 
+pub const UserdataScope = struct {
+    userdata: *Userdata,
+    readonly: bool,
+    previous: ?*UserdataScope,
+};
+
 pub const Userdata = struct {
+    scope_readers: usize = 0,
+    scope_writers: usize = 0,
+    rollback: ?*@import("rollback.zig").Record(Userdata) = null,
     payload: ?*UserdataPayload = null,
     ptr: *anyopaque,
     type_id: usize,
@@ -872,6 +887,7 @@ pub const Userdata = struct {
 };
 
 pub const Thread = struct {
+    rollback: ?*@import("rollback.zig").Record(Thread) = null,
     /// A Lua value has exposed this thread beyond its current host call.
     exposed: bool = false,
     stack: std.ArrayList(Value) = .empty,
