@@ -214,20 +214,17 @@ test "snapshot weak entries finalizer order and host roots are isolated" {
     try lua.doString("collectgarbage(); assert(next(weak) == nil)", .{});
 }
 
-test "snapshot rejects execution and C compatibility state" {
+test "snapshot rejects execution" {
     const Host = struct {
         fn busy(ctx: *api.Context) !void {
             try std.testing.expectError(error.SnapshotBusy, ctx.state().snapshot(a));
         }
-        fn c(_: *@import("../runtime.zig").CClosureContext) !void {}
     };
     var lua = try api.State.init(a, .{});
     defer lua.deinit();
     var cb = try lua.register("busy", Host.busy);
     defer cb.deinit();
     try cb.call(.{}, void);
-    lua.raw_state.c_closure_dispatch = Host.c;
-    try std.testing.expectError(error.SnapshotUnsupported, lua.snapshot(a));
 }
 
 fn allocationFixture() !api.State {

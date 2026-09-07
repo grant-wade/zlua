@@ -20,30 +20,30 @@ const WorkerReport = struct {
 pub fn collect(allocator: std.mem.Allocator, io: std.Io, options: Options, suite: *results.Suite) !void {
     const iterations = options.iterations orelse 1000;
     const warmup = options.warmup orelse 100;
-    for ([_][]const u8{ "zlua-c", "clua" }, [_]?[]const u8{ options.zlua_c, options.clua_c }) |engine, executable| {
-        for ([_][]const u8{ "full", "base+host-3" }, 0..) |name, host| {
-            if (!options.matches("startup", engine, name)) continue;
-            if (options.list) {
-                try suite.addCase("startup", engine, name, "C API creation, libraries, and first chunk");
-                continue;
-            }
-            collectCase(allocator, io, options, suite, engine, executable, name, host) catch |err| {
-                if (err == error.OutOfMemory) return err;
-                try suite.add(.{
-                    .group = "startup",
-                    .engine = engine,
-                    .build_mode = options.c_build,
-                    .executable = executable,
-                    .case = name,
-                    .operation = "worker",
-                    .scope = "In-process phases; worker failed",
-                    .iterations = iterations,
-                    .warmup = warmup,
-                    .status = .failed,
-                    .reason = @errorName(err),
-                });
-            };
+    const engine = "clua";
+    const executable = options.clua_c;
+    for ([_][]const u8{ "full", "base+host-3" }, 0..) |name, host| {
+        if (!options.matches("startup", engine, name)) continue;
+        if (options.list) {
+            try suite.addCase("startup", engine, name, "Upstream Lua creation, libraries, and first chunk");
+            continue;
         }
+        collectCase(allocator, io, options, suite, engine, executable, name, host) catch |err| {
+            if (err == error.OutOfMemory) return err;
+            try suite.add(.{
+                .group = "startup",
+                .engine = engine,
+                .build_mode = options.c_build,
+                .executable = executable,
+                .case = name,
+                .operation = "worker",
+                .scope = "In-process phases; worker failed",
+                .iterations = iterations,
+                .warmup = warmup,
+                .status = .failed,
+                .reason = @errorName(err),
+            });
+        };
     }
 }
 

@@ -72,9 +72,8 @@
 - [testing.bench.allocation](../testing/bench/allocation.md)
 - [testing.bench.c_startup](../testing/bench/c_startup.md)
 - [testing.bench.snapshots](../testing/bench/snapshots.md)
-- [testing.c_api_runner](../testing/c_api_runner.md)
-- [testing.fixtures](../testing/fixtures.md)
 - [testing.diff_runner](../testing/diff_runner.md)
+- [testing.fixtures](../testing/fixtures.md)
 - [testing.expected_failures](../testing/expected_failures.md)
 - [testing.metadata](../testing/metadata.md)
 - [testing.normalizer](../testing/normalizer.md)
@@ -101,13 +100,6 @@
 - [UserdataDeinit](#alias-userdatadeinit)
 - [ProtectedCallResult](#alias-protectedcallresult)
 - [ApiCallbackDispatchFn](#alias-apicallbackdispatchfn)
-- [CClosureDispatchFn](#alias-cclosuredispatchfn)
-- [CClosureResumeDispatchFn](#alias-cclosureresumedispatchfn)
-- [CDebugHookDispatchFn](#alias-cdebughookdispatchfn)
-- [DebugHookEvent](#alias-debughookevent)
-- [CDebugHookContext](#alias-cdebughookcontext)
-- [CClosureContext](#alias-cclosurecontext)
-- [CClosureResumeContext](#alias-cclosureresumecontext)
 - [ApiCallbackContext](#alias-apicallbackcontext)
 - [RuntimeErrorPayload](#alias-runtimeerrorpayload)
 - [ProtectedCallContext](#alias-protectedcallcontext)
@@ -120,8 +112,6 @@
 - [CallOneContinuation](#alias-callonecontinuation)
 - [CoroutineResumeResult](#alias-coroutineresumeresult)
 - [Closure](#alias-closure)
-- [CClosure](#alias-cclosure)
-- [CUpvalue](#alias-cupvalue)
 - [Upvalue](#alias-upvalue)
 - [TableEntry](#alias-tableentry)
 - [TableEntryIndex](#alias-tableentryindex)
@@ -392,62 +382,6 @@ pub const ProtectedCallResult = types.ProtectedCallResult;
 pub const ApiCallbackDispatchFn = types.ApiCallbackDispatchFn;
 ```
 
-<a id="alias-cclosuredispatchfn"></a>
-
-## CClosureDispatchFn
-
-```zig
-pub const CClosureDispatchFn = types.CClosureDispatchFn;
-```
-
-<a id="alias-cclosureresumedispatchfn"></a>
-
-## CClosureResumeDispatchFn
-
-```zig
-pub const CClosureResumeDispatchFn = types.CClosureResumeDispatchFn;
-```
-
-<a id="alias-cdebughookdispatchfn"></a>
-
-## CDebugHookDispatchFn
-
-```zig
-pub const CDebugHookDispatchFn = types.CDebugHookDispatchFn;
-```
-
-<a id="alias-debughookevent"></a>
-
-## DebugHookEvent
-
-```zig
-pub const DebugHookEvent = types.DebugHookEvent;
-```
-
-<a id="alias-cdebughookcontext"></a>
-
-## CDebugHookContext
-
-```zig
-pub const CDebugHookContext = types.CDebugHookContext;
-```
-
-<a id="alias-cclosurecontext"></a>
-
-## CClosureContext
-
-```zig
-pub const CClosureContext = types.CClosureContext;
-```
-
-<a id="alias-cclosureresumecontext"></a>
-
-## CClosureResumeContext
-
-```zig
-pub const CClosureResumeContext = types.CClosureResumeContext;
-```
-
 <a id="alias-apicallbackcontext"></a>
 
 ## ApiCallbackContext
@@ -542,22 +476,6 @@ pub const CoroutineResumeResult = types.CoroutineResumeResult;
 
 ```zig
 pub const Closure = types.Closure;
-```
-
-<a id="alias-cclosure"></a>
-
-## CClosure
-
-```zig
-pub const CClosure = types.CClosure;
-```
-
-<a id="alias-cupvalue"></a>
-
-## CUpvalue
-
-```zig
-pub const CUpvalue = types.CUpvalue;
 ```
 
 <a id="alias-upvalue"></a>

@@ -13,7 +13,6 @@ zig build examples                # compile and run embedding examples
 just diff path/to/fixture.lua
 just extensions tests/extensions/string
 just official calls
-just c-api tests/c-api/stack
 just bench --category table
 just bench
 ```
@@ -34,7 +33,6 @@ Most recipes wrap a similarly named build step:
 | `just diff [args...]` | Run differential tests with `--debug-errors`. |
 | `just extensions [args...]` | Run zlua extension fixtures. |
 | `just official [args...]` | Run official tests with debug errors and a 256 MiB Linux child cap. |
-| `just c-api [args...]` | Run C API fixtures. |
 | `just bench [args...]` | Run the full benchmark suite, or selected cases. |
 | `just fmt` | Format top-level source, testing, build, and example files. |
 | `just clean` | Remove `zig-out/` and `.zig-cache/`. |
@@ -70,10 +68,7 @@ Example filters accept a key, executable name, path, basename, or basename witho
 | `test-official` | Run the complete official-suite dashboard. |
 | `run-test-official -- [args...]` | Run selected official tests or modes. |
 | `bench -- [args...]` | Run all benchmark groups sequentially with one combined report. |
-| `c-api` | Install `libzlua-c.a`, Lua headers, and the C fixture harness. |
-| `test-c-api -- [args...]` | Compile and compare C fixtures. |
-| `ci-c-api` | Build and test the C API layer. |
-| `ci` | Run tests, examples, differential, extension, official, and C API checks. |
+| `ci` | Run tests, examples, differential, extension, and official checks. |
 
 ## zlua CLI
 
@@ -188,26 +183,6 @@ zig build bench -- startup --iterations=1000 --warmup=100
 zig build bench -- callbacks --verbose
 zig build bench -- --json /tmp/bench.json
 ```
-
-### C API
-
-```sh
-zig build test-c-api -- [options] [path]
-just c-api [options] [path]
-```
-
-| Option | Meaning |
-| --- | --- |
-| `path` | C fixture or directory; defaults to `tests/c-api`. |
-| `--zig PATH` | Zig executable used to compile fixtures. |
-| `--clua-include PATH`, `--clua-lib PATH` | Lua 5.5 headers and static library. |
-| `--zlua-include PATH`, `--zlua-lib PATH` | zlua headers and static library. |
-| `--status PATH` | Symbol inventory; defaults to `tests/fixtures/c_api_status.toml`. |
-| `--timeout-ms=N` | Run timeout; default `5000`. |
-| `--compile-timeout-ms=N` | Compile timeout; default `60000`. |
-| `--show-build` | Print compile and link details. |
-
-Without both library paths, the standalone harness validates the inventory and skips execution. The build step supplies all paths automatically.
 
 ## Dependency Environment
 
