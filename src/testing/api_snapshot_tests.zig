@@ -1290,3 +1290,68 @@ test "simultaneous final hookless payload releases finalize dispose and destroy 
     try std.testing.expectEqual(@as(usize, 64), counters.disposals.load(.acquire));
     try std.testing.expectEqual(@as(usize, 64), destroyed.load(.acquire));
 }
+
+test "snapshot and reset preserve suspended userdata pairs normalization and closing" {
+    var lua = try api.State.init(a, .{ .stdlib = .full });
+    defer lua.deinit();
+    var userdata = try lua.newUserdata(u8, 0, .{});
+    defer userdata.deinit();
+    try lua.setGlobal("userdata", userdata);
+    try lua.doString(
+        \\closed = 0
+        \\getmetatable(userdata).__pairs = function(self)
+        \\  local closer <close> = setmetatable({}, {__close = function() closed = closed + 1 end})
+        \\  local value = coroutine.yield('setup')
+        \\  assert(self == userdata)
+        \\  return next, {false, value}, nil, setmetatable({}, {__close = function() closed = closed + 10 end}), 'extra'
+        \\end
+        \\co = coroutine.create(function()
+        \\  local n = 0
+        \\  for k, v in pairs(userdata) do
+        \\    n = n + 1
+        \\    if k == 1 then assert(v == false) else assert(v == 42) end
+        \\  end
+        \\  return n
+        \\end)
+        \\tail = coroutine.create(function() return pairs(userdata) end)
+        \\assert(coroutine.resume(co))
+        \\assert(coroutine.resume(tail))
+        \\native = coroutine.create(function() return pairs(setmetatable({}, {__pairs = coroutine.yield})) end)
+        \\assert(coroutine.resume(native))
+        \\protected = coroutine.create(function()
+        \\  return pcall(pairs, setmetatable({}, {__pairs = pcall, __call = function()
+        \\    coroutine.yield('protected'); return 1, 2, 3, 4, 5
+        \\  end}))
+        \\end)
+        \\assert(coroutine.resume(protected))
+    , .{});
+    var snapshot = try lua.snapshot(a);
+    defer snapshot.deinit();
+    var worker = try snapshot.newState(a);
+    defer worker.deinit();
+    for ([_]*api.State{ &lua, &worker }) |state| {
+        for (0..3) |_| {
+            try state.doString(
+                \\assert(closed == 0)
+                \\collectgarbage('collect')
+                \\local ok, n = coroutine.resume(co, 42)
+                \\assert(ok and n == 2 and closed == 11)
+                \\local result = table.pack(coroutine.resume(tail, 42))
+                \\assert(result.n == 5 and result[1] and result[2] == next and closed == 12)
+                \\result = table.pack(coroutine.resume(native, 1, 2))
+                \\assert(result.n == 5 and result[1] and result[2] == 1 and result[3] == 2 and result[4] == nil and result[5] == nil)
+                \\result = table.pack(coroutine.resume(protected))
+                \\assert(result.n == 6 and result[1] and result[2] and result[3] and result[4] == 1 and result[5] == 2 and result[6] == 3)
+            , .{});
+            try state.reset();
+            try state.doString(
+                \\local ok, err = coroutine.close(co); assert(ok, 'co: ' .. tostring(err))
+                \\local ok, err = coroutine.close(tail); assert(ok, 'tail: ' .. tostring(err))
+                \\local ok, err = coroutine.close(native); assert(ok, 'native: ' .. tostring(err))
+                \\assert(coroutine.close(protected))
+                \\assert(closed == 2, 'closed=' .. closed)
+            , .{});
+            try state.reset();
+        }
+    }
+}

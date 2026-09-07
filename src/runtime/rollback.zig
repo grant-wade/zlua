@@ -106,7 +106,7 @@ pub fn userdataWritable(userdata: *types.Userdata) !void {
     record.header.detached = true;
 }
 
-const thread_lists = .{ "stack", "frames", "yield_values", "protected_continuations", "generic_for_continuations", "tail_call_continuations", "call_one_continuations" };
+const thread_lists = .{ "stack", "frames", "yield_values", "protected_continuations", "generic_for_continuations", "pairs_continuations", "tail_call_continuations", "call_one_continuations" };
 const registries = .{ "string_allocations", "table_allocations", "userdata_allocations", "closure_allocations", "upvalue_allocations", "thread_allocations", "proto_allocations", "source_allocations" };
 const object_lists = .{ "table_allocations", "closure_allocations", "upvalue_allocations", "thread_allocations", "userdata_allocations" };
 const object_types = .{ types.Table, types.Closure, types.Upvalue, types.Thread, types.Userdata };

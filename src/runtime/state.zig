@@ -466,6 +466,7 @@ pub const State = struct {
                 try self.closeFramesTo(thread, target, error_value);
                 return self.throwValue(error_value);
             }
+            if (try self.completeReadyPairsContinuation(thread)) continue;
             if (try self.completeReadyCallOneContinuation(thread)) continue;
             if (try self.completeReadyProtectedContinuation(thread)) continue;
             if (try self.completeReadyTailCallContinuation(thread)) continue;
@@ -608,7 +609,7 @@ pub const State = struct {
                 .eq => |op| {
                     const lhs = stack[base + op.left];
                     const rhs = stack[base + op.right];
-                    if (lhs != .table or rhs != .table) {
+                    if (!equalityHasMetamethod(lhs, rhs)) {
                         stack[base + op.dest] = .{ .boolean = valuesEqual(lhs, rhs) };
                     } else {
                         try self.equalValuesToRegister(thread, op);
@@ -821,7 +822,7 @@ pub const State = struct {
                 .eq => |op| {
                     const lhs = stack[base + op.left];
                     const rhs = stack[base + op.right];
-                    if (lhs == .table and rhs == .table and !valuesEqual(lhs, rhs)) break :fast_loop;
+                    if (equalityHasMetamethod(lhs, rhs) and !valuesEqual(lhs, rhs)) break :fast_loop;
                     stack[base + op.dest] = .{ .boolean = valuesEqual(lhs, rhs) };
                     pc += 1;
                 },
@@ -1357,7 +1358,7 @@ pub const State = struct {
             else => return self.fail(@errorName(err)),
         };
 
-        try self.returnValues(thread, op.base, op.return_count, context.returns.items);
+        try self.returnValues(thread, op.base, op.return_count, context.returns.items());
     }
 
     pub fn readFileAlloc(self: *State, path: []const u8) ![]const u8 {
@@ -2497,6 +2498,7 @@ pub const State = struct {
     }
 
     pub fn closeFramesTo(self: *State, thread: *Thread, frame_count: usize, error_value: ?Value) !void {
+        if (thread.frames.items.len > frame_count) discardPairsContinuationsTo(thread, frame_count);
         var pending_error = error_value;
         var close_failed = false;
         while (thread.frames.items.len > frame_count) {
@@ -2514,11 +2516,22 @@ pub const State = struct {
     }
 
     fn discardFramesTo(self: *State, thread: *Thread, frame_count: usize) void {
+        if (thread.frames.items.len > frame_count) discardPairsContinuationsTo(thread, frame_count);
         while (thread.frames.items.len > frame_count) {
             const frame = thread.frames.items[thread.frames.items.len - 1];
             self.closeUpvalues(thread, frame.base);
             thread.frames.items[thread.frames.items.len - 1].deinit(self.allocator);
             thread.frames.items.len -= 1;
+        }
+    }
+
+    fn discardPairsContinuationsTo(thread: *Thread, frame_count: usize) void {
+        var index = thread.pairs_continuations.items.len;
+        while (index > 0) {
+            index -= 1;
+            if (thread.pairs_continuations.items[index].frame_count > frame_count) {
+                _ = thread.pairs_continuations.orderedRemove(index);
+            }
         }
     }
 
@@ -2806,26 +2819,24 @@ pub const State = struct {
                 try self.returnValues(thread, resolved.base, resolved.return_count, &values);
             },
             .native_pairs => {
-                const table_value = argValue(self, thread, resolved, 0);
-                if (table_value != .table) return self.failArgumentType("pairs", 1, "table", table_value);
-                if (try self.getMetamethod(table_value, "__pairs")) |metamethod| {
-                    self.set(thread, resolved.base, metamethod);
-                    self.set(thread, resolved.base + 1, table_value);
+                if (resolved.arg_count == 0) return self.failArgumentMessage("pairs", 1, "value expected");
+                const value = argValue(self, thread, resolved, 0);
+                if (try self.getMetamethod(value, "__pairs")) |metamethod| {
                     thread.native_call_depth -= 1;
                     defer thread.native_call_depth += 1;
-                    try self.invokeValue(thread, .{ .base = resolved.base, .arg_count = 1, .return_count = resolved.return_count }, 0);
+                    try self.callPairsMetamethod(thread, resolved, metamethod, value);
                     return;
                 }
-                try self.returnValues(thread, resolved.base, resolved.return_count, &.{ .native_next, table_value, .nil });
+                try self.returnValues(thread, resolved.base, resolved.return_count, &.{ .native_next, value, .nil, .nil });
             },
             .native_ipairs => {
-                const table_value = argValue(self, thread, resolved, 0);
-                if (table_value != .table) return self.failArgumentType("ipairs", 1, "table", table_value);
-                try self.returnValues(thread, resolved.base, resolved.return_count, &.{ .native_ipairs_iter, table_value, .{ .integer = 0 } });
+                if (resolved.arg_count == 0) return self.failArgumentMessage("ipairs", 1, "value expected");
+                const value = argValue(self, thread, resolved, 0);
+                try self.returnValues(thread, resolved.base, resolved.return_count, &.{ .native_ipairs_iter, value, .{ .integer = 0 } });
             },
             .native_ipairs_iter => {
                 const values = try self.ipairsIterValues(thread, argValue(self, thread, resolved, 0), argValue(self, thread, resolved, 1));
-                try self.returnValues(thread, resolved.base, resolved.return_count, &values);
+                try self.returnValues(thread, resolved.base, resolved.return_count, values[0..if (values[0] == .nil) @as(usize, 1) else 2]);
             },
             .native_table_create => {
                 const array_hint = try self.tableCreateHint(argValue(self, thread, resolved, 0), 1);
@@ -3175,7 +3186,7 @@ pub const State = struct {
             self.set(thread, op.dest, .{ .boolean = true });
             return;
         }
-        if (lhs != .table or rhs != .table) {
+        if (!equalityHasMetamethod(lhs, rhs)) {
             self.set(thread, op.dest, .{ .boolean = false });
             return;
         }
@@ -3219,7 +3230,7 @@ pub const State = struct {
         switch (op.op) {
             .eq => {
                 if (valuesEqual(lhs, rhs)) return self.jumpIfBranchResult(thread, true, op.jump_if_truthy, op.offset);
-                if (lhs != .table or rhs != .table) return self.jumpIfBranchResult(thread, false, op.jump_if_truthy, op.offset);
+                if (!equalityHasMetamethod(lhs, rhs)) return self.jumpIfBranchResult(thread, false, op.jump_if_truthy, op.offset);
                 const metamethod = (try self.getEitherMetamethod(lhs, rhs, "__eq")) orelse return self.jumpIfBranchResult(thread, false, op.jump_if_truthy, op.offset);
                 const continuation: BranchContinuation = .{ .jump_if_truthy = op.jump_if_truthy, .offset = op.offset };
                 const result = try self.callOneMetamethodWithContinuation(thread, "__eq", metamethod, &.{ lhs, rhs }, .{ .branch_truthy = continuation });
@@ -3306,7 +3317,7 @@ pub const State = struct {
 
     fn equalValues(self: *State, thread: *Thread, lhs: Value, rhs: Value) !bool {
         if (valuesEqual(lhs, rhs)) return true;
-        if (lhs != .table or rhs != .table) return false;
+        if (!equalityHasMetamethod(lhs, rhs)) return false;
         const metamethod = (try self.getEitherMetamethod(lhs, rhs, "__eq")) orelse return false;
         return truthy(try self.callOneMetamethod(thread, "__eq", metamethod, &.{ lhs, rhs }));
     }
@@ -3992,9 +4003,65 @@ pub const State = struct {
         return table.next(key) catch return self.fail("invalid key to 'next'");
     }
 
+    fn callPairsMetamethod(self: *State, thread: *Thread, op: bytecode.Call, metamethod: Value, value: Value) !void {
+        const frame_count = thread.frames.items.len;
+        const frame = thread.frames.items[frame_count - 1];
+        const relative_base = frame.proto.max_registers;
+        const source_base = frame.base + relative_base;
+        try thread.ensureStack(self.allocator, source_base + 4, self.stackValueLimit());
+        thread.stack.items[source_base] = metamethod;
+        thread.stack.items[source_base + 1] = value;
+        const continuation: types.PairsContinuation = .{
+            .frame_count = frame_count,
+            .source_base = source_base,
+            .base = op.base,
+            .return_count = op.return_count,
+        };
+        // Lua asks __pairs for four results even when its caller wants fewer.
+        // Keep these in scratch registers so padding cannot overwrite locals.
+        self.invokeValue(thread, .{ .base = relative_base, .arg_count = 1, .return_count = 4 }, 0) catch |err| {
+            if (err == error.CoroutineYield) try self.pushPairsContinuation(thread, continuation);
+            return err;
+        };
+        self.runThreadUntil(thread, frame_count) catch |err| {
+            if (err == error.CoroutineYield) try self.pushPairsContinuation(thread, continuation);
+            return err;
+        };
+        try self.returnPairsResults(thread, continuation);
+    }
+
+    fn returnPairsResults(self: *State, thread: *Thread, continuation: types.PairsContinuation) !void {
+        // Copy before returnValues can resize the stack or overlap the source.
+        const values = thread.stack.items[continuation.source_base..][0..4].*;
+        try self.returnValues(thread, continuation.base, continuation.return_count, &values);
+    }
+
+    fn pushPairsContinuation(self: *State, thread: *Thread, continuation: types.PairsContinuation) !void {
+        var pending = continuation;
+        thread.continuation_order += 1;
+        pending.order = thread.continuation_order;
+        try thread.pairs_continuations.append(self.allocator, pending);
+    }
+
+    fn completeReadyPairsContinuation(self: *State, thread: *Thread) !bool {
+        for (thread.pairs_continuations.items, 0..) |continuation, index| {
+            if (continuation.frame_count != thread.frames.items.len) continue;
+            // Native __pairs = pcall can suspend at the same frame depth as
+            // pairs itself. Finish that inner call first; an enclosing pcall
+            // instead waits for our four normalized results.
+            if (readyProtectedContinuationIndex(thread)) |protected_index| {
+                if (thread.protected_continuations.items[protected_index].order < continuation.order) {
+                    return self.completeReadyProtectedContinuation(thread);
+                }
+            }
+            _ = thread.pairs_continuations.orderedRemove(index);
+            try self.returnPairsResults(thread, continuation);
+            return true;
+        }
+        return false;
+    }
+
     fn ipairsIterValues(self: *State, thread: *Thread, table_value: Value, key_value: Value) ![2]Value {
-        const table = try self.expectTable(table_value);
-        _ = table;
         const current = toInteger(key_value) orelse return self.fail("invalid index to 'ipairs'");
         const next_index = current +% 1;
         const value = try self.getTableFromThread(thread, table_value, .{ .integer = next_index });
@@ -4015,6 +4082,9 @@ pub const State = struct {
                 break :blk fixed[0..2];
             },
             .native_ipairs_iter => blk: {
+                // Match invokeValue's native boundary, including __index calls.
+                thread.native_call_depth += 1;
+                defer thread.native_call_depth -= 1;
                 fixed = try self.ipairsIterValues(thread, state, control);
                 break :blk fixed[0..2];
             },
@@ -4859,9 +4929,13 @@ fn rawIntegerBitwiseOpFast(lhs: Value, rhs: Value, op: BinaryOp) ?Value {
     return .{ .integer = rawBitwise(lhs.integer, rhs.integer, op) };
 }
 
+fn equalityHasMetamethod(lhs: Value, rhs: Value) bool {
+    return (lhs == .table and rhs == .table) or (lhs == .userdata and rhs == .userdata);
+}
+
 fn rawCompareBranchResult(lhs: Value, rhs: Value, op: bytecode.CompareBranchOp) ?bool {
     return switch (op) {
-        .eq => if (valuesEqual(lhs, rhs)) true else if (lhs == .table and rhs == .table) null else false,
+        .eq => if (valuesEqual(lhs, rhs)) true else if (equalityHasMetamethod(lhs, rhs)) null else false,
         .lt => rawCompare(lhs, rhs, .lt),
         .le => rawCompare(lhs, rhs, .le),
     };

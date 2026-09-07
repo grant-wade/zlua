@@ -1,4 +1,4 @@
-pub const version = "0.4.4";
+pub const version = "0.5.3";
 pub const lua_target_version = "Lua 5.5";
 
 pub const frontend = @import("frontend.zig");

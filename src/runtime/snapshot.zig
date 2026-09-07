@@ -287,11 +287,11 @@ const Copier = struct {
             if (f.pending_returns) |v| frame.pending_returns = try self.values(types.Value, v);
             inline for (.{ "vararg_table_local", "last_hook_line", "debug_name_override", "debug_namewhat_override", "is_tail_call" }) |name| @field(frame, name) = try self.remap(@field(f, name));
         }
-        inline for (.{ "yield_values", "protected_continuations", "generic_for_continuations", "tail_call_continuations", "call_one_continuations" }) |name| {
+        inline for (.{ "yield_values", "protected_continuations", "generic_for_continuations", "pairs_continuations", "tail_call_continuations", "call_one_continuations" }) |name| {
             const items = @field(old, name).items;
             @field(new, name) = try self.list(std.meta.Elem(@TypeOf(items)), items);
         }
-        inline for (.{ "open_upvalues", "hook", "hook_call", "hook_line", "hook_return", "hook_count", "hook_count_remaining", "pending_yield_hook_return", "last_result_base", "last_result_count", "last_transfer_base", "last_transfer_count", "yield_result_base", "yield_result_count", "close_error_value", "error_traceback", "pending_unwind_error", "pending_unwind_resume_frame_count", "pending_unwind_target_frame_count", "entry", "started", "is_main", "closing", "status", "exposed" }) |name| @field(new, name) = try self.remap(@field(old, name));
+        inline for (.{ "open_upvalues", "hook", "hook_call", "hook_line", "hook_return", "hook_count", "hook_count_remaining", "pending_yield_hook_return", "continuation_order", "last_result_base", "last_result_count", "last_transfer_base", "last_transfer_count", "yield_result_base", "yield_result_count", "close_error_value", "error_traceback", "pending_unwind_error", "pending_unwind_resume_frame_count", "pending_unwind_target_frame_count", "entry", "started", "is_main", "closing", "status", "exposed" }) |name| @field(new, name) = try self.remap(@field(old, name));
         // Hook transfer/name pointers and native call depths belong to host call
         // scopes, not suspended bytecode. They must not retain obsolete storage.
     }
@@ -376,7 +376,7 @@ comptime {
         .transient = "execution_depth userdata_scope rollback snapshot_busy discarding current_thread api_callback_dispatch api_callback_user_data active_api_callback coroutine_close_depth is_collecting collect_after_instruction mark_all_stack_registers conservative_gc_depth",
     });
     review(types.Thread, .{
-        .copied = "exposed stack frames yield_values protected_continuations generic_for_continuations tail_call_continuations call_one_continuations hook_call hook_line hook_return hook_count hook_count_remaining pending_yield_hook_return last_result_base last_result_count last_transfer_base last_transfer_count yield_result_base yield_result_count pending_unwind_resume_frame_count pending_unwind_target_frame_count started is_main closing status",
+        .copied = "exposed stack frames yield_values protected_continuations generic_for_continuations pairs_continuations tail_call_continuations call_one_continuations hook_call hook_line hook_return hook_count hook_count_remaining pending_yield_hook_return continuation_order last_result_base last_result_count last_transfer_base last_transfer_count yield_result_base yield_result_count pending_unwind_resume_frame_count pending_unwind_target_frame_count started is_main closing status",
         .remapped = "open_upvalues hook close_error_value error_traceback pending_unwind_error entry",
         .transient = "rollback marked hook_running hook_return_name hook_level2_func hook_transfer_index_base hook_transfer_stack_base hook_transfer_count hook_transfer_values next_call_name next_call_namewhat native_call_depth traceback_native_name protected_close_depth resume_parent",
     });

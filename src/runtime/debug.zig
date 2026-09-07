@@ -62,7 +62,7 @@ pub fn appendUnhandledErrorDebugDump(comptime State: type, self: *State, thread:
     };
     try appendFmt(self.allocator, out, "allocations strings={d} tables={d} closures={d} upvalues={d} threads={d} bytes={d}\n", .{ stats.strings, stats.tables, stats.closures, stats.upvalues, stats.threads, stats.bytes });
     try appendFmt(self.allocator, out, "thread status={s} frames={d} stack={d} results={d}@{d} native_depth={d} protected_close_depth={d}\n", .{ @tagName(thread.status), thread.frames.items.len, thread.stack.items.len, thread.last_result_count, thread.last_result_base, thread.native_call_depth, thread.protected_close_depth });
-    try appendFmt(self.allocator, out, "continuations protected={d} call_one={d} tail={d} generic_for={d}\n", .{ thread.protected_continuations.items.len, thread.call_one_continuations.items.len, thread.tail_call_continuations.items.len, thread.generic_for_continuations.items.len });
+    try appendFmt(self.allocator, out, "continuations protected={d} call_one={d} tail={d} generic_for={d} pairs={d}\n", .{ thread.protected_continuations.items.len, thread.call_one_continuations.items.len, thread.tail_call_continuations.items.len, thread.generic_for_continuations.items.len, thread.pairs_continuations.items.len });
     try appendDebugFrames(State, self, out, thread);
     try appendDebugStack(State, self, out, thread);
     try out.appendSlice(self.allocator, "[/zlua debug]\n");

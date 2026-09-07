@@ -284,7 +284,7 @@ pub fn markRoots(comptime State: type, self: *State) void {
     while (callback) |context| : (callback = context.parent) {
         markThread(State, self, context.thread);
         markStackRange(State, self, context.thread, context.argument_base, context.argCount());
-        for (context.returns.items) |value| markValue(State, self, value);
+        for (context.returns.items()) |value| markValue(State, self, value);
         if (context.error_value) |value| markValue(State, self, value);
     }
     markRuntimeErrorPayload(State, self, self.last_error);
