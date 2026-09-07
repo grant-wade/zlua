@@ -12,9 +12,24 @@ Lua-visible behavior is checked against the official Lua 5.5 C implementation bu
 | Differential fixtures | `zig build test-diff` | Runs `tests/diff/**/*.lua` under Lua 5.5 and zlua. |
 | Extension fixtures | `zig build test-extensions` | Checks zlua-only libraries and functions against checked-in output. |
 | Official suite | `zig build test-official` | Runs downloaded Lua 5.5 tests under both interpreters. |
-| Full check | `zig build ci` | All layers above. |
+| Full check | `zig build ci` | Unit tests, freestanding smoke builds, examples, differential fixtures, extension fixtures, and official suite. |
 
 `just test`, `just diff`, `just extensions`, `just official`, and `just ci` are convenience wrappers.
+
+## GitHub Actions
+
+Every push runs `zig build test test-wasm` on Linux x64. Pull requests targeting
+`main` run `zig build ci test-wasm` on Linux, macOS, and Windows, each on x64 and
+ARM64 native runners. The full matrix can also be started manually.
+
+The `PR checks` job succeeds only when the entire full-suite matrix passes; failed,
+cancelled, or skipped matrix jobs prevent it from passing. Select `PR checks` as
+the required status check in the branch protection rule or ruleset for `main`.
+
+CI uses the Zig version declared in `build.zig.zon`. The setup action caches Zig
+downloads and build outputs, with separate build caches for each OS, architecture,
+and dependency manifest. Full-suite jobs also cache Lua source and test downloads.
+New commits cancel older runs for the same event and branch or pull request.
 
 ## Lua 5.5 Reference
 
