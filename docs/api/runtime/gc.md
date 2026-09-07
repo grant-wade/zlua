@@ -72,9 +72,8 @@
 - [testing.bench.allocation](../testing/bench/allocation.md)
 - [testing.bench.c_startup](../testing/bench/c_startup.md)
 - [testing.bench.snapshots](../testing/bench/snapshots.md)
-- [testing.c_api_runner](../testing/c_api_runner.md)
-- [testing.fixtures](../testing/fixtures.md)
 - [testing.diff_runner](../testing/diff_runner.md)
+- [testing.fixtures](../testing/fixtures.md)
 - [testing.expected_failures](../testing/expected_failures.md)
 - [testing.metadata](../testing/metadata.md)
 - [testing.normalizer](../testing/normalizer.md)
@@ -96,12 +95,6 @@
 - [collectGarbageParam](#fn-collectgarbageparam)
 - [collectGarbageStep](#fn-collectgarbagestep)
 - [collectGarbage](#fn-collectgarbage)
-- [collectGarbageStepPublic](#fn-collectgarbagesteppublic)
-- [allocationByteCount](#fn-allocationbytecount)
-- [gcIsRunning](#fn-gcisrunning)
-- [stopGc](#fn-stopgc)
-- [restartGc](#fn-restartgc)
-- [switchGcMode](#fn-switchgcmode)
 - [gcParam](#fn-gcparam)
 - [setGcParam](#fn-setgcparam)
 - [collectGarbageConservatively](#fn-collectgarbageconservatively)
@@ -119,9 +112,7 @@
 - [markWeakTableStrings](#fn-markweaktablestrings)
 - [markWeakString](#fn-markweakstring)
 - [markClosure](#fn-markclosure)
-- [markCClosure](#fn-markcclosure)
 - [markUpvalue](#fn-markupvalue)
-- [markCUpvalue](#fn-markcupvalue)
 - [markThread](#fn-markthread)
 - [markThreadStack](#fn-markthreadstack)
 - [markStackRange](#fn-markstackrange)
@@ -147,22 +138,17 @@
 - [sweepUserdata](#fn-sweepuserdata)
 - [sweepTables](#fn-sweeptables)
 - [sweepClosures](#fn-sweepclosures)
-- [sweepCClosures](#fn-sweepcclosures)
 - [sweepUpvalues](#fn-sweepupvalues)
-- [sweepCUpvalues](#fn-sweepcupvalues)
 - [sweepThreads](#fn-sweepthreads)
 - [findStringAllocation](#fn-findstringallocation)
 - [isTrackedThread](#fn-istrackedthread)
 - [isTrackedTable](#fn-istrackedtable)
 - [isTrackedUserdata](#fn-istrackeduserdata)
 - [isTrackedClosure](#fn-istrackedclosure)
-- [isTrackedCClosure](#fn-istrackedcclosure)
 - [isTrackedUpvalue](#fn-istrackedupvalue)
-- [isTrackedCUpvalue](#fn-istrackedcupvalue)
 - [destroyTable](#fn-destroytable)
 - [destroyUserdata](#fn-destroyuserdata)
 - [destroyClosure](#fn-destroyclosure)
-- [destroyCClosure](#fn-destroycclosure)
 - [destroyThread](#fn-destroythread)
 - [allocationStats](#fn-allocationstats)
 - [noteTableMetatableChanged](#fn-notetablemetatablechanged)
@@ -254,54 +240,6 @@ pub fn collectGarbageStep(comptime State: type, self: *State, thread: ?*Thread, 
 
 ```zig
 pub fn collectGarbage(comptime State: type, self: *State) !void
-```
-
-<a id="fn-collectgarbagesteppublic"></a>
-
-## collectGarbageStepPublic
-
-```zig
-pub fn collectGarbageStepPublic(comptime State: type, self: *State, budget: i64) !bool
-```
-
-<a id="fn-allocationbytecount"></a>
-
-## allocationByteCount
-
-```zig
-pub fn allocationByteCount(comptime State: type, self: State) usize
-```
-
-<a id="fn-gcisrunning"></a>
-
-## gcIsRunning
-
-```zig
-pub fn gcIsRunning(comptime State: type, self: State) bool
-```
-
-<a id="fn-stopgc"></a>
-
-## stopGc
-
-```zig
-pub fn stopGc(comptime State: type, self: *State) void
-```
-
-<a id="fn-restartgc"></a>
-
-## restartGc
-
-```zig
-pub fn restartGc(comptime State: type, self: *State) void
-```
-
-<a id="fn-switchgcmode"></a>
-
-## switchGcMode
-
-```zig
-pub fn switchGcMode(comptime State: type, self: *State, mode: GcMode) GcMode
 ```
 
 <a id="fn-gcparam"></a>
@@ -440,28 +378,12 @@ pub fn markWeakString(comptime State: type, self: *State, value: Value) void
 pub fn markClosure(comptime State: type, self: *State, closure: *Closure) void
 ```
 
-<a id="fn-markcclosure"></a>
-
-## markCClosure
-
-```zig
-pub fn markCClosure(comptime State: type, self: *State, closure: *CClosure) void
-```
-
 <a id="fn-markupvalue"></a>
 
 ## markUpvalue
 
 ```zig
 pub fn markUpvalue(comptime State: type, self: *State, upvalue: *Upvalue) void
-```
-
-<a id="fn-markcupvalue"></a>
-
-## markCUpvalue
-
-```zig
-pub fn markCUpvalue(comptime State: type, self: *State, upvalue: *CUpvalue) void
 ```
 
 <a id="fn-markthread"></a>
@@ -664,28 +586,12 @@ pub fn sweepTables(comptime State: type, self: *State) void
 pub fn sweepClosures(comptime State: type, self: *State) void
 ```
 
-<a id="fn-sweepcclosures"></a>
-
-## sweepCClosures
-
-```zig
-pub fn sweepCClosures(comptime State: type, self: *State) void
-```
-
 <a id="fn-sweepupvalues"></a>
 
 ## sweepUpvalues
 
 ```zig
 pub fn sweepUpvalues(comptime State: type, self: *State) void
-```
-
-<a id="fn-sweepcupvalues"></a>
-
-## sweepCUpvalues
-
-```zig
-pub fn sweepCUpvalues(comptime State: type, self: *State) void
 ```
 
 <a id="fn-sweepthreads"></a>
@@ -736,28 +642,12 @@ pub fn isTrackedUserdata(comptime State: type, self: *State, userdata: *Userdata
 pub fn isTrackedClosure(comptime State: type, self: *State, closure: *Closure) bool
 ```
 
-<a id="fn-istrackedcclosure"></a>
-
-## isTrackedCClosure
-
-```zig
-pub fn isTrackedCClosure(comptime State: type, self: *State, closure: *CClosure) bool
-```
-
 <a id="fn-istrackedupvalue"></a>
 
 ## isTrackedUpvalue
 
 ```zig
 pub fn isTrackedUpvalue(comptime State: type, self: *State, upvalue: *Upvalue) bool
-```
-
-<a id="fn-istrackedcupvalue"></a>
-
-## isTrackedCUpvalue
-
-```zig
-pub fn isTrackedCUpvalue(comptime State: type, self: *State, upvalue: *CUpvalue) bool
 ```
 
 <a id="fn-destroytable"></a>
@@ -782,14 +672,6 @@ pub fn destroyUserdata(comptime State: type, self: *State, userdata: *Userdata) 
 
 ```zig
 pub fn destroyClosure(comptime State: type, self: *State, closure: *Closure) void
-```
-
-<a id="fn-destroycclosure"></a>
-
-## destroyCClosure
-
-```zig
-pub fn destroyCClosure(comptime State: type, self: *State, closure: *CClosure) void
 ```
 
 <a id="fn-destroythread"></a>

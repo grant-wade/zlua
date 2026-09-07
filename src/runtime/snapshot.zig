@@ -8,9 +8,7 @@ const static_strings = @import("../stdlib/static_strings.zig");
 
 pub fn checkIdle(source: *const State) !void {
     if (source.current_thread != null or source.active_api_callback != null or source.is_collecting or source.snapshot_busy) return error.SnapshotBusy;
-    if (source.c_closure_dispatch != null or source.c_closure_resume_dispatch != null or source.c_debug_hook_dispatch != null or source.c_closure_user_data != null or source.c_closure_allocations.items.len != 0 or source.c_upvalue_allocations.items.len != 0) return error.SnapshotUnsupported;
     for (source.thread_allocations.items) |thread| {
-        if (thread.pending_c_continuation) return error.SnapshotUnsupported;
         if (thread.status == .running or thread.status == .normal or thread.hook_running or thread.hook_transfer_values.len != 0) return error.SnapshotBusy;
     }
 }
@@ -80,7 +78,6 @@ const Copier = struct {
                 const address = self.map.get(@intFromPtr(pointer)) orelse return error.SnapshotUnsupported;
                 return @unionInit(types.Value, @tagName(tag), @as(@TypeOf(pointer), @ptrFromInt(address)));
             },
-            .c_closure => return error.SnapshotUnsupported,
             else => return old,
         }
     }
@@ -344,13 +341,11 @@ comptime {
         .rebuilt = "strings string_allocation_index table_allocation_index gc_next_total gc_known_total api_roots",
         .remapped = "global_table table_metatable_head table_finalizer_head table_pending_finalizer_head string_metatable number_metatable boolean_metatable nil_metatable file_metatable zerde_null zerde_array_metatable zerde_object_metatable last_error",
         .copied = "string_allocations table_allocations userdata_allocations closure_allocations upvalue_allocations thread_allocations proto_allocations source_allocations stdout stderr table_metatable_count stdin_pos last_error_in_close traceback_error_in_close gc_running gc_mode gc_params random_state instruction_count",
-        .unsupported = "c_closure_allocations c_upvalue_allocations c_closure_dispatch c_closure_resume_dispatch c_debug_hook_dispatch c_closure_user_data",
         .transient = "snapshot_busy discarding current_thread api_callback_dispatch api_callback_user_data active_api_callback coroutine_close_depth is_collecting collect_after_instruction mark_all_stack_registers conservative_gc_depth",
     });
     review(types.Thread, .{
         .copied = "exposed stack frames yield_values protected_continuations generic_for_continuations tail_call_continuations call_one_continuations hook_call hook_line hook_return hook_count hook_count_remaining pending_yield_hook_return last_result_base last_result_count last_transfer_base last_transfer_count yield_result_base yield_result_count pending_unwind_resume_frame_count pending_unwind_target_frame_count started is_main closing status",
         .remapped = "open_upvalues hook close_error_value error_traceback pending_unwind_error entry",
-        .unsupported = "pending_c_continuation",
         .transient = "marked hook_running hook_return_name hook_level2_func hook_transfer_index_base hook_transfer_stack_base hook_transfer_count hook_transfer_values next_call_name next_call_namewhat native_call_depth traceback_native_name protected_close_depth resume_parent",
     });
     review(types.CallFrame, .{
@@ -385,7 +380,7 @@ comptime {
         .copied = "constants instructions line_info locals upvalues error_sites max_registers param_count is_vararg named_vararg source_name debug_name defined_line last_defined_line has_to_close_locals",
         .remapped = "children",
     });
-    review(types.Value, .{ .remapped = "string table userdata closure thread coroutine_wrapper gmatch_iterator", .unsupported = "c_closure", .external = "nil boolean integer number native_print native_tostring native_getmetatable native_setmetatable native_rawequal native_rawget native_rawset native_rawlen native_next native_pairs native_ipairs native_ipairs_iter native_table_create native_select native_assert native_error native_pcall native_xpcall native_collectgarbage native_debug_traceback native_coroutine_create native_coroutine_resume native_coroutine_yield native_coroutine_status native_coroutine_running native_coroutine_isyieldable native_coroutine_close native_coroutine_wrap native api_callback" });
+    review(types.Value, .{ .remapped = "string table userdata closure thread coroutine_wrapper gmatch_iterator", .external = "nil boolean integer number native_print native_tostring native_getmetatable native_setmetatable native_rawequal native_rawget native_rawset native_rawlen native_next native_pairs native_ipairs native_ipairs_iter native_table_create native_select native_assert native_error native_pcall native_xpcall native_collectgarbage native_debug_traceback native_coroutine_create native_coroutine_resume native_coroutine_yield native_coroutine_status native_coroutine_running native_coroutine_isyieldable native_coroutine_close native_coroutine_wrap native api_callback" });
     review(types.StringAllocation, .{
         .copied = "bytes",
         .transient = "marked",
@@ -394,11 +389,5 @@ comptime {
         .external = "allocator lifetime ptr finalizer finalizer_data dispose snapshot_copy snapshot_dispose",
         .rebuilt = "references is_snapshot_copy",
         .copied = "finalized",
-    });
-    review(types.CClosure, .{
-        .unsupported = "function_id upvalues marked",
-    });
-    review(types.CUpvalue, .{
-        .unsupported = "value marked",
     });
 }

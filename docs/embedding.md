@@ -373,7 +373,7 @@ defer another.deinit();
 
 Snapshots copy the VM heap, including suspended Lua coroutines, shared references, module caches, I/O buffers, random state, and GC settings. Reset also restores options, host bindings, and instruction usage. Checkpoints are reusable, can outlive the source state, and have no persistence format.
 
-Snapshot and reset require an idle VM. Active calls, collection, destruction, or recursive snapshot operations return `error.SnapshotBusy`. C compatibility states, C closures or continuations, and untracked runtime objects return `error.SnapshotUnsupported`. Serialize access to each state and checkpoint.
+Snapshot and reset require an idle VM. Active calls, collection, destruction, or recursive snapshot operations return `error.SnapshotBusy`. Untracked runtime objects return `error.SnapshotUnsupported`. Serialize access to each state and checkpoint.
 
 ### Reset and Lifetimes
 

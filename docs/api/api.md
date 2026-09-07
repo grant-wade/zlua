@@ -71,9 +71,8 @@
 - [testing.bench.allocation](testing/bench/allocation.md)
 - [testing.bench.c_startup](testing/bench/c_startup.md)
 - [testing.bench.snapshots](testing/bench/snapshots.md)
-- [testing.c_api_runner](testing/c_api_runner.md)
-- [testing.fixtures](testing/fixtures.md)
 - [testing.diff_runner](testing/diff_runner.md)
+- [testing.fixtures](testing/fixtures.md)
 - [testing.expected_failures](testing/expected_failures.md)
 - [testing.metadata](testing/metadata.md)
 - [testing.normalizer](testing/normalizer.md)
@@ -88,7 +87,7 @@ Zig-native embedding API for zlua.
 
 This module is the primary host-facing entrypoint. It provides a high-level
 API around a Lua 5.5 state using Zig values, explicit host capabilities,
-rooted handles, and Zig errors rather than the Lua C API stack discipline.
+rooted handles, and Zig errors.
 
 A typical host creates a `State`, optionally grants capabilities and limits,
 loads Lua source or bytecode, installs host callbacks or userdata, and then

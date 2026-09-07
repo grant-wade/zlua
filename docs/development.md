@@ -12,10 +12,9 @@ zlua targets Zig `0.16.0`. The package depends on `zerde`; the build also downlo
 | `src/compile/` | Resolver, bytecode, protos, compiler, and disassembler. |
 | `src/runtime/` | VM, calls, coroutines, GC, host services, and chunks. |
 | `src/stdlib/` | Lua libraries and zlua extensions. |
-| `src/c_api.zig` | Lua 5.5 C API layer. |
-| `src/testing/` | Differential, extension, official, C API, and benchmark harnesses. |
+| `src/testing/` | Differential, extension, official, and benchmark harnesses. |
 | `examples/` | Zig embedding examples and API smoke tests. |
-| `tests/` | Lua, C API, extension, and benchmark fixtures. |
+| `tests/` | Lua, extension, and benchmark fixtures. |
 
 Embedding applications should use `zlua.State` from `src/api.zig`. Runtime types are available to zlua itself and its tests but are not a stable host contract.
 
@@ -30,7 +29,6 @@ zig build examples        # compile and run embedding examples
 just diff path/to/test.lua
 just official calls
 just extensions tests/extensions/string
-just c-api tests/c-api/stack
 just bench --category table
 ```
 

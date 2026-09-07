@@ -7,7 +7,6 @@ pub const Options = struct {
     zlua_build: ?[]const u8 = null,
     clua_build: ?[]const u8 = null,
     c_build: ?[]const u8 = null,
-    zlua_c: ?[]const u8 = null,
     clua_c: ?[]const u8 = null,
     bench_root: []const u8 = default_bench_root,
     selectors: []const []const u8 = &.{},
@@ -57,10 +56,10 @@ pub fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !Option
             options.clua_build = arg[13..];
         } else if (std.mem.startsWith(u8, arg, "--c-build=")) {
             options.c_build = arg[10..];
-        } else if (std.mem.eql(u8, arg, "--zlua-c") or std.mem.eql(u8, arg, "--clua-c")) {
+        } else if (std.mem.eql(u8, arg, "--clua-c")) {
             index += 1;
             if (index >= args.len) return error.MissingOptionValue;
-            if (std.mem.eql(u8, arg, "--zlua-c")) options.zlua_c = args[index] else options.clua_c = args[index];
+            options.clua_c = args[index];
             options.c_build = null;
         } else if (std.mem.eql(u8, arg, "--list")) {
             options.list = true;

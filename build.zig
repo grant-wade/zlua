@@ -64,33 +64,6 @@ pub fn build(b: *std.Build) void {
         .imports = &.{.{ .name = "zerde", .module = freestanding_zerde_dep.module("zerde") }},
     });
 
-    const zlua_c_lib = b.addLibrary(.{
-        .name = "zlua-c",
-        .linkage = .static,
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/c_api.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{.{ .name = "zerde", .module = zerde_mod }},
-        }),
-    });
-    zlua_c_lib.step.dependOn(lua_deps_step);
-    const zlua_c_startup_bench_lib = b.addLibrary(.{
-        .name = "zlua-c-startup-bench",
-        .linkage = .static,
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/c_api.zig"),
-            .target = target,
-            .optimize = bench_optimize,
-            .imports = &.{.{ .name = "zerde", .module = zerde_bench_mod }},
-        }),
-    });
-    zlua_c_startup_bench_lib.step.dependOn(lua_deps_step);
-    zlua_c_lib.installHeader(b.path(lua_source_root ++ "/lua.h"), "lua.h");
-    zlua_c_lib.installHeader(b.path(lua_source_root ++ "/lauxlib.h"), "lauxlib.h");
-    zlua_c_lib.installHeader(b.path(lua_source_root ++ "/lualib.h"), "lualib.h");
-    zlua_c_lib.installHeader(b.path(lua_source_root ++ "/luaconf.h"), "luaconf.h");
-
     const exe = b.addExecutable(.{
         .name = "zlua",
         .root_module = b.createModule(.{
@@ -112,7 +85,6 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    const zlua_c_startup_bench_exe = addCStartupBench(b, target, bench_optimize, zlua_c_startup_bench_lib, "zlua-bench-startup-c-api");
     const clua_startup_bench_exe = addCStartupBench(b, target, bench_optimize, clua_bench_lib, "clua-bench-startup-c-api");
 
     const diff_exe = b.addExecutable(.{
@@ -158,22 +130,6 @@ pub fn build(b: *std.Build) void {
         }),
     });
     b.installArtifact(bench_exe);
-
-    const c_api_exe = b.addExecutable(.{
-        .name = "zlua-test-c-api",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/test_c_api_main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{.{ .name = "zlua", .module = mod }},
-        }),
-    });
-
-    const install_zlua_c = b.addInstallArtifact(zlua_c_lib, .{});
-    const install_c_api_exe = b.addInstallArtifact(c_api_exe, .{});
-    const c_api_step = b.step("c-api", "Build zlua C API library, headers, and harness");
-    c_api_step.dependOn(&install_zlua_c.step);
-    c_api_step.dependOn(&install_c_api_exe.step);
 
     const embedding_examples = [_]EmbeddingExample{
         .{ .key = "snapshot_adversarial", .name = "zlua-embed-snapshot-adversarial", .path = "examples/snapshot_adversarial.zig" },
@@ -252,32 +208,11 @@ pub fn build(b: *std.Build) void {
     run_bench.addArg("--zlua");
     run_bench.addArtifactArg(bench_zlua_exe);
     run_bench.addArgs(&.{ "--zlua-build=ReleaseFast", "--clua-build=ReleaseFast" });
-    run_bench.addArg("--zlua-c");
-    run_bench.addArtifactArg(zlua_c_startup_bench_exe);
     run_bench.addArg("--clua-c");
     run_bench.addArtifactArg(clua_startup_bench_exe);
     run_bench.addArg("--c-build=ReleaseFast");
     if (b.args) |args| run_bench.addArgs(args);
     bench_step.dependOn(&run_bench.step);
-
-    const c_api_test_step = b.step("test-c-api", "Run C API differential fixture harness");
-    const c_api_test_cmd = b.addRunArtifact(c_api_exe);
-    c_api_test_cmd.addArg("--zig");
-    c_api_test_cmd.addArg(b.graph.zig_exe);
-    c_api_test_cmd.addArg("--clua-include");
-    c_api_test_cmd.addDirectoryArg(b.path(lua_source_root));
-    c_api_test_cmd.addArg("--clua-lib");
-    c_api_test_cmd.addArtifactArg(clua_lib);
-    c_api_test_cmd.addArg("--zlua-include");
-    c_api_test_cmd.addDirectoryArg(b.path(lua_source_root));
-    c_api_test_cmd.addArg("--zlua-lib");
-    c_api_test_cmd.addArtifactArg(zlua_c_lib);
-    if (b.args) |args| c_api_test_cmd.addArgs(args);
-    c_api_test_step.dependOn(&c_api_test_cmd.step);
-
-    const ci_c_api_step = b.step("ci-c-api", "Build and test the C API compatibility harness");
-    ci_c_api_step.dependOn(c_api_step);
-    ci_c_api_step.dependOn(c_api_test_step);
 
     const test_step = b.step("test", "Run unit tests");
     if (target.result.os.tag != .freestanding) {
@@ -374,7 +309,6 @@ pub fn build(b: *std.Build) void {
     ci_step.dependOn(extensions_step);
     ci_step.dependOn(diff_step);
     ci_step.dependOn(official_step);
-    ci_step.dependOn(ci_c_api_step);
 
     const docs_lib = b.addLibrary(.{
         .name = "zlua",

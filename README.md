@@ -2,7 +2,7 @@
 
 zlua is a source-compatible Lua 5.5 implementation written in Zig. You can use it as a command-line interpreter or embed it in a Zig application with control over what Lua can access.
 
-zlua is pre-1.0 and currently targets Zig `0.16.0`. The Zig embedding API is the main public interface; internals, binary chunks, and C API coverage may still change.
+zlua is pre-1.0 and currently targets Zig `0.16.0`. The Zig embedding API is the main public interface; internals and binary chunks may still change.
 
 ## Quickstart
 
@@ -77,12 +77,11 @@ By default, a state opens sandbox-friendly standard libraries. Hosts can opt int
 
 ## Goals
 
-zlua follows the official Lua 5.5 implementation as closely as practical, including parser behavior, runtime semantics, standard libraries, diagnostics, and the C API. It aims to:
+zlua follows the official Lua 5.5 implementation as closely as practical, including parser behavior, runtime semantics, standard libraries, and diagnostics. It aims to:
 
 - Run Lua 5.5 programs from the command line.
 - Make Lua straightforward to embed in Zig.
 - Give hosts explicit control over capabilities and resource limits.
-- Provide useful, test-backed Lua C API compatibility.
 
 ## Common Commands
 
@@ -126,11 +125,10 @@ The build downloads the Lua 5.5 sources and official tests, then builds a local 
 - Small Lua programs against both zlua and the official implementation.
 - The upstream Lua 5.5 test suite.
 - Zig embedding examples.
-- C API compatibility tests.
 
 ## More Documentation
 
-The [documentation index](docs/README.md) covers embedding, the standard library, commands, testing, architecture, C API compatibility, and development workflows.
+The [documentation index](docs/README.md) covers embedding, the standard library, commands, testing, architecture, and development workflows.
 
 ## License
 

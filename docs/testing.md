@@ -12,10 +12,9 @@ Lua-visible behavior is checked against the official Lua 5.5 C implementation bu
 | Differential fixtures | `zig build test-diff` | Runs `tests/diff/**/*.lua` under Lua 5.5 and zlua. |
 | Extension fixtures | `zig build test-extensions` | Checks zlua-only libraries and functions against checked-in output. |
 | Official suite | `zig build test-official` | Runs downloaded Lua 5.5 tests under both interpreters. |
-| C API fixtures | `zig build test-c-api` | Compiles and runs each C fixture against both libraries. |
 | Full check | `zig build ci` | All layers above. |
 
-`just test`, `just diff`, `just extensions`, `just official`, `just c-api`, and `just ci` are convenience wrappers.
+`just test`, `just diff`, `just extensions`, `just official`, and `just ci` are convenience wrappers.
 
 ## Lua 5.5 Reference
 
@@ -96,18 +95,6 @@ zig build test-official -Dofficial-memory-limit-mb=0
 
 The build step applies a 256 MiB child-process cap on Linux by default and no cap elsewhere. Direct harness runs default to no timeout or memory cap. `--mode=internal` is parsed but skipped because `testC` builds are not wired.
 
-## C API Fixtures
-
-`tests/c-api/**/*.c` is compiled twice: once against downloaded Lua 5.5 and once against `zlua-c`. Compatible builds, exit status, stdout, and stderr are required.
-
-```sh
-zig build ci-c-api
-just c-api tests/c-api/stack/stack_manipulation.c
-just c-api tests/c-api/coroutines
-```
-
-`tests/fixtures/c_api_status.toml` tracks public symbols. `tested-clua-diff` means at least one differential C fixture covers the symbol.
-
 ## Debugging a Failure
 
 1. Run the narrowest fixture with both outputs visible.
@@ -119,7 +106,6 @@ just c-api tests/c-api/coroutines
 ```sh
 just diff --show-clua --show-zlua path/to/case.lua
 just official --show-clua --show-zlua calls
-just c-api --show-build tests/c-api/values/roundtrip.c
 ```
 
 Benchmarks are deliberately separate from correctness checks and are not part of `zig build ci`.
