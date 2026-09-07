@@ -1,0 +1,75 @@
+name: Zig
+
+on:
+  push:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quick:
+    name: Push checks
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: mlugg/setup-zig@v2.2.1
+        with:
+          cache-key: ${{ runner.arch }}-${{ hashFiles('build.zig.zon') }}
+      - name: Unit tests and WASM smoke test
+        run: zig build test test-wasm --summary all
+
+  test:
+    name: Full suite (${{ matrix.os }})
+    if: github.event_name != 'push'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - ubuntu-24.04-arm
+          - macos-15-intel
+          - macos-15
+          - windows-2025
+          - windows-11-arm
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: mlugg/setup-zig@v2.2.1
+        with:
+          cache-key: ${{ runner.arch }}-${{ hashFiles('build.zig.zon') }}
+      - name: Cache Lua dependencies
+        uses: actions/cache@v6.1.0
+        with:
+          path: .zlua-deps
+          key: ${{ runner.os }}-lua-${{ hashFiles('tools/fetch-lua.sh') }}
+      - name: Full test suite and WASM smoke test
+        run: zig build ci test-wasm --summary all
+
+  pr-check:
+    name: PR checks
+    needs: test
+    if: ${{ always() && github.event_name == 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every platform to pass
+        env:
+          TEST_RESULT: ${{ needs.test.result }}
+        run: |
+          if [ "$TEST_RESULT" != "success" ]; then
+            echo "Full test matrix did not pass: $TEST_RESULT"
+            exit 1
+          fi

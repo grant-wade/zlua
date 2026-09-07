@@ -72,9 +72,8 @@
 - [testing.bench.allocation](../../testing/bench/allocation.md)
 - [testing.bench.c_startup](../../testing/bench/c_startup.md)
 - [testing.bench.snapshots](../../testing/bench/snapshots.md)
-- [testing.c_api_runner](../../testing/c_api_runner.md)
-- [testing.fixtures](../../testing/fixtures.md)
 - [testing.diff_runner](../../testing/diff_runner.md)
+- [testing.fixtures](../../testing/fixtures.md)
 - [testing.expected_failures](../../testing/expected_failures.md)
 - [testing.metadata](../../testing/metadata.md)
 - [testing.normalizer](../../testing/normalizer.md)
@@ -118,7 +117,6 @@ pub const Options = struct {
     zlua_build: ?[]const u8 = null,
     clua_build: ?[]const u8 = null,
     c_build: ?[]const u8 = null,
-    zlua_c: ?[]const u8 = null,
     clua_c: ?[]const u8 = null,
     bench_root: []const u8 = default_bench_root,
     selectors: []const []const u8 = &.{},

@@ -12,8 +12,6 @@ const ProtectedCallResult = types.ProtectedCallResult;
 const Value = types.Value;
 const NativeFn = types.NativeFn;
 const Closure = types.Closure;
-const CClosure = types.CClosure;
-const CUpvalue = types.CUpvalue;
 const Upvalue = types.Upvalue;
 const TableEntry = types.TableEntry;
 const Table = types.Table;
@@ -68,7 +66,7 @@ fn isNativeCallable(value: Value) bool {
 
 fn functionLike(value: Value) bool {
     return switch (value) {
-        .closure, .c_closure, .coroutine_wrapper, .gmatch_iterator => true,
+        .closure, .coroutine_wrapper, .gmatch_iterator => true,
         else => isNativeCallable(value),
     };
 }
@@ -196,32 +194,6 @@ pub fn collectGarbage(comptime State: type, self: *State) !void {
     try collectGarbageWithFinalizers(State, self, self.current_thread);
 }
 
-pub fn collectGarbageStepPublic(comptime State: type, self: *State, budget: i64) !bool {
-    return collectGarbageStep(State, self, self.current_thread, budget);
-}
-
-pub fn allocationByteCount(comptime State: type, self: State) usize {
-    return allocationStats(State, self).total();
-}
-
-pub fn gcIsRunning(comptime State: type, self: State) bool {
-    return self.gc_running;
-}
-
-pub fn stopGc(comptime State: type, self: *State) void {
-    self.gc_running = false;
-}
-
-pub fn restartGc(comptime State: type, self: *State) void {
-    self.gc_running = true;
-}
-
-pub fn switchGcMode(comptime State: type, self: *State, mode: GcMode) GcMode {
-    const old = self.gc_mode;
-    self.gc_mode = mode;
-    return old;
-}
-
 pub fn gcParam(comptime State: type, self: State, param: GcParam) i64 {
     return self.gc_params.get(param);
 }
@@ -289,9 +261,7 @@ pub fn resetMarks(comptime State: type, self: *State) void {
     for (self.table_allocations.items) |table| table.marked = false;
     for (self.userdata_allocations.items) |userdata| userdata.marked = false;
     for (self.closure_allocations.items) |closure| closure.marked = false;
-    for (self.c_closure_allocations.items) |closure| closure.marked = false;
     for (self.upvalue_allocations.items) |upvalue| upvalue.marked = false;
-    for (self.c_upvalue_allocations.items) |upvalue| upvalue.marked = false;
     for (self.thread_allocations.items) |thread| thread.marked = false;
     var callback = self.active_api_callback;
     while (callback) |context| : (callback = context.parent) context.thread.marked = false;
@@ -334,7 +304,6 @@ pub fn markValue(comptime State: type, self: *State, value: Value) void {
         .table => |table| if (isTrackedTable(State, self, table)) markTable(State, self, table),
         .userdata => |userdata| if (isTrackedUserdata(State, self, userdata)) markUserdata(State, self, userdata),
         .closure => |closure| if (isTrackedClosure(State, self, closure)) markClosure(State, self, closure),
-        .c_closure => |closure| if (isTrackedCClosure(State, self, closure)) markCClosure(State, self, closure),
         .thread, .coroutine_wrapper => |thread| if (isTrackedThread(State, self, thread) or thread == self.current_thread) markThread(State, self, thread),
         .gmatch_iterator => |table| if (isTrackedTable(State, self, table)) markTable(State, self, table),
         else => {},
@@ -420,12 +389,6 @@ pub fn markClosure(comptime State: type, self: *State, closure: *Closure) void {
     for (closure.upvalues) |upvalue| markUpvalue(State, self, upvalue);
 }
 
-pub fn markCClosure(comptime State: type, self: *State, closure: *CClosure) void {
-    if (closure.marked) return;
-    closure.marked = true;
-    for (closure.upvalues) |upvalue| markCUpvalue(State, self, upvalue);
-}
-
 pub fn markUpvalue(comptime State: type, self: *State, upvalue: *Upvalue) void {
     if (!isTrackedUpvalue(State, self, upvalue)) return;
     if (upvalue.marked) return;
@@ -435,13 +398,6 @@ pub fn markUpvalue(comptime State: type, self: *State, upvalue: *Upvalue) void {
     } else {
         markValue(State, self, upvalue.closed);
     }
-}
-
-pub fn markCUpvalue(comptime State: type, self: *State, upvalue: *CUpvalue) void {
-    if (!isTrackedCUpvalue(State, self, upvalue)) return;
-    if (upvalue.marked) return;
-    upvalue.marked = true;
-    markValue(State, self, upvalue.value);
 }
 
 pub fn markThread(comptime State: type, self: *State, thread: *Thread) void {
@@ -815,19 +771,6 @@ pub fn sweepClosures(comptime State: type, self: *State) void {
     }
 }
 
-pub fn sweepCClosures(comptime State: type, self: *State) void {
-    var index: usize = 0;
-    while (index < self.c_closure_allocations.items.len) {
-        const closure = self.c_closure_allocations.items[index];
-        if (closure.marked) {
-            index += 1;
-            continue;
-        }
-        destroyCClosure(State, self, closure);
-        _ = self.c_closure_allocations.swapRemove(index);
-    }
-}
-
 pub fn sweepUpvalues(comptime State: type, self: *State) void {
     var index: usize = 0;
     while (index < self.upvalue_allocations.items.len) {
@@ -841,19 +784,6 @@ pub fn sweepUpvalues(comptime State: type, self: *State) void {
             self.allocator.destroy(upvalue);
         }
         _ = self.upvalue_allocations.swapRemove(index);
-    }
-}
-
-pub fn sweepCUpvalues(comptime State: type, self: *State) void {
-    var index: usize = 0;
-    while (index < self.c_upvalue_allocations.items.len) {
-        const upvalue = self.c_upvalue_allocations.items[index];
-        if (upvalue.marked) {
-            index += 1;
-            continue;
-        }
-        self.allocator.destroy(upvalue);
-        _ = self.c_upvalue_allocations.swapRemove(index);
     }
 }
 
@@ -906,22 +836,8 @@ pub fn isTrackedClosure(comptime State: type, self: *State, closure: *Closure) b
     return false;
 }
 
-pub fn isTrackedCClosure(comptime State: type, self: *State, closure: *CClosure) bool {
-    for (self.c_closure_allocations.items) |allocation| {
-        if (allocation == closure) return true;
-    }
-    return false;
-}
-
 pub fn isTrackedUpvalue(comptime State: type, self: *State, upvalue: *Upvalue) bool {
     for (self.upvalue_allocations.items) |allocation| {
-        if (allocation == upvalue) return true;
-    }
-    return false;
-}
-
-pub fn isTrackedCUpvalue(comptime State: type, self: *State, upvalue: *CUpvalue) bool {
-    for (self.c_upvalue_allocations.items) |allocation| {
         if (allocation == upvalue) return true;
     }
     return false;
@@ -963,11 +879,6 @@ pub fn destroyClosure(comptime State: type, self: *State, closure: *Closure) voi
     self.allocator.destroy(closure);
 }
 
-pub fn destroyCClosure(comptime State: type, self: *State, closure: *CClosure) void {
-    if (closure.upvalues.len != 0) self.allocator.free(closure.upvalues);
-    self.allocator.destroy(closure);
-}
-
 pub fn destroyThread(comptime State: type, self: *State, thread: *Thread) void {
     if (rollback.retainCollected(thread)) return;
     if (self.rollback) |journal| journal.freed(@intFromPtr(thread));
@@ -986,9 +897,7 @@ pub fn allocationStats(comptime State: type, self: State) RuntimeAllocationStats
     for (self.closure_allocations.items) |closure| {
         if (closure.constants) |constants| bytes += constants.len * @sizeOf(?Value);
     }
-    bytes += self.c_closure_allocations.items.len * @sizeOf(CClosure);
     bytes += self.upvalue_allocations.items.len * @sizeOf(Upvalue);
-    bytes += self.c_upvalue_allocations.items.len * @sizeOf(CUpvalue);
     bytes += self.thread_allocations.items.len * @sizeOf(Thread);
 
     return .{

@@ -4,11 +4,10 @@
 | --- | --- |
 | [Embedding](embedding.md) | Creating states, loading code, callbacks, userdata, capabilities, and limits. |
 | [Lua Libraries and Extensions](stdlib.md) | Library selection, host-facing behavior, `fs`, and data-format libraries. |
-| [Lua C API](c-api.md) | Building, linking, testing, and compatibility boundaries. |
 | [Architecture](architecture.md) | Compiler pipeline, runtime, startup, GC, and API boundaries. |
 | [Development](development.md) | Repository layout, conventions, and contribution workflow. |
 | [Commands](commands.md) | `just`, `zig build`, CLI, and harness options. |
-| [Testing](testing.md) | Differential, extension, official, embedding, and C API checks. |
+| [Testing](testing.md) | Differential, extension, official, and embedding checks. |
 | [Benchmarking](benchmark.md) | Process and startup benchmarks. |
 | [Generated Zig API](api/README.md) | API reference generated from source comments. |
 

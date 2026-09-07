@@ -2,7 +2,7 @@
 //!
 //! This module is the primary host-facing entrypoint. It provides a high-level
 //! API around a Lua 5.5 state using Zig values, explicit host capabilities,
-//! rooted handles, and Zig errors rather than the Lua C API stack discipline.
+//! rooted handles, and Zig errors.
 //!
 //! A typical host creates a `State`, optionally grants capabilities and limits,
 //! loads Lua source or bytecode, installs host callbacks or userdata, and then

@@ -19,13 +19,6 @@ pub const UserdataFinalizer = types.UserdataFinalizer;
 pub const UserdataDeinit = types.UserdataDeinit;
 pub const ProtectedCallResult = types.ProtectedCallResult;
 pub const ApiCallbackDispatchFn = types.ApiCallbackDispatchFn;
-pub const CClosureDispatchFn = types.CClosureDispatchFn;
-pub const CClosureResumeDispatchFn = types.CClosureResumeDispatchFn;
-pub const CDebugHookDispatchFn = types.CDebugHookDispatchFn;
-pub const DebugHookEvent = types.DebugHookEvent;
-pub const CDebugHookContext = types.CDebugHookContext;
-pub const CClosureContext = types.CClosureContext;
-pub const CClosureResumeContext = types.CClosureResumeContext;
 pub const ApiCallbackContext = types.ApiCallbackContext;
 pub const RuntimeErrorPayload = types.RuntimeErrorPayload;
 
@@ -33,8 +26,6 @@ pub const appendBinaryChunkHeader = chunk_mod.appendBinaryChunkHeader;
 pub const dumpClosureBinary = chunk_mod.dumpClosureBinary;
 
 pub const Closure = types.Closure;
-pub const CClosure = types.CClosure;
-pub const CUpvalue = types.CUpvalue;
 pub const Upvalue = types.Upvalue;
 pub const Table = types.Table;
 pub const Userdata = types.Userdata;

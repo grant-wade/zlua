@@ -73,9 +73,8 @@
 - [testing.bench.allocation](../testing/bench/allocation.md)
 - [testing.bench.c_startup](../testing/bench/c_startup.md)
 - [testing.bench.snapshots](../testing/bench/snapshots.md)
-- [testing.c_api_runner](../testing/c_api_runner.md)
-- [testing.fixtures](../testing/fixtures.md)
 - [testing.diff_runner](../testing/diff_runner.md)
+- [testing.fixtures](../testing/fixtures.md)
 - [testing.expected_failures](../testing/expected_failures.md)
 - [testing.metadata](../testing/metadata.md)
 - [testing.normalizer](../testing/normalizer.md)
@@ -120,13 +119,6 @@
 - [UserdataDeinit](#alias-userdatadeinit)
 - [ProtectedCallResult](#alias-protectedcallresult)
 - [ApiCallbackDispatchFn](#alias-apicallbackdispatchfn)
-- [CClosureDispatchFn](#alias-cclosuredispatchfn)
-- [CClosureResumeDispatchFn](#alias-cclosureresumedispatchfn)
-- [CDebugHookDispatchFn](#alias-cdebughookdispatchfn)
-- [DebugHookEvent](#alias-debughookevent)
-- [CDebugHookContext](#alias-cdebughookcontext)
-- [CClosureContext](#alias-cclosurecontext)
-- [CClosureResumeContext](#alias-cclosureresumecontext)
 - [ApiCallbackContext](#alias-apicallbackcontext)
 - [RuntimeErrorPayload](#alias-runtimeerrorpayload)
 - [StdlibMode](#alias-stdlibmode)
@@ -142,8 +134,6 @@
 - [ProcessCapability](#alias-processcapability)
 - [ProcessResult](#alias-processresult)
 - [Closure](#alias-closure)
-- [CClosure](#alias-cclosure)
-- [CUpvalue](#alias-cupvalue)
 - [Upvalue](#alias-upvalue)
 - [Table](#alias-table)
 - [Userdata](#alias-userdata)
@@ -205,62 +195,6 @@ pub const ProtectedCallResult = types.ProtectedCallResult;
 
 ```zig
 pub const ApiCallbackDispatchFn = types.ApiCallbackDispatchFn;
-```
-
-<a id="alias-cclosuredispatchfn"></a>
-
-## CClosureDispatchFn
-
-```zig
-pub const CClosureDispatchFn = types.CClosureDispatchFn;
-```
-
-<a id="alias-cclosureresumedispatchfn"></a>
-
-## CClosureResumeDispatchFn
-
-```zig
-pub const CClosureResumeDispatchFn = types.CClosureResumeDispatchFn;
-```
-
-<a id="alias-cdebughookdispatchfn"></a>
-
-## CDebugHookDispatchFn
-
-```zig
-pub const CDebugHookDispatchFn = types.CDebugHookDispatchFn;
-```
-
-<a id="alias-debughookevent"></a>
-
-## DebugHookEvent
-
-```zig
-pub const DebugHookEvent = types.DebugHookEvent;
-```
-
-<a id="alias-cdebughookcontext"></a>
-
-## CDebugHookContext
-
-```zig
-pub const CDebugHookContext = types.CDebugHookContext;
-```
-
-<a id="alias-cclosurecontext"></a>
-
-## CClosureContext
-
-```zig
-pub const CClosureContext = types.CClosureContext;
-```
-
-<a id="alias-cclosureresumecontext"></a>
-
-## CClosureResumeContext
-
-```zig
-pub const CClosureResumeContext = types.CClosureResumeContext;
 ```
 
 <a id="alias-apicallbackcontext"></a>
@@ -385,22 +319,6 @@ pub const ProcessResult = host.ProcessResult;
 pub const Closure = types.Closure;
 ```
 
-<a id="alias-cclosure"></a>
-
-## CClosure
-
-```zig
-pub const CClosure = types.CClosure;
-```
-
-<a id="alias-cupvalue"></a>
-
-## CUpvalue
-
-```zig
-pub const CUpvalue = types.CUpvalue;
-```
-
 <a id="alias-upvalue"></a>
 
 ## Upvalue
@@ -514,9 +432,7 @@ pub const State = struct {
     table_metatable_count: usize = 0,
     userdata_allocations: std.ArrayList(*Userdata) = .empty,
     closure_allocations: std.ArrayList(*Closure) = .empty,
-    c_closure_allocations: std.ArrayList(*CClosure) = .empty,
     upvalue_allocations: std.ArrayList(*Upvalue) = .empty,
-    c_upvalue_allocations: std.ArrayList(*CUpvalue) = .empty,
     thread_allocations: std.ArrayList(*Thread) = .empty,
     proto_allocations: std.ArrayList(*proto_mod.Proto) = .empty,
     /// Prefix owned by the API state's retained immutable checkpoint.
@@ -534,10 +450,6 @@ pub const State = struct {
     api_callback_dispatch: ?ApiCallbackDispatchFn = null,
     api_callback_user_data: ?*anyopaque = null,
     active_api_callback: ?*ApiCallbackContext = null,
-    c_closure_dispatch: ?CClosureDispatchFn = null,
-    c_closure_resume_dispatch: ?CClosureResumeDispatchFn = null,
-    c_debug_hook_dispatch: ?CDebugHookDispatchFn = null,
-    c_closure_user_data: ?*anyopaque = null,
     coroutine_close_depth: usize = 0,
     string_metatable: ?*Table = null,
     number_metatable: ?*Table = null,
@@ -605,16 +517,6 @@ pub const State = struct {
 | [rootedValue](#fn-state-rootedvalue) | `self: *const State, index: usize` | `Value` |  |
 | [activeRootCount](#fn-state-activerootcount) | `self: State` | `usize` |  |
 | [setApiCallbackDispatch](#fn-state-setapicallbackdispatch) | `self: *State, dispatch: ApiCallbackDispatchFn, user_data: *anyopaque` | `void` |  |
-| [setCClosureDispatch](#fn-state-setcclosuredispatch) | `self: *State, dispatch: CClosureDispatchFn, user_data: *anyopaque` | `void` |  |
-| [setCClosureResumeDispatch](#fn-state-setcclosureresumedispatch) | `self: *State, dispatch: CClosureResumeDispatchFn` | `void` |  |
-| [setCDebugHookDispatch](#fn-state-setcdebughookdispatch) | `self: *State, dispatch: CDebugHookDispatchFn` | `void` |  |
-| [newCClosure](#fn-state-newcclosure) | `self: *State, function_id: usize, upvalue_values: []const Value` | `!*CClosure` |  |
-| [newCoroutine](#fn-state-newcoroutine) | `self: *State, entry: Value` | `!*Thread` |  |
-| [resumeThread](#fn-state-resumethread) | `self: *State, target: *Thread, args: []const Value` | `!ProtectedCallResult` |  |
-| [closeThread](#fn-state-closethread) | `self: *State, target: *Thread` | `!?Value` |  |
-| [threadWasYielded](#fn-state-threadwasyielded) | `_: *State, target: *Thread` | `bool` |  |
-| [callCClosureDispatch](#fn-state-callcclosuredispatch) | `self: *State, thread: *Thread, op: bytecode.Call, closure: *CClosure` | `!void` |  |
-| [resumeCClosureDispatch](#fn-state-resumecclosuredispatch) | `self: *State, thread: *Thread, args: []const Value` | `!void` |  |
 | [callApiCallbackDispatch](#fn-state-callapicallbackdispatch) | `self: *State, thread: *Thread, op: bytecode.Call, callback_id: usize` | `!void` |  |
 | [readFileAlloc](#fn-state-readfilealloc) | `self: *State, path: []const u8` | `![]const u8` |  |
 | [writeStdout](#fn-state-writestdout) | `self: *State, bytes: []const u8` | `!void` |  |
@@ -723,12 +625,6 @@ pub const State = struct {
 | [collectGarbageParam](#fn-state-collectgarbageparam) | `self: *State, value: Value` | `!GcParam` |  |
 | [collectGarbageStep](#fn-state-collectgarbagestep) | `self: *State, thread: ?*Thread, budget: i64` | `!bool` |  |
 | [collectGarbage](#fn-state-collectgarbage) | `self: *State` | `!void` |  |
-| [collectGarbageStepPublic](#fn-state-collectgarbagesteppublic) | `self: *State, budget: i64` | `!bool` |  |
-| [allocationByteCount](#fn-state-allocationbytecount) | `self: State` | `usize` |  |
-| [gcIsRunning](#fn-state-gcisrunning) | `self: State` | `bool` |  |
-| [stopGc](#fn-state-stopgc) | `self: *State` | `void` |  |
-| [restartGc](#fn-state-restartgc) | `self: *State` | `void` |  |
-| [switchGcMode](#fn-state-switchgcmode) | `self: *State, mode: GcMode` | `GcMode` |  |
 | [gcParam](#fn-state-gcparam) | `self: State, param: GcParam` | `i64` |  |
 | [setGcParam](#fn-state-setgcparam) | `self: *State, param: GcParam, value: i64` | `void` |  |
 | [collectGarbageConservatively](#fn-state-collectgarbageconservatively) | `self: *State, thread: ?*Thread` | `!void` |  |
@@ -746,9 +642,7 @@ pub const State = struct {
 | [markWeakTableStrings](#fn-state-markweaktablestrings) | `self: *State, table: *Table, keys: bool, values: bool` | `void` |  |
 | [markWeakString](#fn-state-markweakstring) | `self: *State, value: Value` | `void` |  |
 | [markClosure](#fn-state-markclosure) | `self: *State, closure: *Closure` | `void` |  |
-| [markCClosure](#fn-state-markcclosure) | `self: *State, closure: *CClosure` | `void` |  |
 | [markUpvalue](#fn-state-markupvalue) | `self: *State, upvalue: *Upvalue` | `void` |  |
-| [markCUpvalue](#fn-state-markcupvalue) | `self: *State, upvalue: *CUpvalue` | `void` |  |
 | [markThread](#fn-state-markthread) | `self: *State, thread: *Thread` | `void` |  |
 | [markThreadStack](#fn-state-markthreadstack) | `self: *State, thread: *Thread` | `void` |  |
 | [markStackRange](#fn-state-markstackrange) | `self: *State, thread: *Thread, base: usize, count: usize` | `void` |  |
@@ -774,22 +668,17 @@ pub const State = struct {
 | [sweepUserdata](#fn-state-sweepuserdata) | `self: *State` | `void` |  |
 | [sweepTables](#fn-state-sweeptables) | `self: *State` | `void` |  |
 | [sweepClosures](#fn-state-sweepclosures) | `self: *State` | `void` |  |
-| [sweepCClosures](#fn-state-sweepcclosures) | `self: *State` | `void` |  |
 | [sweepUpvalues](#fn-state-sweepupvalues) | `self: *State` | `void` |  |
-| [sweepCUpvalues](#fn-state-sweepcupvalues) | `self: *State` | `void` |  |
 | [sweepThreads](#fn-state-sweepthreads) | `self: *State` | `void` |  |
 | [findStringAllocation](#fn-state-findstringallocation) | `self: *State, bytes: []const u8` | `?usize` |  |
 | [isTrackedThread](#fn-state-istrackedthread) | `self: *State, thread: *Thread` | `bool` |  |
 | [isTrackedTable](#fn-state-istrackedtable) | `self: *State, table: *Table` | `bool` |  |
 | [isTrackedUserdata](#fn-state-istrackeduserdata) | `self: *State, userdata: *Userdata` | `bool` |  |
 | [isTrackedClosure](#fn-state-istrackedclosure) | `self: *State, closure: *Closure` | `bool` |  |
-| [isTrackedCClosure](#fn-state-istrackedcclosure) | `self: *State, closure: *CClosure` | `bool` |  |
 | [isTrackedUpvalue](#fn-state-istrackedupvalue) | `self: *State, upvalue: *Upvalue` | `bool` |  |
-| [isTrackedCUpvalue](#fn-state-istrackedcupvalue) | `self: *State, upvalue: *CUpvalue` | `bool` |  |
 | [destroyTable](#fn-state-destroytable) | `self: *State, table: *Table` | `void` |  |
 | [destroyUserdata](#fn-state-destroyuserdata) | `self: *State, userdata: *Userdata` | `void` |  |
 | [destroyClosure](#fn-state-destroyclosure) | `self: *State, closure: *Closure` | `void` |  |
-| [destroyCClosure](#fn-state-destroycclosure) | `self: *State, closure: *CClosure` | `void` |  |
 | [destroyThread](#fn-state-destroythread) | `self: *State, thread: *Thread` | `void` |  |
 | [allocationStats](#fn-state-allocationstats) | `self: State` | `RuntimeAllocationStats` |  |
 | [failRuntimeDetail](#fn-state-failruntimedetail) | `self: *State, thread: ?*Thread, detail: []const u8` | `RuntimeError` |  |
@@ -1210,106 +1099,6 @@ pub fn setApiCallbackDispatch(self: *State, dispatch: ApiCallbackDispatchFn, use
 ```
 
 References: [`State`](#type-state), [`ApiCallbackDispatchFn`](#alias-apicallbackdispatchfn)
-
-<a id="fn-state-setcclosuredispatch"></a>
-
-### State.setCClosureDispatch
-
-```zig
-pub fn setCClosureDispatch(self: *State, dispatch: CClosureDispatchFn, user_data: *anyopaque) void
-```
-
-References: [`State`](#type-state), [`CClosureDispatchFn`](#alias-cclosuredispatchfn)
-
-<a id="fn-state-setcclosureresumedispatch"></a>
-
-### State.setCClosureResumeDispatch
-
-```zig
-pub fn setCClosureResumeDispatch(self: *State, dispatch: CClosureResumeDispatchFn) void
-```
-
-References: [`State`](#type-state), [`CClosureResumeDispatchFn`](#alias-cclosureresumedispatchfn)
-
-<a id="fn-state-setcdebughookdispatch"></a>
-
-### State.setCDebugHookDispatch
-
-```zig
-pub fn setCDebugHookDispatch(self: *State, dispatch: CDebugHookDispatchFn) void
-```
-
-References: [`State`](#type-state), [`CDebugHookDispatchFn`](#alias-cdebughookdispatchfn)
-
-<a id="fn-state-newcclosure"></a>
-
-### State.newCClosure
-
-```zig
-pub fn newCClosure(self: *State, function_id: usize, upvalue_values: []const Value) !*CClosure
-```
-
-References: [`State`](#type-state), [`Value`](#alias-value), [`CClosure`](#alias-cclosure)
-
-<a id="fn-state-newcoroutine"></a>
-
-### State.newCoroutine
-
-```zig
-pub fn newCoroutine(self: *State, entry: Value) !*Thread
-```
-
-References: [`State`](#type-state), [`Value`](#alias-value), [`Thread`](#alias-thread)
-
-<a id="fn-state-resumethread"></a>
-
-### State.resumeThread
-
-```zig
-pub fn resumeThread(self: *State, target: *Thread, args: []const Value) !ProtectedCallResult
-```
-
-References: [`State`](#type-state), [`Thread`](#alias-thread), [`Value`](#alias-value), [`ProtectedCallResult`](#alias-protectedcallresult)
-
-<a id="fn-state-closethread"></a>
-
-### State.closeThread
-
-```zig
-pub fn closeThread(self: *State, target: *Thread) !?Value
-```
-
-References: [`State`](#type-state), [`Thread`](#alias-thread), [`Value`](#alias-value)
-
-<a id="fn-state-threadwasyielded"></a>
-
-### State.threadWasYielded
-
-```zig
-pub fn threadWasYielded(_: *State, target: *Thread) bool
-```
-
-References: [`State`](#type-state), [`Thread`](#alias-thread)
-
-<a id="fn-state-callcclosuredispatch"></a>
-
-### State.callCClosureDispatch
-
-```zig
-pub fn callCClosureDispatch(self: *State, thread: *Thread, op: bytecode.Call, closure: *CClosure) !void
-```
-
-References: [`State`](#type-state), [`Thread`](#alias-thread), [`CClosure`](#alias-cclosure)
-
-<a id="fn-state-resumecclosuredispatch"></a>
-
-### State.resumeCClosureDispatch
-
-```zig
-pub fn resumeCClosureDispatch(self: *State, thread: *Thread, args: []const Value) !void
-```
-
-References: [`State`](#type-state), [`Thread`](#alias-thread), [`Value`](#alias-value)
 
 <a id="fn-state-callapicallbackdispatch"></a>
 
@@ -2394,66 +2183,6 @@ pub fn collectGarbage(self: *State) !void
 
 References: [`State`](#type-state)
 
-<a id="fn-state-collectgarbagesteppublic"></a>
-
-### State.collectGarbageStepPublic
-
-```zig
-pub fn collectGarbageStepPublic(self: *State, budget: i64) !bool
-```
-
-References: [`State`](#type-state)
-
-<a id="fn-state-allocationbytecount"></a>
-
-### State.allocationByteCount
-
-```zig
-pub fn allocationByteCount(self: State) usize
-```
-
-References: [`State`](#type-state)
-
-<a id="fn-state-gcisrunning"></a>
-
-### State.gcIsRunning
-
-```zig
-pub fn gcIsRunning(self: State) bool
-```
-
-References: [`State`](#type-state)
-
-<a id="fn-state-stopgc"></a>
-
-### State.stopGc
-
-```zig
-pub fn stopGc(self: *State) void
-```
-
-References: [`State`](#type-state)
-
-<a id="fn-state-restartgc"></a>
-
-### State.restartGc
-
-```zig
-pub fn restartGc(self: *State) void
-```
-
-References: [`State`](#type-state)
-
-<a id="fn-state-switchgcmode"></a>
-
-### State.switchGcMode
-
-```zig
-pub fn switchGcMode(self: *State, mode: GcMode) GcMode
-```
-
-References: [`State`](#type-state), [`GcMode`](#alias-gcmode)
-
 <a id="fn-state-gcparam"></a>
 
 ### State.gcParam
@@ -2624,16 +2353,6 @@ pub fn markClosure(self: *State, closure: *Closure) void
 
 References: [`State`](#type-state), [`Closure`](#alias-closure)
 
-<a id="fn-state-markcclosure"></a>
-
-### State.markCClosure
-
-```zig
-pub fn markCClosure(self: *State, closure: *CClosure) void
-```
-
-References: [`State`](#type-state), [`CClosure`](#alias-cclosure)
-
 <a id="fn-state-markupvalue"></a>
 
 ### State.markUpvalue
@@ -2643,16 +2362,6 @@ pub fn markUpvalue(self: *State, upvalue: *Upvalue) void
 ```
 
 References: [`State`](#type-state), [`Upvalue`](#alias-upvalue)
-
-<a id="fn-state-markcupvalue"></a>
-
-### State.markCUpvalue
-
-```zig
-pub fn markCUpvalue(self: *State, upvalue: *CUpvalue) void
-```
-
-References: [`State`](#type-state), [`CUpvalue`](#alias-cupvalue)
 
 <a id="fn-state-markthread"></a>
 
@@ -2904,32 +2613,12 @@ pub fn sweepClosures(self: *State) void
 
 References: [`State`](#type-state)
 
-<a id="fn-state-sweepcclosures"></a>
-
-### State.sweepCClosures
-
-```zig
-pub fn sweepCClosures(self: *State) void
-```
-
-References: [`State`](#type-state)
-
 <a id="fn-state-sweepupvalues"></a>
 
 ### State.sweepUpvalues
 
 ```zig
 pub fn sweepUpvalues(self: *State) void
-```
-
-References: [`State`](#type-state)
-
-<a id="fn-state-sweepcupvalues"></a>
-
-### State.sweepCUpvalues
-
-```zig
-pub fn sweepCUpvalues(self: *State) void
 ```
 
 References: [`State`](#type-state)
@@ -2994,16 +2683,6 @@ pub fn isTrackedClosure(self: *State, closure: *Closure) bool
 
 References: [`State`](#type-state), [`Closure`](#alias-closure)
 
-<a id="fn-state-istrackedcclosure"></a>
-
-### State.isTrackedCClosure
-
-```zig
-pub fn isTrackedCClosure(self: *State, closure: *CClosure) bool
-```
-
-References: [`State`](#type-state), [`CClosure`](#alias-cclosure)
-
 <a id="fn-state-istrackedupvalue"></a>
 
 ### State.isTrackedUpvalue
@@ -3013,16 +2692,6 @@ pub fn isTrackedUpvalue(self: *State, upvalue: *Upvalue) bool
 ```
 
 References: [`State`](#type-state), [`Upvalue`](#alias-upvalue)
-
-<a id="fn-state-istrackedcupvalue"></a>
-
-### State.isTrackedCUpvalue
-
-```zig
-pub fn isTrackedCUpvalue(self: *State, upvalue: *CUpvalue) bool
-```
-
-References: [`State`](#type-state), [`CUpvalue`](#alias-cupvalue)
 
 <a id="fn-state-destroytable"></a>
 
@@ -3053,16 +2722,6 @@ pub fn destroyClosure(self: *State, closure: *Closure) void
 ```
 
 References: [`State`](#type-state), [`Closure`](#alias-closure)
-
-<a id="fn-state-destroycclosure"></a>
-
-### State.destroyCClosure
-
-```zig
-pub fn destroyCClosure(self: *State, closure: *CClosure) void
-```
-
-References: [`State`](#type-state), [`CClosure`](#alias-cclosure)
 
 <a id="fn-state-destroythread"></a>
 

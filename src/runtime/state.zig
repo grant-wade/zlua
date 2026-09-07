@@ -34,13 +34,6 @@ pub const UserdataFinalizer = types.UserdataFinalizer;
 pub const UserdataDeinit = types.UserdataDeinit;
 pub const ProtectedCallResult = types.ProtectedCallResult;
 pub const ApiCallbackDispatchFn = types.ApiCallbackDispatchFn;
-pub const CClosureDispatchFn = types.CClosureDispatchFn;
-pub const CClosureResumeDispatchFn = types.CClosureResumeDispatchFn;
-pub const CDebugHookDispatchFn = types.CDebugHookDispatchFn;
-pub const DebugHookEvent = types.DebugHookEvent;
-pub const CDebugHookContext = types.CDebugHookContext;
-pub const CClosureContext = types.CClosureContext;
-pub const CClosureResumeContext = types.CClosureResumeContext;
 pub const ApiCallbackContext = types.ApiCallbackContext;
 pub const RuntimeErrorPayload = types.RuntimeErrorPayload;
 const ProtectedCallContext = types.ProtectedCallContext;
@@ -71,8 +64,6 @@ pub const ProcessResult = host.ProcessResult;
 
 const CoroutineResumeResult = types.CoroutineResumeResult;
 pub const Closure = types.Closure;
-pub const CClosure = types.CClosure;
-pub const CUpvalue = types.CUpvalue;
 pub const Upvalue = types.Upvalue;
 const TableEntry = types.TableEntry;
 const TableEntryIndex = types.TableEntryIndex;
@@ -137,9 +128,7 @@ pub const State = struct {
     table_metatable_count: usize = 0,
     userdata_allocations: std.ArrayList(*Userdata) = .empty,
     closure_allocations: std.ArrayList(*Closure) = .empty,
-    c_closure_allocations: std.ArrayList(*CClosure) = .empty,
     upvalue_allocations: std.ArrayList(*Upvalue) = .empty,
-    c_upvalue_allocations: std.ArrayList(*CUpvalue) = .empty,
     thread_allocations: std.ArrayList(*Thread) = .empty,
     proto_allocations: std.ArrayList(*proto_mod.Proto) = .empty,
     /// Prefix owned by the API state's retained immutable checkpoint.
@@ -157,10 +146,6 @@ pub const State = struct {
     api_callback_dispatch: ?ApiCallbackDispatchFn = null,
     api_callback_user_data: ?*anyopaque = null,
     active_api_callback: ?*ApiCallbackContext = null,
-    c_closure_dispatch: ?CClosureDispatchFn = null,
-    c_closure_resume_dispatch: ?CClosureResumeDispatchFn = null,
-    c_debug_hook_dispatch: ?CDebugHookDispatchFn = null,
-    c_closure_user_data: ?*anyopaque = null,
     coroutine_close_depth: usize = 0,
     string_metatable: ?*Table = null,
     number_metatable: ?*Table = null,
@@ -277,9 +262,7 @@ pub const State = struct {
         self.table_allocation_index.deinit();
         for (self.thread_allocations.items) |thread| self.destroyThread(thread);
         for (self.closure_allocations.items) |closure| self.destroyClosure(closure);
-        for (self.c_closure_allocations.items) |closure| self.destroyCClosure(closure);
         for (self.upvalue_allocations.items) |upvalue| self.allocator.destroy(upvalue);
-        for (self.c_upvalue_allocations.items) |upvalue| self.allocator.destroy(upvalue);
         for (self.userdata_allocations.items) |userdata| self.destroyUserdata(userdata);
         for (self.table_allocations.items) |table| {
             if (self.discarding) {
@@ -298,9 +281,7 @@ pub const State = struct {
         self.proto_allocations.deinit(self.allocator);
         self.thread_allocations.deinit(self.allocator);
         self.upvalue_allocations.deinit(self.allocator);
-        self.c_upvalue_allocations.deinit(self.allocator);
         self.closure_allocations.deinit(self.allocator);
-        self.c_closure_allocations.deinit(self.allocator);
         self.userdata_allocations.deinit(self.allocator);
         self.table_allocations.deinit(self.allocator);
         self.string_allocations.deinit(self.allocator);
@@ -1263,18 +1244,6 @@ pub const State = struct {
     }
 
     pub fn callHook(self: *State, thread: *Thread, event: []const u8) !void {
-        if (self.c_debug_hook_dispatch) |dispatch| {
-            var context = CDebugHookContext{
-                .state = self,
-                .thread = thread,
-                .event = debugHookEvent(event),
-                .currentline = if (std.mem.eql(u8, event, "line")) lineForFrame(thread.frames.items[thread.frames.items.len - 1]) else null,
-                .ftransfer = thread.hook_transfer_index_base,
-                .ntransfer = thread.hook_transfer_count,
-                .user_data = self.c_closure_user_data,
-            };
-            return dispatch(&context);
-        }
         const args = [_]Value{.{ .string = try self.intern(event) }};
         try self.callHookWithArgs(thread, &args);
     }
@@ -1364,85 +1333,6 @@ pub const State = struct {
     pub fn setApiCallbackDispatch(self: *State, dispatch: ApiCallbackDispatchFn, user_data: *anyopaque) void {
         self.api_callback_dispatch = dispatch;
         self.api_callback_user_data = user_data;
-    }
-
-    pub fn setCClosureDispatch(self: *State, dispatch: CClosureDispatchFn, user_data: *anyopaque) void {
-        self.c_closure_dispatch = dispatch;
-        self.c_closure_user_data = user_data;
-    }
-
-    pub fn setCClosureResumeDispatch(self: *State, dispatch: CClosureResumeDispatchFn) void {
-        self.c_closure_resume_dispatch = dispatch;
-    }
-
-    pub fn setCDebugHookDispatch(self: *State, dispatch: CDebugHookDispatchFn) void {
-        self.c_debug_hook_dispatch = dispatch;
-    }
-
-    pub fn newCClosure(self: *State, function_id: usize, upvalue_values: []const Value) !*CClosure {
-        var upvalues: []*CUpvalue = if (upvalue_values.len == 0)
-            &.{}
-        else
-            try self.allocator.alloc(*CUpvalue, upvalue_values.len);
-        errdefer if (upvalues.len != 0) self.allocator.free(upvalues);
-
-        for (upvalue_values, 0..) |value, index| {
-            const upvalue = try self.allocator.create(CUpvalue);
-            errdefer self.allocator.destroy(upvalue);
-            upvalue.* = .{ .value = value };
-            try self.c_upvalue_allocations.append(self.allocator, upvalue);
-            self.noteAllocation(@sizeOf(CUpvalue));
-            upvalues[index] = upvalue;
-        }
-
-        const closure = try self.allocator.create(CClosure);
-        closure.* = .{ .function_id = function_id, .upvalues = upvalues };
-        errdefer self.allocator.destroy(closure);
-        try self.c_closure_allocations.append(self.allocator, closure);
-        self.noteAllocation(@sizeOf(CClosure));
-        return closure;
-    }
-
-    pub fn newCoroutine(self: *State, entry: Value) !*Thread {
-        return coroutine_mod.newCoroutine(State, self, entry);
-    }
-
-    pub fn resumeThread(self: *State, target: *Thread, args: []const Value) !ProtectedCallResult {
-        return coroutine_mod.resumeThread(State, self, target, args);
-    }
-
-    pub fn closeThread(self: *State, target: *Thread) !?Value {
-        return coroutine_mod.closeThread(State, self, target);
-    }
-
-    pub fn threadWasYielded(_: *State, target: *Thread) bool {
-        return coroutine_mod.threadWasYielded(State, undefined, target);
-    }
-
-    pub fn callCClosureDispatch(self: *State, thread: *Thread, op: bytecode.Call, closure: *CClosure) !void {
-        const dispatch = self.c_closure_dispatch orelse return self.fail("C closure dispatcher unavailable");
-        var context = CClosureContext{
-            .state = self,
-            .thread = thread,
-            .op = op,
-            .closure = closure,
-            .user_data = self.c_closure_user_data,
-        };
-        defer context.deinit();
-
-        dispatch(&context) catch |err| switch (err) {
-            error.RuntimeError, error.StackOverflow, error.UnsupportedOpcode => return err,
-            error.CoroutineYield, error.CoroutineClose => return err,
-            error.LuaError => return self.failValue(context.error_value orelse .{ .string = try self.intern("C callback raised an error") }),
-            error.OutOfMemory => return err,
-            else => return self.fail(@errorName(err)),
-        };
-
-        try self.returnValues(thread, op.base, op.return_count, context.returns.items);
-    }
-
-    pub fn resumeCClosureDispatch(self: *State, thread: *Thread, args: []const Value) !void {
-        return coroutine_mod.resumeCClosureDispatch(State, self, thread, args);
     }
 
     pub fn callApiCallbackDispatch(self: *State, thread: *Thread, op: bytecode.Call, callback_id: usize) !void {
@@ -2881,7 +2771,6 @@ pub const State = struct {
         }
         switch (callee) {
             .closure => |closure| try self.callClosure(thread, resolved, closure, call_name, call_namewhat),
-            .c_closure => |closure| try self.callCClosureDispatch(thread, resolved, closure),
             .api_callback => |id| try self.callApiCallbackDispatch(thread, resolved, id),
             .native_print => {
                 for (0..resolved.arg_count) |index| {
@@ -4282,30 +4171,6 @@ pub const State = struct {
         return gc_mod.collectGarbage(State, self);
     }
 
-    pub fn collectGarbageStepPublic(self: *State, budget: i64) !bool {
-        return gc_mod.collectGarbageStepPublic(State, self, budget);
-    }
-
-    pub fn allocationByteCount(self: State) usize {
-        return gc_mod.allocationByteCount(State, self);
-    }
-
-    pub fn gcIsRunning(self: State) bool {
-        return gc_mod.gcIsRunning(State, self);
-    }
-
-    pub fn stopGc(self: *State) void {
-        return gc_mod.stopGc(State, self);
-    }
-
-    pub fn restartGc(self: *State) void {
-        return gc_mod.restartGc(State, self);
-    }
-
-    pub fn switchGcMode(self: *State, mode: GcMode) GcMode {
-        return gc_mod.switchGcMode(State, self, mode);
-    }
-
     pub fn gcParam(self: State, param: GcParam) i64 {
         return gc_mod.gcParam(State, self, param);
     }
@@ -4374,16 +4239,8 @@ pub const State = struct {
         return gc_mod.markClosure(State, self, closure);
     }
 
-    pub fn markCClosure(self: *State, closure: *CClosure) void {
-        return gc_mod.markCClosure(State, self, closure);
-    }
-
     pub fn markUpvalue(self: *State, upvalue: *Upvalue) void {
         return gc_mod.markUpvalue(State, self, upvalue);
-    }
-
-    pub fn markCUpvalue(self: *State, upvalue: *CUpvalue) void {
-        return gc_mod.markCUpvalue(State, self, upvalue);
     }
 
     pub fn markThread(self: *State, thread: *Thread) void {
@@ -4486,16 +4343,8 @@ pub const State = struct {
         return gc_mod.sweepClosures(State, self);
     }
 
-    pub fn sweepCClosures(self: *State) void {
-        return gc_mod.sweepCClosures(State, self);
-    }
-
     pub fn sweepUpvalues(self: *State) void {
         return gc_mod.sweepUpvalues(State, self);
-    }
-
-    pub fn sweepCUpvalues(self: *State) void {
-        return gc_mod.sweepCUpvalues(State, self);
     }
 
     pub fn sweepThreads(self: *State) void {
@@ -4522,16 +4371,8 @@ pub const State = struct {
         return gc_mod.isTrackedClosure(State, self, closure);
     }
 
-    pub fn isTrackedCClosure(self: *State, closure: *CClosure) bool {
-        return gc_mod.isTrackedCClosure(State, self, closure);
-    }
-
     pub fn isTrackedUpvalue(self: *State, upvalue: *Upvalue) bool {
         return gc_mod.isTrackedUpvalue(State, self, upvalue);
-    }
-
-    pub fn isTrackedCUpvalue(self: *State, upvalue: *CUpvalue) bool {
-        return gc_mod.isTrackedCUpvalue(State, self, upvalue);
     }
 
     pub fn destroyTable(self: *State, table: *Table) void {
@@ -4544,10 +4385,6 @@ pub const State = struct {
 
     pub fn destroyClosure(self: *State, closure: *Closure) void {
         return gc_mod.destroyClosure(State, self, closure);
-    }
-
-    pub fn destroyCClosure(self: *State, closure: *CClosure) void {
-        return gc_mod.destroyCClosure(State, self, closure);
     }
 
     pub fn destroyThread(self: *State, thread: *Thread) void {
@@ -4877,7 +4714,6 @@ fn luaTypeName(value: Value) []const u8 {
         .userdata => "userdata",
         .thread => "thread",
         .closure,
-        .c_closure,
         .coroutine_wrapper,
         .gmatch_iterator,
         .native_print,
@@ -5199,7 +5035,6 @@ fn hashValue(value: Value) u64 {
         .table => |payload| hashPointer(5, payload),
         .userdata => |payload| hashPointer(6, payload),
         .closure => |payload| hashPointer(7, payload),
-        .c_closure => |payload| hashPointer(8, payload),
         .thread => |payload| hashPointer(9, payload),
         .coroutine_wrapper => |payload| hashPointer(10, payload),
         .gmatch_iterator => |payload| hashPointer(11, payload),
@@ -5316,7 +5151,7 @@ fn isYieldBlockingNative(value: Value) bool {
 
 fn functionLike(value: Value) bool {
     return switch (value) {
-        .closure, .c_closure, .coroutine_wrapper, .gmatch_iterator => true,
+        .closure, .coroutine_wrapper, .gmatch_iterator => true,
         else => isNativeCallable(value),
     };
 }
@@ -5408,14 +5243,6 @@ fn debugStackRegister(thread: *Thread, stack_index: usize) ?DebugStackSlot {
 
 fn debugValueTypeName(value: Value) []const u8 {
     return value_mod.debugValueTypeName(value);
-}
-
-fn debugHookEvent(event: []const u8) DebugHookEvent {
-    if (std.mem.eql(u8, event, "return")) return .ret;
-    if (std.mem.eql(u8, event, "line")) return .line;
-    if (std.mem.eql(u8, event, "count")) return .count;
-    if (std.mem.eql(u8, event, "tail call")) return .tail_call;
-    return .call;
 }
 
 pub fn appendLuaString(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: Value) !void {

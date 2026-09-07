@@ -23,7 +23,6 @@ pub const Value = union(enum) {
     table: *Table,
     userdata: *Userdata,
     closure: *Closure,
-    c_closure: *CClosure,
     thread: *Thread,
     coroutine_wrapper: *Thread,
     gmatch_iterator: *Table,
@@ -439,101 +438,6 @@ pub const ProtectedCallResult = union(enum) {
 };
 
 pub const ApiCallbackDispatchFn = *const fn (*ApiCallbackContext) anyerror!void;
-pub const CClosureDispatchFn = *const fn (*CClosureContext) anyerror!void;
-pub const CClosureResumeDispatchFn = *const fn (*CClosureResumeContext) anyerror!void;
-pub const CDebugHookDispatchFn = *const fn (*CDebugHookContext) anyerror!void;
-
-pub const DebugHookEvent = enum {
-    call,
-    ret,
-    line,
-    count,
-    tail_call,
-};
-
-pub const CDebugHookContext = struct {
-    state: *State,
-    thread: *Thread,
-    event: DebugHookEvent,
-    currentline: ?usize = null,
-    ftransfer: i64 = 0,
-    ntransfer: usize = 0,
-    user_data: ?*anyopaque,
-};
-
-pub const CClosureContext = struct {
-    state: *State,
-    thread: *Thread,
-    op: bytecode.Call,
-    closure: *CClosure,
-    user_data: ?*anyopaque,
-    returns: std.ArrayList(Value) = .empty,
-    error_value: ?Value = null,
-
-    pub fn deinit(self: *CClosureContext) void {
-        self.returns.deinit(self.state.allocator);
-    }
-
-    pub fn argCount(self: *CClosureContext) usize {
-        return self.op.arg_count;
-    }
-
-    pub fn argValue(self: *CClosureContext, index: usize) Value {
-        const raw_index = std.math.cast(u16, index) orelse return .nil;
-        return value_mod.runtimeArgValue(self.state, self.thread, self.op, raw_index);
-    }
-
-    pub fn appendReturn(self: *CClosureContext, value: Value) !void {
-        try self.returns.append(self.state.allocator, value);
-    }
-
-    pub fn raise(self: *CClosureContext, value: Value) error{LuaError} {
-        self.error_value = value;
-        return error.LuaError;
-    }
-
-    pub fn yieldWithReturns(self: *CClosureContext, values: []const Value) !void {
-        self.thread.yield_values.clearRetainingCapacity();
-        try self.thread.yield_values.appendSlice(self.state.allocator, values);
-        const frame = self.thread.frames.items[self.thread.frames.items.len - 1];
-        self.thread.yield_result_base = frame.base + self.op.base;
-        self.thread.yield_result_count = self.op.return_count;
-        self.thread.pending_c_continuation = true;
-        self.thread.status = .suspended;
-        return error.CoroutineYield;
-    }
-};
-
-pub const CClosureResumeContext = struct {
-    state: *State,
-    thread: *Thread,
-    args: []const Value,
-    user_data: ?*anyopaque,
-    returns: std.ArrayList(Value) = .empty,
-    error_value: ?Value = null,
-
-    pub fn deinit(self: *CClosureResumeContext) void {
-        self.returns.deinit(self.state.allocator);
-    }
-
-    pub fn appendReturn(self: *CClosureResumeContext, value: Value) !void {
-        try self.returns.append(self.state.allocator, value);
-    }
-
-    pub fn raise(self: *CClosureResumeContext, value: Value) error{LuaError} {
-        self.error_value = value;
-        return error.LuaError;
-    }
-
-    pub fn yieldWithReturns(self: *CClosureResumeContext, values: []const Value) !void {
-        self.thread.yield_values.clearRetainingCapacity();
-        try self.thread.yield_values.appendSlice(self.state.allocator, values);
-        self.thread.pending_c_continuation = true;
-        self.thread.status = .suspended;
-        return error.CoroutineYield;
-    }
-};
-
 pub const ApiCallbackContext = struct {
     state: *State,
     thread: *Thread,
@@ -674,17 +578,6 @@ pub const Closure = struct {
     upvalues: []*Upvalue,
     constants: ?[]?Value = null,
     stripped_debug: bool = false,
-    marked: bool = false,
-};
-
-pub const CClosure = struct {
-    function_id: usize,
-    upvalues: []*CUpvalue,
-    marked: bool = false,
-};
-
-pub const CUpvalue = struct {
-    value: Value = .nil,
     marked: bool = false,
 };
 
@@ -928,7 +821,6 @@ pub const Thread = struct {
     pending_unwind_error: ?Value = null,
     pending_unwind_resume_frame_count: usize = 0,
     pending_unwind_target_frame_count: usize = 0,
-    pending_c_continuation: bool = false,
     resume_parent: ?*Thread = null,
     entry: Value = .nil,
     marked: bool = false,

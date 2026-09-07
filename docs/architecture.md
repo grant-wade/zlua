@@ -1,6 +1,6 @@
 # Architecture
 
-zlua is a Lua 5.5 implementation with a frontend, bytecode compiler, runtime, standard libraries, and two embedding layers. Compatibility is measured against the official Lua 5.5 implementation; it is the reference for accepted syntax, runtime behavior, diagnostics, libraries, and the C API.
+zlua is a Lua 5.5 implementation with a frontend, bytecode compiler, runtime, standard libraries, and a Zig embedding API. Compatibility is measured against the official Lua 5.5 implementation; it is the reference for accepted syntax, runtime behavior, diagnostics, and libraries.
 
 ## Main Boundaries
 
@@ -12,7 +12,6 @@ zlua is a Lua 5.5 implementation with a frontend, bytecode compiler, runtime, st
 | Frontend and compiler | `src/frontend/`, `src/compile/` | Lexes, parses, resolves, and compiles Lua source. |
 | Runtime | `src/runtime.zig`, `src/runtime/` | Values, VM execution, calls, coroutines, GC, errors, and host services. |
 | Standard libraries | `src/stdlib.zig`, `src/stdlib/` | Lua-visible native functions and library setup. |
-| C API | `src/c_api.zig` | Lua 5.5 C API compatibility backed by the zlua runtime. |
 
 `src/api.zig`, re-exported through `src/root.zig`, is the intended Zig embedding boundary. Direct runtime imports expose object layouts, stack frames, GC bookkeeping, and bytecode details that may change.
 
@@ -107,7 +106,6 @@ Library setup also avoids repeated object layouts. Standard file handles share o
 | Object | Key data |
 | --- | --- |
 | `Closure` | Proto, Lua upvalues, lazily loaded constants, and debug-strip state. |
-| `CClosure` | C function identity and C upvalues. |
 | `Upvalue` | An open stack slot or a closed stored value. |
 | `Table` | Array part, hash entries and index, metatable, and GC flags. |
 | `Userdata` | Native pointer, type information, metatable, finalizer, and deinit hook. |
@@ -172,23 +170,9 @@ The memory filesystem normalizes sandbox-relative paths and rejects absolute pat
 
 The API maps options into runtime options, converts values in both directions, binds host callbacks and userdata, exposes module and memory-filesystem helpers, and captures Lua errors. Registered host functions are native values containing state-local callback IDs. Active callback contexts root their arguments and pending returns across reentrant calls and collection. Installing a handle into Lua gives Lua its own reference; it does not consume the host handle.
 
-### C API
-
-`src/c_api.zig` is a compatibility layer, not a direct cast of `runtime.State`. Its `lua_State` owns a C-facing stack, registry, strings, tables, userdata, threads, and continuations alongside a runtime state.
-
-Values that cross the boundary keep stable peers where identity matters:
-
-- C strings are indexed by content and may cache their runtime string.
-- C tables and runtime tables are linked in both directions.
-- Linked runtime tables stay rooted while used by the C layer.
-- Recursive synchronization uses in-progress guards and per-traversal visitation generations.
-- The C global table is linked to the runtime's canonical global table.
-
-This bridge lets loaded Lua closures call through C-created tables without replacing table identity on every conversion. The C layer also implements stack indices, pseudo-indices, `luaL_*` helpers, coroutine continuations, status codes, and C-compatible exports matching the installed Lua headers.
-
 ## Errors and Binary Chunks
 
-Load-time failures use `errors.Diagnostic`. Runtime failures use `RuntimeErrorPayload`, an error value, and traceback/debug context. The Zig API exposes these as `error.LuaError` or protected-call results; the C API maps them to Lua status codes.
+Load-time failures use `errors.Diagnostic`. Runtime failures use `RuntimeErrorPayload`, an error value, and traceback/debug context. The Zig API exposes these as `error.LuaError` or protected-call results.
 
 zlua binary chunks serialize protos for zlua-to-zlua use. `string.dump`, `Function.dumpBytecode`, and `State.loadBytecode` use this format. It is version-sensitive, does not promise `luac` compatibility, and is not a stable external ABI.
 
@@ -202,7 +186,6 @@ The test harnesses are Zig build artifacts under `src/testing/`:
 | Differential fixtures | The same Lua program under zlua and downloaded Lua 5.5. |
 | Extension fixtures | zlua-only libraries checked against committed output. |
 | Official suite | Upstream Lua 5.5 tests under both runtimes. |
-| C API fixtures | The same C fixture linked against zlua and Lua 5.5. |
 | Benchmarks | Process-level and in-process startup measurements. |
 
 Staged differential tests can compare frontend, resolver, and compiler acceptance without depending on VM execution. Startup tests separately check allocation hints, static strings, global-table identity, and shared file metatables.
@@ -221,4 +204,4 @@ Changes should preserve these rules:
 - C/runtime value conversion must preserve table identity and cycles.
 - Host effects remain explicit capabilities.
 - Binary chunks and VM layouts remain internal.
-- Performance work must still pass differential, extension, official, embedding, and C API tests.
+- Performance work must still pass differential, extension, official, and embedding tests.

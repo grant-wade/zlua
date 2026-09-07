@@ -73,9 +73,8 @@
 - [testing.bench.allocation](../testing/bench/allocation.md)
 - [testing.bench.c_startup](../testing/bench/c_startup.md)
 - [testing.bench.snapshots](../testing/bench/snapshots.md)
-- [testing.c_api_runner](../testing/c_api_runner.md)
-- [testing.fixtures](../testing/fixtures.md)
 - [testing.diff_runner](../testing/diff_runner.md)
+- [testing.fixtures](../testing/fixtures.md)
 - [testing.expected_failures](../testing/expected_failures.md)
 - [testing.metadata](../testing/metadata.md)
 - [testing.normalizer](../testing/normalizer.md)
@@ -86,11 +85,6 @@
 
 ## Functions
 
-- [newCoroutine](#fn-newcoroutine)
-- [resumeThread](#fn-resumethread)
-- [closeThread](#fn-closethread)
-- [threadWasYielded](#fn-threadwasyielded)
-- [resumeCClosureDispatch](#fn-resumecclosuredispatch)
 - [coroutineCreate](#fn-coroutinecreate)
 - [coroutineResume](#fn-coroutineresume)
 - [coroutineYield](#fn-coroutineyield)
@@ -110,46 +104,6 @@
 - [returnCoroutineResumeResult](#fn-returncoroutineresumeresult)
 - [copyValues](#fn-copyvalues)
 - [copyStackSlice](#fn-copystackslice)
-
-<a id="fn-newcoroutine"></a>
-
-## newCoroutine
-
-```zig
-pub fn newCoroutine(comptime State: type, self: *State, entry: Value) !*Thread
-```
-
-<a id="fn-resumethread"></a>
-
-## resumeThread
-
-```zig
-pub fn resumeThread(comptime State: type, self: *State, target: *Thread, args: []const Value) !ProtectedCallResult
-```
-
-<a id="fn-closethread"></a>
-
-## closeThread
-
-```zig
-pub fn closeThread(comptime State: type, self: *State, target: *Thread) !?Value
-```
-
-<a id="fn-threadwasyielded"></a>
-
-## threadWasYielded
-
-```zig
-pub fn threadWasYielded(comptime State: type, _: *State, target: *Thread) bool
-```
-
-<a id="fn-resumecclosuredispatch"></a>
-
-## resumeCClosureDispatch
-
-```zig
-pub fn resumeCClosureDispatch(comptime State: type, self: *State, thread: *Thread, args: []const Value) !void
-```
 
 <a id="fn-coroutinecreate"></a>
 

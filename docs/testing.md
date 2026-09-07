@@ -12,10 +12,24 @@ Lua-visible behavior is checked against the official Lua 5.5 C implementation bu
 | Differential fixtures | `zig build test-diff` | Runs `tests/diff/**/*.lua` under Lua 5.5 and zlua. |
 | Extension fixtures | `zig build test-extensions` | Checks zlua-only libraries and functions against checked-in output. |
 | Official suite | `zig build test-official` | Runs downloaded Lua 5.5 tests under both interpreters. |
-| C API fixtures | `zig build test-c-api` | Compiles and runs each C fixture against both libraries. |
-| Full check | `zig build ci` | All layers above. |
+| Full check | `zig build ci` | Unit tests, freestanding smoke builds, examples, differential fixtures, extension fixtures, and official suite. |
 
-`just test`, `just diff`, `just extensions`, `just official`, `just c-api`, and `just ci` are convenience wrappers.
+`just test`, `just diff`, `just extensions`, `just official`, and `just ci` are convenience wrappers.
+
+## GitHub Actions
+
+Every push runs `zig build test test-wasm` on Linux x64. Pull requests targeting
+`main` run `zig build ci test-wasm` on Linux, macOS, and Windows, each on x64 and
+ARM64 native runners. The full matrix can also be started manually.
+
+The `PR checks` job succeeds only when the entire full-suite matrix passes; failed,
+cancelled, or skipped matrix jobs prevent it from passing. Select `PR checks` as
+the required status check in the branch protection rule or ruleset for `main`.
+
+CI uses the Zig version declared in `build.zig.zon`. The setup action caches Zig
+downloads and build outputs, with separate build caches for each OS, architecture,
+and dependency manifest. Full-suite jobs also cache Lua source and test downloads.
+New commits cancel older runs for the same event and branch or pull request.
 
 ## Lua 5.5 Reference
 
@@ -96,18 +110,6 @@ zig build test-official -Dofficial-memory-limit-mb=0
 
 The build step applies a 256 MiB child-process cap on Linux by default and no cap elsewhere. Direct harness runs default to no timeout or memory cap. `--mode=internal` is parsed but skipped because `testC` builds are not wired.
 
-## C API Fixtures
-
-`tests/c-api/**/*.c` is compiled twice: once against downloaded Lua 5.5 and once against `zlua-c`. Compatible builds, exit status, stdout, and stderr are required.
-
-```sh
-zig build ci-c-api
-just c-api tests/c-api/stack/stack_manipulation.c
-just c-api tests/c-api/coroutines
-```
-
-`tests/fixtures/c_api_status.toml` tracks public symbols. `tested-clua-diff` means at least one differential C fixture covers the symbol.
-
 ## Debugging a Failure
 
 1. Run the narrowest fixture with both outputs visible.
@@ -119,7 +121,6 @@ just c-api tests/c-api/coroutines
 ```sh
 just diff --show-clua --show-zlua path/to/case.lua
 just official --show-clua --show-zlua calls
-just c-api --show-build tests/c-api/values/roundtrip.c
 ```
 
 Benchmarks are deliberately separate from correctness checks and are not part of `zig build ci`.

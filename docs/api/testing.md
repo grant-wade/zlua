@@ -3,7 +3,7 @@
 ## Navigation
 
 - [API Index](README.md)
-- Submodules: [testing.process](testing/process.md), [testing.clua](testing/clua.md), [testing.bench_runner](testing/bench_runner.md), [testing.c_api_runner](testing/c_api_runner.md), [testing.fixtures](testing/fixtures.md), [testing.diff_runner](testing/diff_runner.md), [testing.expected_failures](testing/expected_failures.md), [testing.metadata](testing/metadata.md), [testing.normalizer](testing/normalizer.md), [testing.extension_runner](testing/extension_runner.md), [testing.official_suite](testing/official_suite.md)
+- Submodules: [testing.process](testing/process.md), [testing.clua](testing/clua.md), [testing.bench_runner](testing/bench_runner.md), [testing.diff_runner](testing/diff_runner.md), [testing.fixtures](testing/fixtures.md), [testing.expected_failures](testing/expected_failures.md), [testing.metadata](testing/metadata.md), [testing.normalizer](testing/normalizer.md), [testing.extension_runner](testing/extension_runner.md), [testing.official_suite](testing/official_suite.md)
 
 <details>
 <summary>All documents</summary>
@@ -73,9 +73,8 @@
 - [testing.bench.allocation](testing/bench/allocation.md)
 - [testing.bench.c_startup](testing/bench/c_startup.md)
 - [testing.bench.snapshots](testing/bench/snapshots.md)
-- [testing.c_api_runner](testing/c_api_runner.md)
-- [testing.fixtures](testing/fixtures.md)
 - [testing.diff_runner](testing/diff_runner.md)
+- [testing.fixtures](testing/fixtures.md)
 - [testing.expected_failures](testing/expected_failures.md)
 - [testing.metadata](testing/metadata.md)
 - [testing.normalizer](testing/normalizer.md)
@@ -88,7 +87,6 @@
 
 - [clua](#import-clua) `@import("testing/clua.zig")`
 - [bench_runner](#import-bench_runner) `@import("testing/bench_runner.zig")`
-- [c_api_runner](#import-c_api_runner) `@import("testing/c_api_runner.zig")`
 - [diff_runner](#import-diff_runner) `@import("testing/diff_runner.zig")`
 - [extension_runner](#import-extension_runner) `@import("testing/extension_runner.zig")`
 - [expected_failures](#import-expected_failures) `@import("testing/expected_failures.zig")`
@@ -111,14 +109,6 @@ pub const clua = @import("testing/clua.zig");
 
 ```zig
 pub const bench_runner = @import("testing/bench_runner.zig");
-```
-
-<a id="import-c_api_runner"></a>
-
-## c_api_runner
-
-```zig
-pub const c_api_runner = @import("testing/c_api_runner.zig");
 ```
 
 <a id="import-diff_runner"></a>

@@ -373,7 +373,7 @@ defer another.deinit();
 
 Capture copies the VM heap, including suspended Lua coroutines, shared references, module caches, I/O buffers, random state, and GC settings. Clones share immutable checkpoint bytecode while keeping mutable closures, caches, and other VM objects private. Capture establishes an active baseline on the source, and clone establishes it on the new worker. Reset also restores options, host bindings, and instruction usage. Checkpoints are reusable, can outlive the source state, and have no persistence format.
 
-Snapshot and reset require an idle VM. Active calls, collection, destruction, or recursive snapshot operations return `error.SnapshotBusy`. C compatibility states, C closures or continuations, and untracked runtime objects return `error.SnapshotUnsupported`. Serialize access to each state and checkpoint.
+Snapshot and reset require an idle VM. Active calls, collection, destruction, or recursive snapshot operations return `error.SnapshotBusy`. Untracked runtime objects return `error.SnapshotUnsupported`. Serialize access to each state and checkpoint.
 
 ### Reset and Lifetimes
 

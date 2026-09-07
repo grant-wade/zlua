@@ -73,9 +73,8 @@
 - [testing.bench.allocation](../testing/bench/allocation.md)
 - [testing.bench.c_startup](../testing/bench/c_startup.md)
 - [testing.bench.snapshots](../testing/bench/snapshots.md)
-- [testing.c_api_runner](../testing/c_api_runner.md)
-- [testing.fixtures](../testing/fixtures.md)
 - [testing.diff_runner](../testing/diff_runner.md)
+- [testing.fixtures](../testing/fixtures.md)
 - [testing.expected_failures](../testing/expected_failures.md)
 - [testing.metadata](../testing/metadata.md)
 - [testing.normalizer](../testing/normalizer.md)
@@ -92,10 +91,6 @@
 - [AllocatorLifetime](#type-allocatorlifetime)
 - [UserdataPayload](#type-userdatapayload)
 - [ProtectedCallResult](#type-protectedcallresult)
-- [DebugHookEvent](#type-debughookevent)
-- [CDebugHookContext](#type-cdebughookcontext)
-- [CClosureContext](#type-cclosurecontext)
-- [CClosureResumeContext](#type-cclosureresumecontext)
 - [ApiCallbackContext](#type-apicallbackcontext)
 - [RuntimeErrorPayload](#type-runtimeerrorpayload)
 - [ProtectedCallContext](#type-protectedcallcontext)
@@ -108,8 +103,6 @@
 - [CallOneContinuation](#type-callonecontinuation)
 - [CoroutineResumeResult](#type-coroutineresumeresult)
 - [Closure](#type-closure)
-- [CClosure](#type-cclosure)
-- [CUpvalue](#type-cupvalue)
 - [Upvalue](#type-upvalue)
 - [TableEntry](#type-tableentry)
 - [Table](#type-table)
@@ -131,9 +124,6 @@
 - [UserdataDeinit](#const-userdatadeinit)
 - [UserdataSnapshotCopy](#const-userdatasnapshotcopy)
 - [ApiCallbackDispatchFn](#const-apicallbackdispatchfn)
-- [CClosureDispatchFn](#const-cclosuredispatchfn)
-- [CClosureResumeDispatchFn](#const-cclosureresumedispatchfn)
-- [CDebugHookDispatchFn](#const-cdebughookdispatchfn)
 - [TableEntryIndex](#const-tableentryindex)
 - [PointerAllocationIndex](#const-pointerallocationindex)
 
@@ -163,7 +153,6 @@ pub const Value = union(enum) {
     table: *Table,
     userdata: *Userdata,
     closure: *Closure,
-    c_closure: *CClosure,
     thread: *Thread,
     coroutine_wrapper: *Thread,
     gmatch_iterator: *Table,
@@ -517,217 +506,6 @@ pub const ApiCallbackDispatchFn = *const fn (*ApiCallbackContext) anyerror!void;
 
 References: [`ApiCallbackContext`](#type-apicallbackcontext)
 
-<a id="const-cclosuredispatchfn"></a>
-
-## CClosureDispatchFn
-
-```zig
-pub const CClosureDispatchFn = *const fn (*CClosureContext) anyerror!void;
-```
-
-References: [`CClosureContext`](#type-cclosurecontext)
-
-<a id="const-cclosureresumedispatchfn"></a>
-
-## CClosureResumeDispatchFn
-
-```zig
-pub const CClosureResumeDispatchFn = *const fn (*CClosureResumeContext) anyerror!void;
-```
-
-References: [`CClosureResumeContext`](#type-cclosureresumecontext)
-
-<a id="const-cdebughookdispatchfn"></a>
-
-## CDebugHookDispatchFn
-
-```zig
-pub const CDebugHookDispatchFn = *const fn (*CDebugHookContext) anyerror!void;
-```
-
-References: [`CDebugHookContext`](#type-cdebughookcontext)
-
-<a id="type-debughookevent"></a>
-
-## DebugHookEvent
-
-```zig
-pub const DebugHookEvent = enum {
-    call,
-    ret,
-    line,
-    count,
-    tail_call,
-};
-```
-
-<a id="type-cdebughookcontext"></a>
-
-## CDebugHookContext
-
-```zig
-pub const CDebugHookContext = struct {
-    state: *State,
-    thread: *Thread,
-    event: DebugHookEvent,
-    currentline: ?usize = null,
-    ftransfer: i64 = 0,
-    ntransfer: usize = 0,
-    user_data: ?*anyopaque,
-};
-```
-
-<a id="type-cclosurecontext"></a>
-
-## CClosureContext
-
-```zig
-pub const CClosureContext = struct {
-    state: *State,
-    thread: *Thread,
-    op: bytecode.Call,
-    closure: *CClosure,
-    user_data: ?*anyopaque,
-    returns: std.ArrayList(Value) = .empty,
-    error_value: ?Value = null,
-};
-```
-
-### Nested Declarations
-
-| Name | Parameters | Return Type | Description |
-| --- | --- | --- | --- |
-| [deinit](#fn-cclosurecontext-deinit) | `self: *CClosureContext` | `void` |  |
-| [argCount](#fn-cclosurecontext-argcount) | `self: *CClosureContext` | `usize` |  |
-| [argValue](#fn-cclosurecontext-argvalue) | `self: *CClosureContext, index: usize` | `Value` |  |
-| [appendReturn](#fn-cclosurecontext-appendreturn) | `self: *CClosureContext, value: Value` | `!void` |  |
-| [raise](#fn-cclosurecontext-raise) | `self: *CClosureContext, value: Value` | `error` |  |
-| [yieldWithReturns](#fn-cclosurecontext-yieldwithreturns) | `self: *CClosureContext, values: []const Value` | `!void` |  |
-
-<a id="fn-cclosurecontext-deinit"></a>
-
-### CClosureContext.deinit
-
-```zig
-pub fn deinit(self: *CClosureContext) void
-```
-
-References: [`CClosureContext`](#type-cclosurecontext)
-
-<a id="fn-cclosurecontext-argcount"></a>
-
-### CClosureContext.argCount
-
-```zig
-pub fn argCount(self: *CClosureContext) usize
-```
-
-References: [`CClosureContext`](#type-cclosurecontext)
-
-<a id="fn-cclosurecontext-argvalue"></a>
-
-### CClosureContext.argValue
-
-```zig
-pub fn argValue(self: *CClosureContext, index: usize) Value
-```
-
-References: [`CClosureContext`](#type-cclosurecontext), [`Value`](#type-value)
-
-<a id="fn-cclosurecontext-appendreturn"></a>
-
-### CClosureContext.appendReturn
-
-```zig
-pub fn appendReturn(self: *CClosureContext, value: Value) !void
-```
-
-References: [`CClosureContext`](#type-cclosurecontext), [`Value`](#type-value)
-
-<a id="fn-cclosurecontext-raise"></a>
-
-### CClosureContext.raise
-
-```zig
-pub fn raise(self: *CClosureContext, value: Value) error{LuaError}
-```
-
-References: [`CClosureContext`](#type-cclosurecontext), [`Value`](#type-value)
-
-<a id="fn-cclosurecontext-yieldwithreturns"></a>
-
-### CClosureContext.yieldWithReturns
-
-```zig
-pub fn yieldWithReturns(self: *CClosureContext, values: []const Value) !void
-```
-
-References: [`CClosureContext`](#type-cclosurecontext), [`Value`](#type-value)
-
-<a id="type-cclosureresumecontext"></a>
-
-## CClosureResumeContext
-
-```zig
-pub const CClosureResumeContext = struct {
-    state: *State,
-    thread: *Thread,
-    args: []const Value,
-    user_data: ?*anyopaque,
-    returns: std.ArrayList(Value) = .empty,
-    error_value: ?Value = null,
-};
-```
-
-### Nested Declarations
-
-| Name | Parameters | Return Type | Description |
-| --- | --- | --- | --- |
-| [deinit](#fn-cclosureresumecontext-deinit) | `self: *CClosureResumeContext` | `void` |  |
-| [appendReturn](#fn-cclosureresumecontext-appendreturn) | `self: *CClosureResumeContext, value: Value` | `!void` |  |
-| [raise](#fn-cclosureresumecontext-raise) | `self: *CClosureResumeContext, value: Value` | `error` |  |
-| [yieldWithReturns](#fn-cclosureresumecontext-yieldwithreturns) | `self: *CClosureResumeContext, values: []const Value` | `!void` |  |
-
-<a id="fn-cclosureresumecontext-deinit"></a>
-
-### CClosureResumeContext.deinit
-
-```zig
-pub fn deinit(self: *CClosureResumeContext) void
-```
-
-References: [`CClosureResumeContext`](#type-cclosureresumecontext)
-
-<a id="fn-cclosureresumecontext-appendreturn"></a>
-
-### CClosureResumeContext.appendReturn
-
-```zig
-pub fn appendReturn(self: *CClosureResumeContext, value: Value) !void
-```
-
-References: [`CClosureResumeContext`](#type-cclosureresumecontext), [`Value`](#type-value)
-
-<a id="fn-cclosureresumecontext-raise"></a>
-
-### CClosureResumeContext.raise
-
-```zig
-pub fn raise(self: *CClosureResumeContext, value: Value) error{LuaError}
-```
-
-References: [`CClosureResumeContext`](#type-cclosureresumecontext), [`Value`](#type-value)
-
-<a id="fn-cclosureresumecontext-yieldwithreturns"></a>
-
-### CClosureResumeContext.yieldWithReturns
-
-```zig
-pub fn yieldWithReturns(self: *CClosureResumeContext, values: []const Value) !void
-```
-
-References: [`CClosureResumeContext`](#type-cclosureresumecontext), [`Value`](#type-value)
-
 <a id="type-apicallbackcontext"></a>
 
 ## ApiCallbackContext
@@ -1009,29 +787,6 @@ pub const Closure = struct {
 };
 ```
 
-<a id="type-cclosure"></a>
-
-## CClosure
-
-```zig
-pub const CClosure = struct {
-    function_id: usize,
-    upvalues: []*CUpvalue,
-    marked: bool = false,
-};
-```
-
-<a id="type-cupvalue"></a>
-
-## CUpvalue
-
-```zig
-pub const CUpvalue = struct {
-    value: Value = .nil,
-    marked: bool = false,
-};
-```
-
 <a id="type-upvalue"></a>
 
 ## Upvalue
@@ -1274,7 +1029,6 @@ pub const Thread = struct {
     pending_unwind_error: ?Value = null,
     pending_unwind_resume_frame_count: usize = 0,
     pending_unwind_target_frame_count: usize = 0,
-    pending_c_continuation: bool = false,
     resume_parent: ?*Thread = null,
     entry: Value = .nil,
     marked: bool = false,

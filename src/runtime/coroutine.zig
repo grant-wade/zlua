@@ -10,9 +10,7 @@ const RuntimeError = types.RuntimeError;
 const Value = types.Value;
 const ProtectedCallResult = types.ProtectedCallResult;
 const CoroutineResumeResult = types.CoroutineResumeResult;
-const CClosureResumeContext = types.CClosureResumeContext;
 const Closure = types.Closure;
-const CClosure = types.CClosure;
 const Upvalue = types.Upvalue;
 const Thread = types.Thread;
 const ThreadStatus = types.ThreadStatus;
@@ -59,7 +57,7 @@ fn isNativeCallable(value: Value) bool {
 
 fn functionLike(value: Value) bool {
     return switch (value) {
-        .closure, .c_closure, .coroutine_wrapper, .gmatch_iterator => true,
+        .closure, .coroutine_wrapper, .gmatch_iterator => true,
         else => isNativeCallable(value),
     };
 }
@@ -85,53 +83,6 @@ fn resumeChainDepth(thread: ?*Thread) usize {
     var current = thread;
     while (current) |active| : (current = active.resume_parent) depth += 1;
     return depth;
-}
-
-pub fn newCoroutine(comptime State: type, self: *State, entry: Value) !*Thread {
-    return newCoroutineThread(State, self, entry);
-}
-
-pub fn resumeThread(comptime State: type, self: *State, target: *Thread, args: []const Value) !ProtectedCallResult {
-    const result = try resumeCoroutine(State, self, target, args);
-    return switch (result) {
-        .success => |values| .{ .success = values },
-        .failure => |value| .{ .failure = value },
-    };
-}
-
-pub fn closeThread(comptime State: type, self: *State, target: *Thread) !?Value {
-    return closeCoroutine(State, self, target, null);
-}
-
-pub fn threadWasYielded(comptime State: type, _: *State, target: *Thread) bool {
-    return target.status == .suspended and target.started;
-}
-
-pub fn resumeCClosureDispatch(comptime State: type, self: *State, thread: *Thread, args: []const Value) !void {
-    const dispatch = self.c_closure_resume_dispatch orelse return;
-    var context = CClosureResumeContext{
-        .state = self,
-        .thread = thread,
-        .args = args,
-        .user_data = self.c_closure_user_data,
-    };
-    defer context.deinit();
-
-    dispatch(&context) catch |err| switch (err) {
-        error.RuntimeError, error.StackOverflow, error.UnsupportedOpcode => return err,
-        error.CoroutineYield, error.CoroutineClose => return err,
-        error.LuaError => return self.failValue(context.error_value orelse .{ .string = try self.intern("C callback raised an error") }),
-        error.OutOfMemory => return err,
-        else => return self.fail(@errorName(err)),
-    };
-
-    const actual_count = try self.resolveReturnCount(thread.yield_result_count, context.returns.items.len);
-    try thread.ensureStack(self.allocator, thread.yield_result_base + actual_count, self.stackValueLimit());
-    for (0..actual_count) |index| {
-        thread.stack.items[thread.yield_result_base + index] = if (index < context.returns.items.len) context.returns.items[index] else .nil;
-    }
-    thread.last_result_base = thread.yield_result_base;
-    thread.last_result_count = actual_count;
 }
 
 pub fn coroutineCreate(comptime State: type, self: *State, thread: *Thread, op: bytecode.Call) !void {
@@ -308,9 +259,6 @@ pub fn resumeCoroutine(comptime State: type, self: *State, target: *Thread, args
 
     if (!target.started) {
         try startCoroutine(State, self, target, args);
-    } else if (target.pending_c_continuation) {
-        target.pending_c_continuation = false;
-        try resumeCClosureDispatch(State, self, target, args);
     } else {
         try setCoroutineResumeValues(State, self, target, args);
     }

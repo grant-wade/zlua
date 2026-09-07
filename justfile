@@ -70,10 +70,6 @@ extensions *args:
 official *args:
     {{zig}} build --summary all run-test-official -- --debug-errors {{official_memory_limit}} {{args}}
 
-# Run all C API fixtures, or one fixture file/directory.
-c-api *args:
-    {{zig}} build --summary all test-c-api -- {{args}}
-
 # Run the full benchmark suite, or select cases with arguments.
 bench *args:
     {{zig}} build --summary all bench -- {{args}}

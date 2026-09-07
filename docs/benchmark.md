@@ -5,7 +5,7 @@ Run the whole suite with `zig build bench` (or `just bench`). It runs these grou
 | Group | Measures |
 | --- | --- |
 | Process | Complete Lua programs under zlua and Lua 5.5, including process launch, compilation, and shutdown. |
-| Startup | State creation, library opening, and the first chunk through the native and C APIs. |
+| Startup | State creation, library opening, and the first chunk through the native Zig API and upstream Lua’s C API. |
 | Snapshots | Capture, clone, first-work mutation, reset-only, no-op reset, full work/reset cycles, and equivalent rebuild. |
 
 All benchmarks use ReleaseFast for both zlua and C Lua, including process comparisons and C startup workers, regardless of `-Doptimize`. Startup and snapshot timings exclude process launch. Startup totals sum the measured phases; they are not another independently timed operation.
@@ -61,4 +61,4 @@ Add a Lua fixture under `tests/bench/<category>/` for a complete-program compari
 
 Without metadata, the name is the fixture path and the category is `misc`. `expect: skip` or `expect: fail` excludes a fixture and requires a `reason`.
 
-For an in-process case, add it to `src/testing/bench/startup.zig` or `snapshots.zig`. Keep setup and cleanup visibly outside the timer unless they are the operation being measured. Both C engines share `tools/bench_c_api_startup.c`; it returns raw measurements to the same Zig reporter.
+For an in-process case, add it to `src/testing/bench/startup.zig` or `snapshots.zig`. Keep setup and cleanup visibly outside the timer unless they are the operation being measured. The upstream Lua worker in `tools/bench_c_api_startup.c` returns raw measurements to the same Zig reporter.
