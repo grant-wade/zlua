@@ -735,203 +735,472 @@ pub const State = struct {
         if (thread.hook != .nil and (thread.hook_line or thread.hook_count != 0 or thread.hook_running)) return false;
         if (self.gc_running and self.shouldRunAutoGc()) return false;
 
-        const frame_index = thread.frames.items.len - 1;
-        var frame = &thread.frames.items[frame_index];
-        if (frame.proto.has_to_close_locals) return false;
-        const proto = frame.proto;
-        const instructions = proto.instructions.items;
-        const base = frame.base;
-        var pc = frame.pc;
-        var stack = thread.stack.items;
-        var executed_count: u64 = 0;
+        var did_work = false;
+        frames: while (true) {
+            const frame_index = thread.frames.items.len - 1;
+            const frame = &thread.frames.items[frame_index];
+            if (frame.proto.has_to_close_locals) return did_work;
+            const proto = frame.proto;
+            const instructions = proto.instructions.items;
+            var pc = frame.pc;
+            if (pc >= instructions.len) return did_work;
+            // Check the end once for sequential dispatch. The last opcode
+            // must stop dispatch or check the bound itself, as CLOSE does.
+            // Branches still check their targets; other prototypes fall back.
+            switch (instructions[instructions.len - 1]) {
+                .ret, .tail_call, .close => {},
+                else => return did_work,
+            }
+            const stack = thread.stack.items[frame.base..];
+            var executed_count: u64 = 0;
+            // Straight-line instructions advance PC. Count their span at a
+            // branch or exit instead of saturating a counter at every opcode.
+            var block_start = pc;
 
-        fast_loop: while (pc < instructions.len) {
-            switch (instructions[pc]) {
-                .load_nil => |dest| {
-                    stack[base + dest] = .nil;
+            // Dispatch at each opcode keeps the next branch specific to its
+            // predecessor instead of routing every instruction through one loop.
+            // Carry only the tag across branches; decode operands in their handler
+            // so the dispatch does not copy the entire instruction union.
+            fast_loop: switch (std.meta.activeTag(instructions[pc])) {
+                .load_nil => {
+                    const dest = instructions[pc].load_nil;
+                    stack[dest] = .nil;
                     pc += 1;
+                    continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
-                .load_bool => |op| {
-                    stack[base + op.dest] = .{ .boolean = op.value };
+                .load_bool => {
+                    const op = instructions[pc].load_bool;
+                    stack[op.dest] = .{ .boolean = op.value };
                     pc += 1;
+                    continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
-                .load_const => |op| {
+                .load_const => {
+                    const op = instructions[pc].load_const;
                     const constants = frame.closure.constants orelse break :fast_loop;
-                    stack[base + op.dest] = constants[op.constant] orelse break :fast_loop;
+                    stack[op.dest] = constants[op.constant] orelse break :fast_loop;
                     pc += 1;
+                    continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
-                .move => |op| {
-                    stack[base + op.dest] = stack[base + op.source];
+                .move => {
+                    const op = instructions[pc].move;
+                    stack[op.dest] = stack[op.source];
                     pc += 1;
+                    continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
-                .add => |op| {
-                    const value = rawNumericBinaryOpFast(stack[base + op.left], stack[base + op.right], .add) orelse break :fast_loop;
-                    stack[base + op.dest] = value;
+                .get_upvalue => {
+                    const op = instructions[pc].get_upvalue;
+                    const upvalue = frame.closure.upvalues[op.upvalue];
+                    stack[op.register] = if (upvalue.is_open) upvalue.owner.stack.items[upvalue.stack_index] else upvalue.closed;
                     pc += 1;
+                    continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
-                .sub => |op| {
-                    const value = rawNumericBinaryOpFast(stack[base + op.left], stack[base + op.right], .sub) orelse break :fast_loop;
-                    stack[base + op.dest] = value;
+                .set_upvalue => {
+                    const op = instructions[pc].set_upvalue;
+                    const upvalue = frame.closure.upvalues[op.upvalue];
+                    if (self.is_collecting) break :fast_loop;
+                    if (upvalue.is_open) {
+                        if (upvalue.owner.rollback) |record| if (!record.header.detached) break :fast_loop;
+                        rollback_mod.touch(upvalue);
+                        upvalue.owner.stack.items[upvalue.stack_index] = stack[op.register];
+                    } else {
+                        rollback_mod.touch(upvalue);
+                        upvalue.closed = stack[op.register];
+                    }
                     pc += 1;
+                    continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
-                .mul => |op| {
-                    const value = rawNumericBinaryOpFast(stack[base + op.left], stack[base + op.right], .mul) orelse break :fast_loop;
-                    stack[base + op.dest] = value;
+                .add => {
+                    const op = instructions[pc].add;
+                    const value = rawNumericBinaryOpFast(stack[op.left], stack[op.right], .add) orelse break :fast_loop;
+                    stack[op.dest] = value;
                     pc += 1;
+                    continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
-                .div => |op| {
-                    const value = rawNumericBinaryOpFast(stack[base + op.left], stack[base + op.right], .div) orelse break :fast_loop;
-                    stack[base + op.dest] = value;
+                .sub => {
+                    const op = instructions[pc].sub;
+                    const value = rawNumericBinaryOpFast(stack[op.left], stack[op.right], .sub) orelse break :fast_loop;
+                    stack[op.dest] = value;
                     pc += 1;
+                    continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
-                .idiv => |op| {
-                    const value = rawNumericBinaryOpFast(stack[base + op.left], stack[base + op.right], .idiv) orelse break :fast_loop;
-                    stack[base + op.dest] = value;
+                .mul => {
+                    const op = instructions[pc].mul;
+                    const value = rawNumericBinaryOpFast(stack[op.left], stack[op.right], .mul) orelse break :fast_loop;
+                    stack[op.dest] = value;
                     pc += 1;
+                    continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
-                .mod => |op| {
-                    const value = rawNumericBinaryOpFast(stack[base + op.left], stack[base + op.right], .mod) orelse break :fast_loop;
-                    stack[base + op.dest] = value;
+                .div => {
+                    const op = instructions[pc].div;
+                    const value = rawNumericBinaryOpFast(stack[op.left], stack[op.right], .div) orelse break :fast_loop;
+                    stack[op.dest] = value;
                     pc += 1;
+                    continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
-                .band => |op| {
-                    const value = rawIntegerBitwiseOpFast(stack[base + op.left], stack[base + op.right], .band) orelse break :fast_loop;
-                    stack[base + op.dest] = value;
+                .idiv => {
+                    const op = instructions[pc].idiv;
+                    const value = rawNumericBinaryOpFast(stack[op.left], stack[op.right], .idiv) orelse break :fast_loop;
+                    stack[op.dest] = value;
                     pc += 1;
+                    continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
-                .bor => |op| {
-                    const value = rawIntegerBitwiseOpFast(stack[base + op.left], stack[base + op.right], .bor) orelse break :fast_loop;
-                    stack[base + op.dest] = value;
+                .mod => {
+                    const op = instructions[pc].mod;
+                    const value = rawNumericBinaryOpFast(stack[op.left], stack[op.right], .mod) orelse break :fast_loop;
+                    stack[op.dest] = value;
                     pc += 1;
+                    continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
-                .bxor => |op| {
-                    const value = rawIntegerBitwiseOpFast(stack[base + op.left], stack[base + op.right], .bxor) orelse break :fast_loop;
-                    stack[base + op.dest] = value;
+                .band => {
+                    const op = instructions[pc].band;
+                    const value = rawIntegerBitwiseOpFast(stack[op.left], stack[op.right], .band) orelse break :fast_loop;
+                    stack[op.dest] = value;
                     pc += 1;
+                    continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
-                .shl => |op| {
-                    const value = rawIntegerBitwiseOpFast(stack[base + op.left], stack[base + op.right], .shl) orelse break :fast_loop;
-                    stack[base + op.dest] = value;
+                .bor => {
+                    const op = instructions[pc].bor;
+                    const value = rawIntegerBitwiseOpFast(stack[op.left], stack[op.right], .bor) orelse break :fast_loop;
+                    stack[op.dest] = value;
                     pc += 1;
+                    continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
-                .shr => |op| {
-                    const value = rawIntegerBitwiseOpFast(stack[base + op.left], stack[base + op.right], .shr) orelse break :fast_loop;
-                    stack[base + op.dest] = value;
+                .bxor => {
+                    const op = instructions[pc].bxor;
+                    const value = rawIntegerBitwiseOpFast(stack[op.left], stack[op.right], .bxor) orelse break :fast_loop;
+                    stack[op.dest] = value;
                     pc += 1;
+                    continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
-                .eq => |op| {
-                    const lhs = stack[base + op.left];
-                    const rhs = stack[base + op.right];
+                .shl => {
+                    const op = instructions[pc].shl;
+                    const value = rawIntegerBitwiseOpFast(stack[op.left], stack[op.right], .shl) orelse break :fast_loop;
+                    stack[op.dest] = value;
+                    pc += 1;
+                    continue :fast_loop std.meta.activeTag(instructions[pc]);
+                },
+                .shr => {
+                    const op = instructions[pc].shr;
+                    const value = rawIntegerBitwiseOpFast(stack[op.left], stack[op.right], .shr) orelse break :fast_loop;
+                    stack[op.dest] = value;
+                    pc += 1;
+                    continue :fast_loop std.meta.activeTag(instructions[pc]);
+                },
+                .eq => {
+                    const op = instructions[pc].eq;
+                    const lhs = stack[op.left];
+                    const rhs = stack[op.right];
                     if (equalityHasMetamethod(lhs, rhs) and !valuesEqual(lhs, rhs)) break :fast_loop;
-                    stack[base + op.dest] = .{ .boolean = valuesEqual(lhs, rhs) };
+                    stack[op.dest] = .{ .boolean = valuesEqual(lhs, rhs) };
                     pc += 1;
+                    continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
-                .lt => |op| {
-                    const result = rawCompare(stack[base + op.left], stack[base + op.right], .lt) orelse break :fast_loop;
-                    stack[base + op.dest] = .{ .boolean = result };
+                .lt => {
+                    const op = instructions[pc].lt;
+                    const result = rawCompare(stack[op.left], stack[op.right], .lt) orelse break :fast_loop;
+                    stack[op.dest] = .{ .boolean = result };
                     pc += 1;
+                    continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
-                .le => |op| {
-                    const result = rawCompare(stack[base + op.left], stack[base + op.right], .le) orelse break :fast_loop;
-                    stack[base + op.dest] = .{ .boolean = result };
+                .le => {
+                    const op = instructions[pc].le;
+                    const result = rawCompare(stack[op.left], stack[op.right], .le) orelse break :fast_loop;
+                    stack[op.dest] = .{ .boolean = result };
                     pc += 1;
+                    continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
-                .not => |op| {
-                    stack[base + op.dest] = .{ .boolean = !truthy(stack[base + op.source]) };
+                .not => {
+                    const op = instructions[pc].not;
+                    stack[op.dest] = .{ .boolean = !truthy(stack[op.source]) };
                     pc += 1;
+                    continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
-                .len => |op| {
-                    const value = fastLengthNoMetamethod(stack[base + op.source]) orelse break :fast_loop;
-                    stack[base + op.dest] = value;
+                .unm => {
+                    const op = instructions[pc].unm;
+                    stack[op.dest] = switch (stack[op.source]) {
+                        .integer => |value| .{ .integer = -%value },
+                        .number => |value| .{ .number = -value },
+                        else => break :fast_loop,
+                    };
                     pc += 1;
+                    continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
-                .get_table => |op| {
-                    const value = fastTableRawGet(stack[base + op.table], stack[base + op.key]) orelse break :fast_loop;
-                    stack[base + op.dest] = value;
+                .bnot => {
+                    const op = instructions[pc].bnot;
+                    const value = stack[op.source];
+                    if (value != .integer) break :fast_loop;
+                    stack[op.dest] = .{ .integer = ~value.integer };
                     pc += 1;
+                    continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
-                .get_field => |op| {
+                .len => {
+                    const op = instructions[pc].len;
+                    const value = fastLengthNoMetamethod(stack[op.source]) orelse break :fast_loop;
+                    stack[op.dest] = value;
+                    pc += 1;
+                    continue :fast_loop std.meta.activeTag(instructions[pc]);
+                },
+                .get_table => {
+                    const op = instructions[pc].get_table;
+                    const value = fastTableRawGet(stack[op.table], stack[op.key]) orelse break :fast_loop;
+                    stack[op.dest] = value;
+                    pc += 1;
+                    continue :fast_loop std.meta.activeTag(instructions[pc]);
+                },
+                .get_field => {
+                    const op = instructions[pc].get_field;
                     const key = Value{ .string = constantString(proto, op.name) };
-                    const value = fastTableRawGet(stack[base + op.table], key) orelse break :fast_loop;
-                    stack[base + op.dest] = value;
+                    const value = fastTableRawGet(stack[op.table], key) orelse break :fast_loop;
+                    stack[op.dest] = value;
                     pc += 1;
+                    continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
-                .set_table => |op| {
-                    if (!self.fastTableArraySetExistingNoAlloc(stack[base + op.table], stack[base + op.key], stack[base + op.value]) and
-                        !self.fastTableKnownKeySetExistingNoAlloc(stack[base + op.table], stack[base + op.key], stack[base + op.value])) break :fast_loop;
+                .set_table => {
+                    const op = instructions[pc].set_table;
+                    if (!self.fastTableArraySetExistingNoAlloc(stack[op.table], stack[op.key], stack[op.value]) and
+                        !self.fastTableKnownKeySetExistingNoAlloc(stack[op.table], stack[op.key], stack[op.value])) break :fast_loop;
                     pc += 1;
+                    continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
-                .set_field => |op| {
+                .set_array => {
+                    const op = instructions[pc].set_array;
+                    const table_value = stack[op.table];
+                    if (self.is_collecting or table_value != .table or op.index == 0) break :fast_loop;
+                    const table = table_value.table;
+                    if (table.rollback) |record| if (!record.header.detached) break :fast_loop;
+                    const index: usize = op.index;
+                    const value = stack[op.value];
+                    if (index <= table.array.items.len) {
+                        table.array.items[index - 1] = value;
+                    } else if (value != .nil) {
+                        if (index > table.array.capacity) break :fast_loop;
+                        const old_len = table.array.items.len;
+                        table.array.items.len = index;
+                        @memset(table.array.items[old_len..], .nil);
+                        table.array.items[index - 1] = value;
+                    }
+                    pc += 1;
+                    continue :fast_loop std.meta.activeTag(instructions[pc]);
+                },
+                .set_field => {
+                    const op = instructions[pc].set_field;
                     const key = Value{ .string = constantString(proto, op.name) };
-                    if (!self.fastTableKnownKeySetExistingNoAlloc(stack[base + op.table], key, stack[base + op.value])) break :fast_loop;
+                    if (!self.fastTableKnownKeySetExistingNoAlloc(stack[op.table], key, stack[op.value])) break :fast_loop;
                     pc += 1;
+                    continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
-                .compare_branch => |op| {
-                    const result = rawCompareBranchResult(stack[base + op.left], stack[base + op.right], op.op) orelse break :fast_loop;
+                .compare_branch => {
+                    const op = instructions[pc].compare_branch;
+                    const result = rawCompareBranchResult(stack[op.left], stack[op.right], op.op) orelse break :fast_loop;
                     pc += 1;
+                    executed_count = executed_count +| (pc - block_start);
                     if (result == op.jump_if_truthy) {
                         const source_pc = pc;
                         pc = jumpTarget(source_pc, op.offset);
                         if (pc < source_pc) frame.last_hook_line = null;
                     }
+                    block_start = pc;
+                    if (pc >= instructions.len) break :fast_loop;
+                    continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
-                .jmp => |offset| {
+                .jmp => {
+                    const offset = instructions[pc].jmp;
                     pc += 1;
+                    executed_count = executed_count +| (pc - block_start);
                     const source_pc = pc;
                     pc = jumpTarget(source_pc, offset);
                     if (pc < source_pc) frame.last_hook_line = null;
+                    block_start = pc;
+                    if (pc >= instructions.len) break :fast_loop;
+                    continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
-                .test_op => |op| {
+                .test_op => {
+                    const op = instructions[pc].test_op;
                     pc += 1;
-                    if (truthy(stack[base + op.register]) == op.jump_if_truthy) {
+                    executed_count = executed_count +| (pc - block_start);
+                    if (truthy(stack[op.register]) == op.jump_if_truthy) {
                         const source_pc = pc;
                         pc = jumpTarget(source_pc, op.offset);
                         if (pc < source_pc) frame.last_hook_line = null;
                     }
+                    block_start = pc;
+                    if (pc >= instructions.len) break :fast_loop;
+                    continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
-                .test_set => |op| {
-                    const value = stack[base + op.source];
-                    stack[base + op.dest] = value;
+                .test_set => {
+                    const op = instructions[pc].test_set;
+                    const value = stack[op.source];
+                    stack[op.dest] = value;
                     pc += 1;
+                    executed_count = executed_count +| (pc - block_start);
                     if (truthy(value) == op.jump_if_truthy) {
                         const source_pc = pc;
                         pc = jumpTarget(source_pc, op.offset);
                         if (pc < source_pc) frame.last_hook_line = null;
                     }
+                    block_start = pc;
+                    if (pc >= instructions.len) break :fast_loop;
+                    continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
-                .for_loop => |op| {
-                    const absolute_base = base + op.base;
+                .for_loop => {
+                    const op = instructions[pc].for_loop;
+                    const absolute_base: usize = op.base;
                     const current = stack[absolute_base];
                     const limit = stack[absolute_base + 1];
                     const step = stack[absolute_base + 2];
-                    if (current != .integer or limit != .integer or step != .integer) break :fast_loop;
-                    const next = current.integer +% step.integer;
-                    stack[absolute_base] = .{ .integer = next };
+                    const continues = if (current == .integer and limit == .integer and step == .integer) blk: {
+                        const next = current.integer +% step.integer;
+                        stack[absolute_base] = .{ .integer = next };
+                        const wrapped = (step.integer > 0 and next < current.integer) or (step.integer < 0 and next > current.integer);
+                        break :blk !wrapped and forLoopContinuesInteger(next, limit.integer, step.integer);
+                    } else if (current == .number and limit == .number and step == .number) blk: {
+                        const next = current.number + step.number;
+                        stack[absolute_base] = .{ .number = next };
+                        break :blk forLoopContinuesNumber(next, limit.number, step.number);
+                    } else break :fast_loop;
                     pc += 1;
-                    const wrapped = (step.integer > 0 and next < current.integer) or (step.integer < 0 and next > current.integer);
-                    if (!wrapped and forLoopContinuesInteger(next, limit.integer, step.integer)) {
+                    executed_count = executed_count +| (pc - block_start);
+                    if (continues) {
                         const source_pc = pc;
                         pc = jumpTarget(source_pc, op.offset);
                         if (pc < source_pc) frame.last_hook_line = null;
                     }
+                    block_start = pc;
+                    if (pc >= instructions.len) break :fast_loop;
+                    continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
-                .close => |register| {
-                    _ = register;
-                    if (thread.open_upvalues != null) break :fast_loop;
+                .call => {
+                    var op = instructions[pc].call;
+                    if (thread.hook_call) break :fast_loop;
+                    if (op.arg_count == bytecode.multret_count) {
+                        // A preceding call/vararg must still own the last-result
+                        // state. Otherwise the general path clears and resolves it.
+                        if (executed_count != 0 or pc != block_start) break :fast_loop;
+                        const expected_base = frame.base + op.base + 1;
+                        if (thread.last_result_base < expected_base) break :fast_loop;
+                        const result_end = thread.last_result_base + thread.last_result_count;
+                        const count = result_end -| expected_base;
+                        if (count >= bytecode.multret_count) break :fast_loop;
+                        op.arg_count = @intCast(count);
+                    }
+                    const callee = stack[op.base];
+                    if (callee == .native and !thread.hook_return) {
+                        if (op.arg_count == 0 or @as(usize, op.base) + 1 >= stack.len) break :fast_loop;
+                        const result = stdlib.math.fastUnaryResult(callee.native, stack[op.base + 1]) orelse break :fast_loop;
+                        const return_count: usize = if (op.return_count == bytecode.multret_count) 1 else op.return_count;
+                        const absolute_base = frame.base + op.base;
+                        const stored_end = absolute_base + @max(return_count, 1);
+                        if (stored_end > thread.stack.items.len or stored_end > self.stackValueLimit()) break :fast_loop;
+                        stack[op.base] = result;
+                        if (return_count > 1) @memset(thread.stack.items[absolute_base + 1 .. stored_end], .nil);
+                        thread.last_result_base = absolute_base;
+                        thread.last_result_count = return_count;
+                        thread.last_transfer_base = absolute_base;
+                        thread.last_transfer_count = 1;
+                        thread.next_call_name = null;
+                        thread.next_call_namewhat = null;
+                        frame.pc = pc + 1;
+                        self.instruction_count = self.instruction_count +| (executed_count +| (pc - block_start) +| 1);
+                        did_work = true;
+                        continue :frames;
+                    }
+                    if (callee != .closure) break :fast_loop;
+                    const closure = callee.closure;
+                    const callee_proto = closure.proto;
+                    // Reuse existing storage; growth, varargs and hooks use
+                    // the general call path, which can allocate or reenter Lua.
+                    if (callee_proto.is_vararg or callee_proto.named_vararg or callee_proto.has_to_close_locals) break :fast_loop;
+                    if (thread.frames.items.len >= thread.frames.capacity or
+                        thread.frames.items.len >= self.callFrameLimit()) break :fast_loop;
+                    const callee_base = frame.base + op.base;
+                    const register_count = @max(callee_proto.max_registers, 1);
+                    const stack_end = callee_base + register_count;
+                    if (stack_end > thread.stack.items.len or stack_end > self.stackValueLimit()) break :fast_loop;
+
+                    executed_count = executed_count +| (pc - block_start);
+                    const copied = @min(op.arg_count, callee_proto.param_count);
+                    for (0..copied) |index| stack[op.base + index] = stack[op.base + 1 + index];
+                    @memset(thread.stack.items[callee_base + copied .. stack_end], .nil);
+                    frame.pc = pc + 1;
+                    thread.frames.appendAssumeCapacity(.{
+                        .closure = closure,
+                        .proto = callee_proto,
+                        .base = callee_base,
+                        .pc = 0,
+                        .return_start = callee_base,
+                        .return_count = op.return_count,
+                        .varargs = &.{},
+                        .debug_name_override = thread.next_call_name,
+                        .debug_namewhat_override = thread.next_call_namewhat,
+                    });
+                    thread.next_call_name = null;
+                    thread.next_call_namewhat = null;
+                    if (executed_count != 0) {
+                        thread.last_result_count = 0;
+                        thread.last_transfer_count = 0;
+                    }
+                    self.instruction_count = self.instruction_count +| (executed_count +| 1);
+                    did_work = true;
+                    continue :frames;
+                },
+                .ret => {
+                    const op = instructions[pc].ret;
+                    // The outer interpreter completes continuations and
+                    // stops at host call boundaries before executing a caller.
+                    const can_return = thread.pending_unwind_error == null and
+                        !thread.pending_yield_hook_return and
+                        thread.pairs_continuations.items.len == 0 and
+                        thread.call_one_continuations.items.len == 0 and
+                        thread.protected_continuations.items.len == 0 and
+                        thread.tail_call_continuations.items.len == 0 and
+                        thread.generic_for_continuations.items.len == 0;
+                    if (!can_return or thread.hook_return or frame_index <= target_frame_count) break :fast_loop;
+                    if (op.count == bytecode.multret_count or frame.return_count == bytecode.multret_count or
+                        frame.owns_varargs or frame.pending_returns != null) break :fast_loop;
+                    var current = thread.open_upvalues;
+                    while (current) |upvalue| : (current = upvalue.next) {
+                        if (upvalue.is_open and upvalue.stack_index >= frame.base) break :fast_loop;
+                    }
+                    const return_start = frame.return_start;
+                    const return_count = frame.return_count;
+                    if (return_start + return_count > thread.stack.items.len or
+                        return_start + return_count > self.stackValueLimit()) break :fast_loop;
+                    executed_count = executed_count +| (pc - block_start);
+                    const copied = @min(return_count, op.count);
+                    for (0..copied) |index| thread.stack.items[return_start + index] = stack[op.first + index];
+                    @memset(thread.stack.items[return_start + copied .. return_start + return_count], .nil);
+                    thread.frames.items.len -= 1;
+                    thread.last_result_base = return_start;
+                    thread.last_result_count = return_count;
+                    if (executed_count != 0) thread.last_transfer_count = 0;
+                    self.instruction_count = self.instruction_count +| (executed_count +| 1);
+                    did_work = true;
+                    continue :frames;
+                },
+                .close => {
+                    const register = instructions[pc].close;
+                    // An open upvalue in an outer scope does not require work at
+                    // this boundary. Only leave the loop when something closes.
+                    const first = frame.base + register;
+                    var current = thread.open_upvalues;
+                    while (current) |upvalue| : (current = upvalue.next) {
+                        if (upvalue.is_open and upvalue.stack_index >= first) break :fast_loop;
+                    }
                     pc += 1;
+                    if (pc >= instructions.len) break :fast_loop;
+                    continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
                 else => break :fast_loop,
             }
-            executed_count = executed_count +| 1;
-        }
 
-        if (executed_count == 0) return false;
-        frame = &thread.frames.items[frame_index];
-        frame.pc = pc;
-        self.instruction_count = self.instruction_count +| executed_count;
-        thread.last_result_count = 0;
-        thread.last_transfer_count = 0;
-        return true;
+            executed_count = executed_count +| (pc - block_start);
+            if (executed_count == 0) return did_work;
+            frame.pc = pc;
+            self.instruction_count = self.instruction_count +| executed_count;
+            thread.last_result_count = 0;
+            thread.last_transfer_count = 0;
+            return true;
+        }
     }
 
     pub fn checkExecutionLimits(self: *State, thread: *Thread) !void {
@@ -1005,11 +1274,13 @@ pub const State = struct {
         if (table_value != .table or key != .string) return false;
         const table = table_value.table;
         if (table.rollback) |record| if (!record.header.detached) return false;
-        const index = table.entry_index.get(key) orelse return false;
-        const slot = &table.entries.items[index].value;
-        if (slot.* == .nil and table.metatable != null) return false;
-        slot.* = value;
-        return true;
+        if (table.findEntry(key)) |index| {
+            const slot = &table.entries.items[index].value;
+            if (slot.* == .nil and table.metatable != null) return false;
+            slot.* = value;
+            return true;
+        }
+        return table.metatable == null and table.insertHashEntryNoAlloc(key, value);
     }
 
     fn fastTableArraySetIndex(self: *State, table_value: Value, index_u32: u32, value: Value) !bool {
@@ -4876,7 +5147,7 @@ fn rawBinaryOp(lhs: Value, rhs: Value, op: BinaryOp) !?Value {
     };
 }
 
-fn rawNumericBinaryOpFast(lhs: Value, rhs: Value, op: BinaryOp) ?Value {
+inline fn rawNumericBinaryOpFast(lhs: Value, rhs: Value, comptime op: BinaryOp) ?Value {
     return switch (lhs) {
         .integer => |left_integer| switch (rhs) {
             .integer => |right_integer| switch (op) {
@@ -4924,7 +5195,7 @@ fn rawNumericBinaryOpFast(lhs: Value, rhs: Value, op: BinaryOp) ?Value {
     };
 }
 
-fn rawIntegerBitwiseOpFast(lhs: Value, rhs: Value, op: BinaryOp) ?Value {
+inline fn rawIntegerBitwiseOpFast(lhs: Value, rhs: Value, comptime op: BinaryOp) ?Value {
     if (lhs != .integer or rhs != .integer) return null;
     return .{ .integer = rawBitwise(lhs.integer, rhs.integer, op) };
 }
@@ -5350,6 +5621,8 @@ fn plainFastLoopCanStart(instruction: bytecode.Instruction) bool {
         .load_bool,
         .load_const,
         .move,
+        .get_upvalue,
+        .set_upvalue,
         .add,
         .sub,
         .mul,
@@ -5365,16 +5638,21 @@ fn plainFastLoopCanStart(instruction: bytecode.Instruction) bool {
         .lt,
         .le,
         .not,
+        .unm,
+        .bnot,
         .len,
         .get_table,
         .get_field,
         .set_table,
+        .set_array,
         .set_field,
         .compare_branch,
         .jmp,
         .test_op,
         .test_set,
         .for_loop,
+        .call,
+        .ret,
         .close,
         => true,
         else => false,

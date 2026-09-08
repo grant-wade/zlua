@@ -201,15 +201,14 @@ const Copier = struct {
             // Tombstone keys can refer to objects already swept. Preserve valid
             // keys for next(), but never dereference missing heap identities.
             new.entries = try self.list(types.TableEntry, old.entries.items);
-            try new.entry_index.ensureTotalCapacity(@intCast(new.entries.items.len));
             var retained: usize = 0;
             for (new.entries.items) |entry| {
                 if (entry.key == .nil) continue;
                 new.entries.items[retained] = entry;
-                try new.entry_index.put(entry.key, retained);
                 retained += 1;
             }
             new.entries.items.len = retained;
+            try new.rebuildEntryIndex();
             inline for (.{ "metatable", "metatable_prev", "metatable_next", "counts_for_gc_count", "finalizer_registered", "finalizer_next" }) |name| @field(new, name) = try self.remap(@field(old, name));
             try d.table_allocation_index.put(@intFromPtr(new), index);
         }

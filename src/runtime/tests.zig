@@ -16,6 +16,28 @@ const valuesEqual = runtime.valuesEqual;
 const appendBinaryChunkHeader = runtime.appendBinaryChunkHeader;
 const dumpClosureBinary = runtime.dumpClosureBinary;
 
+test "small table growth preserves existing entries on allocation failure" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, tableGrowthAllocationScenario, .{});
+}
+
+fn tableGrowthAllocationScenario(allocator: std.mem.Allocator) !void {
+    var table = try runtime.Table.init(allocator, 0, 1);
+    defer table.deinit(allocator);
+    const keys = [_][]const u8{ "one", "two", "three", "four", "five", "six", "seven", "eight", "nine" };
+    for (keys, 0..) |key, index| {
+        table.set(allocator, .{ .string = key }, .{ .integer = @intCast(index) }) catch |err| {
+            for (keys[0..index], 0..) |previous, expected| {
+                try std.testing.expectEqual(@as(i64, @intCast(expected)), table.get(.{ .string = previous }).integer);
+            }
+            try std.testing.expect(table.get(.{ .string = key }) == .nil);
+            return err;
+        };
+    }
+    for (keys, 0..) |key, expected| {
+        try std.testing.expectEqual(@as(i64, @intCast(expected)), table.get(.{ .string = key }).integer);
+    }
+}
+
 test "executes basic print and arithmetic" {
     var result = try executeSource(std.testing.allocator,
         \\print(1 + 2)
@@ -57,6 +79,48 @@ test "reports stack overflow for unbounded Lua recursion" {
 
     try std.testing.expectEqual(@as(?u8, 1), result.exit_code);
     try std.testing.expect(std.mem.indexOf(u8, result.stderr, "stack overflow") != null);
+}
+
+test "instruction accounting agrees across nested call dispatch paths" {
+    const source =
+        \\local function f(n)
+        \\  if n == 0 then return 3 end
+        \\  return 1 + f(n - 1)
+        \\end
+        \\local sum = 0
+        \\for i = 1, 20 do
+        \\  local t = { i, a = i }
+        \\  sum = sum + f(i) + t[1] - t.a + math.floor(math.sqrt(i * i)) - i
+        \\end
+        \\assert(sum == 270)
+    ;
+    var fast = try State.init(std.testing.allocator);
+    defer fast.deinit();
+    try fast.executeSourceChunk(source);
+    var metered = try State.initWithOptions(std.testing.allocator, .{ .max_instructions = 100_000 });
+    defer metered.deinit();
+    try metered.executeSourceChunk(source);
+    try std.testing.expectEqual(metered.instruction_count, fast.instruction_count);
+}
+
+test "hand-built bytecode can fall through or jump past its final instruction" {
+    const compile = @import("../compile.zig");
+    const Instruction = compile.bytecode.Instruction;
+    const cases = [_][]const Instruction{
+        &.{},
+        &.{.{ .load_nil = 0 }},
+        &.{ .{ .load_nil = 0 }, .{ .close = 0 } },
+        &.{ .{ .load_nil = 0 }, .{ .jmp = 1 }, .{ .ret = .{ .first = 0, .count = 0 } } },
+    };
+    for (cases) |instructions| {
+        var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .none });
+        defer state.deinit();
+        var proto = compile.proto.Proto.init(std.testing.allocator);
+        defer proto.deinit();
+        proto.max_registers = 1;
+        for (instructions) |instruction| _ = try proto.emit(instruction, 0);
+        try state.execute(&proto);
+    }
 }
 
 test "reports calls to non-functions" {

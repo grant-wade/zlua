@@ -584,8 +584,10 @@ pub fn clearDeadHashKeys(comptime State: type, self: *State) void {
             if (entry.value == .nil and valueIsCollectableUnmarked(State, self, entry.key)) {
                 _ = table.entry_index.remove(entry.key);
             } else {
-                if (write_index != read_index) table.entries.items[write_index] = entry;
-                table.entry_index.getPtr(entry.key).?.* = write_index;
+                if (write_index != read_index) {
+                    table.entries.items[write_index] = entry;
+                    if (table.entry_index.capacity() != 0) table.entry_index.getPtr(entry.key).?.* = write_index;
+                }
                 write_index += 1;
             }
         }

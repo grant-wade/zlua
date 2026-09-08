@@ -215,7 +215,7 @@ References: [`Constant`](#type-constant)
 ## Instruction
 
 ```zig
-pub const Instruction = union(enum) {
+pub const Instruction = union(enum(u8)) {
     load_nil: Register,
     load_bool: LoadBool,
     load_const: LoadConst,

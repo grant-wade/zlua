@@ -15,6 +15,7 @@ All benchmarks use ReleaseFast for both zlua and C Lua, including process compar
 ```sh
 zig build bench -- --list
 zig build bench -- table/pairs_iteration --iterations=20
+zig build bench -- sustained --iterations=10 --warmup=2
 zig build bench -- startup --iterations=1000 --warmup=100
 zig build bench -- callbacks --verbose
 zig build bench -- --json /tmp/bench.json --csv /tmp/bench.csv
@@ -23,6 +24,8 @@ zig build bench -- --json /tmp/bench.json --csv /tmp/bench.csv
 All groups accept `--list`, selectors, `--iterations`, `--warmup` (or `--no-warmup`), `--verbose`, `--json`, and `--csv`. Options with values also accept `--option=value`. Process selectors match fixture names, paths, or directories. Startup and snapshot selectors match a case, engine, or the paths printed by `--list`.
 
 Process fixtures default to 30 samples per engine and 1 warmup unless their metadata says otherwise. Startup and snapshots default to 1,000 samples and 100 warmups. `--category` selects a process metadata category or the `startup` / `snapshots` group.
+
+Fixtures under `tests/bench/sustained/` use longer loops to reduce the influence of process startup on execution measurements. They default to 10 samples and 2 warmups. Six extend the existing arithmetic, call, array, and allocation fixtures; two cover floating-point loop counters and repeated upvalue writes. Keep the shorter fixtures in comparisons as well, since startup still matters for complete programs.
 
 ## Reading the results
 
@@ -35,6 +38,8 @@ Allocation counts and bytes are medians across samples. Requested bytes include 
 JSON format 2 includes run metadata, raw samples, summaries, and comparisons for every group. Existing process records and their mean-based ratio remain under `benchmarks`. CSV format 2 has one row per operation sample; failed or skipped operations with no samples still get a row. Both formats store nanoseconds and bytes.
 
 Save a baseline, make the change, and repeat the same command on an otherwise idle machine. Look at the samples and spread as well as the ratio. Process runs alternate engine order and check every pair's exit status and output outside the timer.
+
+[Performance work from 2026-09-07](performance.md) records the current optimization measurements and remaining gaps against Lua 5.5.
 
 ## Snapshot reset measurements
 
