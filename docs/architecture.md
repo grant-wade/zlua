@@ -138,11 +138,13 @@ The instruction dispatcher lives in `runtime/state.zig`; `runtime/vm.zig` perfor
 
 ### Garbage Collection
 
-The collector marks from the global table, API roots, active threads and stacks, closures, upvalues, metatables, current errors, and callback state. It also handles weak tables and userdata/table finalizers.
+The collector keeps object addresses stable and supports two modes. Generational mode, the default, focuses on recently allocated objects. Incremental mode spreads a full collection across VM safepoints and calls to `State.stepGc`.
 
-Collection must remain safe across protected calls, yields, close handlers, finalizers, and host callbacks. Conservative collection is used where an in-progress operation temporarily holds values outside normal roots.
+Collection follows references from globals, embedding handles, active calls, and suspended coroutines. Write barriers keep those references valid when Lua or host code changes an object between steps. Weak tables and finalizers receive special handling so unreachable objects can be cleared or finalized without losing objects that become reachable again.
 
-`collectgarbage("step")` and `State.stepGc` currently do full-collection-style work rather than a truly incremental step. Runtime mode and tuning controls exist for Lua compatibility, but a full generational collector is still future work.
+Snapshots save the heap and GC settings without running collection. Reset restores the saved objects without repeating a full-heap scan; generational collections then focus on new allocations. Storage kept for reset still counts toward the state's memory limit, even when it is no longer part of the live Lua heap.
+
+See [Garbage Collection](embedding.md#garbage-collection) for embedding controls.
 
 ## Standard Libraries and Host Access
 

@@ -206,8 +206,19 @@ pub const InstructionBudget = struct {
     remaining: ?u64,
 };
 
-/// Garbage-collector tuning options, reserved for future API expansion.
-pub const GcOptions = struct {};
+/// Choose generational or incremental garbage collection.
+pub const GcMode = runtime_types.GcMode;
+/// Parameters accepted by `gcParam` and `setGcParam`.
+pub const GcParam = runtime_types.GcParam;
+/// Percentages, except stepsize, which is measured in bytes.
+pub const GcParams = runtime_types.GcParams;
+
+/// Initial GC settings. Automatic generational collection is enabled by default.
+pub const GcOptions = struct {
+    mode: GcMode = .generational,
+    running: bool = true,
+    params: GcParams = .{},
+};
 
 /// Diagnostics and tracing options intended for development and tests.
 pub const DebugOptions = struct {
@@ -368,15 +379,15 @@ const MemoryLimitAllocator = struct {
 
 /// Budget passed to `State.stepGc`.
 pub const GcBudget = struct {
-    /// Requested number of GC steps; currently reserved because `stepGc` performs a full collection.
+    /// At most this many basic steps; zero requests one basic step.
     steps: usize = 0,
 };
 
 /// Result of an incremental garbage-collection step.
 pub const GcStepResult = enum {
-    /// The requested collection work completed.
+    /// An incremental or generational major cycle completed.
     complete,
-    /// More work remains.
+    /// No major cycle completed; a minor collection alone reports pending.
     pending,
 };
 
@@ -409,6 +420,7 @@ pub const State = struct {
     /// The allocator must remain valid until `deinit`. The default options open
     /// safe libraries with sandboxed host capabilities.
     pub fn init(state_allocator: std.mem.Allocator, options: Options) !State {
+        inline for (@typeInfo(GcParam).@"enum".fields) |f| try validateGcParam(options.gc.params.get(@field(GcParam, f.name)));
         var memory_limit_allocator: ?*MemoryLimitAllocator = null;
         errdefer if (memory_limit_allocator) |allocator_ptr| state_allocator.destroy(allocator_ptr);
 
@@ -424,6 +436,10 @@ pub const State = struct {
             .memory_limit_allocator = memory_limit_allocator,
             .raw_state = try runtime.State.initWithOptions(runtime_allocator, runtimeOptions(options)),
         };
+        state.raw_state.gc_mode = options.gc.mode;
+        state.raw_state.gc_running = options.gc.running;
+        state.raw_state.gc_params = options.gc.params;
+        state.raw_state.resetAutoGcThreshold();
         if (memory_limit_allocator) |limit| state.raw_state.allocator_lifetime = &limit.lifetime;
         memory_limit_allocator = null;
         errdefer state.deinit();
@@ -628,24 +644,67 @@ pub const State = struct {
         if (!runtime_selection.isEmpty()) try stdlib.installGlobalTable(&self.raw_state);
     }
 
-    /// Runs a full garbage collection cycle.
+    /// Runs a full collection and pending finalizers, even while automatic GC is stopped.
     pub fn collect(self: *State) !void {
         self.bindDispatch();
         try self.raw_state.collectGarbage();
     }
 
-    /// Runs garbage-collection work for `budget` and reports whether collection completed.
-    ///
-    /// This currently performs a full collection regardless of the budget.
+    /// Runs at most the requested number of basic steps, even while stopped.
+    /// This limits work, not elapsed time; large objects and finalizers may take longer.
     pub fn stepGc(self: *State, budget: GcBudget) !GcStepResult {
-        _ = budget;
-        try self.collect();
-        return .complete;
+        self.bindDispatch();
+        return if (try self.raw_state.stepGc(budget.steps)) .complete else .pending;
+    }
+
+    pub fn gcMode(self: *const State) GcMode {
+        return self.raw_state.gc_mode;
+    }
+
+    /// Changes collection mode and returns the previous mode.
+    pub fn setGcMode(self: *State, mode: GcMode) GcMode {
+        return self.raw_state.setGcMode(mode);
+    }
+
+    pub fn gcParam(self: *const State, param: GcParam) i64 {
+        return self.raw_state.gcParam(param);
+    }
+
+    /// Sets a tuning parameter and returns its previous value.
+    /// Values outside 0 through maxInt(i32) return `error.InvalidGcParam`.
+    pub fn setGcParam(self: *State, param: GcParam, value: i64) !i64 {
+        try validateGcParam(value);
+        const previous = self.raw_state.gcParam(param);
+        self.raw_state.setGcParam(param, value);
+        self.raw_state.resetAutoGcThreshold();
+        return previous;
+    }
+
+    pub fn stopGc(self: *State) void {
+        self.raw_state.gc_running = false;
+    }
+
+    pub fn restartGc(self: *State) void {
+        self.raw_state.gc_running = true;
+    }
+
+    pub fn isGcRunning(self: *const State) bool {
+        return self.raw_state.gc_running;
+    }
+
+    // Called after embedding writes have installed all temporary values in roots.
+    fn gcBoundary(self: *State) !void {
+        if (self.raw_state.gc_running and self.raw_state.shouldRunAutoGc()) {
+            _ = try self.raw_state.stepGc(1);
+        }
     }
 
     /// Converts a Zig value into a rooted high-level Lua `Value`.
     pub fn push(self: *State, value: anytype) !Value {
-        return Value.fromRuntime(self, try toRuntimeValue(self, value));
+        var result = try Value.fromRuntime(self, try toRuntimeValue(self, value));
+        errdefer result.deinit();
+        try self.gcBoundary();
+        return result;
     }
 
     /// Converts a high-level Lua `Value` to the requested Zig type.
@@ -658,6 +717,7 @@ pub const State = struct {
         const raw_name = try self.raw_state.intern(name);
         const raw_value = try toRuntimeValue(self, value);
         self.raw_state.putGlobal(raw_name, raw_value) catch |err| return self.captureLuaError(err);
+        try self.gcBoundary();
     }
 
     /// Reads a global variable and converts it to `T`.
@@ -706,7 +766,10 @@ pub const State = struct {
     /// Creates a rooted Lua table handle with optional capacity hints.
     pub fn createTable(self: *State, options: TableOptions) !Table {
         const raw = self.raw_state.newTableWithHints(options.array_hint, options.hash_hint) catch |err| return self.captureLuaError(err);
-        return Table.fromRuntime(self, raw);
+        var table = try Table.fromRuntime(self, raw);
+        errdefer table.deinit();
+        try self.gcBoundary();
+        return table;
     }
 
     /// Allocates Lua-owned userdata storage initialized with `value`.
@@ -721,14 +784,17 @@ pub const State = struct {
             self.allocator().destroy(ptr);
             return err;
         };
+        raw.userdata.payload.?.managed_bytes = @sizeOf(T);
+        self.raw_state.noteAllocation(@sizeOf(T));
         var userdata = try Userdata(T).fromRuntime(self, raw);
         errdefer userdata.deinit();
-        if (metatable) |table| raw.userdata.metatable = table else try userdata.initMetatable();
+        if (metatable) |table| try self.raw_state.setDebugMetatableValue(raw, .{ .table = table }) else try userdata.initMetatable();
         raw.userdata.finalizer = userdataFinalizer(T, options.finalizer);
         raw.userdata.finalizer_data = userdataFinalizerData(T, options.finalizer);
         raw.userdata.payload.?.finalizer = raw.userdata.finalizer;
         raw.userdata.payload.?.finalizer_data = raw.userdata.finalizer_data;
         setUserdataSnapshotHooks(T, raw.userdata, options.snapshot);
+        try self.gcBoundary();
         return userdata;
     }
 
@@ -754,12 +820,13 @@ pub const State = struct {
         const raw = try self.raw_state.newUserdata(ptr, typeId(T), @typeName(T), null, null, null);
         var userdata = try Userdata(T).fromRuntime(self, raw);
         errdefer userdata.deinit();
-        if (metatable) |table| raw.userdata.metatable = table else try userdata.initMetatable();
+        if (metatable) |table| try self.raw_state.setDebugMetatableValue(raw, .{ .table = table }) else try userdata.initMetatable();
         raw.userdata.finalizer = userdataFinalizer(T, options.finalizer);
         raw.userdata.finalizer_data = userdataFinalizerData(T, options.finalizer);
         raw.userdata.payload.?.finalizer = raw.userdata.finalizer;
         raw.userdata.payload.?.finalizer_data = raw.userdata.finalizer_data;
         setUserdataSnapshotHooks(T, raw.userdata, options.snapshot);
+        try self.gcBoundary();
         return userdata;
     }
 
@@ -1184,6 +1251,7 @@ pub const Table = struct {
         const raw_key = try toRuntimeValue(self.ref.state, key);
         const raw_value = try toRuntimeValue(self.ref.state, value);
         self.ref.state.raw_state.setTableValue(raw, raw_key, raw_value) catch |err| return self.ref.state.captureLuaError(err);
+        try self.ref.state.gcBoundary();
     }
 
     /// Returns a state-local token, valid while rooted and until reset.
@@ -1383,7 +1451,7 @@ pub fn Userdata(comptime T: type) type {
             var index_value = metatable.table.get(index_key);
             if (index_value == .nil) {
                 index_value = self.ref.state.raw_state.newTableWithHints(0, 4) catch |err| return self.ref.state.captureLuaError(err);
-                try metatable.table.set(self.ref.state.allocator(), index_key, index_value);
+                try self.ref.state.raw_state.setTableRaw(metatable.table, index_key, index_value);
                 self.ref.state.raw_state.setTableValue(metatable, index_key, index_value) catch |err| return self.ref.state.captureLuaError(err);
             }
             if (index_value != .table) return error.TypeMismatch;
@@ -1435,10 +1503,10 @@ pub fn Userdata(comptime T: type) type {
             if (raw.metatable != null) return;
             const metatable = self.ref.state.raw_state.newTableWithHints(0, 3) catch |err| return self.ref.state.captureLuaError(err);
             const index = self.ref.state.raw_state.newTableWithHints(0, 4) catch |err| return self.ref.state.captureLuaError(err);
-            try metatable.table.set(self.ref.state.allocator(), .{ .string = try self.ref.state.raw_state.intern("__name") }, .{ .string = try self.ref.state.raw_state.intern(@typeName(T)) });
-            try metatable.table.set(self.ref.state.allocator(), .{ .string = try self.ref.state.raw_state.intern("__index") }, index);
+            try self.ref.state.raw_state.setTableRaw(metatable.table, .{ .string = try self.ref.state.raw_state.intern("__name") }, .{ .string = try self.ref.state.raw_state.intern(@typeName(T)) });
+            try self.ref.state.raw_state.setTableRaw(metatable.table, .{ .string = try self.ref.state.raw_state.intern("__index") }, index);
             rollback_runtime.touch(raw);
-            raw.metatable = metatable.table;
+            try self.ref.state.raw_state.setDebugMetatableValue(.{ .userdata = raw }, metatable);
         }
 
         fn rawValue(self: @This()) !runtime.Value {
@@ -1728,6 +1796,10 @@ pub const Context = struct {
 
 /// Opaque placeholder for future high-level coroutine/thread handles.
 pub const Thread = opaque {};
+
+fn validateGcParam(value: i64) !void {
+    if (value < 0 or value > std.math.maxInt(i32)) return error.InvalidGcParam;
+}
 
 fn runtimeOptions(options: Options) runtime.StateOptions {
     return .{

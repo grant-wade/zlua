@@ -1,4 +1,4 @@
-# testing.bench.options
+# testing.bench.gc
 
 ## Navigation
 
@@ -83,108 +83,21 @@
 
 </details>
 
+## Overview
+
+GC work distributions. Setup is outside each measured step. The counting
+allocator reports physical VM storage, including retained rollback copies;
+runtime_bytes reports the live managed heap used by collector pacing.
+
 ## Functions
 
-- [parseArgs](#fn-parseargs)
-- [parsePositiveUsize](#fn-parsepositiveusize)
-- [parsePositiveU64](#fn-parsepositiveu64)
+- [collect](#fn-collect)
 
-## Types
+<a id="fn-collect"></a>
 
-- [Family](#type-family)
-- [Options](#type-options)
-
-<a id="type-family"></a>
-
-## Family
+## collect
 
 ```zig
-pub const Family = enum {
-    process,
-    startup,
-    snapshots,
-    gc,
-    all,
-};
-```
-
-<a id="type-options"></a>
-
-## Options
-
-```zig
-pub const Options = struct {
-    family: Family = .all,
-    verbose: bool = false,
-    zlua_build: ?[]const u8 = null,
-    clua_build: ?[]const u8 = null,
-    c_build: ?[]const u8 = null,
-    clua_c: ?[]const u8 = null,
-    bench_root: []const u8 = default_bench_root,
-    selectors: []const []const u8 = &.{},
-    clua: ?[]const u8 = null,
-    zlua: ?[]const u8 = null,
-    list: bool = false,
-    iterations: ?usize = null,
-    warmup: ?usize = null,
-    timeout_ms: ?u64 = null,
-    category: ?[]const u8 = null,
-    json_path: ?[]const u8 = null,
-    csv_path: ?[]const u8 = null,
-    debug_errors: bool = false,
-};
-```
-
-### Nested Declarations
-
-| Name | Parameters | Return Type | Description |
-| --- | --- | --- | --- |
-| [matches](#fn-options-matches) | `self: Options, group: []const u8, engine: []const u8, name: []const u8` | `bool` |  |
-| [deinit](#fn-options-deinit) | `self: Options, allocator: std.mem.Allocator` | `void` |  |
-
-<a id="fn-options-matches"></a>
-
-### Options.matches
-
-```zig
-pub fn matches(self: Options, group: []const u8, engine: []const u8, name: []const u8) bool
-```
-
-References: [`Options`](#type-options)
-
-<a id="fn-options-deinit"></a>
-
-### Options.deinit
-
-```zig
-pub fn deinit(self: Options, allocator: std.mem.Allocator) void
-```
-
-References: [`Options`](#type-options)
-
-<a id="fn-parseargs"></a>
-
-## parseArgs
-
-```zig
-pub fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !Options
-```
-
-References: [`Options`](#type-options)
-
-<a id="fn-parsepositiveusize"></a>
-
-## parsePositiveUsize
-
-```zig
-pub fn parsePositiveUsize(value: []const u8) !usize
-```
-
-<a id="fn-parsepositiveu64"></a>
-
-## parsePositiveU64
-
-```zig
-pub fn parsePositiveU64(value: []const u8) !u64
+pub fn collect(allocator: std.mem.Allocator, io: std.Io, options: Options, suite: *results.Suite) !void
 ```
 

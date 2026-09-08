@@ -25,7 +25,7 @@ All groups accept `--list`, selectors, `--iterations`, `--warmup` (or `--no-warm
 
 Process fixtures default to 30 samples per engine and 1 warmup unless their metadata says otherwise. Startup and snapshots default to 1,000 samples and 100 warmups. `--category` selects a process metadata category or the `startup` / `snapshots` group.
 
-Fixtures under `tests/bench/sustained/` use longer loops to reduce the influence of process startup on execution measurements. They default to 10 samples and 2 warmups. Six extend the existing arithmetic, call, array, and allocation fixtures; two cover floating-point loop counters and repeated upvalue writes. Keep the shorter fixtures in comparisons as well, since startup still matters for complete programs.
+Use `sustained` to measure longer-running Lua code with less influence from process startup. These fixtures default to 10 samples and 2 warmups. Keep the shorter fixtures when startup time matters to your application.
 
 ## Reading the results
 
@@ -38,8 +38,6 @@ Allocation counts and bytes are medians across samples. Requested bytes include 
 JSON format 2 includes run metadata, raw samples, summaries, and comparisons for every group. Existing process records and their mean-based ratio remain under `benchmarks`. CSV format 2 has one row per operation sample; failed or skipped operations with no samples still get a row. Both formats store nanoseconds and bytes.
 
 Save a baseline, make the change, and repeat the same command on an otherwise idle machine. Look at the samples and spread as well as the ratio. Process runs alternate engine order and check every pair's exit status and output outside the timer.
-
-[Performance work from 2026-09-07](performance.md) records the current optimization measurements and remaining gaps against Lua 5.5.
 
 ## Snapshot reset measurements
 

@@ -411,6 +411,9 @@ pub const UserdataPayload = struct {
     lifetime: ?*AllocatorLifetime,
     references: std.atomic.Value(usize) = .init(1),
     ptr: *anyopaque,
+    /// Known inline storage owned by this payload; external/nested storage is
+    /// accounted by the host allocator, not inferred through opaque pointers.
+    managed_bytes: usize = 0,
     finalizer: ?UserdataFinalizer,
     finalizer_data: ?*const anyopaque,
     dispose: ?UserdataDeinit,
@@ -522,6 +525,7 @@ pub const ApiCallbackContext = struct {
 
     pub fn appendReturn(self: *ApiCallbackContext, value: Value) !void {
         try self.returns.append(self.state.allocator, value);
+        self.state.markValue(value);
     }
 
     pub fn fail(self: *ApiCallbackContext, message: []const u8) RuntimeError {
@@ -538,6 +542,7 @@ pub const ApiCallbackContext = struct {
 
     pub fn raise(self: *ApiCallbackContext, value: Value) error{LuaError} {
         self.error_value = value;
+        self.state.markValue(value);
         return error.LuaError;
     }
 
@@ -641,6 +646,7 @@ pub const Closure = struct {
     constants: ?[]?Value = null,
     stripped_debug: bool = false,
     marked: bool = false,
+    gc: GcMeta = .{},
 };
 
 pub const Upvalue = struct {
@@ -651,6 +657,7 @@ pub const Upvalue = struct {
     is_open: bool = true,
     next: ?*Upvalue = null,
     marked: bool = false,
+    gc: GcMeta = .{},
 };
 
 pub const TableEntry = struct {
@@ -684,8 +691,11 @@ pub const Table = struct {
     metatable_next: ?*Table = null,
     counts_for_gc_count: bool = true,
     marked: bool = false,
+    gc: GcMeta = .{},
     finalizer_registered: bool = false,
     finalizer_next: ?*Table = null,
+    finalizer_prev: ?*Table = null,
+    finalizer_order: u64 = 0,
 
     pub inline fn init(allocator: std.mem.Allocator, array_hint: u32, hash_hint: u32) !Table {
         var table = Table{ .entry_index = TableEntryIndex.init(allocator) };
@@ -876,7 +886,10 @@ pub const Userdata = struct {
     finalizer_data: ?*const anyopaque = null,
     deinit_fn: ?UserdataDeinit = null,
     marked: bool = false,
+    gc: GcMeta = .{},
     finalized: bool = false,
+    finalization_pending: bool = false,
+    finalizer_next: ?*Userdata = null,
 };
 
 pub const Thread = struct {
@@ -926,6 +939,7 @@ pub const Thread = struct {
     resume_parent: ?*Thread = null,
     entry: Value = .nil,
     marked: bool = false,
+    gc: GcMeta = .{},
     started: bool = false,
     is_main: bool = false,
     closing: bool = false,
@@ -1005,8 +1019,42 @@ pub const CallFrame = struct {
 pub const StringAllocation = struct {
     bytes: []const u8,
     marked: bool = false,
+    gc: GcMeta = .{},
 };
 pub const PointerAllocationIndex = std.AutoHashMap(usize, usize);
+
+/// Collector scratch state never participates in logical rollback dirtiness.
+pub const GcMeta = struct {
+    epoch: u64 = 0,
+    generation: u64 = 0,
+    color: enum { white, gray, black } = .white,
+    age: enum { new, survivor, old } = .new,
+    remembered: bool = false,
+    weak_epoch: u64 = 0,
+    tables_epoch: u64 = 0,
+    has_young: bool = false,
+    storage_bytes: usize = 0,
+};
+
+/// Queue entries own identities, never pointers into growable registries.
+pub const GcObject = union(enum) {
+    table: *Table,
+    userdata: *Userdata,
+    closure: *Closure,
+    upvalue: *Upvalue,
+    thread: *Thread,
+};
+
+pub const GcPhase = enum { pause, propagate, atomic, sweep_threads, sweep_closures, sweep_upvalues, sweep_strings, sweep_userdata, sweep_tables, finalize };
+pub const GcCycle = enum { major, minor };
+pub const GcGenerations = struct {
+    string_allocations: usize = 0,
+    table_allocations: usize = 0,
+    userdata_allocations: usize = 0,
+    closure_allocations: usize = 0,
+    upvalue_allocations: usize = 0,
+    thread_allocations: usize = 0,
+};
 
 pub const GcMode = enum {
     incremental,
@@ -1029,12 +1077,21 @@ pub const GcParam = enum {
     stepsize,
 };
 
+/// Collection tuning. Values are percentages except `stepsize`, which is in bytes.
+/// The Zig API accepts values from 0 through maxInt(i32) without rounding.
+/// Lua's `collectgarbage("param", ...)` rounds values to Lua's parameter format.
 pub const GcParams = struct {
+    /// Heap growth before the next minor collection.
     minormul: i64 = 20,
+    /// Fraction of the heap a major collection must reclaim to return to minor collections.
     majorminor: i64 = 50,
+    /// Heap growth since the last major collection before another is requested.
     minormajor: i64 = 70,
+    /// Heap size relative to the last collection before starting another full cycle.
     pause: i64 = 250,
+    /// Work multiplier for each step.
     stepmul: i64 = 200,
+    /// Allocation between steps, in bytes; also used to determine step work.
     stepsize: i64 = 200,
 
     pub fn get(self: GcParams, param: GcParam) i64 {

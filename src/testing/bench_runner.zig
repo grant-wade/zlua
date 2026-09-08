@@ -6,6 +6,7 @@ const process = @import("bench/process.zig");
 const startup = @import("bench/startup.zig");
 const c_startup = @import("bench/c_startup.zig");
 const snapshots = @import("bench/snapshots.zig");
+const gc = @import("bench/gc.zig");
 
 pub fn runCli(allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map, zlua_exe: []const u8, args: []const []const u8) !u8 {
     return run(allocator, io, environ_map, zlua_exe, args) catch |err| {
@@ -70,4 +71,6 @@ fn collectFamilies(allocator: std.mem.Allocator, io: std.Io, environ_map: *const
     }
     if (options.family == .snapshots or options.family == .all)
         try snapshots.collect(allocator, io, options, suite);
+    if (options.family == .gc or options.family == .all)
+        try gc.collect(allocator, io, options, suite);
 }

@@ -73,6 +73,7 @@
 - [testing.bench.allocation](../testing/bench/allocation.md)
 - [testing.bench.c_startup](../testing/bench/c_startup.md)
 - [testing.bench.snapshots](../testing/bench/snapshots.md)
+- [testing.bench.gc](../testing/bench/gc.md)
 - [testing.diff_runner](../testing/diff_runner.md)
 - [testing.fixtures](../testing/fixtures.md)
 - [testing.expected_failures](../testing/expected_failures.md)
@@ -85,6 +86,13 @@
 
 ## Functions
 
+- [reserveQueues](#fn-reservequeues)
+- [prepareRegistration](#fn-prepareregistration)
+- [registeredAllocation](#fn-registeredallocation)
+- [forgetThread](#fn-forgetthread)
+- [isOld](#fn-isold)
+- [rememberObject](#fn-rememberobject)
+- [propagate](#fn-propagate)
 - [noteAllocation](#fn-noteallocation)
 - [noteAllocationFreed](#fn-noteallocationfreed)
 - [refreshAllocationTotal](#fn-refreshallocationtotal)
@@ -92,9 +100,16 @@
 - [tableCapacityBytes](#fn-tablecapacitybytes)
 - [tableGcBytes](#fn-tablegcbytes)
 - [noteTableCapacityDelta](#fn-notetablecapacitydelta)
+- [threadCapacityBytes](#fn-threadcapacitybytes)
+- [syncThreadStorage](#fn-syncthreadstorage)
+- [userdataBytes](#fn-userdatabytes)
+- [closureBytes](#fn-closurebytes)
 - [collectGarbageValue](#fn-collectgarbagevalue)
 - [collectGarbageParam](#fn-collectgarbageparam)
 - [collectGarbageStep](#fn-collectgarbagestep)
+- [stepCount](#fn-stepcount)
+- [autoStep](#fn-autostep)
+- [step](#fn-step)
 - [collectGarbage](#fn-collectgarbage)
 - [gcParam](#fn-gcparam)
 - [setGcParam](#fn-setgcparam)
@@ -103,6 +118,7 @@
 - [collectGarbageWithFinalizersMode](#fn-collectgarbagewithfinalizersmode)
 - [shouldRunAutoGc](#fn-shouldrunautogc)
 - [resetAutoGcThreshold](#fn-resetautogcthreshold)
+- [normalizeBaseline](#fn-normalizebaseline)
 - [resetMarks](#fn-resetmarks)
 - [markRoots](#fn-markroots)
 - [markValue](#fn-markvalue)
@@ -133,11 +149,13 @@
 - [writeTableBarrier](#fn-writetablebarrier)
 - [writeBarrier](#fn-writebarrier)
 - [runPendingFinalizers](#fn-runpendingfinalizers)
+- [runFinalizerBatch](#fn-runfinalizerbatch)
 - [runPendingUserdataFinalizers](#fn-runpendinguserdatafinalizers)
 - [callableValue](#fn-callablevalue)
+- [removeRegistryItem](#fn-removeregistryitem)
 - [sweepStrings](#fn-sweepstrings)
-- [sweepUserdata](#fn-sweepuserdata)
 - [sweepTables](#fn-sweeptables)
+- [sweepUserdata](#fn-sweepuserdata)
 - [sweepClosures](#fn-sweepclosures)
 - [sweepUpvalues](#fn-sweepupvalues)
 - [sweepThreads](#fn-sweepthreads)
@@ -154,6 +172,62 @@
 - [allocationStats](#fn-allocationstats)
 - [noteTableMetatableChanged](#fn-notetablemetatablechanged)
 - [unlinkTableMetatable](#fn-unlinktablemetatable)
+
+<a id="fn-reservequeues"></a>
+
+## reserveQueues
+
+```zig
+pub fn reserveQueues(comptime State: type, self: *State, extra: usize) !void
+```
+
+<a id="fn-prepareregistration"></a>
+
+## prepareRegistration
+
+```zig
+pub fn prepareRegistration(comptime State: type, self: *State, comptime field: []const u8) !void
+```
+
+<a id="fn-registeredallocation"></a>
+
+## registeredAllocation
+
+```zig
+pub fn registeredAllocation(comptime State: type, self: *State, comptime field: []const u8, item: anytype) void
+```
+
+<a id="fn-forgetthread"></a>
+
+## forgetThread
+
+```zig
+pub fn forgetThread(comptime State: type, self: *State, thread: *Thread) void
+```
+
+<a id="fn-isold"></a>
+
+## isOld
+
+```zig
+pub fn isOld(comptime State: type, self: *State, object: anytype) bool
+```
+
+<a id="fn-rememberobject"></a>
+
+## rememberObject
+
+```zig
+pub fn rememberObject(comptime State: type, self: *State, object: types.GcObject) void
+```
+
+<a id="fn-propagate"></a>
+
+## propagate
+
+```zig
+pub fn propagate(comptime State: type, self: *State, budget: usize) usize
+```
 
 <a id="fn-noteallocation"></a>
 
@@ -208,7 +282,42 @@ pub fn tableGcBytes(table: *const Table) usize
 ## noteTableCapacityDelta
 
 ```zig
-pub fn noteTableCapacityDelta(comptime State: type, self: *State, table: *const Table, old_capacity_bytes: usize) void
+pub fn noteTableCapacityDelta(comptime State: type, self: *State, table: *Table, old_capacity_bytes: usize) void
+```
+
+<a id="fn-threadcapacitybytes"></a>
+
+## threadCapacityBytes
+
+Managed backing capacities; allocator overhead and rollback copies are
+measured separately by the embedding allocator, never used to pace GC.
+
+```zig
+pub fn threadCapacityBytes(thread: *const Thread) usize
+```
+
+<a id="fn-syncthreadstorage"></a>
+
+## syncThreadStorage
+
+```zig
+pub fn syncThreadStorage(comptime State: type, self: *State, thread: *Thread) void
+```
+
+<a id="fn-userdatabytes"></a>
+
+## userdataBytes
+
+```zig
+pub fn userdataBytes(userdata: *const Userdata) usize
+```
+
+<a id="fn-closurebytes"></a>
+
+## closureBytes
+
+```zig
+pub fn closureBytes(closure: *const Closure) usize
 ```
 
 <a id="fn-collectgarbagevalue"></a>
@@ -231,8 +340,37 @@ pub fn collectGarbageParam(comptime State: type, self: *State, value: Value) !Gc
 
 ## collectGarbageStep
 
+Lua 5.5 expresses explicit step budgets in bytes; zero forces a basic step.
+
 ```zig
 pub fn collectGarbageStep(comptime State: type, self: *State, thread: ?*Thread, budget: i64) !bool
+```
+
+<a id="fn-stepcount"></a>
+
+## stepCount
+
+```zig
+pub fn stepCount(comptime State: type, self: *State, thread: ?*Thread, steps: usize) !bool
+```
+
+<a id="fn-autostep"></a>
+
+## autoStep
+
+```zig
+pub fn autoStep(comptime State: type, self: *State, thread: ?*Thread) !void
+```
+
+<a id="fn-step"></a>
+
+## step
+
+A basic step bounds propagation by references and sweeping by objects.
+Atomic weak processing, large objects, and one finalizer can exceed the target.
+
+```zig
+pub fn step(comptime State: type, self: *State, thread: ?*Thread, conservative: bool) !bool
 ```
 
 <a id="fn-collectgarbage"></a>
@@ -297,6 +435,14 @@ pub fn shouldRunAutoGc(comptime State: type, self: *State) bool
 
 ```zig
 pub fn resetAutoGcThreshold(comptime State: type, self: *State) void
+```
+
+<a id="fn-normalizebaseline"></a>
+
+## normalizeBaseline
+
+```zig
+pub fn normalizeBaseline(comptime State: type, self: *State) void
 ```
 
 <a id="fn-resetmarks"></a>
@@ -528,7 +674,7 @@ pub fn writeTableBarrier(comptime State: type, self: *State, table: *Table, key:
 ## writeBarrier
 
 ```zig
-pub fn writeBarrier(comptime State: type, self: *State, parent_marked: bool, child: Value) void
+pub fn writeBarrier(comptime State: type, self: *State, parent: anytype, child: Value) void
 ```
 
 <a id="fn-runpendingfinalizers"></a>
@@ -539,12 +685,20 @@ pub fn writeBarrier(comptime State: type, self: *State, parent_marked: bool, chi
 pub fn runPendingFinalizers(comptime State: type, self: *State, thread: ?*Thread) !void
 ```
 
+<a id="fn-runfinalizerbatch"></a>
+
+## runFinalizerBatch
+
+```zig
+pub fn runFinalizerBatch(comptime State: type, self: *State, thread: ?*Thread, limit: usize) !bool
+```
+
 <a id="fn-runpendinguserdatafinalizers"></a>
 
 ## runPendingUserdataFinalizers
 
 ```zig
-pub fn runPendingUserdataFinalizers(comptime State: type, self: *State) void
+pub fn runPendingUserdataFinalizers(comptime State: type, self: *State) !void
 ```
 
 <a id="fn-callablevalue"></a>
@@ -555,6 +709,14 @@ pub fn runPendingUserdataFinalizers(comptime State: type, self: *State) void
 pub fn callableValue(comptime State: type, self: *State, value: Value) bool
 ```
 
+<a id="fn-removeregistryitem"></a>
+
+## removeRegistryItem
+
+```zig
+pub fn removeRegistryItem(comptime State: type, self: *State, comptime field: []const u8, index: usize) void
+```
+
 <a id="fn-sweepstrings"></a>
 
 ## sweepStrings
@@ -563,20 +725,20 @@ pub fn callableValue(comptime State: type, self: *State, value: Value) bool
 pub fn sweepStrings(comptime State: type, self: *State) void
 ```
 
-<a id="fn-sweepuserdata"></a>
-
-## sweepUserdata
-
-```zig
-pub fn sweepUserdata(comptime State: type, self: *State) void
-```
-
 <a id="fn-sweeptables"></a>
 
 ## sweepTables
 
 ```zig
 pub fn sweepTables(comptime State: type, self: *State) void
+```
+
+<a id="fn-sweepuserdata"></a>
+
+## sweepUserdata
+
+```zig
+pub fn sweepUserdata(comptime State: type, self: *State) void
 ```
 
 <a id="fn-sweepclosures"></a>

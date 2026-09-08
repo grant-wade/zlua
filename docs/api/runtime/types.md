@@ -73,6 +73,7 @@
 - [testing.bench.allocation](../testing/bench/allocation.md)
 - [testing.bench.c_startup](../testing/bench/c_startup.md)
 - [testing.bench.snapshots](../testing/bench/snapshots.md)
+- [testing.bench.gc](../testing/bench/gc.md)
 - [testing.diff_runner](../testing/diff_runner.md)
 - [testing.fixtures](../testing/fixtures.md)
 - [testing.expected_failures](../testing/expected_failures.md)
@@ -114,6 +115,11 @@
 - [ThreadStatus](#type-threadstatus)
 - [CallFrame](#type-callframe)
 - [StringAllocation](#type-stringallocation)
+- [GcMeta](#type-gcmeta)
+- [GcObject](#type-gcobject)
+- [GcPhase](#type-gcphase)
+- [GcCycle](#type-gccycle)
+- [GcGenerations](#type-gcgenerations)
 - [GcMode](#type-gcmode)
 - [GcParam](#type-gcparam)
 - [GcParams](#type-gcparams)
@@ -452,6 +458,9 @@ pub const UserdataPayload = struct {
     lifetime: ?*AllocatorLifetime,
     references: std.atomic.Value(usize) = .init(1),
     ptr: *anyopaque,
+    /// Known inline storage owned by this payload; external/nested storage is
+    /// accounted by the host allocator, not inferred through opaque pointers.
+    managed_bytes: usize = 0,
     finalizer: ?UserdataFinalizer,
     finalizer_data: ?*const anyopaque,
     dispose: ?UserdataDeinit,
@@ -879,6 +888,7 @@ pub const Closure = struct {
     constants: ?[]?Value = null,
     stripped_debug: bool = false,
     marked: bool = false,
+    gc: GcMeta = .{},
 };
 ```
 
@@ -895,6 +905,7 @@ pub const Upvalue = struct {
     is_open: bool = true,
     next: ?*Upvalue = null,
     marked: bool = false,
+    gc: GcMeta = .{},
 };
 ```
 
@@ -934,8 +945,11 @@ pub const Table = struct {
     metatable_next: ?*Table = null,
     counts_for_gc_count: bool = true,
     marked: bool = false,
+    gc: GcMeta = .{},
     finalizer_registered: bool = false,
     finalizer_next: ?*Table = null,
+    finalizer_prev: ?*Table = null,
+    finalizer_order: u64 = 0,
 };
 ```
 
@@ -1109,7 +1123,10 @@ pub const Userdata = struct {
     finalizer_data: ?*const anyopaque = null,
     deinit_fn: ?UserdataDeinit = null,
     marked: bool = false,
+    gc: GcMeta = .{},
     finalized: bool = false,
+    finalization_pending: bool = false,
+    finalizer_next: ?*Userdata = null,
 };
 ```
 
@@ -1165,6 +1182,7 @@ pub const Thread = struct {
     resume_parent: ?*Thread = null,
     entry: Value = .nil,
     marked: bool = false,
+    gc: GcMeta = .{},
     started: bool = false,
     is_main: bool = false,
     closing: bool = false,
@@ -1281,6 +1299,7 @@ References: [`CallFrame`](#type-callframe)
 pub const StringAllocation = struct {
     bytes: []const u8,
     marked: bool = false,
+    gc: GcMeta = .{},
 };
 ```
 
@@ -1290,6 +1309,87 @@ pub const StringAllocation = struct {
 
 ```zig
 pub const PointerAllocationIndex = std.AutoHashMap(usize, usize);
+```
+
+<a id="type-gcmeta"></a>
+
+## GcMeta
+
+Collector scratch state never participates in logical rollback dirtiness.
+
+```zig
+pub const GcMeta = struct {
+    epoch: u64 = 0,
+    generation: u64 = 0,
+    color: enum { white, gray, black } = .white,
+    age: enum { new, survivor, old } = .new,
+    remembered: bool = false,
+    weak_epoch: u64 = 0,
+    tables_epoch: u64 = 0,
+    has_young: bool = false,
+    storage_bytes: usize = 0,
+};
+```
+
+<a id="type-gcobject"></a>
+
+## GcObject
+
+Queue entries own identities, never pointers into growable registries.
+
+```zig
+pub const GcObject = union(enum) {
+    table: *Table,
+    userdata: *Userdata,
+    closure: *Closure,
+    upvalue: *Upvalue,
+    thread: *Thread,
+};
+```
+
+<a id="type-gcphase"></a>
+
+## GcPhase
+
+```zig
+pub const GcPhase = enum {
+    pause,
+    propagate,
+    atomic,
+    sweep_threads,
+    sweep_closures,
+    sweep_upvalues,
+    sweep_strings,
+    sweep_userdata,
+    sweep_tables,
+    finalize,
+};
+```
+
+<a id="type-gccycle"></a>
+
+## GcCycle
+
+```zig
+pub const GcCycle = enum {
+    major,
+    minor,
+};
+```
+
+<a id="type-gcgenerations"></a>
+
+## GcGenerations
+
+```zig
+pub const GcGenerations = struct {
+    string_allocations: usize = 0,
+    table_allocations: usize = 0,
+    userdata_allocations: usize = 0,
+    closure_allocations: usize = 0,
+    upvalue_allocations: usize = 0,
+    thread_allocations: usize = 0,
+};
 ```
 
 <a id="type-gcmode"></a>
@@ -1338,13 +1438,23 @@ pub const GcParam = enum {
 
 ## GcParams
 
+Collection tuning. Values are percentages except `stepsize`, which is in bytes.
+The Zig API accepts values from 0 through maxInt(i32) without rounding.
+Lua's `collectgarbage("param", ...)` rounds values to Lua's parameter format.
+
 ```zig
 pub const GcParams = struct {
+    /// Heap growth before the next minor collection.
     minormul: i64 = 20,
+    /// Fraction of the heap a major collection must reclaim to return to minor collections.
     majorminor: i64 = 50,
+    /// Heap growth since the last major collection before another is requested.
     minormajor: i64 = 70,
+    /// Heap size relative to the last collection before starting another full cycle.
     pause: i64 = 250,
+    /// Work multiplier for each step.
     stepmul: i64 = 200,
+    /// Allocation between steps, in bytes; also used to determine step work.
     stepsize: i64 = 200,
 };
 ```

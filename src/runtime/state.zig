@@ -122,9 +122,12 @@ pub const State = struct {
     string_allocation_index: PointerAllocationIndex,
     table_allocations: std.ArrayList(*Table) = .empty,
     table_allocation_index: PointerAllocationIndex,
+    object_allocation_index: std.AutoHashMapUnmanaged(usize, usize) = .empty,
     table_metatable_head: ?*Table = null,
     table_finalizer_head: ?*Table = null,
+    table_finalizer_serial: u64 = 0,
     table_pending_finalizer_head: ?*Table = null,
+    userdata_pending_finalizer_head: ?*Userdata = null,
     table_metatable_count: usize = 0,
     userdata_allocations: std.ArrayList(*Userdata) = .empty,
     closure_allocations: std.ArrayList(*Closure) = .empty,
@@ -157,11 +160,30 @@ pub const State = struct {
     zerde_object_metatable: ?*Table = null,
     is_collecting: bool = false,
     collect_after_instruction: bool = false,
+    step_after_instruction: bool = false,
     gc_running: bool = true,
     gc_mode: GcMode = .generational,
     gc_params: GcParams = .{},
     gc_next_total: usize = 0,
     gc_known_total: usize = 0,
+    gc_epoch: u64 = 1,
+    gc_generation: u64 = 1,
+    gc_phase: types.GcPhase = .pause,
+    gc_cycle: types.GcCycle = .major,
+    gc_work: std.ArrayList(types.GcObject) = .empty,
+    gc_remembered: std.ArrayList(types.GcObject) = .empty,
+    gc_weak: std.ArrayList(*Table) = .empty,
+    gc_tables: std.ArrayList(*Table) = .empty,
+    gc_finalizers: std.ArrayList(*Table) = .empty,
+    gc_major_pending: bool = false,
+    gc_cycle_start_total: usize = 0,
+    gc_found_young: bool = false,
+    gc_old: types.GcGenerations = .{},
+    gc_sweep_cursor: usize = 0,
+    gc_major_base: usize = 0,
+    gc_work_done: usize = 0,
+    gc_minor_count: usize = 0,
+
     mark_all_stack_registers: bool = false,
     conservative_gc_depth: usize = 0,
     random_state: [4]u64 = .{ 0x123456789abcdef0, 0xff, 0xfedcba9876543210, 0 },
@@ -169,7 +191,9 @@ pub const State = struct {
 
     pub fn registerAllocation(self: *State, comptime field: []const u8, item: anytype) !void {
         if (self.rollback) |journal| try journal.prepareAllocation(self);
+        try gc_mod.prepareRegistration(State, self, field);
         try @field(self, field).append(self.allocator, item);
+        gc_mod.registeredAllocation(State, self, field, item);
         if (self.rollback) |journal| journal.allocated(field, item);
     }
 
@@ -213,7 +237,8 @@ pub const State = struct {
         try stdlib.openLibraries(&state, options.stdlib);
         observe(observer_context, .libraries, &state);
 
-        state.resetAutoGcThreshold();
+        _ = state.refreshAllocationTotal();
+        gc_mod.normalizeBaseline(State, &state);
         observe(observer_context, .gc_baseline, &state);
         return state;
     }
@@ -260,6 +285,12 @@ pub const State = struct {
         self.strings.deinit();
         self.string_allocation_index.deinit();
         self.table_allocation_index.deinit();
+        self.object_allocation_index.deinit(self.allocator);
+        self.gc_work.deinit(self.allocator);
+        self.gc_remembered.deinit(self.allocator);
+        self.gc_weak.deinit(self.allocator);
+        self.gc_tables.deinit(self.allocator);
+        self.gc_finalizers.deinit(self.allocator);
         for (self.thread_allocations.items) |thread| self.destroyThread(thread);
         for (self.closure_allocations.items) |closure| self.destroyClosure(closure);
         for (self.upvalue_allocations.items) |upvalue| self.allocator.destroy(upvalue);
@@ -305,15 +336,13 @@ pub const State = struct {
     }
 
     fn retireHostThread(self: *State, thread: *Thread) void {
+        gc_mod.syncThreadStorage(State, self, thread);
         self.closeUpvalues(thread, 0);
         if (!thread.exposed) {
-            for (self.thread_allocations.items, 0..) |tracked, index| {
-                if (tracked == thread) {
-                    _ = self.thread_allocations.swapRemove(index);
-                    break;
-                }
-            }
-            self.noteAllocationFreed(@sizeOf(Thread));
+            const index = self.object_allocation_index.get(@intFromPtr(thread)).?;
+            gc_mod.forgetThread(State, self, thread);
+            gc_mod.removeRegistryItem(State, self, "thread_allocations", index);
+            self.noteAllocationFreed(@sizeOf(Thread) + thread.gc.storage_bytes);
             self.destroyThread(thread);
             return;
         }
@@ -321,6 +350,7 @@ pub const State = struct {
         // borrowed from the host stack. Keep the observable thread and its hook.
         const retained = Thread{
             .marked = thread.marked,
+            .gc = thread.gc,
             .exposed = true,
             .is_main = true,
             .started = true,
@@ -335,6 +365,7 @@ pub const State = struct {
         };
         thread.deinit(self.allocator);
         thread.* = retained;
+        gc_mod.syncThreadStorage(State, self, thread);
     }
 
     pub fn callLoadedClosure(self: *State, closure: *Closure, args: []const Value) ![]Value {
@@ -455,6 +486,8 @@ pub const State = struct {
     }
 
     pub fn runThreadUntil(self: *State, thread: *Thread, target_frame_count: usize) anyerror!void {
+        defer gc_mod.syncThreadStorage(State, self, thread);
+        gc_mod.rememberObject(State, self, .{ .thread = thread });
         self.execution_depth += 1;
         defer self.execution_depth -= 1;
         try rollback_mod.threadWritable(thread);
@@ -724,14 +757,14 @@ pub const State = struct {
                 thread.last_transfer_count = 0;
             }
 
-            if (self.gc_running and (self.collect_after_instruction or self.shouldRunAutoGc())) try self.collectGarbageConservatively(thread);
+            if (self.gc_running and (self.collect_after_instruction or self.step_after_instruction or self.shouldRunAutoGc())) try gc_mod.autoStep(State, self, thread);
         }
     }
 
     fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bool {
         if (thread.frames.items.len <= target_frame_count) return false;
         if (self.options.max_instructions != null or self.options.trace_vm) return false;
-        if (self.collect_after_instruction) return false;
+        if (self.collect_after_instruction or self.step_after_instruction) return false;
         if (thread.hook != .nil and (thread.hook_line or thread.hook_count != 0 or thread.hook_running)) return false;
         if (self.gc_running and self.shouldRunAutoGc()) return false;
 
@@ -797,7 +830,6 @@ pub const State = struct {
                 .set_upvalue => {
                     const op = instructions[pc].set_upvalue;
                     const upvalue = frame.closure.upvalues[op.upvalue];
-                    if (self.is_collecting) break :fast_loop;
                     if (upvalue.is_open) {
                         if (upvalue.owner.rollback) |record| if (!record.header.detached) break :fast_loop;
                         rollback_mod.touch(upvalue);
@@ -805,6 +837,7 @@ pub const State = struct {
                     } else {
                         rollback_mod.touch(upvalue);
                         upvalue.closed = stack[op.register];
+                        self.writeBarrier(upvalue, upvalue.closed);
                     }
                     pc += 1;
                     continue :fast_loop std.meta.activeTag(instructions[pc]);
@@ -965,7 +998,7 @@ pub const State = struct {
                 .set_array => {
                     const op = instructions[pc].set_array;
                     const table_value = stack[op.table];
-                    if (self.is_collecting or table_value != .table or op.index == 0) break :fast_loop;
+                    if (table_value != .table or op.index == 0) break :fast_loop;
                     const table = table_value.table;
                     if (table.rollback) |record| if (!record.header.detached) break :fast_loop;
                     const index: usize = op.index;
@@ -979,6 +1012,7 @@ pub const State = struct {
                         @memset(table.array.items[old_len..], .nil);
                         table.array.items[index - 1] = value;
                     }
+                    self.writeTableBarrier(table, .{ .integer = @intCast(index) }, value);
                     pc += 1;
                     continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
@@ -1231,14 +1265,15 @@ pub const State = struct {
         return gc_mod.tableGcBytes(table);
     }
 
-    pub fn noteTableCapacityDelta(self: *State, table: *const Table, old_capacity_bytes: usize) void {
+    pub fn noteTableCapacityDelta(self: *State, table: *Table, old_capacity_bytes: usize) void {
         return gc_mod.noteTableCapacityDelta(State, self, table, old_capacity_bytes);
     }
 
-    fn setTableRaw(self: *State, table: *Table, key: Value, value: Value) !void {
+    pub fn setTableRaw(self: *State, table: *Table, key: Value, value: Value) !void {
         const old_capacity_bytes = tableCapacityBytes(table);
+        defer self.noteTableCapacityDelta(table, old_capacity_bytes);
         try table.set(self.allocator, key, value);
-        self.noteTableCapacityDelta(table, old_capacity_bytes);
+        self.writeTableBarrier(table, key, value);
     }
 
     fn fastTableArraySet(self: *State, table_value: Value, key_value: Value, value: Value) !bool {
@@ -1249,7 +1284,6 @@ pub const State = struct {
     }
 
     fn fastTableArraySetExistingNoAlloc(self: *State, table_value: Value, key_value: Value, value: Value) bool {
-        if (self.is_collecting) return false;
         if (table_value != .table) return false;
         const index = arrayIndex(key_value) orelse return false;
         const table = table_value.table;
@@ -1258,19 +1292,20 @@ pub const State = struct {
             const slot = &table.array.items[index - 1];
             if (slot.* == .nil and table.metatable != null) return false;
             slot.* = value;
+            self.writeTableBarrier(table, key_value, value);
             return true;
         }
         if (table.metatable != null or value == .nil) return false;
         if (index == table.array.items.len + 1 and index <= table.array.capacity) {
             table.array.appendAssumeCapacity(value);
             table.removeHashKey(key_value);
+            self.writeTableBarrier(table, key_value, value);
             return true;
         }
         return false;
     }
 
     fn fastTableKnownKeySetExistingNoAlloc(self: *State, table_value: Value, key: Value, value: Value) bool {
-        if (self.is_collecting) return false;
         if (table_value != .table or key != .string) return false;
         const table = table_value.table;
         if (table.rollback) |record| if (!record.header.detached) return false;
@@ -1278,9 +1313,12 @@ pub const State = struct {
             const slot = &table.entries.items[index].value;
             if (slot.* == .nil and table.metatable != null) return false;
             slot.* = value;
+            self.writeTableBarrier(table, key, value);
             return true;
         }
-        return table.metatable == null and table.insertHashEntryNoAlloc(key, value);
+        if (table.metatable != null or !table.insertHashEntryNoAlloc(key, value)) return false;
+        self.writeTableBarrier(table, key, value);
+        return true;
     }
 
     fn fastTableArraySetIndex(self: *State, table_value: Value, index_u32: u32, value: Value) !bool {
@@ -1288,6 +1326,7 @@ pub const State = struct {
         const index: usize = index_u32;
         const key_value = Value{ .integer = @intCast(index_u32) };
         const table = table_value.table;
+        defer self.noteTableCapacityDelta(table, 0);
         try rollback_mod.tableWritable(table);
         if (index <= table.array.items.len) {
             const slot = &table.array.items[index - 1];
@@ -1321,6 +1360,7 @@ pub const State = struct {
     }
 
     fn setTableArrayRawIndex(self: *State, table: *Table, index_u32: u32, value: Value) !void {
+        defer self.noteTableCapacityDelta(table, 0);
         try rollback_mod.tableWritable(table);
         const index: usize = index_u32;
         const key = Value{ .integer = @intCast(index_u32) };
@@ -1354,7 +1394,10 @@ pub const State = struct {
     fn fastTableKnownKeySet(self: *State, table_value: Value, key: Value, value: Value) !bool {
         if (table_value != .table) return false;
         const table = table_value.table;
-        if (table.rollback != null and table.get(key) != .nil) try rollback_mod.tableWritable(table);
+        if (table.rollback != null and table.get(key) != .nil) {
+            try rollback_mod.tableWritable(table);
+            self.noteTableCapacityDelta(table, 0);
+        }
         if (table.setExistingNonNil(key, value)) {
             self.writeTableBarrier(table, key, value);
             return true;
@@ -1477,8 +1520,8 @@ pub const State = struct {
 
     pub fn setThreadHook(self: *State, target: *Thread, hook: Value, mask: []const u8, count: u32) void {
         rollback_mod.touch(target);
-        _ = self;
         target.hook = hook;
+        self.writeBarrier(target, hook);
         target.hook_call = false;
         target.hook_line = false;
         target.hook_return = false;
@@ -2221,6 +2264,7 @@ pub const State = struct {
         if (closure.constants == null) closure.constants = try self.allocateConstantCache(closure.proto);
         const constants = closure.constants.?;
         if (constants[index] == null) constants[index] = try self.loadConstant(closure.proto.constants.items[index]);
+        self.writeBarrier(closure, constants[index].?);
         return constants[index].?;
     }
 
@@ -2234,7 +2278,12 @@ pub const State = struct {
 
     pub fn intern(self: *State, bytes: []const u8) ![]const u8 {
         if (stdlib_static_strings.canonical(bytes)) |static| return static;
-        if (self.strings.get(bytes)) |interned| return interned;
+        if (self.strings.get(bytes)) |interned| {
+            // Interned strings are weakly held by the registry. Reusing one
+            // during sweeping resurrects it before exposing it to the mutator.
+            if (self.gc_phase != .pause) self.markString(interned);
+            return interned;
+        }
         const interned = try self.allocateString(bytes);
         try self.strings.put(interned, interned);
         return interned;
@@ -2403,7 +2452,7 @@ pub const State = struct {
         try self.registerAllocation("userdata_allocations", userdata);
         if (payload.lifetime) |l| l.retain();
         userdata.payload = payload;
-        self.noteAllocation(@sizeOf(Userdata));
+        self.noteAllocation(gc_mod.userdataBytes(userdata));
         return .{ .userdata = userdata };
     }
 
@@ -2521,14 +2570,14 @@ pub const State = struct {
         if (upvalue.is_open) {
             try rollback_mod.threadWritable(upvalue.owner);
             upvalue.owner.stack.items[upvalue.stack_index] = value;
+            self.threadBarrier(upvalue.owner, value);
         } else {
             upvalue.closed = value;
-            self.writeBarrier(upvalue.marked, value);
+            self.writeBarrier(upvalue, value);
         }
     }
 
     pub fn closeUpvalues(self: *State, thread: *Thread, first_stack_index: usize) void {
-        _ = self;
         var previous: ?*Upvalue = null;
         var current = thread.open_upvalues;
         while (current) |upvalue| {
@@ -2537,6 +2586,7 @@ pub const State = struct {
                 rollback_mod.touch(upvalue);
                 rollback_mod.touch(thread);
                 upvalue.closed = thread.stack.items[upvalue.stack_index];
+                self.writeBarrier(upvalue, upvalue.closed);
                 upvalue.is_open = false;
                 upvalue.next = null;
                 if (previous) |prev| {
@@ -2599,6 +2649,7 @@ pub const State = struct {
             self.callOneResult(thread, metamethod, &.{value})) catch |err| {
             if (err == error.CoroutineYield and error_value != null) {
                 thread.pending_unwind_error = error_value.?;
+                self.threadBarrier(thread, error_value.?);
                 thread.pending_unwind_resume_frame_count = frame_count;
                 thread.pending_unwind_target_frame_count = if (frame_count == 0) 0 else frame_count - 1;
             }
@@ -2627,7 +2678,7 @@ pub const State = struct {
         thread.frames.items[frame_index].pc = target_pc;
         if (target_pc < source_pc) {
             thread.frames.items[frame_index].last_hook_line = null;
-            if (auto_gc and self.gc_running and self.shouldRunAutoGc()) try self.collectGarbageConservatively(thread);
+            if (auto_gc and self.gc_running and self.shouldRunAutoGc()) try gc_mod.autoStep(State, self, thread);
         }
     }
 
@@ -2640,7 +2691,7 @@ pub const State = struct {
         frame.pc = target_pc;
         if (target_pc < source_pc) {
             frame.last_hook_line = null;
-            if (auto_gc and self.gc_running and self.shouldRunAutoGc()) try self.collectGarbageConservatively(thread);
+            if (auto_gc and self.gc_running and self.shouldRunAutoGc()) try gc_mod.autoStep(State, self, thread);
         }
     }
 
@@ -2902,7 +2953,10 @@ pub const State = struct {
 
         if (table_value == .table) {
             const table = table_value.table;
-            if (table.rollback != null and table.get(key) != .nil) try rollback_mod.tableWritable(table);
+            if (table.rollback != null and table.get(key) != .nil) {
+                try rollback_mod.tableWritable(table);
+                self.noteTableCapacityDelta(table, 0);
+            }
             if (table.setExistingNonNil(key, value)) {
                 self.writeTableBarrier(table, key, value);
                 return;
@@ -2934,7 +2988,10 @@ pub const State = struct {
 
         if (table_value == .table) {
             const table = table_value.table;
-            if (table.rollback != null and table.get(key) != .nil) try rollback_mod.tableWritable(table);
+            if (table.rollback != null and table.get(key) != .nil) {
+                try rollback_mod.tableWritable(table);
+                self.noteTableCapacityDelta(table, 0);
+            }
             if (table.setExistingNonNil(key, value)) {
                 self.writeTableBarrier(table, key, value);
                 return;
@@ -3343,7 +3400,7 @@ pub const State = struct {
             else => return self.fail("nil or table expected"),
         };
         self.setTableMetatableRaw(table, metatable);
-        if (table.metatable) |active_metatable| self.writeBarrier(table.marked, .{ .table = active_metatable });
+        if (table.metatable) |active_metatable| self.writeBarrier(table, .{ .table = active_metatable });
     }
 
     pub fn setDebugMetatableValue(self: *State, value: Value, metatable_value: Value) !void {
@@ -3355,12 +3412,12 @@ pub const State = struct {
         switch (value) {
             .table => |table| {
                 self.setTableMetatableRaw(table, metatable);
-                if (metatable) |mt| self.writeBarrier(table.marked, .{ .table = mt });
+                if (metatable) |mt| self.writeBarrier(table, .{ .table = mt });
             },
             .userdata => |userdata| {
                 rollback_mod.touch(userdata);
                 userdata.metatable = metatable;
-                if (metatable) |mt| self.writeBarrier(userdata.marked, .{ .table = mt });
+                if (metatable) |mt| self.writeBarrier(userdata, .{ .table = mt });
             },
             .string => self.string_metatable = metatable,
             .integer, .number => self.number_metatable = metatable,
@@ -3368,6 +3425,7 @@ pub const State = struct {
             .nil => self.nil_metatable = metatable,
             else => return self.fail("cannot set metatable for this value"),
         }
+        if (metatable) |mt| self.markValue(.{ .table = mt });
     }
 
     pub fn getMetamethod(self: *State, value: Value, name: []const u8) !?Value {
@@ -3389,6 +3447,7 @@ pub const State = struct {
         const old_has_metatable = table.metatable != null;
         table.metatable = metatable;
         self.noteTableMetatableChanged(table, old_has_metatable);
+        if (metatable) |mt| self.writeBarrier(table, .{ .table = mt });
     }
 
     pub fn noteTableMetatableChanged(self: *State, table: *Table, old_has_metatable: bool) void {
@@ -3800,7 +3859,6 @@ pub const State = struct {
     pub fn namedVarargTable(self: *State, varargs: []const Value) !Value {
         const table_value = try self.newTableWithHints(@intCast(varargs.len), 1);
         const table = table_value.table;
-        self.noteAllocationFreed(tableGcBytes(table));
         table.counts_for_gc_count = false;
         try self.setTableRaw(table, .{ .string = try self.intern("n") }, .{ .integer = @intCast(varargs.len) });
         for (varargs, 0..) |value, index| {
@@ -3880,6 +3938,7 @@ pub const State = struct {
     fn fastSetListRaw(self: *State, thread: *Thread, table_value: Value, source_start: usize, count: usize, start_index_u32: u32) !bool {
         if (table_value != .table or start_index_u32 == 0) return false;
         const table = table_value.table;
+        defer self.noteTableCapacityDelta(table, 0);
         try rollback_mod.tableWritable(table);
         if (table.metatable != null) return false;
 
@@ -4504,6 +4563,22 @@ pub const State = struct {
         return gc_mod.collectGarbageParam(State, self, value);
     }
 
+    pub fn setGcMode(self: *State, mode: GcMode) GcMode {
+        const previous = self.gc_mode;
+        if (mode == previous) return previous;
+        self.gc_mode = mode;
+        if (!self.is_collecting) self.normalizeGcBaseline();
+        return previous;
+    }
+
+    pub fn stepGc(self: *State, steps: usize) !bool {
+        return gc_mod.stepCount(State, self, self.current_thread, steps);
+    }
+
+    pub fn normalizeGcBaseline(self: *State) void {
+        gc_mod.normalizeBaseline(State, self);
+    }
+
     pub fn collectGarbageStep(self: *State, thread: ?*Thread, budget: i64) !bool {
         return gc_mod.collectGarbageStep(State, self, thread, budget);
     }
@@ -4652,15 +4727,41 @@ pub const State = struct {
         return gc_mod.writeTableBarrier(State, self, table, key, value);
     }
 
-    pub fn writeBarrier(self: *State, parent_marked: bool, child: Value) void {
-        return gc_mod.writeBarrier(State, self, parent_marked, child);
+    pub fn upvalueBarrier(self: *State, closure: *Closure, upvalue: *Upvalue) void {
+        gc_mod.rememberObject(State, self, .{ .closure = closure });
+        if (self.gc_phase != .pause) self.markUpvalue(upvalue);
+    }
+
+    pub fn threadBarrier(self: *State, thread: *Thread, value: Value) void {
+        gc_mod.syncThreadStorage(State, self, thread);
+        gc_mod.rememberObject(State, self, .{ .thread = thread });
+        self.markValue(value);
+    }
+
+    pub fn writeBarrier(self: *State, parent: anytype, child: Value) void {
+        return gc_mod.writeBarrier(State, self, parent, child);
+    }
+
+    /// Provide a protected execution frame for GC requested by an idle host.
+    /// Allocate it before consuming any pending registration so OOM is retryable.
+    pub fn runFinalizersFromHost(self: *State, limit: usize) anyerror!bool {
+        var proto = proto_mod.Proto.init(self.allocator);
+        defer proto.deinit();
+        proto.source_name = "=[C]";
+        var closure = Closure{ .proto = &proto, .upvalues = &.{} };
+        const thread = try self.newHostThread(&closure);
+        defer self.retireHostThread(thread);
+        const previous_thread = self.current_thread;
+        self.current_thread = thread;
+        defer self.current_thread = previous_thread;
+        return gc_mod.runFinalizerBatch(State, self, thread, limit);
     }
 
     pub fn runPendingFinalizers(self: *State, thread: ?*Thread) !void {
         return gc_mod.runPendingFinalizers(State, self, thread);
     }
 
-    pub fn runPendingUserdataFinalizers(self: *State) void {
+    pub fn runPendingUserdataFinalizers(self: *State) !void {
         return gc_mod.runPendingUserdataFinalizers(State, self);
     }
 

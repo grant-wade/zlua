@@ -73,6 +73,7 @@
 - [testing.bench.allocation](../testing/bench/allocation.md)
 - [testing.bench.c_startup](../testing/bench/c_startup.md)
 - [testing.bench.snapshots](../testing/bench/snapshots.md)
+- [testing.bench.gc](../testing/bench/gc.md)
 - [testing.diff_runner](../testing/diff_runner.md)
 - [testing.fixtures](../testing/fixtures.md)
 - [testing.expected_failures](../testing/expected_failures.md)
@@ -426,9 +427,12 @@ pub const State = struct {
     string_allocation_index: PointerAllocationIndex,
     table_allocations: std.ArrayList(*Table) = .empty,
     table_allocation_index: PointerAllocationIndex,
+    object_allocation_index: std.AutoHashMapUnmanaged(usize, usize) = .empty,
     table_metatable_head: ?*Table = null,
     table_finalizer_head: ?*Table = null,
+    table_finalizer_serial: u64 = 0,
     table_pending_finalizer_head: ?*Table = null,
+    userdata_pending_finalizer_head: ?*Userdata = null,
     table_metatable_count: usize = 0,
     userdata_allocations: std.ArrayList(*Userdata) = .empty,
     closure_allocations: std.ArrayList(*Closure) = .empty,
@@ -461,11 +465,29 @@ pub const State = struct {
     zerde_object_metatable: ?*Table = null,
     is_collecting: bool = false,
     collect_after_instruction: bool = false,
+    step_after_instruction: bool = false,
     gc_running: bool = true,
     gc_mode: GcMode = .generational,
     gc_params: GcParams = .{},
     gc_next_total: usize = 0,
     gc_known_total: usize = 0,
+    gc_epoch: u64 = 1,
+    gc_generation: u64 = 1,
+    gc_phase: types.GcPhase = .pause,
+    gc_cycle: types.GcCycle = .major,
+    gc_work: std.ArrayList(types.GcObject) = .empty,
+    gc_remembered: std.ArrayList(types.GcObject) = .empty,
+    gc_weak: std.ArrayList(*Table) = .empty,
+    gc_tables: std.ArrayList(*Table) = .empty,
+    gc_finalizers: std.ArrayList(*Table) = .empty,
+    gc_major_pending: bool = false,
+    gc_cycle_start_total: usize = 0,
+    gc_found_young: bool = false,
+    gc_old: types.GcGenerations = .{},
+    gc_sweep_cursor: usize = 0,
+    gc_major_base: usize = 0,
+    gc_work_done: usize = 0,
+    gc_minor_count: usize = 0,
     mark_all_stack_registers: bool = false,
     conservative_gc_depth: usize = 0,
     random_state: [4]u64 = .{ 0x123456789abcdef0, 0xff, 0xfedcba9876543210, 0 },
@@ -501,7 +523,8 @@ pub const State = struct {
 | [currentAllocationTotal](#fn-state-currentallocationtotal) | `self: *State` | `usize` |  |
 | [tableCapacityBytes](#fn-state-tablecapacitybytes) | `table: *const Table` | `usize` |  |
 | [tableGcBytes](#fn-state-tablegcbytes) | `table: *const Table` | `usize` |  |
-| [noteTableCapacityDelta](#fn-state-notetablecapacitydelta) | `self: *State, table: *const Table, old_capacity_bytes: usize` | `void` |  |
+| [noteTableCapacityDelta](#fn-state-notetablecapacitydelta) | `self: *State, table: *Table, old_capacity_bytes: usize` | `void` |  |
+| [setTableRaw](#fn-state-settableraw) | `self: *State, table: *Table, key: Value, value: Value` | `!void` |  |
 | [getGlobal](#fn-state-getglobal) | `self: *State, name: []const u8` | `Value` |  |
 | [currentLine](#fn-state-currentline) | `self: *State, thread: *Thread, level: i64` | `?usize` |  |
 | [currentExtraArgs](#fn-state-currentextraargs) | `self: *State, thread: *Thread, level: i64` | `?usize` |  |
@@ -623,6 +646,9 @@ pub const State = struct {
 | [expectThread](#fn-state-expectthread) | `self: *State, value: Value` | `!*Thread` |  |
 | [collectGarbageValue](#fn-state-collectgarbagevalue) | `self: *State, thread: *Thread, op: bytecode.Call` | `!void` |  |
 | [collectGarbageParam](#fn-state-collectgarbageparam) | `self: *State, value: Value` | `!GcParam` |  |
+| [setGcMode](#fn-state-setgcmode) | `self: *State, mode: GcMode` | `GcMode` |  |
+| [stepGc](#fn-state-stepgc) | `self: *State, steps: usize` | `!bool` |  |
+| [normalizeGcBaseline](#fn-state-normalizegcbaseline) | `self: *State` | `void` |  |
 | [collectGarbageStep](#fn-state-collectgarbagestep) | `self: *State, thread: ?*Thread, budget: i64` | `!bool` |  |
 | [collectGarbage](#fn-state-collectgarbage) | `self: *State` | `!void` |  |
 | [gcParam](#fn-state-gcparam) | `self: State, param: GcParam` | `i64` |  |
@@ -660,9 +686,12 @@ pub const State = struct {
 | [clearWeakTableValues](#fn-state-clearweaktablevalues) | `self: *State, table: *Table` | `void` |  |
 | [clearWeakTableKeys](#fn-state-clearweaktablekeys) | `self: *State, table: *Table` | `void` |  |
 | [writeTableBarrier](#fn-state-writetablebarrier) | `self: *State, table: *Table, key: Value, value: Value` | `void` |  |
-| [writeBarrier](#fn-state-writebarrier) | `self: *State, parent_marked: bool, child: Value` | `void` |  |
+| [upvalueBarrier](#fn-state-upvaluebarrier) | `self: *State, closure: *Closure, upvalue: *Upvalue` | `void` |  |
+| [threadBarrier](#fn-state-threadbarrier) | `self: *State, thread: *Thread, value: Value` | `void` |  |
+| [writeBarrier](#fn-state-writebarrier) | `self: *State, parent: anytype, child: Value` | `void` |  |
+| [runFinalizersFromHost](#fn-state-runfinalizersfromhost) | `self: *State, limit: usize` | `anyerror!bool` | Provide a protected execution frame for GC requested by an idle host. Allocate it before consuming any pending registration so OOM is retryable. |
 | [runPendingFinalizers](#fn-state-runpendingfinalizers) | `self: *State, thread: ?*Thread` | `!void` |  |
-| [runPendingUserdataFinalizers](#fn-state-runpendinguserdatafinalizers) | `self: *State` | `void` |  |
+| [runPendingUserdataFinalizers](#fn-state-runpendinguserdatafinalizers) | `self: *State` | `!void` |  |
 | [callableValue](#fn-state-callablevalue) | `self: *State, value: Value` | `bool` |  |
 | [sweepStrings](#fn-state-sweepstrings) | `self: *State` | `void` |  |
 | [sweepUserdata](#fn-state-sweepuserdata) | `self: *State` | `void` |  |
@@ -945,10 +974,20 @@ References: [`Table`](#alias-table)
 ### State.noteTableCapacityDelta
 
 ```zig
-pub fn noteTableCapacityDelta(self: *State, table: *const Table, old_capacity_bytes: usize) void
+pub fn noteTableCapacityDelta(self: *State, table: *Table, old_capacity_bytes: usize) void
 ```
 
 References: [`State`](#type-state), [`Table`](#alias-table)
+
+<a id="fn-state-settableraw"></a>
+
+### State.setTableRaw
+
+```zig
+pub fn setTableRaw(self: *State, table: *Table, key: Value, value: Value) !void
+```
+
+References: [`State`](#type-state), [`Table`](#alias-table), [`Value`](#alias-value)
 
 <a id="fn-state-getglobal"></a>
 
@@ -2163,6 +2202,36 @@ pub fn collectGarbageParam(self: *State, value: Value) !GcParam
 
 References: [`State`](#type-state), [`Value`](#alias-value), [`GcParam`](#alias-gcparam)
 
+<a id="fn-state-setgcmode"></a>
+
+### State.setGcMode
+
+```zig
+pub fn setGcMode(self: *State, mode: GcMode) GcMode
+```
+
+References: [`State`](#type-state), [`GcMode`](#alias-gcmode)
+
+<a id="fn-state-stepgc"></a>
+
+### State.stepGc
+
+```zig
+pub fn stepGc(self: *State, steps: usize) !bool
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-normalizegcbaseline"></a>
+
+### State.normalizeGcBaseline
+
+```zig
+pub fn normalizeGcBaseline(self: *State) void
+```
+
+References: [`State`](#type-state)
+
 <a id="fn-state-collectgarbagestep"></a>
 
 ### State.collectGarbageStep
@@ -2533,15 +2602,48 @@ pub fn writeTableBarrier(self: *State, table: *Table, key: Value, value: Value) 
 
 References: [`State`](#type-state), [`Table`](#alias-table), [`Value`](#alias-value)
 
+<a id="fn-state-upvaluebarrier"></a>
+
+### State.upvalueBarrier
+
+```zig
+pub fn upvalueBarrier(self: *State, closure: *Closure, upvalue: *Upvalue) void
+```
+
+References: [`State`](#type-state), [`Closure`](#alias-closure), [`Upvalue`](#alias-upvalue)
+
+<a id="fn-state-threadbarrier"></a>
+
+### State.threadBarrier
+
+```zig
+pub fn threadBarrier(self: *State, thread: *Thread, value: Value) void
+```
+
+References: [`State`](#type-state), [`Thread`](#alias-thread), [`Value`](#alias-value)
+
 <a id="fn-state-writebarrier"></a>
 
 ### State.writeBarrier
 
 ```zig
-pub fn writeBarrier(self: *State, parent_marked: bool, child: Value) void
+pub fn writeBarrier(self: *State, parent: anytype, child: Value) void
 ```
 
 References: [`State`](#type-state), [`Value`](#alias-value)
+
+<a id="fn-state-runfinalizersfromhost"></a>
+
+### State.runFinalizersFromHost
+
+Provide a protected execution frame for GC requested by an idle host.
+Allocate it before consuming any pending registration so OOM is retryable.
+
+```zig
+pub fn runFinalizersFromHost(self: *State, limit: usize) anyerror!bool
+```
+
+References: [`State`](#type-state)
 
 <a id="fn-state-runpendingfinalizers"></a>
 
@@ -2558,7 +2660,7 @@ References: [`State`](#type-state), [`Thread`](#alias-thread)
 ### State.runPendingUserdataFinalizers
 
 ```zig
-pub fn runPendingUserdataFinalizers(self: *State) void
+pub fn runPendingUserdataFinalizers(self: *State) !void
 ```
 
 References: [`State`](#type-state)

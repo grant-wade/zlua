@@ -76,8 +76,11 @@ just diff tests/diff/runtime/tables.lua
 just diff --stage=parse
 just diff --feature=table
 just diff --gc-stress
+just diff --gc-step-stress
 just diff --show-clua --show-zlua tests/diff/runtime/errors.lua
 ```
+
+Use `--gc-stress` to look for values that are collected too early, or `--gc-step-stress` to test changes made between collection steps. Add `--feature=gc` to run just the GC fixtures. Both modes respect Lua's stop/restart controls.
 
 `--bless` and `--update-expected-failures` are accepted but are currently no-ops.
 

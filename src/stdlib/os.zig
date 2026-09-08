@@ -160,14 +160,14 @@ fn tableToTime(state: *State, value: Value) !i64 {
     const days = daysFromCivil(year, month, day);
     const timestamp = days * std.time.s_per_day + hour * 3600 + min * 60 + sec;
     const normalized = timeParts(timestamp);
-    try table.set(state.allocator, .{ .string = try state.intern("year") }, .{ .integer = normalized.year });
-    try table.set(state.allocator, .{ .string = try state.intern("month") }, .{ .integer = normalized.month });
-    try table.set(state.allocator, .{ .string = try state.intern("day") }, .{ .integer = normalized.day });
-    try table.set(state.allocator, .{ .string = try state.intern("hour") }, .{ .integer = normalized.hour });
-    try table.set(state.allocator, .{ .string = try state.intern("min") }, .{ .integer = normalized.min });
-    try table.set(state.allocator, .{ .string = try state.intern("sec") }, .{ .integer = normalized.sec });
-    try table.set(state.allocator, .{ .string = try state.intern("wday") }, .{ .integer = normalized.wday });
-    try table.set(state.allocator, .{ .string = try state.intern("yday") }, .{ .integer = normalized.yday });
+    try state.setTableRaw(table, .{ .string = try state.intern("year") }, .{ .integer = normalized.year });
+    try state.setTableRaw(table, .{ .string = try state.intern("month") }, .{ .integer = normalized.month });
+    try state.setTableRaw(table, .{ .string = try state.intern("day") }, .{ .integer = normalized.day });
+    try state.setTableRaw(table, .{ .string = try state.intern("hour") }, .{ .integer = normalized.hour });
+    try state.setTableRaw(table, .{ .string = try state.intern("min") }, .{ .integer = normalized.min });
+    try state.setTableRaw(table, .{ .string = try state.intern("sec") }, .{ .integer = normalized.sec });
+    try state.setTableRaw(table, .{ .string = try state.intern("wday") }, .{ .integer = normalized.wday });
+    try state.setTableRaw(table, .{ .string = try state.intern("yday") }, .{ .integer = normalized.yday });
     return timestamp;
 }
 
@@ -211,15 +211,15 @@ fn timeTable(state: *State, timestamp: i64) !Value {
     const parts = timeParts(timestamp);
     const value = try state.newTableWithHints(0, 9);
     const table = value.table;
-    try table.set(state.allocator, .{ .string = try state.intern("year") }, .{ .integer = parts.year });
-    try table.set(state.allocator, .{ .string = try state.intern("month") }, .{ .integer = parts.month });
-    try table.set(state.allocator, .{ .string = try state.intern("day") }, .{ .integer = parts.day });
-    try table.set(state.allocator, .{ .string = try state.intern("hour") }, .{ .integer = parts.hour });
-    try table.set(state.allocator, .{ .string = try state.intern("min") }, .{ .integer = parts.min });
-    try table.set(state.allocator, .{ .string = try state.intern("sec") }, .{ .integer = parts.sec });
-    try table.set(state.allocator, .{ .string = try state.intern("yday") }, .{ .integer = parts.yday });
-    try table.set(state.allocator, .{ .string = try state.intern("wday") }, .{ .integer = parts.wday });
-    try table.set(state.allocator, .{ .string = try state.intern("isdst") }, .{ .boolean = false });
+    try state.setTableRaw(table, .{ .string = try state.intern("year") }, .{ .integer = parts.year });
+    try state.setTableRaw(table, .{ .string = try state.intern("month") }, .{ .integer = parts.month });
+    try state.setTableRaw(table, .{ .string = try state.intern("day") }, .{ .integer = parts.day });
+    try state.setTableRaw(table, .{ .string = try state.intern("hour") }, .{ .integer = parts.hour });
+    try state.setTableRaw(table, .{ .string = try state.intern("min") }, .{ .integer = parts.min });
+    try state.setTableRaw(table, .{ .string = try state.intern("sec") }, .{ .integer = parts.sec });
+    try state.setTableRaw(table, .{ .string = try state.intern("yday") }, .{ .integer = parts.yday });
+    try state.setTableRaw(table, .{ .string = try state.intern("wday") }, .{ .integer = parts.wday });
+    try state.setTableRaw(table, .{ .string = try state.intern("isdst") }, .{ .boolean = false });
     return value;
 }
 

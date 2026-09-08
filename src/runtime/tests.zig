@@ -583,3 +583,178 @@ test "ephemeron table marks value when key is reachable" {
     try std.testing.expect(kept_value == .table);
     try std.testing.expect(valuesEqual(kept_value.table.get(.{ .string = "answer" }), .{ .integer = 42 }));
 }
+
+test "collector traverses deep mixed graphs without native recursion" {
+    var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .none });
+    defer state.deinit();
+    const root = try state.newTableWithHints(1, 0);
+    const handle = try state.rootValue(root);
+    var tail = root;
+    for (0..50000) |_| {
+        const child = try state.newTableWithHints(1, 0);
+        try state.setTableValue(tail, .{ .integer = 1 }, child);
+        tail = child;
+    }
+    try state.setTableValue(tail, .{ .integer = 1 }, root);
+    try state.collectGarbage();
+    try std.testing.expectEqual(@as(usize, 50002), state.table_allocations.items.len);
+    state.unrootValue(handle);
+    try state.collectGarbage();
+    try std.testing.expectEqual(@as(usize, 1), state.table_allocations.items.len);
+}
+
+test "incremental phases preserve mutations and allocations while sweeping" {
+    var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .none });
+    defer state.deinit();
+    state.gc_mode = .incremental;
+    state.gc_params.stepsize = 8;
+    state.gc_params.stepmul = 100;
+    const root = try state.newTableWithHints(0, 2);
+    const handle = try state.rootValue(root);
+    defer state.unrootValue(handle);
+    for (0..100) |_| _ = try state.newTableWithHints(0, 0);
+    try std.testing.expect(!try state.stepGc(0));
+    try std.testing.expectEqual(.propagate, state.gc_phase);
+    while (state.gc_phase == .propagate) _ = try state.stepGc(1);
+    const child = try state.newTableWithHints(0, 1);
+    try state.setTableValue(root, .{ .string = "child" }, child);
+    _ = try state.stepGc(1);
+    try std.testing.expectEqual(.sweep_threads, state.gc_phase);
+    const during_sweep = try state.newTableWithHints(0, 1);
+    try state.setTableValue(during_sweep, .{ .string = "message" }, .{ .string = try state.intern("allocated during sweeping") });
+    try state.setTableValue(child, .{ .string = "nested" }, during_sweep);
+    var steps: usize = 0;
+    while (!try state.stepGc(1)) : (steps += 1) try std.testing.expect(steps < 1000);
+    try std.testing.expect(state.isTrackedTable(child.table));
+    try std.testing.expect(state.isTrackedTable(during_sweep.table));
+    try std.testing.expectEqualStrings("allocated during sweeping", during_sweep.table.get(.{ .string = "message" }).string);
+}
+
+test "minor work scales with young and remembered objects and promotes survivors" {
+    var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .none });
+    defer state.deinit();
+    const root = try state.newTableWithHints(10000, 0);
+    for (0..10000) |i| {
+        const child = try state.newTableWithHints(0, 1);
+        try state.setTableValue(root, .{ .integer = @intCast(i + 1) }, child);
+    }
+    const handle = try state.rootValue(root);
+    defer state.unrootValue(handle);
+    state.normalizeGcBaseline();
+    const leaf = root.table.get(.{ .integer = 5000 });
+    const young = try state.newTableWithHints(0, 1);
+    try state.setTableValue(leaf, .{ .string = "child" }, young);
+    try std.testing.expect(!try state.stepGc(1));
+    try std.testing.expectEqual(.minor, state.gc_cycle);
+    try std.testing.expect(state.gc_work_done < 100);
+    try std.testing.expectEqual(.survivor, young.table.gc.age);
+    try std.testing.expect(!try state.stepGc(1));
+    try std.testing.expectEqual(.old, young.table.gc.age);
+    const second = try state.newTableWithHints(0, 0);
+    try state.setTableValue(young, .{ .string = "next" }, second);
+    try std.testing.expect(!try state.stepGc(1));
+    try std.testing.expect(state.isTrackedTable(second.table));
+    try state.setTableValue(young, .{ .string = "next" }, .nil);
+    try std.testing.expect(!try state.stepGc(1));
+    try std.testing.expect(!state.isTrackedTable(second.table));
+    try std.testing.expectEqual(@as(usize, 10003), state.table_allocations.items.len);
+}
+
+test "automatic finalization runs a bounded userdata batch" {
+    var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .none });
+    defer state.deinit();
+    state.gc_mode = .incremental;
+    var calls: usize = 0;
+    const finalizer = struct {
+        fn run(ptr: *anyopaque, _: ?*const anyopaque) void {
+            const count: *usize = @ptrCast(@alignCast(ptr));
+            count.* += 1;
+        }
+    }.run;
+    for (0..5) |_| _ = try state.newUserdata(&calls, 1, "count", finalizer, null, null);
+    while (state.gc_phase != .finalize) _ = try state.stepGc(1);
+    try std.testing.expectEqual(@as(usize, 0), calls);
+    try std.testing.expect(!try state.stepGc(1));
+    try std.testing.expectEqual(@as(usize, 1), calls);
+    try state.collectGarbage();
+    try std.testing.expectEqual(@as(usize, 5), calls);
+}
+
+test "remembered old metatables keep young metadata through promotion" {
+    var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .none });
+    defer state.deinit();
+    const parent = try state.newTableWithHints(0, 0);
+    const handle = try state.rootValue(parent);
+    defer state.unrootValue(handle);
+    state.normalizeGcBaseline();
+    const metatable = try state.newTableWithHints(0, 0);
+    state.setTableMetatableRaw(parent.table, metatable.table);
+    for (0..3) |_| {
+        try std.testing.expect(!try state.stepGc(1));
+        try std.testing.expect(state.isTrackedTable(metatable.table));
+    }
+    try std.testing.expectEqual(.old, metatable.table.gc.age);
+}
+
+test "suspended unwind errors remain roots across minor and major cycles" {
+    var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .none });
+    defer state.deinit();
+    const thread = try state.newCoroutineThread(.nil);
+    const handle = try state.rootValue(.{ .thread = thread });
+    defer state.unrootValue(handle);
+    state.normalizeGcBaseline();
+    const error_value = try state.newTableWithHints(0, 1);
+    try state.setTableRaw(error_value.table, .{ .string = "detail" }, .{ .string = try state.intern("suspended error") });
+    thread.pending_unwind_error = error_value;
+    state.threadBarrier(thread, error_value);
+    for (0..3) |_| {
+        _ = try state.stepGc(1);
+        try std.testing.expect(state.isTrackedTable(error_value.table));
+    }
+    try state.collectGarbage();
+    try std.testing.expect(state.isTrackedTable(error_value.table));
+    try std.testing.expectEqualStrings("suspended error", error_value.table.get(.{ .string = "detail" }).string);
+    thread.pending_unwind_error = null;
+    try state.collectGarbage();
+    try std.testing.expect(!state.isTrackedTable(error_value.table));
+}
+
+test "remembered old threads retain young diagnostic strings through promotion" {
+    var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .none });
+    defer state.deinit();
+    const thread = try state.newCoroutineThread(.nil);
+    const handle = try state.rootValue(.{ .thread = thread });
+    defer state.unrootValue(handle);
+    state.normalizeGcBaseline();
+    const diagnostic = try state.intern("young traceback belonging to a suspended old thread");
+    thread.error_traceback = diagnostic;
+    state.threadBarrier(thread, .{ .string = diagnostic });
+    for (0..3) |_| {
+        _ = try state.stepGc(1);
+        try std.testing.expect(state.findStringAllocation(diagnostic) != null);
+    }
+    try state.collectGarbage();
+    try std.testing.expectEqualStrings("young traceback belonging to a suspended old thread", thread.error_traceback.?);
+}
+
+test "changing weak modes after propagation retraces newly strong edges" {
+    var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .none });
+    defer state.deinit();
+    state.gc_mode = .incremental;
+    const metatable = try state.newTableWithHints(0, 1);
+    try state.setTableRaw(metatable.table, .{ .string = "__mode" }, .{ .string = "v" });
+    const weak = try state.newTableWithHints(0, 1);
+    state.setTableMetatableRaw(weak.table, metatable.table);
+    const handle = try state.rootValue(weak);
+    defer state.unrootValue(handle);
+    const child = try state.newTableWithHints(0, 0);
+    try state.setTableRaw(weak.table, .{ .string = "item" }, child);
+    while (state.gc_phase != .atomic) _ = try state.stepGc(1);
+    try state.setTableRaw(metatable.table, .{ .string = "__mode" }, .{ .string = "" });
+    while (!try state.stepGc(1)) {}
+    try std.testing.expect(state.isTrackedTable(child.table));
+    try std.testing.expect(weak.table.get(.{ .string = "item" }) == .table);
+    try state.setTableRaw(metatable.table, .{ .string = "__mode" }, .{ .string = "v" });
+    try state.collectGarbage();
+    try std.testing.expect(weak.table.get(.{ .string = "item" }) == .nil);
+}

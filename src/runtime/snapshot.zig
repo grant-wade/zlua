@@ -109,7 +109,7 @@ const Copier = struct {
         if (T == []const u8) return self.text(old);
         return switch (@typeInfo(T)) {
             .optional => if (old) |v| try self.remap(v) else null,
-            .pointer => |p| if (p.size == .one and (p.child == types.Table or p.child == types.Closure or p.child == types.Upvalue or p.child == types.Thread or p.child == Proto)) try self.mapped(old) else @compileError("unclassified snapshot pointer: " ++ @typeName(T)),
+            .pointer => |p| if (p.size == .one and (p.child == types.Table or p.child == types.Userdata or p.child == types.Closure or p.child == types.Upvalue or p.child == types.Thread or p.child == Proto)) try self.mapped(old) else @compileError("unclassified snapshot pointer: " ++ @typeName(T)),
             .@"struct" => blk: {
                 var result: T = undefined;
                 inline for (@typeInfo(T).@"struct".fields) |f| @field(result, f.name) = try self.remap(@field(old, f.name));
@@ -209,7 +209,7 @@ const Copier = struct {
             }
             new.entries.items.len = retained;
             try new.rebuildEntryIndex();
-            inline for (.{ "metatable", "metatable_prev", "metatable_next", "counts_for_gc_count", "finalizer_registered", "finalizer_next" }) |name| @field(new, name) = try self.remap(@field(old, name));
+            inline for (.{ "metatable", "metatable_prev", "metatable_next", "counts_for_gc_count", "finalizer_registered", "finalizer_next", "finalizer_prev", "finalizer_order" }) |name| @field(new, name) = try self.remap(@field(old, name));
             try d.table_allocation_index.put(@intFromPtr(new), index);
         }
         for (source.closure_allocations.items, d.closure_allocations.items) |old, new| {
@@ -228,12 +228,17 @@ const Copier = struct {
         }
         for (source.thread_allocations.items, d.thread_allocations.items) |old, new| try self.thread(old, new);
         for (source.userdata_allocations.items, d.userdata_allocations.items) |old, new| try self.userdata(old, new);
-        inline for (.{ "global_table", "table_metatable_head", "table_finalizer_head", "table_pending_finalizer_head", "table_metatable_count", "stdin_pos", "last_error", "last_error_in_close", "traceback_error_in_close", "string_metatable", "number_metatable", "boolean_metatable", "nil_metatable", "file_metatable", "zerde_null", "zerde_array_metatable", "zerde_object_metatable", "gc_running", "gc_mode", "gc_params", "random_state", "instruction_count" }) |name| @field(d, name) = try self.remap(@field(source, name));
+        inline for (.{ "global_table", "table_metatable_head", "table_finalizer_head", "table_pending_finalizer_head", "userdata_pending_finalizer_head", "table_metatable_count", "table_finalizer_serial", "stdin_pos", "last_error", "last_error_in_close", "traceback_error_in_close", "string_metatable", "number_metatable", "boolean_metatable", "nil_metatable", "file_metatable", "zerde_null", "zerde_array_metatable", "zerde_object_metatable", "gc_running", "gc_mode", "gc_params", "random_state", "instruction_count" }) |name| @field(d, name) = try self.remap(@field(source, name));
         d.stdout = try self.list(u8, source.stdout.items);
         d.stderr = try self.list(u8, source.stderr.items);
         d.options.stdin = try self.text(source.options.stdin);
+        inline for (.{ "userdata_allocations", "closure_allocations", "upvalue_allocations", "thread_allocations" }) |field| {
+            for (@field(d, field).items, 0..) |object, index| try d.object_allocation_index.put(a, @intFromPtr(object), index);
+        }
+        try @import("gc.zig").reserveQueues(State, d, 0);
         if (error_root) |index| _ = try d.rootValue(try self.value(source.rootedValue(index)));
-        d.resetAutoGcThreshold();
+        _ = d.refreshAllocationTotal();
+        d.normalizeGcBaseline();
     }
 
     fn storedValue(self: *Copier, v: types.Value) !types.Value {
@@ -300,6 +305,8 @@ const Copier = struct {
         new.type_id = old.type_id;
         new.type_name = try self.text(old.type_name);
         new.metatable = try self.remap(old.metatable);
+        new.finalizer_next = try self.remap(old.finalizer_next);
+        new.finalization_pending = old.finalization_pending;
         new.finalized = old.finalized;
         new.finalizer = old.finalizer;
         new.finalizer_data = old.finalizer_data;
@@ -316,6 +323,7 @@ const Copier = struct {
                 .finalizer_data = p.finalizer_data,
                 .dispose = p.snapshot_dispose,
                 .finalized = p.finalized,
+                .managed_bytes = p.managed_bytes,
                 .snapshot_copy = p.snapshot_copy,
                 .snapshot_dispose = p.snapshot_dispose,
                 .snapshot_tracking = p.snapshot_tracking,
@@ -369,15 +377,15 @@ comptime {
     @setEvalBranchQuota(1000000);
     review(State, .{
         .external = "allocator allocator_lifetime options",
-        .rebuilt = "borrowed_proto_count strings string_allocation_index table_allocation_index gc_next_total gc_known_total api_roots",
-        .remapped = "global_table table_metatable_head table_finalizer_head table_pending_finalizer_head string_metatable number_metatable boolean_metatable nil_metatable file_metatable zerde_null zerde_array_metatable zerde_object_metatable last_error",
-        .copied = "string_allocations table_allocations userdata_allocations closure_allocations upvalue_allocations thread_allocations proto_allocations source_allocations stdout stderr table_metatable_count stdin_pos last_error_in_close traceback_error_in_close gc_running gc_mode gc_params random_state instruction_count",
-        .transient = "execution_depth userdata_scope rollback snapshot_busy discarding current_thread api_callback_dispatch api_callback_user_data active_api_callback coroutine_close_depth is_collecting collect_after_instruction mark_all_stack_registers conservative_gc_depth",
+        .rebuilt = "borrowed_proto_count strings string_allocation_index table_allocation_index object_allocation_index gc_next_total gc_known_total api_roots",
+        .remapped = "global_table table_metatable_head table_finalizer_head table_pending_finalizer_head userdata_pending_finalizer_head string_metatable number_metatable boolean_metatable nil_metatable file_metatable zerde_null zerde_array_metatable zerde_object_metatable last_error",
+        .copied = "string_allocations table_allocations userdata_allocations closure_allocations upvalue_allocations thread_allocations proto_allocations source_allocations stdout stderr table_metatable_count table_finalizer_serial stdin_pos last_error_in_close traceback_error_in_close gc_running gc_mode gc_params random_state instruction_count",
+        .transient = "execution_depth userdata_scope rollback snapshot_busy discarding current_thread api_callback_dispatch api_callback_user_data active_api_callback coroutine_close_depth gc_epoch gc_generation gc_phase gc_cycle gc_work gc_remembered gc_weak gc_tables gc_finalizers gc_major_pending gc_cycle_start_total gc_found_young gc_old gc_sweep_cursor gc_major_base gc_work_done gc_minor_count is_collecting collect_after_instruction step_after_instruction mark_all_stack_registers conservative_gc_depth",
     });
     review(types.Thread, .{
         .copied = "exposed stack frames yield_values protected_continuations generic_for_continuations pairs_continuations tail_call_continuations call_one_continuations hook_call hook_line hook_return hook_count hook_count_remaining pending_yield_hook_return continuation_order last_result_base last_result_count last_transfer_base last_transfer_count yield_result_base yield_result_count pending_unwind_resume_frame_count pending_unwind_target_frame_count started is_main closing status",
         .remapped = "open_upvalues hook close_error_value error_traceback pending_unwind_error entry",
-        .transient = "rollback marked hook_running hook_return_name hook_level2_func hook_transfer_index_base hook_transfer_stack_base hook_transfer_count hook_transfer_values next_call_name next_call_namewhat native_call_depth traceback_native_name protected_close_depth resume_parent",
+        .transient = "rollback marked gc hook_running hook_return_name hook_level2_func hook_transfer_index_base hook_transfer_stack_base hook_transfer_count hook_transfer_values next_call_name next_call_namewhat native_call_depth traceback_native_name protected_close_depth resume_parent",
     });
     review(types.CallFrame, .{
         .copied = "base pc return_start return_count varargs last_hook_line debug_name_override debug_namewhat_override is_tail_call pending_returns",
@@ -385,26 +393,26 @@ comptime {
         .rebuilt = "owns_varargs",
     });
     review(types.Table, .{
-        .copied = "array entries counts_for_gc_count finalizer_registered",
-        .remapped = "metatable metatable_prev metatable_next finalizer_next",
+        .copied = "array entries counts_for_gc_count finalizer_registered finalizer_order",
+        .remapped = "metatable metatable_prev metatable_next finalizer_next finalizer_prev",
         .rebuilt = "entry_index",
-        .transient = "rollback marked",
+        .transient = "rollback marked gc",
     });
     review(types.Closure, .{
         .remapped = "proto upvalues constants",
         .copied = "stripped_debug",
-        .transient = "rollback marked",
+        .transient = "rollback marked gc",
     });
     review(types.Upvalue, .{
         .remapped = "owner closed next",
         .copied = "stack_index is_open",
-        .transient = "rollback marked",
+        .transient = "rollback marked gc",
     });
     review(types.Userdata, .{
         .external = "ptr type_id finalizer finalizer_data deinit_fn",
-        .copied = "type_name finalized",
-        .remapped = "metatable payload",
-        .transient = "scope_readers scope_writers rollback marked",
+        .copied = "type_name finalized finalization_pending",
+        .remapped = "metatable payload finalizer_next",
+        .transient = "scope_readers scope_writers rollback marked gc",
     });
     review(Proto, .{
         .rebuilt = "allocator arena",
@@ -414,11 +422,11 @@ comptime {
     review(types.Value, .{ .remapped = "string table userdata closure thread coroutine_wrapper gmatch_iterator", .external = "nil boolean integer number native_print native_tostring native_getmetatable native_setmetatable native_rawequal native_rawget native_rawset native_rawlen native_next native_pairs native_ipairs native_ipairs_iter native_table_create native_select native_assert native_error native_pcall native_xpcall native_collectgarbage native_debug_traceback native_coroutine_create native_coroutine_resume native_coroutine_yield native_coroutine_status native_coroutine_running native_coroutine_isyieldable native_coroutine_close native_coroutine_wrap native api_callback" });
     review(types.StringAllocation, .{
         .copied = "bytes",
-        .transient = "marked",
+        .transient = "marked gc",
     });
     review(types.UserdataPayload, .{
         .external = "allocator lifetime ptr finalizer finalizer_data dispose snapshot_copy snapshot_dispose",
         .rebuilt = "references is_snapshot_copy",
-        .copied = "finalized snapshot_tracking",
+        .copied = "finalized snapshot_tracking managed_bytes",
     });
 }
