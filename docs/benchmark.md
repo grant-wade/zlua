@@ -4,7 +4,7 @@ Run the whole suite with `zig build bench` (or `just bench`). It runs these grou
 
 | Group | Measures |
 | --- | --- |
-| Process | Complete Lua programs under zlua and Lua 5.5, including process launch, compilation, and shutdown. |
+| Process | Complete Lua programs under zlua, zlua snapshot, and Lua 5.5, including process launch, compilation, and shutdown. |
 | Startup | State creation, library opening, and the first chunk through the native Zig API and upstream Lua’s C API. |
 | Snapshots | Capture, new State creation (`new_state`), first-work mutation, reset-only, no-op reset, full work/reset cycles, and equivalent rebuild. |
 
@@ -29,7 +29,7 @@ Use `sustained` to measure longer-running Lua code with less influence from proc
 
 ## Reading the results
 
-The main tables show medians and sample counts. For process comparisons, **zlua/Lua below 1 is faster**. For snapshots, **speedup above 1 is faster**. Break-even estimates how many resets recover the capture cost: `ceil(capture / (rebuild - reset))`. A dash means no saving or an unavailable result.
+The main tables show medians and sample counts. For process comparisons, **ratios below 1 mean the numerator is faster**. The table shows zlua/Lua, snapshot/Lua, and snapshot/zlua. For snapshots, **speedup above 1 is faster**. Break-even estimates how many resets recover the capture cost: `ceil(capture / (rebuild - reset))`. A dash means no saving or an unavailable result.
 
 Use `--verbose` for phase timings, p95, spread, and allocation details. With very few samples, p95 is usually the maximum; use more samples before drawing conclusions.
 
@@ -37,7 +37,15 @@ Allocation counts and bytes are medians across samples. Requested bytes include 
 
 JSON format 2 includes run metadata, raw samples, summaries, and comparisons for every group. Existing process records and their mean-based ratio remain under `benchmarks`. CSV format 2 has one row per operation sample; failed or skipped operations with no samples still get a row. Both formats store nanoseconds and bytes.
 
-Save a baseline, make the change, and repeat the same command on an otherwise idle machine. Look at the samples and spread as well as the ratio. Process runs alternate engine order and check every pair's exit status and output outside the timer.
+Save a baseline, make the change, and repeat the same command on an otherwise idle machine. Look at the samples and spread as well as the ratio. Process runs rotate all three engines through each execution position and check both zlua variants against Lua 5.5 for every sample's exit status and output outside the timer.
+
+## Snapshot program comparisons
+
+The top Process table runs every selected Lua fixture in an ordinary zlua state, a snapshot-restored zlua state, and Lua 5.5. The snapshot worker opens full libraries and installs `arg`, captures that baseline, calls `Snapshot.newState`, then loads and executes the fixture in the restored state. Snapshot tracking stays active throughout execution.
+
+All three columns time complete processes. The snapshot column includes baseline initialization, capture, restoration, compilation, execution, and teardown; it does not represent amortized snapshot startup savings. Use `sustained` fixtures to reduce those setup costs' influence when comparing general execution performance. Snapshot capture/reset microbenchmarks remain in their separate section.
+
+`zig build bench` supplies a ReleaseFast snapshot worker automatically. When invoking `zlua-test-bench` directly, it defaults to the installed sibling `zlua-bench-snapshot`; `--zlua-snapshot PATH` overrides it. JSON and CSV identify this third engine as `zlua_snapshot` and include its samples and comparisons.
 
 ## Snapshot reset measurements
 

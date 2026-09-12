@@ -2,6 +2,21 @@ const std = @import("std");
 const api = @import("../api.zig");
 const a = std.testing.allocator;
 
+test "snapshot accepts stateless allocator with undefined context" {
+    const allocator = std.heap.smp_allocator;
+    var lua = try api.State.init(allocator, .{ .stdlib = .full });
+    defer lua.deinit();
+    try lua.doString("value = 40", .{});
+    var snapshot = try lua.snapshot(allocator);
+    defer snapshot.deinit();
+    var worker = try snapshot.newState(allocator);
+    defer worker.deinit();
+    try worker.doString("value = value + 2; assert(value == 42)", .{});
+    try worker.reset();
+    try worker.doString("assert(value == 40)", .{});
+    try lua.doString("assert(value == 40)", .{});
+}
+
 test "reset without baseline fails" {
     var lua = try api.State.init(a, .{});
     defer lua.deinit();

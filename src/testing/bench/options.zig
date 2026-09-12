@@ -5,6 +5,7 @@ pub const Options = struct {
     family: Family = .all,
     verbose: bool = false,
     zlua_build: ?[]const u8 = null,
+    snapshot_build: ?[]const u8 = null,
     clua_build: ?[]const u8 = null,
     c_build: ?[]const u8 = null,
     clua_c: ?[]const u8 = null,
@@ -12,6 +13,7 @@ pub const Options = struct {
     selectors: []const []const u8 = &.{},
     clua: ?[]const u8 = null,
     zlua: ?[]const u8 = null,
+    zlua_snapshot: ?[]const u8 = null,
     list: bool = false,
     iterations: ?usize = null,
     warmup: ?usize = null,
@@ -52,6 +54,16 @@ pub fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !Option
             options.family = std.meta.stringToEnum(Family, arg[9..]) orelse return error.InvalidOptionValue;
         } else if (std.mem.startsWith(u8, arg, "--zlua-build=")) {
             options.zlua_build = arg[13..];
+        } else if (std.mem.startsWith(u8, arg, "--snapshot-build=")) {
+            options.snapshot_build = arg[17..];
+        } else if (std.mem.eql(u8, arg, "--zlua-snapshot")) {
+            index += 1;
+            if (index >= args.len) return error.MissingOptionValue;
+            options.zlua_snapshot = args[index];
+            options.snapshot_build = null;
+        } else if (std.mem.startsWith(u8, arg, "--zlua-snapshot=")) {
+            options.zlua_snapshot = arg[16..];
+            options.snapshot_build = null;
         } else if (std.mem.startsWith(u8, arg, "--clua-build=")) {
             options.clua_build = arg[13..];
         } else if (std.mem.startsWith(u8, arg, "--c-build=")) {
@@ -176,4 +188,13 @@ test "invalid and missing numeric arguments are rejected" {
     try std.testing.expectError(error.InvalidOptionValue, parseArgs(std.testing.allocator, &.{"--iterations=0"}));
     try std.testing.expectError(error.MissingOptionValue, parseArgs(std.testing.allocator, &.{"--warmup"}));
     try std.testing.expectError(error.UnknownOption, parseArgs(std.testing.allocator, &.{"--unknown"}));
+}
+
+test "snapshot worker overrides invalidate only the snapshot build" {
+    const options = try parseArgs(std.testing.allocator, &.{ "--zlua-build=ReleaseFast", "--zlua-snapshot", "built", "--snapshot-build=ReleaseFast", "--zlua-snapshot=external" });
+    defer options.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("external", options.zlua_snapshot.?);
+    try std.testing.expect(options.snapshot_build == null);
+    try std.testing.expectEqualStrings("ReleaseFast", options.zlua_build.?);
+    try std.testing.expectError(error.MissingOptionValue, parseArgs(std.testing.allocator, &.{"--zlua-snapshot"}));
 }

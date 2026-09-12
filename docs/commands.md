@@ -165,7 +165,7 @@ just bench [options] [selectors...]
 | --- | --- |
 | `selectors...` | Group, case, or process fixture name/path. |
 | `--list` | List selected benchmark cases. |
-| `--clua PATH`, `--zlua PATH` | Override executables; `=PATH` forms also work. |
+| `--clua PATH`, `--zlua PATH`, `--zlua-snapshot PATH` | Override process benchmark executables; `=PATH` forms also work. |
 | `--iterations N` | Override measured runs; must be positive. |
 | `--warmup N`, `--no-warmup` | Override warmup runs. |
 | `--timeout-ms N` | Positive per-process timeout. |

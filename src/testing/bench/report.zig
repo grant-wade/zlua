@@ -32,10 +32,14 @@ fn comparisons(allocator: std.mem.Allocator, suite: *const Suite) ![]Comparison 
     var list: std.ArrayList(Comparison) = .empty;
     errdefer list.deinit(allocator);
     for (suite.results.items) |r| {
-        if (std.mem.eql(u8, r.group, "process") and std.mem.eql(u8, r.engine, "zlua")) {
+        if (std.mem.eql(u8, r.group, "process") and (std.mem.eql(u8, r.engine, "zlua") or std.mem.eql(u8, r.engine, "zlua_snapshot"))) {
             const a = median(r);
             const b = median(find(suite, r.group, r.case, "clua", "program"));
-            try list.append(allocator, .{ .group = r.group, .case = r.case, .numerator = "zlua", .denominator = "clua", .ratio = if (a != null and b != null) stats.ratio(a.?, b.?) else null });
+            try list.append(allocator, .{ .group = r.group, .case = r.case, .numerator = r.engine, .denominator = "clua", .ratio = if (a != null and b != null) stats.ratio(a.?, b.?) else null });
+            if (std.mem.eql(u8, r.engine, "zlua_snapshot")) {
+                const plain = median(find(suite, r.group, r.case, "zlua", "program"));
+                try list.append(allocator, .{ .group = r.group, .case = r.case, .numerator = r.engine, .denominator = "zlua", .ratio = if (a != null and plain != null) stats.ratio(a.?, plain.?) else null });
+            }
         } else if (std.mem.eql(u8, r.group, "snapshots") and std.mem.eql(u8, r.operation, "reset")) {
             const reset = median(r);
             const rebuild = median(find(suite, r.group, r.case, r.engine, "rebuild"));
@@ -80,11 +84,24 @@ pub fn human(allocator: std.mem.Allocator, out: *std.Io.Writer, suite: *const Su
         if (std.mem.eql(u8, group, "process")) {
             try out.writeAll("\nProcess\n");
             try builds(out, suite, group);
-            try out.print("{s:<34} {s:>7} {s:>7} {s:>12} {s:>12} {s:>11}\n", .{ "case", "n", "warmup", "zlua", "Lua 5.5", "zlua/Lua" });
+            try out.print("{s:<34} {s:>7} {s:>7} {s:>12} {s:>14} {s:>12} {s:>11} {s:>12} {s:>13}\n", .{ "case", "n", "warmup", "zlua", "zlua snapshot", "Lua 5.5", "zlua/Lua", "snapshot/Lua", "snapshot/zlua" });
             for (comparisons_list) |c| {
-                if (!std.mem.eql(u8, c.group, group)) continue;
+                if (!std.mem.eql(u8, c.group, group) or !std.mem.eql(u8, c.numerator, "zlua")) continue;
                 const zlua = find(suite, group, c.case, "zlua", "program").?;
-                try out.print("{s:<34} {d:>7} {d:>7} {s:>12} {s:>12} {s:>11}", .{ c.case, zlua.iterations, zlua.warmup, try timeText(a, median(zlua)), try timeText(a, median(find(suite, group, c.case, "clua", "program"))), try ratioText(a, c.ratio) });
+                const snapshot = median(find(suite, group, c.case, "zlua_snapshot", "program"));
+                const lua = median(find(suite, group, c.case, "clua", "program"));
+                const plain = median(zlua);
+                try out.print("{s:<34} {d:>7} {d:>7} {s:>12} {s:>14} {s:>12} {s:>11} {s:>12} {s:>13}", .{
+                    c.case,
+                    zlua.iterations,
+                    zlua.warmup,
+                    try timeText(a, plain),
+                    try timeText(a, snapshot),
+                    try timeText(a, lua),
+                    try ratioText(a, c.ratio),
+                    try ratioText(a, if (snapshot != null and lua != null) stats.ratio(snapshot.?, lua.?) else null),
+                    try ratioText(a, if (snapshot != null and plain != null) stats.ratio(snapshot.?, plain.?) else null),
+                });
                 try status(out, zlua);
             }
         } else if (std.mem.eql(u8, group, "startup")) {
@@ -123,16 +140,16 @@ pub fn human(allocator: std.mem.Allocator, out: *std.Io.Writer, suite: *const Su
     }
     if (verbose) {
         try out.writeAll("\nTiming details\n");
-        try out.print("{s:<34} {s:<9} {s:<14} {s:>12} {s:>12} {s:>12} {s:>12} {s:>12} {s:>12}\n", .{ "case", "engine", "operation", "median", "p95", "min", "mean", "max", "stddev" });
+        try out.print("{s:<34} {s:<13} {s:<14} {s:>12} {s:>12} {s:>12} {s:>12} {s:>12} {s:>12}\n", .{ "case", "engine", "operation", "median", "p95", "min", "mean", "max", "stddev" });
         for (suite.results.items) |r| {
             const t = r.timing orelse continue;
-            try out.print("{s:<34} {s:<9} {s:<14} {s:>12} {s:>12} {s:>12} {s:>12} {s:>12} {s:>12}\n", .{ r.case, r.engine, r.operation, try timeText(a, t.median_ns), try timeText(a, t.p95_ns), try timeText(a, t.min_ns), try timeText(a, t.mean_ns), try timeText(a, t.max_ns), try timeText(a, t.stddev_ns) });
+            try out.print("{s:<34} {s:<13} {s:<14} {s:>12} {s:>12} {s:>12} {s:>12} {s:>12} {s:>12}\n", .{ r.case, r.engine, r.operation, try timeText(a, t.median_ns), try timeText(a, t.p95_ns), try timeText(a, t.min_ns), try timeText(a, t.mean_ns), try timeText(a, t.max_ns), try timeText(a, t.stddev_ns) });
         }
         try out.writeAll("\nAllocation details (bytes)\n");
-        try out.print("{s:<26} {s:<9} {s:<14} {s:<11} {s:>8} {s:>8} {s:>12} {s:>12} {s:>12} {s:>12}\n", .{ "case", "engine", "operation", "scope", "allocs", "resizes", "requested", "live", "peak", "runtime" });
+        try out.print("{s:<26} {s:<13} {s:<14} {s:<11} {s:>8} {s:>8} {s:>12} {s:>12} {s:>12} {s:>12}\n", .{ "case", "engine", "operation", "scope", "allocs", "resizes", "requested", "live", "peak", "runtime" });
         for (suite.results.items) |r| {
             if (r.memory_scope == .unavailable or r.status != .benchmarked) continue;
-            try out.print("{s:<26} {s:<9} {s:<14} {s:<11}", .{ r.case, r.engine, r.operation, @tagName(r.memory_scope) });
+            try out.print("{s:<26} {s:<13} {s:<14} {s:<11}", .{ r.case, r.engine, r.operation, @tagName(r.memory_scope) });
             inline for (.{ "allocations", "resizes", "requested_bytes", "live_bytes", "peak_bytes", "runtime_bytes" }, 0..) |field, index| {
                 const values = try a.alloc(u64, r.samples.len);
                 var available = true;
@@ -186,7 +203,7 @@ pub fn json(allocator: std.mem.Allocator, out: *std.Io.Writer, suite: *const Sui
     const legacy = suite.legacy_process;
     try std.json.Stringify.value(.{
         .format_version = 2,
-        .run = .{ .zig_version = builtin.zig_version_string, .os = @tagName(builtin.os.tag), .arch = @tagName(builtin.cpu.arch), .harness_build = @tagName(builtin.mode), .cpu = builtin.cpu.model.name, .process_order = "alternating pairs", .time_unit = "ns", .memory_unit = "bytes", .median = "middle observation; average of middle two for even counts", .p95 = "nearest rank" },
+        .run = .{ .zig_version = builtin.zig_version_string, .os = @tagName(builtin.os.tag), .arch = @tagName(builtin.cpu.arch), .harness_build = @tagName(builtin.mode), .cpu = builtin.cpu.model.name, .process_order = "rotating triples: clua, zlua, zlua_snapshot", .time_unit = "ns", .memory_unit = "bytes", .median = "middle observation; average of middle two for even counts", .p95 = "nearest rank" },
         .results = suite.results.items,
         .comparisons = compared,
         .benchmarks = if (legacy == .object) legacy.object.get("benchmarks").? else std.json.Value.null,
@@ -289,4 +306,44 @@ test "shared exports preserve samples, escaping, null metrics and failed results
     try csv(&csv_writer.writer, &suite);
     try std.testing.expect(std.mem.indexOf(u8, csv_writer.written(), "\"a,\"\"b\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, csv_writer.written(), ",0,100,,,,,,,") != null);
+}
+
+test "process report compares all three engines and omits ratios for failures" {
+    const a = std.testing.allocator;
+    var suite = Suite.init(a);
+    defer suite.deinit();
+    for ([_][]const u8{ "clua", "zlua", "zlua_snapshot" }, [_]u64{ 100, 200, 300 }) |engine, time| {
+        for ([_]results.Status{ .benchmarked, .failed }) |state| {
+            try suite.add(.{
+                .group = "process",
+                .case = @tagName(state),
+                .engine = engine,
+                .operation = "program",
+                .scope = "process",
+                .iterations = 1,
+                .warmup = 0,
+                .status = state,
+                .samples = &.{.{ .elapsed_ns = time }},
+            });
+        }
+    }
+    const compared = try comparisons(a, &suite);
+    defer a.free(compared);
+    try std.testing.expectEqual(@as(usize, 6), compared.len);
+    for (compared) |c| {
+        if (std.mem.eql(u8, c.case, "failed")) {
+            try std.testing.expect(c.ratio == null);
+        } else {
+            const expected: f64 = if (std.mem.eql(u8, c.numerator, "zlua")) 2 else if (std.mem.eql(u8, c.denominator, "clua")) 3 else 1.5;
+            try std.testing.expectEqual(expected, c.ratio.?);
+        }
+    }
+    var out = std.Io.Writer.Allocating.init(a);
+    defer out.deinit();
+    try human(a, &out.writer, &suite, false, false);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "zlua snapshot") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "snapshot/Lua") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "snapshot/zlua") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "300 ns") != null);
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, out.written(), "benchmarked"));
 }

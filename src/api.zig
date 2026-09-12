@@ -480,7 +480,9 @@ pub const State = struct {
         try self.ownSnapshotInputs();
         const backing = try snapshot_allocator.create(SnapshotBacking);
         errdefer snapshot_allocator.destroy(backing);
-        const uses_state_allocator = snapshot_allocator.ptr == self.raw_state.allocator.ptr and snapshot_allocator.vtable == self.raw_state.allocator.vtable;
+        // Stateless allocators may leave ptr undefined. Only compare contexts
+        // after matching the state allocator's vtable.
+        const uses_state_allocator = snapshot_allocator.vtable == self.raw_state.allocator.vtable and snapshot_allocator.ptr == self.raw_state.allocator.ptr;
         const lifetime = if (uses_state_allocator) self.raw_state.allocator_lifetime else null;
         backing.* = .{ .allocator = snapshot_allocator, .lifetime = lifetime, .image = try self.copyImage(snapshot_allocator, snapshot_allocator, lifetime) };
         errdefer backing.image.discardImage();

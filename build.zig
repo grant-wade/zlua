@@ -86,6 +86,17 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    const snapshot_bench_exe = b.addExecutable(.{
+        .name = "zlua-bench-snapshot",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/bench_snapshot_main.zig"),
+            .target = target,
+            .optimize = bench_optimize,
+            .imports = &.{.{ .name = "zlua", .module = bench_mod }},
+        }),
+    });
+    b.installArtifact(snapshot_bench_exe);
+
     const clua_startup_bench_exe = addCStartupBench(b, target, bench_optimize, clua_bench_lib, "clua-bench-startup-c-api");
 
     const diff_exe = b.addExecutable(.{
@@ -209,6 +220,9 @@ pub fn build(b: *std.Build) void {
     run_bench.addArtifactArg(clua_bench_exe);
     run_bench.addArg("--zlua");
     run_bench.addArtifactArg(bench_zlua_exe);
+    run_bench.addArg("--zlua-snapshot");
+    run_bench.addArtifactArg(snapshot_bench_exe);
+    run_bench.addArg("--snapshot-build=ReleaseFast");
     run_bench.addArgs(&.{ "--zlua-build=ReleaseFast", "--clua-build=ReleaseFast" });
     run_bench.addArg("--clua-c");
     run_bench.addArtifactArg(clua_startup_bench_exe);

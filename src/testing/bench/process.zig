@@ -41,7 +41,7 @@ pub fn collect(allocator: std.mem.Allocator, io: std.Io, environ_map: *const std
         }
     } else if (!try fixtures.resolveSelectors(allocator, io, benchmarks.items, options, &selected)) return error.UnknownSelector;
     if (options.list) {
-        for (selected.items) |index| try suite.addCase("process", "zlua+clua", benchmarks.items[index].name, "Complete program, including process launch and compilation");
+        for (selected.items) |index| try suite.addCase("process", "zlua+zlua_snapshot+clua", benchmarks.items[index].name, "Complete program, including process launch and compilation");
         return;
     }
     if (selected.items.len == 0) return;
@@ -53,6 +53,13 @@ pub fn collect(allocator: std.mem.Allocator, io: std.Io, environ_map: *const std
     };
     const zlua_path = options.zlua orelse zlua_exe;
     if (!try validateZlua(allocator, io, zlua_path)) return error.ZluaNotRunnable;
+    const default_snapshot_path = if (std.fs.path.dirname(zlua_exe)) |dir|
+        try std.fs.path.join(allocator, &.{ dir, "zlua-bench-snapshot" })
+    else
+        try allocator.dupe(u8, "zlua-bench-snapshot");
+    defer allocator.free(default_snapshot_path);
+    const snapshot_path = options.zlua_snapshot orelse default_snapshot_path;
+    if (!try validateZlua(allocator, io, snapshot_path)) return error.SnapshotNotRunnable;
     var reports: std.ArrayList(legacy.BenchmarkReport) = .empty;
     defer {
         for (reports.items) |*report| report.deinit(allocator);
@@ -60,7 +67,7 @@ pub fn collect(allocator: std.mem.Allocator, io: std.Io, environ_map: *const std
     }
     var counts: legacy.Counts = .{};
     for (selected.items) |index| {
-        const report = runOne(allocator, io, benchmarks.items[index], clua_exe, zlua_path, options) catch |err| report: {
+        const report = runOne(allocator, io, benchmarks.items[index], clua_exe, zlua_path, snapshot_path, options) catch |err| report: {
             if (err == error.OutOfMemory) return err;
             const b = benchmarks.items[index];
             break :report legacy.BenchmarkReport{
@@ -81,7 +88,7 @@ pub fn collect(allocator: std.mem.Allocator, io: std.Io, environ_map: *const std
             .failed => counts.failed += 1,
             .timed_out => counts.timed_out += 1,
         }
-        inline for (.{ "clua", "zlua" }) |engine| {
+        inline for (.{ "clua", "zlua", "zlua_snapshot" }) |engine| {
             const data = @field(report, engine);
             const samples = try allocator.alloc(results.Metric, data.samples_ns.len);
             defer allocator.free(samples);
@@ -91,12 +98,15 @@ pub fn collect(allocator: std.mem.Allocator, io: std.Io, environ_map: *const std
                 .case = report.name,
                 .category = report.category,
                 .engine = engine,
-                .build_mode = if (std.mem.eql(u8, engine, "clua")) options.clua_build else options.zlua_build,
-                .executable = if (std.mem.eql(u8, engine, "clua")) clua_exe else zlua_path,
+                .build_mode = if (std.mem.eql(u8, engine, "clua")) options.clua_build else if (std.mem.eql(u8, engine, "zlua_snapshot")) options.snapshot_build else options.zlua_build,
+                .executable = if (std.mem.eql(u8, engine, "clua")) clua_exe else if (std.mem.eql(u8, engine, "zlua_snapshot")) snapshot_path else zlua_path,
                 .failure_sample = report.failure_sample,
                 .failure_during_warmup = report.failure_during_warmup,
                 .operation = "program",
-                .scope = "Process launch, initialization, loading, compilation, execution, and shutdown",
+                .scope = if (std.mem.eql(u8, engine, "zlua_snapshot"))
+                    "Process launch, initialization, library/arg snapshot capture and newState, loading, compilation, execution, and shutdown"
+                else
+                    "Process launch, initialization, loading, compilation, execution, and shutdown",
                 .iterations = report.iterations,
                 .warmup = report.warmup,
                 .timeout_ms = report.timeout_ms,
@@ -112,7 +122,7 @@ pub fn collect(allocator: std.mem.Allocator, io: std.Io, environ_map: *const std
     suite.legacy_process = try std.json.parseFromSliceLeaky(std.json.Value, suite.arena.allocator(), bytes.items, .{ .allocate = .alloc_always });
 }
 
-fn runOne(allocator: std.mem.Allocator, io: std.Io, benchmark: fixtures.Benchmark, clua_exe: []const u8, zlua_exe: []const u8, options: Options) !legacy.BenchmarkReport {
+fn runOne(allocator: std.mem.Allocator, io: std.Io, benchmark: fixtures.Benchmark, clua_exe: []const u8, zlua_exe: []const u8, snapshot_exe: []const u8, options: Options) !legacy.BenchmarkReport {
     const iterations = options.iterations orelse benchmark.iterations;
     const warmup = options.warmup orelse benchmark.warmup;
     const timeout_ms = options.timeout_ms orelse benchmark.timeout_ms;
@@ -126,38 +136,44 @@ fn runOne(allocator: std.mem.Allocator, io: std.Io, benchmark: fixtures.Benchmar
     errdefer allocator.free(report.clua.samples_ns);
     report.zlua.samples_ns = try allocator.alloc(u64, iterations);
     errdefer allocator.free(report.zlua.samples_ns);
+    report.zlua_snapshot.samples_ns = try allocator.alloc(u64, iterations);
+    errdefer allocator.free(report.zlua_snapshot.samples_ns);
     var validation: Validation = .{};
     var failure_index: ?usize = null;
-    // Alternate the first engine in each pair, including warmups. Validation is outside runTimed.
+    const executables = [_][]const u8{ clua_exe, zlua_exe, snapshot_exe };
+    // Rotate all three engines through first, second and third, including warmups.
+    // Output and status validation remain outside runTimed.
     for (0..try std.math.add(usize, iterations, warmup)) |index| {
-        var pair: [2]TimedRun = undefined;
-        const first: usize = index % 2;
-        pair[first] = try runTimed(allocator, io, if (first == 0) clua_exe else zlua_exe, benchmark.path, if (first == 0) .clua else .zlua, timeout_ms, first == 1 and options.debug_errors);
-        defer pair[first].result.deinit(allocator);
-        const second = 1 - first;
-        pair[second] = try runTimed(allocator, io, if (second == 0) clua_exe else zlua_exe, benchmark.path, if (second == 0) .clua else .zlua, timeout_ms, second == 1 and options.debug_errors);
-        defer pair[second].result.deinit(allocator);
+        var runs: [3]TimedRun = undefined;
+        var completed: usize = 0;
+        defer for (0..completed) |offset| {
+            runs[(index + offset) % runs.len].result.deinit(allocator);
+        };
+        for (0..runs.len) |offset| {
+            const engine_index = (index + offset) % runs.len;
+            runs[engine_index] = try runTimed(allocator, io, executables[engine_index], benchmark.path, @enumFromInt(engine_index), timeout_ms, engine_index != 0 and options.debug_errors);
+            completed += 1;
+        }
         const previous = validation.status;
-        validation.observe(pair[0].result, pair[1].result);
+        validation.observe(runs[0].result, runs[1].result);
+        validation.observe(runs[0].result, runs[2].result);
         if (validation.status != previous) {
             failure_index = index;
             if (options.debug_errors) {
-                try stderrPrint(io, "{s}, sample {d}: {s}\nclua: {s}\nzlua: {s}\n", .{ benchmark.name, index + 1, validation.reason, pair[0].result.stderr, pair[1].result.stderr });
+                try stderrPrint(io, "{s}, sample {d}: {s}\nclua: {s}\nzlua: {s}\nzlua_snapshot: {s}\n", .{ benchmark.name, index + 1, validation.reason, runs[0].result.stderr, runs[1].result.stderr, runs[2].result.stderr });
             }
         }
-        if (index >= warmup) {
-            report.clua.samples_ns[index - warmup] = pair[0].elapsed_ns;
-            report.zlua.samples_ns[index - warmup] = pair[1].elapsed_ns;
+        inline for (.{ "clua", "zlua", "zlua_snapshot" }, 0..) |engine, engine_index| {
+            const data = &@field(report, engine);
+            const run = runs[engine_index];
+            if (index >= warmup) data.samples_ns[index - warmup] = run.elapsed_ns;
+            // Preserve the failing sample's exit information.
+            if (failure_index == index or failure_index == null) {
+                data.exit_code = run.result.exit_code;
+                data.signal = run.result.signal;
+            }
+            data.timed_out = data.timed_out or run.result.timed_out;
         }
-        // Preserve the failing pair's exit information rather than replacing it with a later success.
-        if (failure_index == index or failure_index == null) {
-            report.clua.exit_code = pair[0].result.exit_code;
-            report.clua.signal = pair[0].result.signal;
-            report.zlua.exit_code = pair[1].result.exit_code;
-            report.zlua.signal = pair[1].result.signal;
-        }
-        report.clua.timed_out = report.clua.timed_out or pair[0].result.timed_out;
-        report.zlua.timed_out = report.zlua.timed_out or pair[1].result.timed_out;
     }
     if (failure_index) |index| {
         report.failure_during_warmup = index < warmup;
@@ -167,6 +183,7 @@ fn runOne(allocator: std.mem.Allocator, io: std.Io, benchmark: fixtures.Benchmar
     report.reason = validation.reason;
     report.clua.stats = try stats.calculate(allocator, report.clua.samples_ns);
     report.zlua.stats = try stats.calculate(allocator, report.zlua.samples_ns);
+    report.zlua_snapshot.stats = try stats.calculate(allocator, report.zlua_snapshot.samples_ns);
     return report;
 }
 
@@ -199,7 +216,7 @@ fn validateZlua(allocator: std.mem.Allocator, io: std.Io, zlua_exe: []const u8) 
     return result.success();
 }
 
-const Engine = enum { clua, zlua };
+const Engine = enum { clua, zlua, zlua_snapshot };
 
 fn runTimed(
     allocator: std.mem.Allocator,
@@ -213,14 +230,14 @@ fn runTimed(
     var argv = std.ArrayList([]const u8).empty;
     defer argv.deinit(allocator);
     try argv.append(allocator, exe);
-    if (engine == .zlua and debug_errors) try argv.append(allocator, "--debug-errors");
+    if (engine != .clua and debug_errors) try argv.append(allocator, "--debug-errors");
     try argv.append(allocator, path);
 
     const start = Timestamp.now(io, .awake);
     const result = try process.runProcess(allocator, io, argv.items, .{
         .timeout_ms = timeout_ms,
         .max_output_bytes = max_output_bytes,
-        .expand_arg0 = engine == .zlua,
+        .expand_arg0 = engine != .clua,
     });
     const elapsed = start.durationTo(Timestamp.now(io, .awake));
     return .{ .result = result, .elapsed_ns = @intCast(elapsed.toNanoseconds()) };

@@ -45,6 +45,7 @@ pub const BenchmarkReport = struct {
     timeout_ms: u64 = 0,
     clua: EngineReport = .{},
     zlua: EngineReport = .{},
+    zlua_snapshot: EngineReport = .{},
 
     pub fn jsonStringify(self: BenchmarkReport, json: *std.json.Stringify) !void {
         try json.write(.{
@@ -60,17 +61,21 @@ pub const BenchmarkReport = struct {
             else
                 null,
             .median_ratio_zlua_clua = if (self.status == .benchmarked) @import("stats.zig").ratio(self.zlua.stats.median_ns, self.clua.stats.median_ns) else null,
+            .median_ratio_snapshot_clua = if (self.status == .benchmarked) @import("stats.zig").ratio(self.zlua_snapshot.stats.median_ns, self.clua.stats.median_ns) else null,
+            .median_ratio_snapshot_zlua = if (self.status == .benchmarked) @import("stats.zig").ratio(self.zlua_snapshot.stats.median_ns, self.zlua.stats.median_ns) else null,
             .reason = self.reason,
             .failure_sample = self.failure_sample,
             .failure_during_warmup = self.failure_during_warmup,
             .clua = self.clua,
             .zlua = self.zlua,
+            .zlua_snapshot = self.zlua_snapshot,
         });
     }
 
     pub fn deinit(self: *BenchmarkReport, allocator: std.mem.Allocator) void {
         allocator.free(self.clua.samples_ns);
         allocator.free(self.zlua.samples_ns);
+        allocator.free(self.zlua_snapshot.samples_ns);
         self.* = undefined;
     }
 };
