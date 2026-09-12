@@ -448,7 +448,7 @@ const FunctionCompiler = struct {
         try self.compileExpr(stmt.condition, condition);
         const scope = self.scopes.items[self.scopes.items.len - 1];
         _ = try self.emit(.{ .close = scope.next_register });
-        const repeat_jump = try self.emit(.{ .test_op = .{ .register = condition, .jump_if_truthy = false, .offset = 0 } });
+        const repeat_jump = try self.emitConditionJump(condition, false);
         self.release(mark);
         try self.leaveScope();
         try self.proto.patchJump(repeat_jump, loop_start);
@@ -646,6 +646,21 @@ const FunctionCompiler = struct {
                         _ = try self.emitWithErrorSite(.{ .get_table = .{ .dest = dest, .table = table, .key = key } }, .index, &.{table_origin}, null);
                         return;
                     }
+                    // A literal key cannot change the receiver while being
+                    // evaluated. Keep direct access to named varargs so their
+                    // read-only form does not need a materialized table.
+                    switch (index.key.*) {
+                        .nil, .boolean, .integer, .float, .string => {
+                            const mark = self.registerMark();
+                            const key = try self.allocReg();
+                            try self.compileExpr(index.key, key);
+                            const table_origin = try self.exprOrigin(index.receiver);
+                            _ = try self.emitWithErrorSite(.{ .get_table = .{ .dest = dest, .table = table, .key = key } }, .index, &.{table_origin}, null);
+                            self.release(mark);
+                            return;
+                        },
+                        else => {},
+                    }
                 }
                 const mark = self.registerMark();
                 const table = try self.allocReg();
@@ -811,9 +826,18 @@ const FunctionCompiler = struct {
         const mark = self.registerMark();
         const condition = try self.allocReg();
         try self.compileExpr(expr, condition);
-        const jump = try self.emit(.{ .test_op = .{ .register = condition, .jump_if_truthy = jump_if_truthy, .offset = 0 } });
+        const jump = try self.emitConditionJump(condition, jump_if_truthy);
         self.release(mark);
         return jump;
+    }
+
+    fn emitConditionJump(self: *FunctionCompiler, condition: bytecode.Register, jump_if_truthy: bool) !usize {
+        // Only truthiness survives a condition. Drop its object reference before
+        // entering either branch: automatic GC conservatively scans temporaries,
+        // and allocation inside a loop can otherwise keep its weak condition
+        // alive indefinitely. Invert the branch to use NOT's boolean result.
+        _ = try self.emit(.{ .not = .{ .dest = condition, .source = condition } });
+        return self.emit(.{ .test_op = .{ .register = condition, .jump_if_truthy = !jump_if_truthy, .offset = 0 } });
     }
 
     fn compileCompareBranch(self: *FunctionCompiler, binary: ast.BinaryExpr, jump_if_truthy: bool) anyerror!?usize {

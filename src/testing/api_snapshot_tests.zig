@@ -13,6 +13,36 @@ test "reset without baseline fails" {
     try std.testing.expectEqual(@as(i64, 42), try table.get("x", i64));
 }
 
+test "snapshot preserves read-only named varargs across coroutine resumes and resets" {
+    var lua = try api.State.init(a, .{ .stdlib = .full });
+    defer lua.deinit();
+    try lua.doString(
+        \\co = coroutine.create(function(...v)
+        \\  coroutine.yield()
+        \\  return v[1], ...
+        \\end)
+        \\assert(coroutine.resume(co, 10))
+    , .{});
+    var snapshot = try lua.snapshot(a);
+    defer snapshot.deinit();
+    var worker = try snapshot.newState(a);
+    defer worker.deinit();
+    for (0..2) |_| {
+        try worker.doString(
+            \\local name, v = debug.getlocal(co, 1, 1)
+            \\assert(name == 'v' and v == nil)
+            \\assert(debug.setlocal(co, 1, 1, {42, n = 1}) == 'v')
+            \\local ok, first, second = coroutine.resume(co)
+            \\assert(ok and first == 10 and second == 10)
+        , .{});
+        try worker.reset();
+    }
+    try lua.doString(
+        \\local ok, first, second = coroutine.resume(co)
+        \\assert(ok and first == 10 and second == 10)
+    , .{});
+}
+
 test "source resets after public Snapshot wrapper is destroyed" {
     var lua = try api.State.init(a, .{});
     defer lua.deinit();

@@ -689,7 +689,6 @@ pub const Table = struct {
     metatable: ?*Table = null,
     metatable_prev: ?*Table = null,
     metatable_next: ?*Table = null,
-    counts_for_gc_count: bool = true,
     marked: bool = false,
     gc: GcMeta = .{},
     finalizer_registered: bool = false,
@@ -1001,6 +1000,7 @@ pub const CallFrame = struct {
     varargs: []const Value,
     owns_varargs: bool = false,
     vararg_table_local: Value = .nil,
+    named_vararg_readonly: bool = false,
     last_hook_line: ?usize = null,
     debug_name_override: ?[]const u8 = null,
     debug_namewhat_override: ?[]const u8 = null,
@@ -1083,9 +1083,9 @@ pub const GcParam = enum {
 pub const GcParams = struct {
     /// Heap growth before the next minor collection.
     minormul: i64 = 20,
-    /// Fraction of the heap a major collection must reclaim to return to minor collections.
+    /// Percentage of heap growth a major collection must reclaim to return to minor collections.
     majorminor: i64 = 50,
-    /// Heap growth since the last major collection before another is requested.
+    /// Heap growth since the last major collection before another is requested; zero disables the transition.
     minormajor: i64 = 70,
     /// Heap size relative to the last collection before starting another full cycle.
     pause: i64 = 250,

@@ -101,6 +101,42 @@ pub const Proto = struct {
         return self.instructions.items.len;
     }
 
+    /// Direct reads of an unmodified named vararg can use the argument slice.
+    /// Any escape, write, or capture requires the ordinary table representation.
+    pub fn hasReadOnlyNamedVararg(self: *const Proto) bool {
+        if (!self.named_vararg) return false;
+        const register = self.param_count;
+        for (self.children.items) |child| {
+            for (child.upvalues.items) |upvalue| {
+                if (upvalue.in_stack and upvalue.index == register) return false;
+            }
+        }
+        for (self.instructions.items) |instruction| {
+            const touches = switch (instruction) {
+                .get_table => |op| op.dest == register or op.key == register,
+                .get_field => |op| op.dest == register,
+                .jmp, .close => false,
+                .load_nil, .check_close, .close_tbc => |r| r == register,
+                inline .load_bool, .load_const, .new_table, .closure => |op| op.dest == register,
+                inline .move, .unm, .bnot, .not, .len => |op| op.dest == register or op.source == register,
+                inline .get_global, .set_global, .get_upvalue, .set_upvalue, .test_op => |op| op.register == register,
+                .declare_global => |op| op.table == register or op.value == register,
+                .set_table => |op| op.table == register or op.key == register or op.value == register,
+                inline .set_array, .set_field => |op| op.table == register or op.value == register,
+                .set_list => |op| op.table == register or op.first <= register,
+                .add, .sub, .mul, .div, .idiv, .mod, .pow, .band, .bor, .bxor, .shl, .shr, .eq, .lt, .le, .concat => |op| op.dest == register or op.left == register or op.right == register,
+                .compare_branch => |op| op.left == register or op.right == register,
+                .test_set => |op| op.dest == register or op.source == register,
+                // Conservatively reject ranges that could include the binding.
+                inline .call, .tail_call, .for_prep, .for_loop, .tfor_prep, .tfor_call, .tfor_loop => |op| op.base <= register,
+                .ret => |op| op.first <= register,
+                .vararg => |op| op.dest <= register,
+            };
+            if (touches) return false;
+        }
+        return true;
+    }
+
     pub fn emit(self: *Proto, instruction: bytecode.Instruction, line: usize) !usize {
         const index = self.instructions.items.len;
         try self.instructions.append(self.allocator, instruction);

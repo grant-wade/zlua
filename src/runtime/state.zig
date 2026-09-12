@@ -666,14 +666,19 @@ pub const State = struct {
                         try self.compareValuesToRegister(thread, op, .le);
                     }
                 },
-                .not => |op| stack[base + op.dest] = .{ .boolean = !truthy(stack[base + op.source]) },
+                .not => |op| {
+                    const result = !truthy(stack[base + op.source]);
+                    stack[base + op.dest] = .{ .boolean = result };
+                },
                 .len => |op| try self.lengthToRegister(thread, op),
                 .new_table => |op| stack[base + op.dest] = try self.newTableWithHints(op.array_hint, op.hash_hint),
                 .set_list => |op| try self.setList(thread, op),
                 .get_table => |op| {
                     const table_value = stack[base + op.table];
                     const key_value = stack[base + op.key];
-                    if (fastTableRawGet(table_value, key_value)) |value| {
+                    if (frame.named_vararg_readonly and op.table == proto.param_count) {
+                        stack[base + op.dest] = namedVarargRead(frame.varargs, key_value);
+                    } else if (fastTableRawGet(table_value, key_value)) |value| {
                         stack[base + op.dest] = value;
                     } else {
                         try self.getTableToRegister(thread, op.dest, table_value, key_value);
@@ -701,7 +706,9 @@ pub const State = struct {
                 .get_field => |op| {
                     const table_value = stack[base + op.table];
                     const key = Value{ .string = constantString(proto, op.name) };
-                    if (fastTableRawGet(table_value, key)) |value| {
+                    if (frame.named_vararg_readonly and op.table == proto.param_count) {
+                        stack[base + op.dest] = namedVarargRead(frame.varargs, key);
+                    } else if (fastTableRawGet(table_value, key)) |value| {
                         stack[base + op.dest] = value;
                     } else {
                         try self.getTableToRegister(thread, op.dest, table_value, key);
@@ -944,7 +951,8 @@ pub const State = struct {
                 },
                 .not => {
                     const op = instructions[pc].not;
-                    stack[op.dest] = .{ .boolean = !truthy(stack[op.source]) };
+                    const result = !truthy(stack[op.source]);
+                    stack[op.dest] = .{ .boolean = result };
                     pc += 1;
                     continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
@@ -975,7 +983,10 @@ pub const State = struct {
                 },
                 .get_table => {
                     const op = instructions[pc].get_table;
-                    const value = fastTableRawGet(stack[op.table], stack[op.key]) orelse break :fast_loop;
+                    const value = if (frame.named_vararg_readonly and op.table == proto.param_count)
+                        namedVarargRead(frame.varargs, stack[op.key])
+                    else
+                        fastTableRawGet(stack[op.table], stack[op.key]) orelse break :fast_loop;
                     stack[op.dest] = value;
                     pc += 1;
                     continue :fast_loop std.meta.activeTag(instructions[pc]);
@@ -983,7 +994,10 @@ pub const State = struct {
                 .get_field => {
                     const op = instructions[pc].get_field;
                     const key = Value{ .string = constantString(proto, op.name) };
-                    const value = fastTableRawGet(stack[op.table], key) orelse break :fast_loop;
+                    const value = if (frame.named_vararg_readonly and op.table == proto.param_count)
+                        namedVarargRead(frame.varargs, key)
+                    else
+                        fastTableRawGet(stack[op.table], key) orelse break :fast_loop;
                     stack[op.dest] = value;
                     pc += 1;
                     continue :fast_loop std.meta.activeTag(instructions[pc]);
@@ -3859,12 +3873,20 @@ pub const State = struct {
     pub fn namedVarargTable(self: *State, varargs: []const Value) !Value {
         const table_value = try self.newTableWithHints(@intCast(varargs.len), 1);
         const table = table_value.table;
-        table.counts_for_gc_count = false;
         try self.setTableRaw(table, .{ .string = try self.intern("n") }, .{ .integer = @intCast(varargs.len) });
         for (varargs, 0..) |value, index| {
             try self.setTableRaw(table, .{ .integer = @intCast(index + 1) }, value);
         }
         return table_value;
+    }
+
+    fn namedVarargRead(varargs: []const Value, key: Value) Value {
+        if (key == .string and std.mem.eql(u8, key.string, "n")) return .{ .integer = @intCast(varargs.len) };
+        const normalized: Value = if (key == .number) .{ .integer = floatToInteger(key.number) orelse return .nil } else key;
+        if (arrayIndex(normalized)) |index| {
+            if (index <= varargs.len) return varargs[index - 1];
+        }
+        return .nil;
     }
 
     fn resolveCall(self: *State, thread: *Thread, op: bytecode.Call) !bytecode.Call {
@@ -3890,7 +3912,7 @@ pub const State = struct {
 
     fn loadVarargs(self: *State, thread: *Thread, op: bytecode.Vararg) !void {
         const frame = thread.frames.items[thread.frames.items.len - 1];
-        if (frame.proto.named_vararg) return self.loadNamedVarargs(thread, frame, op);
+        if (frame.proto.named_vararg and !frame.named_vararg_readonly) return self.loadNamedVarargs(thread, frame, op);
         const actual_count = try self.resolveReturnCount(op.count, frame.varargs.len);
         const dest = frame.base + op.dest;
         try thread.ensureStack(self.allocator, dest + actual_count, self.stackValueLimit());

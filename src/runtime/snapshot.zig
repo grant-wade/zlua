@@ -209,7 +209,7 @@ const Copier = struct {
             }
             new.entries.items.len = retained;
             try new.rebuildEntryIndex();
-            inline for (.{ "metatable", "metatable_prev", "metatable_next", "counts_for_gc_count", "finalizer_registered", "finalizer_next", "finalizer_prev", "finalizer_order" }) |name| @field(new, name) = try self.remap(@field(old, name));
+            inline for (.{ "metatable", "metatable_prev", "metatable_next", "finalizer_registered", "finalizer_next", "finalizer_prev", "finalizer_order" }) |name| @field(new, name) = try self.remap(@field(old, name));
             try d.table_allocation_index.put(@intFromPtr(new), index);
         }
         for (source.closure_allocations.items, d.closure_allocations.items) |old, new| {
@@ -289,7 +289,7 @@ const Copier = struct {
             frame.varargs = try self.values(types.Value, f.varargs);
             frame.owns_varargs = true;
             if (f.pending_returns) |v| frame.pending_returns = try self.values(types.Value, v);
-            inline for (.{ "vararg_table_local", "last_hook_line", "debug_name_override", "debug_namewhat_override", "is_tail_call" }) |name| @field(frame, name) = try self.remap(@field(f, name));
+            inline for (.{ "vararg_table_local", "named_vararg_readonly", "last_hook_line", "debug_name_override", "debug_namewhat_override", "is_tail_call" }) |name| @field(frame, name) = try self.remap(@field(f, name));
         }
         inline for (.{ "yield_values", "protected_continuations", "generic_for_continuations", "pairs_continuations", "tail_call_continuations", "call_one_continuations" }) |name| {
             const items = @field(old, name).items;
@@ -388,12 +388,12 @@ comptime {
         .transient = "rollback marked gc hook_running hook_return_name hook_level2_func hook_transfer_index_base hook_transfer_stack_base hook_transfer_count hook_transfer_values next_call_name next_call_namewhat native_call_depth traceback_native_name protected_close_depth resume_parent",
     });
     review(types.CallFrame, .{
-        .copied = "base pc return_start return_count varargs last_hook_line debug_name_override debug_namewhat_override is_tail_call pending_returns",
+        .copied = "base pc return_start return_count varargs named_vararg_readonly last_hook_line debug_name_override debug_namewhat_override is_tail_call pending_returns",
         .remapped = "closure proto vararg_table_local",
         .rebuilt = "owns_varargs",
     });
     review(types.Table, .{
-        .copied = "array entries counts_for_gc_count finalizer_registered finalizer_order",
+        .copied = "array entries finalizer_registered finalizer_order",
         .remapped = "metatable metatable_prev metatable_next finalizer_next finalizer_prev",
         .rebuilt = "entry_index",
         .transient = "rollback marked gc",

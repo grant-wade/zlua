@@ -123,6 +123,117 @@ test "hand-built bytecode can fall through or jump past its final instruction" {
     }
 }
 
+test "automatic GC clears weak values after full collection across VM dispatch paths" {
+    // The closure suite waits for this collection without a bound. Keep the
+    // allocation pattern, but fail promptly if a dispatch path retains x[1].
+    const source =
+        \\local A, B = 0, {g = 10}
+        \\local function f(x)
+        \\  local a = {}
+        \\  for i = 1, 1000 do
+        \\    local y = 0
+        \\    a[i] = function() B.g = B.g + 1; y = y + x; return y + A end
+        \\  end
+        \\  local dummy = function() return a[A] end
+        \\  collectgarbage()
+        \\  A = 1; assert(dummy() == a[1]); A = 0
+        \\  assert(a[1]() == x and a[3]() == x)
+        \\  collectgarbage()
+        \\  return a
+        \\end
+        \\local a = f(10)
+        \\local x = {[1] = {}}
+        \\setmetatable(x, {__mode = 'kv'})
+        \\while x[1] do
+        \\  local a = A..A..A..A
+        \\  A = A + 1
+        \\  if A == 100000 then error('weak value retained') end
+        \\end
+        \\assert(a[1]() == 20 + A and a[2]() == 10 + A)
+    ;
+    for ([_]runtime.GcMode{ .generational, .incremental }) |mode| {
+        for ([_]?u64{ null, 10_000_000 }) |limit| {
+            var state = try State.initWithOptions(std.testing.allocator, .{ .max_instructions = limit });
+            defer state.deinit();
+            _ = state.setGcMode(mode);
+            try state.executeSourceChunk(source);
+        }
+    }
+}
+
+test "condition temporaries preserve Lua truthiness across VM dispatch paths" {
+    const source =
+        \\for _, value in ipairs{false, true, 0, 0.0, '', {}, function() end} do
+        \\  local expected = value ~= false
+        \\  local branch = false
+        \\  if value then branch = true end
+        \\  assert(branch == expected)
+        \\  branch = false
+        \\  while value do branch = true; break end
+        \\  assert(branch == expected)
+        \\  local count = 0
+        \\  repeat count = count + 1 until value or count == 2
+        \\  assert(count == (expected and 1 or 2))
+        \\end
+        \\if nil then error('nil is false') end
+    ;
+    for ([_]?u64{ null, 100_000 }) |limit| {
+        var state = try State.initWithOptions(std.testing.allocator, .{ .max_instructions = limit });
+        defer state.deinit();
+        try state.executeSourceChunk(source);
+    }
+}
+
+test "full collection preserves the generational submode" {
+    var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .none });
+    defer state.deinit();
+    // With only live objects, the reclamation heuristic would stay major.
+    try state.collectGarbage();
+    try std.testing.expect(!try state.stepGc(1));
+    try std.testing.expectEqual(.minor, state.gc_cycle);
+
+    state.gc_major_pending = true;
+    try state.collectGarbage();
+    try std.testing.expect(!try state.stepGc(1));
+    try std.testing.expectEqual(.major, state.gc_cycle);
+}
+
+test "read-only named vararg calls do not allocate tables" {
+    var state = try State.init(std.testing.allocator);
+    defer state.deinit();
+    try state.executeSourceChunk(
+        \\collectgarbage('stop')
+        \\function read(key, ...v) return v[key], v.n, ... end
+        \\read(1, 10, 20)
+    );
+    const tables = state.table_allocations.items.len;
+    try state.executeSourceChunk(
+        \\for i = 1, 100 do
+        \\  local value, n, first, second = read(1.0, 10, 20)
+        \\  assert(value == 10 and n == 2 and first == 10 and second == 20)
+        \\end
+    );
+    try std.testing.expectEqual(tables, state.table_allocations.items.len);
+}
+
+test "major collection returns to minor mode based on growth rather than the whole heap" {
+    var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .none });
+    defer state.deinit();
+    const root = try state.newTableWithHints(100, 0);
+    const handle = try state.rootValue(root);
+    defer state.unrootValue(handle);
+    for (0..100) |i| try state.setTableValue(root, .{ .integer = @intCast(i + 1) }, try state.newTableWithHints(0, 0));
+    try state.collectGarbage();
+    // Reclaim all growth, but much less than half the long-lived heap.
+    for (0..10) |_| _ = try state.newTableWithHints(0, 0);
+    state.gc_major_pending = true;
+    var steps: usize = 0;
+    while (!try state.stepGc(1)) : (steps += 1) try std.testing.expect(steps < 1000);
+    try std.testing.expect(!try state.stepGc(1));
+    try std.testing.expectEqual(.minor, state.gc_cycle);
+    try std.testing.expectEqual(@as(usize, 102), state.table_allocations.items.len);
+}
+
 test "reports calls to non-functions" {
     var result = try executeSource(std.testing.allocator,
         \\local value = 1

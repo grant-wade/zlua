@@ -104,6 +104,8 @@ The harness uses safe libraries by default and full libraries for fixtures under
 
 Downloaded tests live under `.zlua-deps/lua-5.5.0-tests`. The default run uses every top-level `.lua` file except `all.lua` with the basic compatibility prelude.
 
+Every failure, signal, or timeout from either interpreter makes the harness exit nonzero. Failure categories are diagnostic labels only; the official harness has no automatic expected failures. Failed child output is always printed, and the summary reports `clua_failed` and `zlua_failed` separately.
+
 ```sh
 zig build test-official
 just official calls db locals

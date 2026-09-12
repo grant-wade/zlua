@@ -524,7 +524,8 @@ pub fn step(comptime State: type, self: *State, thread: ?*Thread, conservative: 
                 }
                 promoteYoung(State, self);
                 self.gc_minor_count += 1;
-                self.gc_major_pending = self.gc_known_total > self.gc_major_base +| @max(256, self.gc_major_base *| @as(usize, @intCast(@max(self.gc_params.minormajor, 0))) / 100);
+                self.gc_major_pending = self.gc_params.minormajor != 0 and
+                    self.gc_known_total > self.gc_major_base +| @max(256, self.gc_major_base *| @as(usize, @intCast(@max(self.gc_params.minormajor, 0))) / 100);
                 self.gc_phase = .finalize;
                 _ = try runUserdataFinalizerBatch(State, self, 1);
                 _ = try runFinalizerBatch(State, self, thread, 1);
@@ -578,7 +579,8 @@ pub fn step(comptime State: type, self: *State, thread: ?*Thread, conservative: 
                 const major = self.gc_cycle == .major;
                 if (major) {
                     const reclaimed = self.gc_cycle_start_total -| self.gc_known_total;
-                    const return_to_minor = reclaimed >= self.gc_cycle_start_total *| @as(usize, @intCast(@max(self.gc_params.majorminor, 0))) / 100;
+                    const added = self.gc_cycle_start_total -| self.gc_major_base;
+                    const return_to_minor = reclaimed > added *| @as(usize, @intCast(@max(self.gc_params.majorminor, 0))) / 100;
                     normalizeBaseline(State, self);
                     self.gc_major_pending = self.gc_mode == .generational and !return_to_minor;
                 } else {
@@ -616,12 +618,20 @@ pub fn collectGarbageWithFinalizers(comptime State: type, self: *State, thread: 
 
 pub fn collectGarbageWithFinalizersMode(comptime State: type, self: *State, thread: ?*Thread, mark_all_stack_registers: bool) !void {
     if (self.is_collecting) return;
+    const was_major = self.gc_major_pending or (self.gc_phase != .pause and self.gc_cycle == .major);
     // A full collection starts from current roots, including objects already
     // separated for finalization. Abandon scratch state without running callbacks
     // from an earlier partial cycle before the new cycle's separation phase.
     normalizeBaseline(State, self);
     self.gc_major_pending = true;
     while (!try step(State, self, thread, mark_all_stack_registers)) {}
+    // Lua's explicit full collection preserves the generational submode:
+    // fullgen re-enters minor mode, while a full collection in major mode
+    // stays there. The reclamation heuristic applies only to ordinary steps.
+    if (self.gc_mode == .generational) {
+        self.gc_major_pending = was_major;
+        resetAutoGcThreshold(State, self);
+    }
 }
 
 pub fn shouldRunAutoGc(comptime State: type, self: *State) bool {
