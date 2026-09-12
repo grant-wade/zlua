@@ -72,6 +72,7 @@
 - [testing.bench.allocation](testing/bench/allocation.md)
 - [testing.bench.c_startup](testing/bench/c_startup.md)
 - [testing.bench.snapshots](testing/bench/snapshots.md)
+- [testing.bench.gc](testing/bench/gc.md)
 - [testing.diff_runner](testing/diff_runner.md)
 - [testing.fixtures](testing/fixtures.md)
 - [testing.expected_failures](testing/expected_failures.md)
@@ -190,6 +191,9 @@ and should not be treated as a stable embedding contract.
 - [CustomProcess](#alias-customprocess)
 - [ProcessResult](#alias-processresult)
 - [ProcessStatus](#alias-processstatus)
+- [GcMode](#alias-gcmode)
+- [GcParam](#alias-gcparam)
+- [GcParams](#alias-gcparams)
 - [DoOptions](#alias-dooptions)
 
 <a id="type-error"></a>
@@ -613,14 +617,48 @@ pub const InstructionBudget = struct {
 };
 ```
 
+<a id="alias-gcmode"></a>
+
+## GcMode
+
+Choose generational or incremental garbage collection.
+
+```zig
+pub const GcMode = runtime_types.GcMode;
+```
+
+<a id="alias-gcparam"></a>
+
+## GcParam
+
+Parameters accepted by `gcParam` and `setGcParam`.
+
+```zig
+pub const GcParam = runtime_types.GcParam;
+```
+
+<a id="alias-gcparams"></a>
+
+## GcParams
+
+Percentages, except stepsize, which is measured in bytes.
+
+```zig
+pub const GcParams = runtime_types.GcParams;
+```
+
 <a id="type-gcoptions"></a>
 
 ## GcOptions
 
-Garbage-collector tuning options, reserved for future API expansion.
+Initial GC settings. Automatic generational collection is enabled by default.
 
 ```zig
-pub const GcOptions = struct {};
+pub const GcOptions = struct {
+    mode: GcMode = .generational,
+    running: bool = true,
+    params: GcParams = .{},
+};
 ```
 
 <a id="type-debugoptions"></a>
@@ -766,7 +804,7 @@ Budget passed to `State.stepGc`.
 
 ```zig
 pub const GcBudget = struct {
-    /// Requested number of GC steps; currently reserved because `stepGc` performs a full collection.
+    /// At most this many basic steps; zero requests one basic step.
     steps: usize = 0,
 };
 ```
@@ -779,9 +817,9 @@ Result of an incremental garbage-collection step.
 
 ```zig
 pub const GcStepResult = enum {
-    /// The requested collection work completed.
+    /// An incremental or generational major cycle completed.
     complete,
-    /// More work remains.
+    /// No major cycle completed; a minor collection alone reports pending.
     pending,
 };
 ```
@@ -830,8 +868,15 @@ pub const State = struct {
 | [instructionBudget](#fn-state-instructionbudget) | `self: *const State` | `InstructionBudget` | Returns the cumulative instruction budget usage for this state. |
 | [resetInstructionBudget](#fn-state-resetinstructionbudget) | `self: *State` | `void` | Resets the cumulative instruction counter to zero. |
 | [openLibs](#fn-state-openlibs) | `self: *State, selection: Stdlib` | `!void` | Opens additional standard libraries after state creation. |
-| [collect](#fn-state-collect) | `self: *State` | `!void` | Runs a full garbage collection cycle. |
-| [stepGc](#fn-state-stepgc) | `self: *State, budget: GcBudget` | `!GcStepResult` | Runs garbage-collection work for &#96;budget&#96; and reports whether collection completed. |
+| [collect](#fn-state-collect) | `self: *State` | `!void` | Runs a full collection and pending finalizers, even while automatic GC is stopped. |
+| [stepGc](#fn-state-stepgc) | `self: *State, budget: GcBudget` | `!GcStepResult` | Runs at most the requested number of basic steps, even while stopped. This limits work, not elapsed time; large objects and finalizers may take longer. |
+| [gcMode](#fn-state-gcmode) | `self: *const State` | `GcMode` |  |
+| [setGcMode](#fn-state-setgcmode) | `self: *State, mode: GcMode` | `GcMode` | Changes collection mode and returns the previous mode. |
+| [gcParam](#fn-state-gcparam) | `self: *const State, param: GcParam` | `i64` |  |
+| [setGcParam](#fn-state-setgcparam) | `self: *State, param: GcParam, value: i64` | `!i64` | Sets a tuning parameter and returns its previous value. Values outside 0 through maxInt(i32) return &#96;error.InvalidGcParam&#96;. |
+| [stopGc](#fn-state-stopgc) | `self: *State` | `void` |  |
+| [restartGc](#fn-state-restartgc) | `self: *State` | `void` |  |
+| [isGcRunning](#fn-state-isgcrunning) | `self: *const State` | `bool` |  |
 | [push](#fn-state-push) | `self: *State, value: anytype` | `!Value` | Converts a Zig value into a rooted high-level Lua &#96;Value&#96;. |
 | [read](#fn-state-read) | `self: *State, value: Value, comptime T: type` | `!T` | Converts a high-level Lua &#96;Value&#96; to the requested Zig type. |
 | [setGlobal](#fn-state-setglobal) | `self: *State, name: []const u8, value: anytype` | `!void` | Sets a global variable after converting &#96;value&#96; to a Lua value. |
@@ -969,7 +1014,7 @@ References: [`State`](#type-state), [`Stdlib`](#type-stdlib)
 
 ### State.collect
 
-Runs a full garbage collection cycle.
+Runs a full collection and pending finalizers, even while automatic GC is stopped.
 
 ```zig
 pub fn collect(self: *State) !void
@@ -981,15 +1026,89 @@ References: [`State`](#type-state)
 
 ### State.stepGc
 
-Runs garbage-collection work for `budget` and reports whether collection completed.
-
-This currently performs a full collection regardless of the budget.
+Runs at most the requested number of basic steps, even while stopped.
+This limits work, not elapsed time; large objects and finalizers may take longer.
 
 ```zig
 pub fn stepGc(self: *State, budget: GcBudget) !GcStepResult
 ```
 
 References: [`State`](#type-state), [`GcBudget`](#type-gcbudget), [`GcStepResult`](#type-gcstepresult)
+
+<a id="fn-state-gcmode"></a>
+
+### State.gcMode
+
+```zig
+pub fn gcMode(self: *const State) GcMode
+```
+
+References: [`State`](#type-state), [`GcMode`](#alias-gcmode)
+
+<a id="fn-state-setgcmode"></a>
+
+### State.setGcMode
+
+Changes collection mode and returns the previous mode.
+
+```zig
+pub fn setGcMode(self: *State, mode: GcMode) GcMode
+```
+
+References: [`State`](#type-state), [`GcMode`](#alias-gcmode)
+
+<a id="fn-state-gcparam"></a>
+
+### State.gcParam
+
+```zig
+pub fn gcParam(self: *const State, param: GcParam) i64
+```
+
+References: [`State`](#type-state), [`GcParam`](#alias-gcparam)
+
+<a id="fn-state-setgcparam"></a>
+
+### State.setGcParam
+
+Sets a tuning parameter and returns its previous value.
+Values outside 0 through maxInt(i32) return `error.InvalidGcParam`.
+
+```zig
+pub fn setGcParam(self: *State, param: GcParam, value: i64) !i64
+```
+
+References: [`State`](#type-state), [`GcParam`](#alias-gcparam)
+
+<a id="fn-state-stopgc"></a>
+
+### State.stopGc
+
+```zig
+pub fn stopGc(self: *State) void
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-restartgc"></a>
+
+### State.restartGc
+
+```zig
+pub fn restartGc(self: *State) void
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-isgcrunning"></a>
+
+### State.isGcRunning
+
+```zig
+pub fn isGcRunning(self: *const State) bool
+```
+
+References: [`State`](#type-state)
 
 <a id="fn-state-push"></a>
 
@@ -1419,6 +1538,11 @@ pub const Table = struct {
 | [deinit](#fn-table-deinit) | `self: *Table` | `void` | Releases this table handle's root. |
 | [get](#fn-table-get) | `self: Table, key: anytype, comptime T: type` | `!T` | Reads &#96;key&#96; from the table and converts the result to &#96;T&#96;. |
 | [set](#fn-table-set) | `self: Table, key: anytype, value: anytype` | `!void` | Converts and assigns &#96;value&#96; at &#96;key&#96; in the table. |
+| [identity](#fn-table-identity) | `self: Table` | `!usize` | Returns a state-local token, valid while rooted and until reset. The token does not retain the table and must not be dereferenced. |
+| [getMetatable](#fn-table-getmetatable) | `self: Table` | `!?Table` | Returns the metatable, ignoring __metatable. Deinitialize the returned handle. |
+| [rawGet](#fn-table-rawget) | `self: Table, key: anytype, comptime T: type` | `!T` | Reads an entry without invoking __index. |
+| [Entry](#type-table-entry) |  |  |  |
+| [rawNext](#fn-table-rawnext) | `self: Table, key: anytype` | `!?Entry` | Iterates without metamethods. Start with null or Value.nil, then pass the previous key. Deinitialize each entry and avoid structural changes during traversal. |
 
 <a id="fn-table-deinit"></a>
 
@@ -1455,6 +1579,83 @@ pub fn set(self: Table, key: anytype, value: anytype) !void
 ```
 
 References: [`Table`](#type-table)
+
+<a id="fn-table-identity"></a>
+
+### Table.identity
+
+Returns a state-local token, valid while rooted and until reset.
+The token does not retain the table and must not be dereferenced.
+
+```zig
+pub fn identity(self: Table) !usize
+```
+
+References: [`Table`](#type-table)
+
+<a id="fn-table-getmetatable"></a>
+
+### Table.getMetatable
+
+Returns the metatable, ignoring __metatable. Deinitialize the returned handle.
+
+```zig
+pub fn getMetatable(self: Table) !?Table
+```
+
+References: [`Table`](#type-table)
+
+<a id="fn-table-rawget"></a>
+
+### Table.rawGet
+
+Reads an entry without invoking __index.
+
+```zig
+pub fn rawGet(self: Table, key: anytype, comptime T: type) !T
+```
+
+References: [`Table`](#type-table)
+
+<a id="type-table-entry"></a>
+
+### Table.Entry
+
+```zig
+pub const Entry = struct {
+    key: Value,
+    value: Value,
+};
+```
+
+#### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [deinit](#fn-entry-deinit) | `self: *Entry` | `void` |  |
+
+<a id="fn-entry-deinit"></a>
+
+#### Entry.deinit
+
+```zig
+pub fn deinit(self: *Entry) void
+```
+
+References: [`Entry`](#type-table-entry)
+
+<a id="fn-table-rawnext"></a>
+
+### Table.rawNext
+
+Iterates without metamethods. Start with null or Value.nil, then pass the previous key.
+Deinitialize each entry and avoid structural changes during traversal.
+
+```zig
+pub fn rawNext(self: Table, key: anytype) !?Entry
+```
+
+References: [`Table`](#type-table), [`Entry`](#type-table-entry)
 
 <a id="type-function"></a>
 
@@ -1556,6 +1757,7 @@ pub const AnyUserdata = struct {
 | Name | Parameters | Return Type | Description |
 | --- | --- | --- | --- |
 | [deinit](#fn-anyuserdata-deinit) | `self: *AnyUserdata` | `void` | Releases this userdata handle's root. |
+| [as](#fn-anyuserdata-as) | `self: AnyUserdata, comptime T: type` | `!Userdata(T)` | Returns a new rooted handle after checking the payload type. |
 
 <a id="fn-anyuserdata-deinit"></a>
 
@@ -1565,6 +1767,18 @@ Releases this userdata handle's root.
 
 ```zig
 pub fn deinit(self: *AnyUserdata) void
+```
+
+References: [`AnyUserdata`](#type-anyuserdata)
+
+<a id="fn-anyuserdata-as"></a>
+
+### AnyUserdata.as
+
+Returns a new rooted handle after checking the payload type.
+
+```zig
+pub fn as(self: AnyUserdata, comptime T: type) !Userdata(T)
 ```
 
 References: [`AnyUserdata`](#type-anyuserdata)
@@ -1718,6 +1932,8 @@ pub const Context = struct {
 | [pushReturn](#fn-context-pushreturn) | `self: *Context, value: anytype` | `!void` | Appends one converted Lua return value for the current callback. |
 | [returnValues](#fn-context-returnvalues) | `self: *Context, values: anytype` | `!void` | Replaces callback returns with &#96;values&#96;. |
 | [raise](#fn-context-raise) | `self: *Context, value: anytype` | `error` | Raises a Lua error using &#96;value&#96; as the error object. |
+| [threadIdentity](#fn-context-threadidentity) | `self: *Context` | `usize` | Returns a coroutine token valid only during this callback and until reset. |
+| [callNonYielding](#fn-context-callnonyielding) | `self: *Context, function: Function, args: anytype, comptime R: type` | `!R` | Calls Lua on this callback's coroutine with its current budget; yielding is forbidden. Lua errors propagate unchanged after cleanup, including __close. Completed effects remain. |
 
 <a id="fn-context-state"></a>
 
@@ -1804,6 +2020,31 @@ pub fn raise(self: *Context, value: anytype) error{ LuaError, OutOfMemory, Inval
 ```
 
 References: [`Context`](#type-context)
+
+<a id="fn-context-threadidentity"></a>
+
+### Context.threadIdentity
+
+Returns a coroutine token valid only during this callback and until reset.
+
+```zig
+pub fn threadIdentity(self: *Context) usize
+```
+
+References: [`Context`](#type-context)
+
+<a id="fn-context-callnonyielding"></a>
+
+### Context.callNonYielding
+
+Calls Lua on this callback's coroutine with its current budget; yielding is forbidden.
+Lua errors propagate unchanged after cleanup, including __close. Completed effects remain.
+
+```zig
+pub fn callNonYielding(self: *Context, function: Function, args: anytype, comptime R: type) !R
+```
+
+References: [`Context`](#type-context), [`Function`](#type-function)
 
 <a id="type-thread"></a>
 

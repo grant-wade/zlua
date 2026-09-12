@@ -70,7 +70,7 @@ pub fn human(allocator: std.mem.Allocator, out: *std.Io.Writer, suite: *const Su
     }
     try out.writeAll("Benchmarks\n");
     const comparisons_list = try comparisons(a, suite);
-    for ([_][]const u8{ "process", "startup", "snapshots" }) |group| {
+    for ([_][]const u8{ "process", "startup", "snapshots", "gc" }) |group| {
         var has_group = false;
         for (suite.results.items) |r| if (std.mem.eql(u8, r.group, group)) {
             has_group = true;
@@ -96,6 +96,15 @@ pub fn human(allocator: std.mem.Allocator, out: *std.Io.Writer, suite: *const Su
                 if (!std.mem.eql(u8, r.operation, "startup-total") and r.status == .benchmarked) continue;
                 try out.print("{s:<34} {s:<9} {d:>7} {d:>7} {s:>12} {s:>12}", .{ r.case, r.engine, r.iterations, r.warmup, try timeText(a, median(r)), try timeText(a, median(find(suite, group, r.case, r.engine, "first-chunk"))) });
                 try status(out, r);
+            }
+        } else if (std.mem.eql(u8, group, "gc")) {
+            try out.writeAll("\nGarbage collection\n");
+            try builds(out, suite, group);
+            try out.print("{s:<26} {s:>7} {s:>12} {s:>12} {s:>12}\n", .{ "case", "n", "median", "p95", "max" });
+            for (suite.results.items) |r| {
+                if (!std.mem.eql(u8, r.group, group)) continue;
+                const t = r.timing orelse continue;
+                try out.print("{s:<26} {d:>7} {s:>12} {s:>12} {s:>12}\n", .{ r.case, r.iterations, try timeText(a, t.median_ns), try timeText(a, t.p95_ns), try timeText(a, t.max_ns) });
             }
         } else {
             try out.writeAll("\nSnapshots\n");

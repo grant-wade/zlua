@@ -1,6 +1,6 @@
 const std = @import("std");
 const default_bench_root = "tests/bench";
-pub const Family = enum { process, startup, snapshots, all };
+pub const Family = enum { process, startup, snapshots, gc, all };
 pub const Options = struct {
     family: Family = .all,
     verbose: bool = false,

@@ -61,7 +61,7 @@ pub fn dedup(state: *State, thread: *Thread, op: bytecode.Call) !void {
         const seen_key = if (value == .number) if (runtime.floatToInteger(value.number)) |integer| Value{ .integer = integer } else value else value;
         if (!is_nan and seen.get(seen_key) != .nil) continue;
         if (!is_nan) try seen.set(state.allocator, seen_key, .{ .boolean = true });
-        try result.table.set(state.allocator, .{ .integer = result_index }, value);
+        try state.setTableRaw(result.table, .{ .integer = result_index }, value);
         result_index += 1;
     }
 
@@ -121,8 +121,8 @@ pub fn move(state: *State, thread: *Thread, op: bytecode.Call) !void {
 pub fn pack(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const table_value = try state.newTableWithHints(op.arg_count, 1);
     const table = table_value.table;
-    for (0..op.arg_count) |index| try table.set(state.allocator, .{ .integer = @intCast(index + 1) }, runtime.argValue(state, thread, op, @intCast(index)));
-    try table.set(state.allocator, .{ .string = try state.intern("n") }, .{ .integer = op.arg_count });
+    for (0..op.arg_count) |index| try state.setTableRaw(table, .{ .integer = @intCast(index + 1) }, runtime.argValue(state, thread, op, @intCast(index)));
+    try state.setTableRaw(table, .{ .string = try state.intern("n") }, .{ .integer = op.arg_count });
     try state.returnValues(thread, op.base, op.return_count, &.{table_value});
 }
 

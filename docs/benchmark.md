@@ -15,6 +15,7 @@ All benchmarks use ReleaseFast for both zlua and C Lua, including process compar
 ```sh
 zig build bench -- --list
 zig build bench -- table/pairs_iteration --iterations=20
+zig build bench -- sustained --iterations=10 --warmup=2
 zig build bench -- startup --iterations=1000 --warmup=100
 zig build bench -- callbacks --verbose
 zig build bench -- --json /tmp/bench.json --csv /tmp/bench.csv
@@ -23,6 +24,8 @@ zig build bench -- --json /tmp/bench.json --csv /tmp/bench.csv
 All groups accept `--list`, selectors, `--iterations`, `--warmup` (or `--no-warmup`), `--verbose`, `--json`, and `--csv`. Options with values also accept `--option=value`. Process selectors match fixture names, paths, or directories. Startup and snapshot selectors match a case, engine, or the paths printed by `--list`.
 
 Process fixtures default to 30 samples per engine and 1 warmup unless their metadata says otherwise. Startup and snapshots default to 1,000 samples and 100 warmups. `--category` selects a process metadata category or the `startup` / `snapshots` group.
+
+Use `sustained` to measure longer-running Lua code with less influence from process startup. These fixtures default to 10 samples and 2 warmups. Keep the shorter fixtures when startup time matters to your application.
 
 ## Reading the results
 

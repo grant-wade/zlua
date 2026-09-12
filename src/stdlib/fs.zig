@@ -111,7 +111,7 @@ pub fn list(state: *State, thread: *Thread, op: bytecode.Call) !void {
     for (entries, 0..) |entry, index| {
         const full_path = try joinTwo(state, path, entry.name);
         defer state.allocator.free(full_path);
-        try result.table.set(state.allocator, .{ .integer = @intCast(index + 1) }, try entryValue(state, entry, full_path, null));
+        try state.setTableRaw(result.table, .{ .integer = @intCast(index + 1) }, try entryValue(state, entry, full_path, null));
     }
     try state.returnValues(thread, op.base, op.return_count, &.{result});
 }
@@ -125,7 +125,7 @@ pub fn scandir(state: *State, thread: *Thread, op: bytecode.Call) !void {
     for (entries, 0..) |entry, index| {
         const full_path = try joinTwo(state, path, entry.name);
         defer state.allocator.free(full_path);
-        try queue.table.set(state.allocator, .{ .integer = @intCast(index + 1) }, try entryValue(state, entry, full_path, 1));
+        try state.setTableRaw(queue.table, .{ .integer = @intCast(index + 1) }, try entryValue(state, entry, full_path, 1));
     }
     try set(iterator, state, "queue", queue);
     try set(iterator, state, "index", .{ .integer = 1 });
@@ -144,7 +144,7 @@ pub fn walk(state: *State, thread: *Thread, op: bytecode.Call) !void {
     for (entries, 0..) |entry, index| {
         const full_path = try joinTwo(state, path, entry.name);
         defer state.allocator.free(full_path);
-        try queue.table.set(state.allocator, .{ .integer = @intCast(index + 1) }, try entryValue(state, entry, full_path, 1));
+        try state.setTableRaw(queue.table, .{ .integer = @intCast(index + 1) }, try entryValue(state, entry, full_path, 1));
     }
     try set(iterator, state, "queue", queue);
     try set(iterator, state, "index", .{ .integer = 1 });
@@ -276,20 +276,20 @@ pub fn iteratorNext(state: *State, iterator: Value) ![]const Value {
     const index = integerField(table, "index") orelse 1;
     const count = integerField(table, "count") orelse 0;
     if (index > count) {
-        try table.set(state.allocator, .{ .string = try state.intern("closed") }, .{ .boolean = true });
+        try state.setTableRaw(table, .{ .string = try state.intern("closed") }, .{ .boolean = true });
         return &.{};
     }
     const entry = queue_value.table.get(.{ .integer = index });
-    try table.set(state.allocator, .{ .string = try state.intern("index") }, .{ .integer = index + 1 });
-    try queue_value.table.set(state.allocator, .{ .integer = index }, .nil);
+    try state.setTableRaw(table, .{ .string = try state.intern("index") }, .{ .integer = index + 1 });
+    try state.setTableRaw(queue_value.table, .{ .integer = index }, .nil);
     if (std.mem.eql(u8, kind.string, "walk") and entry == .table) {
         const entry_kind = entry.table.get(.{ .string = "kind" });
         const depth = runtime.toInteger(entry.table.get(.{ .string = "depth" })) orelse 1;
         const max_depth = integerField(table, "max_depth") orelse std.math.maxInt(i32);
         if (entry_kind == .string and std.mem.eql(u8, entry_kind.string, "directory") and depth < max_depth) {
-            try table.set(state.allocator, .{ .string = try state.intern("pending_path") }, entry.table.get(.{ .string = "path" }));
-            try table.set(state.allocator, .{ .string = try state.intern("pending_depth") }, .{ .integer = depth });
-            try table.set(state.allocator, .{ .string = try state.intern("skip_current") }, .{ .boolean = false });
+            try state.setTableRaw(table, .{ .string = try state.intern("pending_path") }, entry.table.get(.{ .string = "path" }));
+            try state.setTableRaw(table, .{ .string = try state.intern("pending_depth") }, .{ .integer = depth });
+            try state.setTableRaw(table, .{ .string = try state.intern("skip_current") }, .{ .boolean = false });
         }
     }
     const result = try state.allocator.alloc(Value, 1);
@@ -299,14 +299,14 @@ pub fn iteratorNext(state: *State, iterator: Value) ![]const Value {
 
 pub fn iteratorClose(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const table = try expectIteratorTable(state, runtime.argValue(state, thread, op, 0));
-    try table.set(state.allocator, .{ .string = try state.intern("closed") }, .{ .boolean = true });
+    try state.setTableRaw(table, .{ .string = try state.intern("closed") }, .{ .boolean = true });
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = true }});
 }
 
 pub fn iteratorSkip(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const table = try expectIteratorTable(state, runtime.argValue(state, thread, op, 0));
     if (table.get(.{ .string = "pending_path" }) == .nil) return state.fail("fs walker has no current directory to skip");
-    try table.set(state.allocator, .{ .string = try state.intern("skip_current") }, .{ .boolean = true });
+    try state.setTableRaw(table, .{ .string = try state.intern("skip_current") }, .{ .boolean = true });
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = true }});
 }
 
@@ -347,7 +347,7 @@ pub fn fileTruncate(state: *State, thread: *Thread, op: bytecode.Call) !void {
     if (size > copied) @memset(bytes[copied..], 0);
     const path = try state.expectString(file.get(.{ .string = "__zlua_file_path" }));
     state.fsWriteFile(path, bytes) catch |err| return returnFailure(state, thread, op, "truncate", path, null, err);
-    try file.set(state.allocator, .{ .string = try state.intern("__zlua_file_content") }, .{ .string = try state.intern(bytes) });
+    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_content") }, .{ .string = try state.intern(bytes) });
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = true }});
 }
 
@@ -373,7 +373,7 @@ fn dirIteratorDelegate(state: *State, thread: *Thread, op: bytecode.Call, recurs
     for (entries, 0..) |entry, index| {
         const full = try joinTwo(state, path, entry.name);
         defer state.allocator.free(full);
-        try queue.table.set(state.allocator, .{ .integer = @intCast(index + 1) }, try entryValue(state, entry, full, 1));
+        try state.setTableRaw(queue.table, .{ .integer = @intCast(index + 1) }, try entryValue(state, entry, full, 1));
     }
     try set(iterator, state, "queue", queue);
     try set(iterator, state, "index", .{ .integer = 1 });
@@ -435,7 +435,7 @@ pub fn dirClose(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const value = runtime.argValue(state, thread, op, 0);
     if (value != .table or value.table.get(.{ .string = "__zlua_fs_dir" }) == .nil) return state.fail("fs directory expected");
     const dir = value.table;
-    try dir.set(state.allocator, .{ .string = try state.intern("__zlua_fs_dir_closed") }, .{ .boolean = true });
+    try state.setTableRaw(dir, .{ .string = try state.intern("__zlua_fs_dir_closed") }, .{ .boolean = true });
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = true }});
 }
 
@@ -506,7 +506,7 @@ fn newIterator(state: *State, kind: []const u8) !Value {
 fn expandPending(state: *State, iterator: *Table) !void {
     const pending = iterator.get(.{ .string = "pending_path" });
     if (pending != .string) return;
-    defer iterator.set(state.allocator, .{ .string = state.intern("pending_path") catch "pending_path" }, .nil) catch {};
+    defer state.setTableRaw(iterator, .{ .string = state.intern("pending_path") catch "pending_path" }, .nil) catch {};
     if (truthyField(iterator, "skip_current")) return;
     const depth = integerField(iterator, "pending_depth") orelse 1;
     const entries = state.fsReadDirAlloc(pending.string) catch |err| return state.failValue(try failureValue(state, "walk", pending.string, null, err));
@@ -517,9 +517,9 @@ fn expandPending(state: *State, iterator: *Table) !void {
         const full = try joinTwo(state, pending.string, entry.name);
         defer state.allocator.free(full);
         count += 1;
-        try queue.set(state.allocator, .{ .integer = count }, try entryValue(state, entry, full, @intCast(depth + 1)));
+        try state.setTableRaw(queue, .{ .integer = count }, try entryValue(state, entry, full, @intCast(depth + 1)));
     }
-    try iterator.set(state.allocator, .{ .string = try state.intern("count") }, .{ .integer = count });
+    try state.setTableRaw(iterator, .{ .string = try state.intern("count") }, .{ .integer = count });
 }
 
 fn writeBytes(state: *State, path: []const u8, data: []const u8, atomic: bool) !void {
@@ -625,12 +625,12 @@ fn normalizedErrorCode(name: []const u8) []const u8 {
 
 fn addFileMethods(state: *State, file: *Table) !void {
     // fs handles are immediately coherent with path-based operations.
-    try file.set(state.allocator, .{ .string = try state.intern("__zlua_file_buffer_mode") }, .{ .string = try state.intern("no") });
-    try file.set(state.allocator, .{ .string = try state.intern("stat") }, .{ .native = .fs_file_stat });
-    try file.set(state.allocator, .{ .string = try state.intern("tell") }, .{ .native = .fs_file_tell });
-    try file.set(state.allocator, .{ .string = try state.intern("truncate") }, .{ .native = .fs_file_truncate });
-    try file.set(state.allocator, .{ .string = try state.intern("path") }, .{ .native = .fs_file_path });
-    try file.set(state.allocator, .{ .string = try state.intern("sync") }, .{ .native = .io_file_flush });
+    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_buffer_mode") }, .{ .string = try state.intern("no") });
+    try state.setTableRaw(file, .{ .string = try state.intern("stat") }, .{ .native = .fs_file_stat });
+    try state.setTableRaw(file, .{ .string = try state.intern("tell") }, .{ .native = .fs_file_tell });
+    try state.setTableRaw(file, .{ .string = try state.intern("truncate") }, .{ .native = .fs_file_truncate });
+    try state.setTableRaw(file, .{ .string = try state.intern("path") }, .{ .native = .fs_file_path });
+    try state.setTableRaw(file, .{ .string = try state.intern("sync") }, .{ .native = .io_file_flush });
 }
 
 fn expectFsFile(state: *State, value: Value) !*Table {
@@ -710,7 +710,7 @@ fn joinTwo(state: *State, parent: []const u8, child: []const u8) ![]u8 {
 }
 
 fn set(table_value: Value, state: *State, name: []const u8, value: Value) !void {
-    try table_value.table.set(state.allocator, .{ .string = try state.intern(name) }, value);
+    try state.setTableRaw(table_value.table, .{ .string = try state.intern(name) }, value);
 }
 
 fn truthyField(table: *Table, name: []const u8) bool {

@@ -124,6 +124,7 @@ pub fn copyPayload(a: std.mem.Allocator, lifetime: ?*types.AllocatorLifetime, p:
         .finalizer_data = p.finalizer_data,
         .dispose = p.snapshot_dispose,
         .finalized = p.finalized,
+        .managed_bytes = p.managed_bytes,
         .snapshot_copy = p.snapshot_copy,
         .snapshot_dispose = p.snapshot_dispose,
         .snapshot_tracking = p.snapshot_tracking,
@@ -182,6 +183,8 @@ pub const Journal = struct {
             record.object.rollback = record;
             record.original.rollback = record;
         };
+        state.normalizeGcBaseline();
+        self.saved = state.*;
         self.saved.rollback = self;
     }
 
@@ -217,15 +220,18 @@ pub const Journal = struct {
         replacement.strings = std.StringHashMap([]const u8).init(self.allocator);
         replacement.string_allocation_index = types.PointerAllocationIndex.init(self.allocator);
         replacement.table_allocation_index = types.PointerAllocationIndex.init(self.allocator);
+        replacement.object_allocation_index = .empty;
         errdefer freeRegistries(&replacement);
         inline for (registries) |name| @field(replacement, name) = try duplicateList(self.allocator, @field(state, name));
         replacement.strings = try state.strings.clone();
         replacement.string_allocation_index = try state.string_allocation_index.clone();
         replacement.table_allocation_index = try state.table_allocation_index.clone();
+        replacement.object_allocation_index = try state.object_allocation_index.clone(self.allocator);
         inline for (registries) |name| @field(state, name) = @field(replacement, name);
         state.strings = replacement.strings;
         state.string_allocation_index = replacement.string_allocation_index;
         state.table_allocation_index = replacement.table_allocation_index;
+        state.object_allocation_index = replacement.object_allocation_index;
         self.registries_detached = true;
     }
 
@@ -241,11 +247,9 @@ pub const Journal = struct {
 
     /// Called before GC enters its infallible destructive phases.
     pub fn prepareCollection(self: *Journal, state: *State) !void {
-        try self.detachRegistries(state);
-        // Mark bits are collector scratch space. Every collection resets them;
-        // restoring the logical heap never needs a mark-bit traversal.
-        for (state.table_allocations.items) |table| {
-            if (table.finalizer_registered) touch(table);
+        if (state.gc_cycle == .major) return self.detachRegistries(state);
+        inline for (@typeInfo(types.GcGenerations).@"struct".fields) |f| {
+            if (@field(state, f.name).items.len != @field(state.gc_old, f.name)) return self.detachRegistries(state);
         }
     }
 
@@ -268,6 +272,11 @@ pub const Journal = struct {
     }
 
     pub fn reset(self: *Journal, state: *State, prepared: []*types.UserdataPayload) void {
+        state.gc_work.clearRetainingCapacity();
+        state.gc_remembered.clearRetainingCapacity();
+        state.gc_weak.clearRetainingCapacity();
+        state.gc_tables.clearRetainingCapacity();
+        state.gc_finalizers.clearRetainingCapacity();
         state.discarding = true;
         self.last_restored_objects = self.dirty.items.len + self.new_objects.count();
         var objects = self.new_objects.iterator();
@@ -302,7 +311,21 @@ pub const Journal = struct {
         const roots = state.api_roots;
         const callback_dispatch = state.api_callback_dispatch;
         const callback_data = state.api_callback_user_data;
+        const gc_work = state.gc_work;
+        const gc_remembered = state.gc_remembered;
+        const gc_weak = state.gc_weak;
+        const gc_tables = state.gc_tables;
+        const gc_finalizers = state.gc_finalizers;
+        const epoch = state.gc_epoch + 1;
+        const generation = state.gc_generation + 1;
         state.* = self.saved;
+        state.gc_work = gc_work;
+        state.gc_remembered = gc_remembered;
+        state.gc_weak = gc_weak;
+        state.gc_tables = gc_tables;
+        state.gc_finalizers = gc_finalizers;
+        state.gc_epoch = epoch;
+        state.gc_generation = generation;
         state.api_roots = roots;
         state.api_roots.clearRetainingCapacity();
         state.api_callback_dispatch = callback_dispatch;
@@ -361,6 +384,7 @@ fn freeRegistries(state: *State) void {
     state.strings.deinit();
     state.string_allocation_index.deinit();
     state.table_allocation_index.deinit();
+    state.object_allocation_index.deinit(state.allocator);
 }
 fn freeStorage(comptime T: type, a: std.mem.Allocator, object: *T) void {
     if (T == types.Table or T == types.Thread) {

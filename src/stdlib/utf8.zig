@@ -50,9 +50,9 @@ pub fn codes(state: *State, thread: *Thread, op: bytecode.Call) !void {
         return;
     }
     const state_value = try state.newTableWithHints(0, 2);
-    try state_value.table.set(state.allocator, .{ .string = try state.intern("s") }, .{ .string = source });
-    try state_value.table.set(state.allocator, .{ .string = try state.intern("i") }, .{ .integer = 0 });
-    try state_value.table.set(state.allocator, .{ .string = try state.intern("strict") }, .{ .boolean = strict });
+    try state.setTableRaw(state_value.table, .{ .string = try state.intern("s") }, .{ .string = source });
+    try state.setTableRaw(state_value.table, .{ .string = try state.intern("i") }, .{ .integer = 0 });
+    try state.setTableRaw(state_value.table, .{ .string = try state.intern("strict") }, .{ .boolean = strict });
     try state.returnValues(thread, op.base, op.return_count, &.{ .{ .native = .utf8_codes_iter }, state_value, .nil });
 }
 
@@ -82,7 +82,7 @@ pub fn codesNext(state: *State, state_value: Value, index_value: Value) ![2]Valu
     const pos: usize = @intCast(@max(current, 0));
     if (pos >= source.len) return .{ .nil, .nil };
     const decoded = decodeAt(source, pos, strict) orelse return state.fail("invalid UTF-8 code");
-    try state_table.set(state.allocator, .{ .string = try state.intern("i") }, .{ .integer = @intCast(pos + decoded.len) });
+    try state.setTableRaw(state_table, .{ .string = try state.intern("i") }, .{ .integer = @intCast(pos + decoded.len) });
     return .{ .{ .integer = @intCast(pos + 1) }, .{ .integer = decoded.codepoint } };
 }
 

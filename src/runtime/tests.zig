@@ -16,6 +16,28 @@ const valuesEqual = runtime.valuesEqual;
 const appendBinaryChunkHeader = runtime.appendBinaryChunkHeader;
 const dumpClosureBinary = runtime.dumpClosureBinary;
 
+test "small table growth preserves existing entries on allocation failure" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, tableGrowthAllocationScenario, .{});
+}
+
+fn tableGrowthAllocationScenario(allocator: std.mem.Allocator) !void {
+    var table = try runtime.Table.init(allocator, 0, 1);
+    defer table.deinit(allocator);
+    const keys = [_][]const u8{ "one", "two", "three", "four", "five", "six", "seven", "eight", "nine" };
+    for (keys, 0..) |key, index| {
+        table.set(allocator, .{ .string = key }, .{ .integer = @intCast(index) }) catch |err| {
+            for (keys[0..index], 0..) |previous, expected| {
+                try std.testing.expectEqual(@as(i64, @intCast(expected)), table.get(.{ .string = previous }).integer);
+            }
+            try std.testing.expect(table.get(.{ .string = key }) == .nil);
+            return err;
+        };
+    }
+    for (keys, 0..) |key, expected| {
+        try std.testing.expectEqual(@as(i64, @intCast(expected)), table.get(.{ .string = key }).integer);
+    }
+}
+
 test "executes basic print and arithmetic" {
     var result = try executeSource(std.testing.allocator,
         \\print(1 + 2)
@@ -57,6 +79,159 @@ test "reports stack overflow for unbounded Lua recursion" {
 
     try std.testing.expectEqual(@as(?u8, 1), result.exit_code);
     try std.testing.expect(std.mem.indexOf(u8, result.stderr, "stack overflow") != null);
+}
+
+test "instruction accounting agrees across nested call dispatch paths" {
+    const source =
+        \\local function f(n)
+        \\  if n == 0 then return 3 end
+        \\  return 1 + f(n - 1)
+        \\end
+        \\local sum = 0
+        \\for i = 1, 20 do
+        \\  local t = { i, a = i }
+        \\  sum = sum + f(i) + t[1] - t.a + math.floor(math.sqrt(i * i)) - i
+        \\end
+        \\assert(sum == 270)
+    ;
+    var fast = try State.init(std.testing.allocator);
+    defer fast.deinit();
+    try fast.executeSourceChunk(source);
+    var metered = try State.initWithOptions(std.testing.allocator, .{ .max_instructions = 100_000 });
+    defer metered.deinit();
+    try metered.executeSourceChunk(source);
+    try std.testing.expectEqual(metered.instruction_count, fast.instruction_count);
+}
+
+test "hand-built bytecode can fall through or jump past its final instruction" {
+    const compile = @import("../compile.zig");
+    const Instruction = compile.bytecode.Instruction;
+    const cases = [_][]const Instruction{
+        &.{},
+        &.{.{ .load_nil = 0 }},
+        &.{ .{ .load_nil = 0 }, .{ .close = 0 } },
+        &.{ .{ .load_nil = 0 }, .{ .jmp = 1 }, .{ .ret = .{ .first = 0, .count = 0 } } },
+    };
+    for (cases) |instructions| {
+        var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .none });
+        defer state.deinit();
+        var proto = compile.proto.Proto.init(std.testing.allocator);
+        defer proto.deinit();
+        proto.max_registers = 1;
+        for (instructions) |instruction| _ = try proto.emit(instruction, 0);
+        try state.execute(&proto);
+    }
+}
+
+test "automatic GC clears weak values after full collection across VM dispatch paths" {
+    // The closure suite waits for this collection without a bound. Keep the
+    // allocation pattern, but fail promptly if a dispatch path retains x[1].
+    const source =
+        \\local A, B = 0, {g = 10}
+        \\local function f(x)
+        \\  local a = {}
+        \\  for i = 1, 1000 do
+        \\    local y = 0
+        \\    a[i] = function() B.g = B.g + 1; y = y + x; return y + A end
+        \\  end
+        \\  local dummy = function() return a[A] end
+        \\  collectgarbage()
+        \\  A = 1; assert(dummy() == a[1]); A = 0
+        \\  assert(a[1]() == x and a[3]() == x)
+        \\  collectgarbage()
+        \\  return a
+        \\end
+        \\local a = f(10)
+        \\local x = {[1] = {}}
+        \\setmetatable(x, {__mode = 'kv'})
+        \\while x[1] do
+        \\  local a = A..A..A..A
+        \\  A = A + 1
+        \\  if A == 100000 then error('weak value retained') end
+        \\end
+        \\assert(a[1]() == 20 + A and a[2]() == 10 + A)
+    ;
+    for ([_]runtime.GcMode{ .generational, .incremental }) |mode| {
+        for ([_]?u64{ null, 10_000_000 }) |limit| {
+            var state = try State.initWithOptions(std.testing.allocator, .{ .max_instructions = limit });
+            defer state.deinit();
+            _ = state.setGcMode(mode);
+            try state.executeSourceChunk(source);
+        }
+    }
+}
+
+test "condition temporaries preserve Lua truthiness across VM dispatch paths" {
+    const source =
+        \\for _, value in ipairs{false, true, 0, 0.0, '', {}, function() end} do
+        \\  local expected = value ~= false
+        \\  local branch = false
+        \\  if value then branch = true end
+        \\  assert(branch == expected)
+        \\  branch = false
+        \\  while value do branch = true; break end
+        \\  assert(branch == expected)
+        \\  local count = 0
+        \\  repeat count = count + 1 until value or count == 2
+        \\  assert(count == (expected and 1 or 2))
+        \\end
+        \\if nil then error('nil is false') end
+    ;
+    for ([_]?u64{ null, 100_000 }) |limit| {
+        var state = try State.initWithOptions(std.testing.allocator, .{ .max_instructions = limit });
+        defer state.deinit();
+        try state.executeSourceChunk(source);
+    }
+}
+
+test "full collection preserves the generational submode" {
+    var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .none });
+    defer state.deinit();
+    // With only live objects, the reclamation heuristic would stay major.
+    try state.collectGarbage();
+    try std.testing.expect(!try state.stepGc(1));
+    try std.testing.expectEqual(.minor, state.gc_cycle);
+
+    state.gc_major_pending = true;
+    try state.collectGarbage();
+    try std.testing.expect(!try state.stepGc(1));
+    try std.testing.expectEqual(.major, state.gc_cycle);
+}
+
+test "read-only named vararg calls do not allocate tables" {
+    var state = try State.init(std.testing.allocator);
+    defer state.deinit();
+    try state.executeSourceChunk(
+        \\collectgarbage('stop')
+        \\function read(key, ...v) return v[key], v.n, ... end
+        \\read(1, 10, 20)
+    );
+    const tables = state.table_allocations.items.len;
+    try state.executeSourceChunk(
+        \\for i = 1, 100 do
+        \\  local value, n, first, second = read(1.0, 10, 20)
+        \\  assert(value == 10 and n == 2 and first == 10 and second == 20)
+        \\end
+    );
+    try std.testing.expectEqual(tables, state.table_allocations.items.len);
+}
+
+test "major collection returns to minor mode based on growth rather than the whole heap" {
+    var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .none });
+    defer state.deinit();
+    const root = try state.newTableWithHints(100, 0);
+    const handle = try state.rootValue(root);
+    defer state.unrootValue(handle);
+    for (0..100) |i| try state.setTableValue(root, .{ .integer = @intCast(i + 1) }, try state.newTableWithHints(0, 0));
+    try state.collectGarbage();
+    // Reclaim all growth, but much less than half the long-lived heap.
+    for (0..10) |_| _ = try state.newTableWithHints(0, 0);
+    state.gc_major_pending = true;
+    var steps: usize = 0;
+    while (!try state.stepGc(1)) : (steps += 1) try std.testing.expect(steps < 1000);
+    try std.testing.expect(!try state.stepGc(1));
+    try std.testing.expectEqual(.minor, state.gc_cycle);
+    try std.testing.expectEqual(@as(usize, 102), state.table_allocations.items.len);
 }
 
 test "reports calls to non-functions" {
@@ -518,4 +693,179 @@ test "ephemeron table marks value when key is reachable" {
     const kept_value = ephemeron.table.get(key);
     try std.testing.expect(kept_value == .table);
     try std.testing.expect(valuesEqual(kept_value.table.get(.{ .string = "answer" }), .{ .integer = 42 }));
+}
+
+test "collector traverses deep mixed graphs without native recursion" {
+    var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .none });
+    defer state.deinit();
+    const root = try state.newTableWithHints(1, 0);
+    const handle = try state.rootValue(root);
+    var tail = root;
+    for (0..50000) |_| {
+        const child = try state.newTableWithHints(1, 0);
+        try state.setTableValue(tail, .{ .integer = 1 }, child);
+        tail = child;
+    }
+    try state.setTableValue(tail, .{ .integer = 1 }, root);
+    try state.collectGarbage();
+    try std.testing.expectEqual(@as(usize, 50002), state.table_allocations.items.len);
+    state.unrootValue(handle);
+    try state.collectGarbage();
+    try std.testing.expectEqual(@as(usize, 1), state.table_allocations.items.len);
+}
+
+test "incremental phases preserve mutations and allocations while sweeping" {
+    var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .none });
+    defer state.deinit();
+    state.gc_mode = .incremental;
+    state.gc_params.stepsize = 8;
+    state.gc_params.stepmul = 100;
+    const root = try state.newTableWithHints(0, 2);
+    const handle = try state.rootValue(root);
+    defer state.unrootValue(handle);
+    for (0..100) |_| _ = try state.newTableWithHints(0, 0);
+    try std.testing.expect(!try state.stepGc(0));
+    try std.testing.expectEqual(.propagate, state.gc_phase);
+    while (state.gc_phase == .propagate) _ = try state.stepGc(1);
+    const child = try state.newTableWithHints(0, 1);
+    try state.setTableValue(root, .{ .string = "child" }, child);
+    _ = try state.stepGc(1);
+    try std.testing.expectEqual(.sweep_threads, state.gc_phase);
+    const during_sweep = try state.newTableWithHints(0, 1);
+    try state.setTableValue(during_sweep, .{ .string = "message" }, .{ .string = try state.intern("allocated during sweeping") });
+    try state.setTableValue(child, .{ .string = "nested" }, during_sweep);
+    var steps: usize = 0;
+    while (!try state.stepGc(1)) : (steps += 1) try std.testing.expect(steps < 1000);
+    try std.testing.expect(state.isTrackedTable(child.table));
+    try std.testing.expect(state.isTrackedTable(during_sweep.table));
+    try std.testing.expectEqualStrings("allocated during sweeping", during_sweep.table.get(.{ .string = "message" }).string);
+}
+
+test "minor work scales with young and remembered objects and promotes survivors" {
+    var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .none });
+    defer state.deinit();
+    const root = try state.newTableWithHints(10000, 0);
+    for (0..10000) |i| {
+        const child = try state.newTableWithHints(0, 1);
+        try state.setTableValue(root, .{ .integer = @intCast(i + 1) }, child);
+    }
+    const handle = try state.rootValue(root);
+    defer state.unrootValue(handle);
+    state.normalizeGcBaseline();
+    const leaf = root.table.get(.{ .integer = 5000 });
+    const young = try state.newTableWithHints(0, 1);
+    try state.setTableValue(leaf, .{ .string = "child" }, young);
+    try std.testing.expect(!try state.stepGc(1));
+    try std.testing.expectEqual(.minor, state.gc_cycle);
+    try std.testing.expect(state.gc_work_done < 100);
+    try std.testing.expectEqual(.survivor, young.table.gc.age);
+    try std.testing.expect(!try state.stepGc(1));
+    try std.testing.expectEqual(.old, young.table.gc.age);
+    const second = try state.newTableWithHints(0, 0);
+    try state.setTableValue(young, .{ .string = "next" }, second);
+    try std.testing.expect(!try state.stepGc(1));
+    try std.testing.expect(state.isTrackedTable(second.table));
+    try state.setTableValue(young, .{ .string = "next" }, .nil);
+    try std.testing.expect(!try state.stepGc(1));
+    try std.testing.expect(!state.isTrackedTable(second.table));
+    try std.testing.expectEqual(@as(usize, 10003), state.table_allocations.items.len);
+}
+
+test "automatic finalization runs a bounded userdata batch" {
+    var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .none });
+    defer state.deinit();
+    state.gc_mode = .incremental;
+    var calls: usize = 0;
+    const finalizer = struct {
+        fn run(ptr: *anyopaque, _: ?*const anyopaque) void {
+            const count: *usize = @ptrCast(@alignCast(ptr));
+            count.* += 1;
+        }
+    }.run;
+    for (0..5) |_| _ = try state.newUserdata(&calls, 1, "count", finalizer, null, null);
+    while (state.gc_phase != .finalize) _ = try state.stepGc(1);
+    try std.testing.expectEqual(@as(usize, 0), calls);
+    try std.testing.expect(!try state.stepGc(1));
+    try std.testing.expectEqual(@as(usize, 1), calls);
+    try state.collectGarbage();
+    try std.testing.expectEqual(@as(usize, 5), calls);
+}
+
+test "remembered old metatables keep young metadata through promotion" {
+    var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .none });
+    defer state.deinit();
+    const parent = try state.newTableWithHints(0, 0);
+    const handle = try state.rootValue(parent);
+    defer state.unrootValue(handle);
+    state.normalizeGcBaseline();
+    const metatable = try state.newTableWithHints(0, 0);
+    state.setTableMetatableRaw(parent.table, metatable.table);
+    for (0..3) |_| {
+        try std.testing.expect(!try state.stepGc(1));
+        try std.testing.expect(state.isTrackedTable(metatable.table));
+    }
+    try std.testing.expectEqual(.old, metatable.table.gc.age);
+}
+
+test "suspended unwind errors remain roots across minor and major cycles" {
+    var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .none });
+    defer state.deinit();
+    const thread = try state.newCoroutineThread(.nil);
+    const handle = try state.rootValue(.{ .thread = thread });
+    defer state.unrootValue(handle);
+    state.normalizeGcBaseline();
+    const error_value = try state.newTableWithHints(0, 1);
+    try state.setTableRaw(error_value.table, .{ .string = "detail" }, .{ .string = try state.intern("suspended error") });
+    thread.pending_unwind_error = error_value;
+    state.threadBarrier(thread, error_value);
+    for (0..3) |_| {
+        _ = try state.stepGc(1);
+        try std.testing.expect(state.isTrackedTable(error_value.table));
+    }
+    try state.collectGarbage();
+    try std.testing.expect(state.isTrackedTable(error_value.table));
+    try std.testing.expectEqualStrings("suspended error", error_value.table.get(.{ .string = "detail" }).string);
+    thread.pending_unwind_error = null;
+    try state.collectGarbage();
+    try std.testing.expect(!state.isTrackedTable(error_value.table));
+}
+
+test "remembered old threads retain young diagnostic strings through promotion" {
+    var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .none });
+    defer state.deinit();
+    const thread = try state.newCoroutineThread(.nil);
+    const handle = try state.rootValue(.{ .thread = thread });
+    defer state.unrootValue(handle);
+    state.normalizeGcBaseline();
+    const diagnostic = try state.intern("young traceback belonging to a suspended old thread");
+    thread.error_traceback = diagnostic;
+    state.threadBarrier(thread, .{ .string = diagnostic });
+    for (0..3) |_| {
+        _ = try state.stepGc(1);
+        try std.testing.expect(state.findStringAllocation(diagnostic) != null);
+    }
+    try state.collectGarbage();
+    try std.testing.expectEqualStrings("young traceback belonging to a suspended old thread", thread.error_traceback.?);
+}
+
+test "changing weak modes after propagation retraces newly strong edges" {
+    var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .none });
+    defer state.deinit();
+    state.gc_mode = .incremental;
+    const metatable = try state.newTableWithHints(0, 1);
+    try state.setTableRaw(metatable.table, .{ .string = "__mode" }, .{ .string = "v" });
+    const weak = try state.newTableWithHints(0, 1);
+    state.setTableMetatableRaw(weak.table, metatable.table);
+    const handle = try state.rootValue(weak);
+    defer state.unrootValue(handle);
+    const child = try state.newTableWithHints(0, 0);
+    try state.setTableRaw(weak.table, .{ .string = "item" }, child);
+    while (state.gc_phase != .atomic) _ = try state.stepGc(1);
+    try state.setTableRaw(metatable.table, .{ .string = "__mode" }, .{ .string = "" });
+    while (!try state.stepGc(1)) {}
+    try std.testing.expect(state.isTrackedTable(child.table));
+    try std.testing.expect(weak.table.get(.{ .string = "item" }) == .table);
+    try state.setTableRaw(metatable.table, .{ .string = "__mode" }, .{ .string = "v" });
+    try state.collectGarbage();
+    try std.testing.expect(weak.table.get(.{ .string = "item" }) == .nil);
 }

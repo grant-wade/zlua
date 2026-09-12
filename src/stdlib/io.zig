@@ -157,7 +157,7 @@ pub fn fileSeek(state: *State, thread: *Thread, op: bytecode.Call) !void {
         try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.intern("invalid argument") }, .{ .integer = 22 } });
         return;
     }
-    try file.set(state.allocator, .{ .string = try state.intern("__zlua_file_pos") }, .{ .integer = new_pos + 1 });
+    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_pos") }, .{ .integer = new_pos + 1 });
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .integer = new_pos }});
 }
 
@@ -185,7 +185,7 @@ pub fn fileSetvbuf(state: *State, thread: *Thread, op: bytecode.Call) !void {
     try ensureOpen(state, file);
     const mode = try state.expectArgumentString(thread, op, "file:setvbuf", 1);
     if (!std.mem.eql(u8, mode, "no") and !std.mem.eql(u8, mode, "full") and !std.mem.eql(u8, mode, "line")) return state.failArgumentMessage("file:setvbuf", 2, "invalid mode");
-    try file.set(state.allocator, .{ .string = try state.intern("__zlua_file_buffer_mode") }, .{ .string = try state.intern(mode) });
+    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_buffer_mode") }, .{ .string = try state.intern(mode) });
     if (std.mem.eql(u8, mode, "no")) try flushFile(state, file);
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = true }});
 }
@@ -242,7 +242,7 @@ fn setCurrentFile(state: *State, thread: *Thread, op: bytecode.Call, key: []cons
             else => {},
         }
     }
-    try io_table.set(state.allocator, .{ .string = try state.intern(key) }, value);
+    try state.setTableRaw(io_table, .{ .string = try state.intern(key) }, value);
     try state.returnValues(thread, op.base, op.return_count, &.{value});
 }
 
@@ -427,7 +427,7 @@ fn writeBytes(state: *State, file: *runtime.Table, bytes: []const u8) !void {
     const end = pos + bytes.len;
     if (end > content.items.len) try content.resize(state.allocator, end);
     @memcpy(content.items[pos..end], bytes);
-    try file.set(state.allocator, .{ .string = try state.intern("__zlua_file_content") }, .{ .string = try state.intern(content.items) });
+    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_content") }, .{ .string = try state.intern(content.items) });
     try setPos(state, file, end + 1);
 }
 
@@ -448,7 +448,7 @@ fn closeFileValue(state: *State, thread: *Thread, op: bytecode.Call, value: Valu
 fn closeFile(state: *State, file: *runtime.Table, from_iterator: bool) !void {
     _ = from_iterator;
     if (fileWritable(file)) try flushFile(state, file);
-    try file.set(state.allocator, .{ .string = try state.intern("__zlua_file_closed") }, .{ .boolean = true });
+    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_closed") }, .{ .boolean = true });
 }
 
 fn flushFile(state: *State, file: *runtime.Table) !void {
@@ -465,19 +465,19 @@ fn refreshReadable(state: *State, file: *runtime.Table) !void {
     if (std.mem.eql(u8, path, "stdin") or std.mem.eql(u8, path, "stdout") or std.mem.eql(u8, path, "stderr") or isSpecialDevice(path)) return;
     const contents = state.readFileAlloc(path) catch return;
     defer state.allocator.free(contents);
-    try file.set(state.allocator, .{ .string = try state.intern("__zlua_file_content") }, .{ .string = try state.intern(contents) });
+    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_content") }, .{ .string = try state.intern(contents) });
 }
 
 pub fn newFile(state: *State, path: []const u8, mode: []const u8, contents: []const u8, parsed: ParsedMode) !Value {
     const value = try state.newTableWithHints(0, 7);
     const file = value.table;
-    try file.set(state.allocator, .{ .string = try state.intern("__zlua_file") }, .{ .boolean = true });
-    try file.set(state.allocator, .{ .string = try state.intern("__zlua_file_path") }, .{ .string = try state.intern(path) });
-    try file.set(state.allocator, .{ .string = try state.intern("__zlua_file_mode") }, .{ .string = try state.intern(mode) });
-    try file.set(state.allocator, .{ .string = try state.intern("__zlua_file_content") }, .{ .string = try state.intern(contents) });
-    try file.set(state.allocator, .{ .string = try state.intern("__zlua_file_pos") }, .{ .integer = if (parsed.append) @as(i64, @intCast(contents.len + 1)) else 1 });
-    try file.set(state.allocator, .{ .string = try state.intern("__zlua_file_closed") }, .{ .boolean = false });
-    try file.set(state.allocator, .{ .string = try state.intern("__zlua_file_buffer_mode") }, .{ .string = try state.intern("full") });
+    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file") }, .{ .boolean = true });
+    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_path") }, .{ .string = try state.intern(path) });
+    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_mode") }, .{ .string = try state.intern(mode) });
+    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_content") }, .{ .string = try state.intern(contents) });
+    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_pos") }, .{ .integer = if (parsed.append) @as(i64, @intCast(contents.len + 1)) else 1 });
+    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_closed") }, .{ .boolean = false });
+    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_buffer_mode") }, .{ .string = try state.intern("full") });
     state.setTableMetatableRaw(file, try state.fileMetatable());
     return value;
 }
@@ -485,14 +485,14 @@ pub fn newFile(state: *State, path: []const u8, mode: []const u8, contents: []co
 fn newLinesIterator(state: *State, thread: *Thread, file_value: Value, op: bytecode.Call, first_arg: u16, auto_close: bool) !Value {
     const value = try state.newTableWithHints(0, 4);
     const table = value.table;
-    try table.set(state.allocator, .{ .string = try state.intern("__zlua_lines_iterator") }, .{ .boolean = true });
-    try table.set(state.allocator, .{ .string = try state.intern("file") }, file_value);
-    try table.set(state.allocator, .{ .string = try state.intern("auto_close") }, .{ .boolean = auto_close });
+    try state.setTableRaw(table, .{ .string = try state.intern("__zlua_lines_iterator") }, .{ .boolean = true });
+    try state.setTableRaw(table, .{ .string = try state.intern("file") }, file_value);
+    try state.setTableRaw(table, .{ .string = try state.intern("auto_close") }, .{ .boolean = auto_close });
     if (op.arg_count > first_arg) {
         const specs = try state.newTableWithHints(op.arg_count - first_arg, 0);
         var index = first_arg;
-        while (index < op.arg_count) : (index += 1) try specs.table.set(state.allocator, .{ .integer = @intCast(index - first_arg + 1) }, runtime.argValue(state, thread, op, index));
-        try table.set(state.allocator, .{ .string = try state.intern("specs") }, specs);
+        while (index < op.arg_count) : (index += 1) try state.setTableRaw(specs.table, .{ .integer = @intCast(index - first_arg + 1) }, runtime.argValue(state, thread, op, index));
+        try state.setTableRaw(table, .{ .string = try state.intern("specs") }, specs);
     }
     return .{ .gmatch_iterator = table };
 }
@@ -541,7 +541,7 @@ fn fileInteger(file: *runtime.Table, comptime name: []const u8) ?i64 {
 }
 
 fn setPos(state: *State, file: *runtime.Table, pos: usize) !void {
-    try file.set(state.allocator, .{ .string = try state.intern("__zlua_file_pos") }, .{ .integer = @intCast(pos) });
+    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_pos") }, .{ .integer = @intCast(pos) });
 }
 
 pub const ParsedMode = struct {

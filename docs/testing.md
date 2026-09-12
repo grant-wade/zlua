@@ -76,8 +76,11 @@ just diff tests/diff/runtime/tables.lua
 just diff --stage=parse
 just diff --feature=table
 just diff --gc-stress
+just diff --gc-step-stress
 just diff --show-clua --show-zlua tests/diff/runtime/errors.lua
 ```
+
+Use `--gc-stress` to look for values that are collected too early, or `--gc-step-stress` to test changes made between collection steps. Add `--feature=gc` to run just the GC fixtures. Both modes respect Lua's stop/restart controls.
 
 `--bless` and `--update-expected-failures` are accepted but are currently no-ops.
 
@@ -100,6 +103,8 @@ The harness uses safe libraries by default and full libraries for fixtures under
 ## Official Suite
 
 Downloaded tests live under `.zlua-deps/lua-5.5.0-tests`. The default run uses every top-level `.lua` file except `all.lua` with the basic compatibility prelude.
+
+Every failure, signal, or timeout from either interpreter makes the harness exit nonzero. Failure categories are diagnostic labels only; the official harness has no automatic expected failures. Failed child output is always printed, and the summary reports `clua_failed` and `zlua_failed` separately.
 
 ```sh
 zig build test-official

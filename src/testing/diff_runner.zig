@@ -21,6 +21,7 @@ const Options = struct {
     show_clua: bool = false,
     show_zlua: bool = false,
     gc_stress: bool = false,
+    gc_step_stress: bool = false,
     debug_errors: bool = false,
     timeout_ms: u64 = 5000,
 };
@@ -95,6 +96,8 @@ fn parseArgs(args: []const []const u8) !Options {
             options.show_clua = true;
         } else if (std.mem.eql(u8, arg, "--show-zlua")) {
             options.show_zlua = true;
+        } else if (std.mem.eql(u8, arg, "--gc-step-stress")) {
+            options.gc_step_stress = true;
         } else if (std.mem.eql(u8, arg, "--gc-stress")) {
             options.gc_stress = true;
         } else if (std.mem.eql(u8, arg, "--debug-errors")) {
@@ -219,6 +222,7 @@ fn runZluaForStage(
         .compile => runZluaCompileStage(allocator, source),
         .runtime, .stdlib, .official => runtime.executeSourceWithOptions(allocator, source, .{
             .collect_after_instruction = options.gc_stress,
+            .step_after_instruction = options.gc_step_stress,
             .state = .{
                 .io = io,
                 .filesystem = .host_cwd,

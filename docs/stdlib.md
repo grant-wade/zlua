@@ -52,7 +52,7 @@ setmetatable            tonumber tostring     type    warn   xpcall
 | `debug` | `gethook`, `getinfo`, `getlocal`, `getregistry`, `getupvalue`, `getuservalue`, `sethook`, `setlocal`, `setmetatable`, `setupvalue`, `setuservalue`, `traceback`, `upvalueid`, `upvaluejoin` |
 | `package` | `config`, `cpath`, `loaded`, `path`, `preload`, `searchers`, `searchpath`; also `dofile`, `loadfile`, and `require` globals |
 
-`collectgarbage("step")` currently performs full-collection-style work rather than a budgeted incremental step.
+`collectgarbage` supports Lua 5.5's incremental and generational modes, with generational mode as the default. Use `collectgarbage("collect")` for a full collection or `collectgarbage("step", bytes)` to advance it. Explicit collection works even after `collectgarbage("stop")`. Memory counts and collection timing may differ from C Lua. For host-side controls, see [Garbage Collection](embedding.md#garbage-collection).
 
 ### zlua Additions to Core Libraries
 

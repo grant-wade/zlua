@@ -541,7 +541,7 @@ fn flushStateOutput(io: std.Io, state: *zlua.runtime.State) !void {
 }
 
 fn installArgTable(
-    allocator: std.mem.Allocator,
+    _: std.mem.Allocator,
     state: *zlua.runtime.State,
     args: []const []const u8,
     script_index: ?usize,
@@ -551,7 +551,7 @@ fn installArgTable(
     const table = arg_value.table;
     for (args, 0..) |arg, index| {
         const key: i64 = @as(i64, @intCast(index)) - @as(i64, @intCast(zero_index));
-        try table.set(allocator, .{ .integer = key }, .{ .string = try state.intern(arg) });
+        try state.setTableRaw(table, .{ .integer = key }, .{ .string = try state.intern(arg) });
     }
     try state.putGlobal("arg", arg_value);
 }

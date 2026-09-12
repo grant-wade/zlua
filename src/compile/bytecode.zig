@@ -27,7 +27,8 @@ pub fn constantEql(lhs: Constant, rhs: Constant) bool {
     };
 }
 
-pub const Instruction = union(enum) {
+// Full-byte tags avoid masking unused tag bits in every VM dispatch.
+pub const Instruction = union(enum(u8)) {
     load_nil: Register,
     load_bool: LoadBool,
     load_const: LoadConst,

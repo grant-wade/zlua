@@ -73,6 +73,7 @@
 - [testing.bench.allocation](../testing/bench/allocation.md)
 - [testing.bench.c_startup](../testing/bench/c_startup.md)
 - [testing.bench.snapshots](../testing/bench/snapshots.md)
+- [testing.bench.gc](../testing/bench/gc.md)
 - [testing.diff_runner](../testing/diff_runner.md)
 - [testing.fixtures](../testing/fixtures.md)
 - [testing.expected_failures](../testing/expected_failures.md)
@@ -91,12 +92,14 @@
 - [AllocatorLifetime](#type-allocatorlifetime)
 - [UserdataPayload](#type-userdatapayload)
 - [ProtectedCallResult](#type-protectedcallresult)
+- [CallbackReturns](#type-callbackreturns)
 - [ApiCallbackContext](#type-apicallbackcontext)
 - [RuntimeErrorPayload](#type-runtimeerrorpayload)
 - [ProtectedCallContext](#type-protectedcallcontext)
 - [ProtectedContinuationKind](#type-protectedcontinuationkind)
 - [ProtectedContinuation](#type-protectedcontinuation)
 - [GenericForContinuation](#type-genericforcontinuation)
+- [PairsContinuation](#type-pairscontinuation)
 - [BranchContinuation](#type-branchcontinuation)
 - [TailCallContinuation](#type-tailcallcontinuation)
 - [CallOneContinuationResult](#type-callonecontinuationresult)
@@ -112,6 +115,11 @@
 - [ThreadStatus](#type-threadstatus)
 - [CallFrame](#type-callframe)
 - [StringAllocation](#type-stringallocation)
+- [GcMeta](#type-gcmeta)
+- [GcObject](#type-gcobject)
+- [GcPhase](#type-gcphase)
+- [GcCycle](#type-gccycle)
+- [GcGenerations](#type-gcgenerations)
 - [GcMode](#type-gcmode)
 - [GcParam](#type-gcparam)
 - [GcParams](#type-gcparams)
@@ -144,7 +152,7 @@ pub const RuntimeError = error{
 ## Value
 
 ```zig
-pub const Value = union(enum) {
+pub const Value = union(enum(u8)) {
     nil,
     boolean: bool,
     integer: i64,
@@ -450,6 +458,9 @@ pub const UserdataPayload = struct {
     lifetime: ?*AllocatorLifetime,
     references: std.atomic.Value(usize) = .init(1),
     ptr: *anyopaque,
+    /// Known inline storage owned by this payload; external/nested storage is
+    /// accounted by the host allocator, not inferred through opaque pointers.
+    managed_bytes: usize = 0,
     finalizer: ?UserdataFinalizer,
     finalizer_data: ?*const anyopaque,
     dispose: ?UserdataDeinit,
@@ -520,6 +531,70 @@ pub const ApiCallbackDispatchFn = *const fn (*ApiCallbackContext) anyerror!void;
 
 References: [`ApiCallbackContext`](#type-apicallbackcontext)
 
+<a id="type-callbackreturns"></a>
+
+## CallbackReturns
+
+Stores small callback results inline. GC visits each callback’s results through items().
+Contains no self pointers.
+
+```zig
+pub const CallbackReturns = struct {
+    inline_values: [4]Value = undefined,
+    inline_len: usize = 0,
+    spill: std.ArrayList(Value) = .empty,
+};
+```
+
+### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [items](#fn-callbackreturns-items) | `self: *const CallbackReturns` | `[]const Value` |  |
+| [deinit](#fn-callbackreturns-deinit) | `self: *CallbackReturns, allocator: std.mem.Allocator` | `void` |  |
+| [clearRetainingCapacity](#fn-callbackreturns-clearretainingcapacity) | `self: *CallbackReturns` | `void` |  |
+| [append](#fn-callbackreturns-append) | `self: *CallbackReturns, allocator: std.mem.Allocator, value: Value` | `!void` |  |
+
+<a id="fn-callbackreturns-items"></a>
+
+### CallbackReturns.items
+
+```zig
+pub fn items(self: *const CallbackReturns) []const Value
+```
+
+References: [`CallbackReturns`](#type-callbackreturns), [`Value`](#type-value)
+
+<a id="fn-callbackreturns-deinit"></a>
+
+### CallbackReturns.deinit
+
+```zig
+pub fn deinit(self: *CallbackReturns, allocator: std.mem.Allocator) void
+```
+
+References: [`CallbackReturns`](#type-callbackreturns)
+
+<a id="fn-callbackreturns-clearretainingcapacity"></a>
+
+### CallbackReturns.clearRetainingCapacity
+
+```zig
+pub fn clearRetainingCapacity(self: *CallbackReturns) void
+```
+
+References: [`CallbackReturns`](#type-callbackreturns)
+
+<a id="fn-callbackreturns-append"></a>
+
+### CallbackReturns.append
+
+```zig
+pub fn append(self: *CallbackReturns, allocator: std.mem.Allocator, value: Value) !void
+```
+
+References: [`CallbackReturns`](#type-callbackreturns), [`Value`](#type-value)
+
 <a id="type-apicallbackcontext"></a>
 
 ## ApiCallbackContext
@@ -534,7 +609,7 @@ pub const ApiCallbackContext = struct {
     parent: ?*ApiCallbackContext,
     user_data: ?*anyopaque,
     function_name: []const u8 = "host callback",
-    returns: std.ArrayList(Value) = .empty,
+    returns: CallbackReturns = .{},
     error_value: ?Value = null,
 };
 ```
@@ -705,6 +780,7 @@ pub const ProtectedContinuationKind = enum {
 
 ```zig
 pub const ProtectedContinuation = struct {
+    order: usize,
     context: ProtectedCallContext,
     base: bytecode.Register,
     return_count: u16,
@@ -723,6 +799,20 @@ pub const GenericForContinuation = struct {
     frame_count: usize,
     op: bytecode.GenericFor,
     jump_on_nil: bool,
+};
+```
+
+<a id="type-pairscontinuation"></a>
+
+## PairsContinuation
+
+```zig
+pub const PairsContinuation = struct {
+    order: usize = 0,
+    frame_count: usize,
+    source_base: usize,
+    base: bytecode.Register,
+    return_count: u16,
 };
 ```
 
@@ -798,6 +888,7 @@ pub const Closure = struct {
     constants: ?[]?Value = null,
     stripped_debug: bool = false,
     marked: bool = false,
+    gc: GcMeta = .{},
 };
 ```
 
@@ -814,6 +905,7 @@ pub const Upvalue = struct {
     is_open: bool = true,
     next: ?*Upvalue = null,
     marked: bool = false,
+    gc: GcMeta = .{},
 };
 ```
 
@@ -851,10 +943,12 @@ pub const Table = struct {
     metatable: ?*Table = null,
     metatable_prev: ?*Table = null,
     metatable_next: ?*Table = null,
-    counts_for_gc_count: bool = true,
     marked: bool = false,
+    gc: GcMeta = .{},
     finalizer_registered: bool = false,
     finalizer_next: ?*Table = null,
+    finalizer_prev: ?*Table = null,
+    finalizer_order: u64 = 0,
 };
 ```
 
@@ -864,11 +958,14 @@ pub const Table = struct {
 | --- | --- | --- | --- |
 | [init](#fn-table-init) | `allocator: std.mem.Allocator, array_hint: u32, hash_hint: u32` | `!Table` |  |
 | [deinit](#fn-table-deinit) | `self: *Table, allocator: std.mem.Allocator` | `void` |  |
-| [get](#fn-table-get) | `self: Table, key: Value` | `Value` |  |
+| [get](#fn-table-get) | `self: *const Table, key: Value` | `Value` |  |
+| [findEntry](#fn-table-findentry) | `self: *const Table, key: Value` | `?usize` |  |
+| [rebuildEntryIndex](#fn-table-rebuildentryindex) | `self: *Table` | `!void` |  |
+| [insertHashEntryNoAlloc](#fn-table-inserthashentrynoalloc) | `self: *Table, key: Value, value: Value` | `bool` | Insert an absent hash key using reserved storage. The caller must check that the key is absent; false means growth or snapshot detachment is needed. |
 | [set](#fn-table-set) | `self: *Table, allocator: std.mem.Allocator, key: Value, value: Value` | `!void` |  |
 | [setExistingNonNil](#fn-table-setexistingnonnil) | `self: *Table, key: Value, value: Value` | `bool` |  |
-| [len](#fn-table-len) | `self: Table` | `i64` |  |
-| [next](#fn-table-next) | `self: Table, key: Value` | `![2]Value` |  |
+| [len](#fn-table-len) | `self: *const Table` | `i64` |  |
+| [next](#fn-table-next) | `self: *const Table, key: Value` | `![2]Value` |  |
 | [removeHashKey](#fn-table-removehashkey) | `self: *Table, key: Value` | `void` |  |
 | [removeEntryAt](#fn-table-removeentryat) | `self: *Table, index: usize` | `void` |  |
 
@@ -877,7 +974,7 @@ pub const Table = struct {
 ### Table.init
 
 ```zig
-pub fn init(allocator: std.mem.Allocator, array_hint: u32, hash_hint: u32) !Table
+pub inline fn init(allocator: std.mem.Allocator, array_hint: u32, hash_hint: u32) !Table
 ```
 
 References: [`Table`](#type-table)
@@ -897,7 +994,40 @@ References: [`Table`](#type-table)
 ### Table.get
 
 ```zig
-pub fn get(self: Table, key: Value) Value
+pub fn get(self: *const Table, key: Value) Value
+```
+
+References: [`Table`](#type-table), [`Value`](#type-value)
+
+<a id="fn-table-findentry"></a>
+
+### Table.findEntry
+
+```zig
+pub fn findEntry(self: *const Table, key: Value) ?usize
+```
+
+References: [`Table`](#type-table), [`Value`](#type-value)
+
+<a id="fn-table-rebuildentryindex"></a>
+
+### Table.rebuildEntryIndex
+
+```zig
+pub fn rebuildEntryIndex(self: *Table) !void
+```
+
+References: [`Table`](#type-table)
+
+<a id="fn-table-inserthashentrynoalloc"></a>
+
+### Table.insertHashEntryNoAlloc
+
+Insert an absent hash key using reserved storage. The caller must check
+that the key is absent; false means growth or snapshot detachment is needed.
+
+```zig
+pub fn insertHashEntryNoAlloc(self: *Table, key: Value, value: Value) bool
 ```
 
 References: [`Table`](#type-table), [`Value`](#type-value)
@@ -927,7 +1057,7 @@ References: [`Table`](#type-table), [`Value`](#type-value)
 ### Table.len
 
 ```zig
-pub fn len(self: Table) i64
+pub fn len(self: *const Table) i64
 ```
 
 References: [`Table`](#type-table)
@@ -937,7 +1067,7 @@ References: [`Table`](#type-table)
 ### Table.next
 
 ```zig
-pub fn next(self: Table, key: Value) ![2]Value
+pub fn next(self: *const Table, key: Value) ![2]Value
 ```
 
 References: [`Table`](#type-table), [`Value`](#type-value)
@@ -992,7 +1122,10 @@ pub const Userdata = struct {
     finalizer_data: ?*const anyopaque = null,
     deinit_fn: ?UserdataDeinit = null,
     marked: bool = false,
+    gc: GcMeta = .{},
     finalized: bool = false,
+    finalization_pending: bool = false,
+    finalizer_next: ?*Userdata = null,
 };
 ```
 
@@ -1010,6 +1143,8 @@ pub const Thread = struct {
     yield_values: std.ArrayList(Value) = .empty,
     protected_continuations: std.ArrayList(ProtectedContinuation) = .empty,
     generic_for_continuations: std.ArrayList(GenericForContinuation) = .empty,
+    pairs_continuations: std.ArrayList(PairsContinuation) = .empty,
+    continuation_order: usize = 0,
     tail_call_continuations: std.ArrayList(TailCallContinuation) = .empty,
     call_one_continuations: std.ArrayList(CallOneContinuation) = .empty,
     open_upvalues: ?*Upvalue = null,
@@ -1046,6 +1181,7 @@ pub const Thread = struct {
     resume_parent: ?*Thread = null,
     entry: Value = .nil,
     marked: bool = false,
+    gc: GcMeta = .{},
     started: bool = false,
     is_main: bool = false,
     closing: bool = false,
@@ -1130,6 +1266,7 @@ pub const CallFrame = struct {
     varargs: []const Value,
     owns_varargs: bool = false,
     vararg_table_local: Value = .nil,
+    named_vararg_readonly: bool = false,
     last_hook_line: ?usize = null,
     debug_name_override: ?[]const u8 = null,
     debug_namewhat_override: ?[]const u8 = null,
@@ -1162,6 +1299,7 @@ References: [`CallFrame`](#type-callframe)
 pub const StringAllocation = struct {
     bytes: []const u8,
     marked: bool = false,
+    gc: GcMeta = .{},
 };
 ```
 
@@ -1171,6 +1309,87 @@ pub const StringAllocation = struct {
 
 ```zig
 pub const PointerAllocationIndex = std.AutoHashMap(usize, usize);
+```
+
+<a id="type-gcmeta"></a>
+
+## GcMeta
+
+Collector scratch state never participates in logical rollback dirtiness.
+
+```zig
+pub const GcMeta = struct {
+    epoch: u64 = 0,
+    generation: u64 = 0,
+    color: enum { white, gray, black } = .white,
+    age: enum { new, survivor, old } = .new,
+    remembered: bool = false,
+    weak_epoch: u64 = 0,
+    tables_epoch: u64 = 0,
+    has_young: bool = false,
+    storage_bytes: usize = 0,
+};
+```
+
+<a id="type-gcobject"></a>
+
+## GcObject
+
+Queue entries own identities, never pointers into growable registries.
+
+```zig
+pub const GcObject = union(enum) {
+    table: *Table,
+    userdata: *Userdata,
+    closure: *Closure,
+    upvalue: *Upvalue,
+    thread: *Thread,
+};
+```
+
+<a id="type-gcphase"></a>
+
+## GcPhase
+
+```zig
+pub const GcPhase = enum {
+    pause,
+    propagate,
+    atomic,
+    sweep_threads,
+    sweep_closures,
+    sweep_upvalues,
+    sweep_strings,
+    sweep_userdata,
+    sweep_tables,
+    finalize,
+};
+```
+
+<a id="type-gccycle"></a>
+
+## GcCycle
+
+```zig
+pub const GcCycle = enum {
+    major,
+    minor,
+};
+```
+
+<a id="type-gcgenerations"></a>
+
+## GcGenerations
+
+```zig
+pub const GcGenerations = struct {
+    string_allocations: usize = 0,
+    table_allocations: usize = 0,
+    userdata_allocations: usize = 0,
+    closure_allocations: usize = 0,
+    upvalue_allocations: usize = 0,
+    thread_allocations: usize = 0,
+};
 ```
 
 <a id="type-gcmode"></a>
@@ -1219,13 +1438,23 @@ pub const GcParam = enum {
 
 ## GcParams
 
+Collection tuning. Values are percentages except `stepsize`, which is in bytes.
+The Zig API accepts values from 0 through maxInt(i32) without rounding.
+Lua's `collectgarbage("param", ...)` rounds values to Lua's parameter format.
+
 ```zig
 pub const GcParams = struct {
+    /// Heap growth before the next minor collection.
     minormul: i64 = 20,
+    /// Percentage of heap growth a major collection must reclaim to return to minor collections.
     majorminor: i64 = 50,
+    /// Heap growth since the last major collection before another is requested; zero disables the transition.
     minormajor: i64 = 70,
+    /// Heap size relative to the last collection before starting another full cycle.
     pause: i64 = 250,
+    /// Work multiplier for each step.
     stepmul: i64 = 200,
+    /// Allocation between steps, in bytes; also used to determine step work.
     stepsize: i64 = 200,
 };
 ```

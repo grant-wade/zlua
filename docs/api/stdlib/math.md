@@ -73,6 +73,7 @@
 - [testing.bench.allocation](../testing/bench/allocation.md)
 - [testing.bench.c_startup](../testing/bench/c_startup.md)
 - [testing.bench.snapshots](../testing/bench/snapshots.md)
+- [testing.bench.gc](../testing/bench/gc.md)
 - [testing.diff_runner](../testing/diff_runner.md)
 - [testing.fixtures](../testing/fixtures.md)
 - [testing.expected_failures](../testing/expected_failures.md)
@@ -85,6 +86,7 @@
 
 ## Functions
 
+- [fastUnaryResult](#fn-fastunaryresult)
 - [abs](#fn-abs)
 - [acos](#fn-acos)
 - [asin](#fn-asin)
@@ -110,6 +112,19 @@
 - [tointeger](#fn-tointeger)
 - [typeValue](#fn-typevalue)
 - [ult](#fn-ult)
+
+<a id="fn-fastunaryresult"></a>
+
+## fastUnaryResult
+
+A numeric-only call that cannot allocate, throw, or call back into Lua.
+Null delegates coercion, argument errors, and other functions to normal calls.
+
+```zig
+pub fn fastUnaryResult(func: runtime.NativeFn, value: Value) ?Value
+```
+
+References: [`runtime.NativeFn`](../runtime.md#alias-nativefn)
 
 <a id="fn-abs"></a>
 

@@ -360,9 +360,9 @@ pub fn gmatch(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const start = if (initial <= 1) 0 else @min(initial - 1, source.len + 1);
     const state_value = try state.newTableWithHints(0, 3);
     const state_table = state_value.table;
-    try state_table.set(state.allocator, .{ .string = try state.intern("s") }, .{ .string = source });
-    try state_table.set(state.allocator, .{ .string = try state.intern("p") }, .{ .string = try state.expectArgumentString(thread, op, "string.gmatch", 1) });
-    try state_table.set(state.allocator, .{ .string = try state.intern("i") }, .{ .integer = @intCast(start) });
+    try state.setTableRaw(state_table, .{ .string = try state.intern("s") }, .{ .string = source });
+    try state.setTableRaw(state_table, .{ .string = try state.intern("p") }, .{ .string = try state.expectArgumentString(thread, op, "string.gmatch", 1) });
+    try state.setTableRaw(state_table, .{ .string = try state.intern("i") }, .{ .integer = @intCast(start) });
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .gmatch_iterator = state_value.table }});
 }
 
@@ -388,8 +388,8 @@ pub fn gmatchNext(state: *State, state_value: Value) ![2]Value {
         }
         break current;
     };
-    try state_table.set(state.allocator, .{ .string = try state.intern("i") }, .{ .integer = @intCast(if (found.range.end > found.range.start) found.range.end else found.range.end + 1) });
-    try state_table.set(state.allocator, .{ .string = try state.intern("last") }, .{ .integer = @intCast(found.range.end) });
+    try state.setTableRaw(state_table, .{ .string = try state.intern("i") }, .{ .integer = @intCast(if (found.range.end > found.range.start) found.range.end else found.range.end + 1) });
+    try state.setTableRaw(state_table, .{ .string = try state.intern("last") }, .{ .integer = @intCast(found.range.end) });
     if (capture_pattern != null) return .{ .{ .integer = @intCast(found.range.start + 1) }, .{ .string = try state.intern(source[found.range.start..found.range.end]) } };
     var values = [_]Value{ .nil, .nil };
     try writeMatchValues(state, source, found, values[0..]);
@@ -805,7 +805,7 @@ fn splitImpl(state: *State, thread: *Thread, op: bytecode.Call, from_right: bool
     const result = try state.newTableWithHints(@intCast(pieces.items.len), 0);
     for (pieces.items, 0..) |piece, index| {
         const output_index = if (from_right) pieces.items.len - index else index + 1;
-        try result.table.set(state.allocator, .{ .integer = @intCast(output_index) }, .{ .string = try state.intern(piece) });
+        try state.setTableRaw(result.table, .{ .integer = @intCast(output_index) }, .{ .string = try state.intern(piece) });
     }
     try state.returnValues(thread, op.base, op.return_count, &.{result});
 }

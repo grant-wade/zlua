@@ -236,10 +236,20 @@ const FunctionCompiler = struct {
         for (assignment.targets) |target| try targets.append(self.allocator, try self.prepareAssignmentTarget(target));
 
         const first_value = try self.allocRegs(@intCast(assignment.targets.len));
+        const value_start = self.proto.pc();
         if (assignment.targets.len == 1 and assignment.values.len == 1 and assignment.values[0].* == .function_literal) {
             try self.compileFunctionLiteral(assignment.values[0].function_literal, first_value, assignmentTargetDebugName(assignment.targets[0]));
         } else {
             try self.compileExprListAdjusted(assignment.values, first_value, @intCast(assignment.targets.len));
+        }
+
+        if (assignment.targets.len == 1 and assignment.values.len == 1) {
+            if (self.sourceRegister(assignment.targets[0])) |dest| {
+                if (self.redirectAssignmentResult(value_start, first_value, dest)) {
+                    self.release(mark);
+                    return;
+                }
+            }
         }
 
         for (targets.items, 0..) |target, index| {
@@ -247,6 +257,33 @@ const FunctionCompiler = struct {
         }
 
         self.release(mark);
+    }
+
+    fn redirectAssignmentResult(self: *FunctionCompiler, start: usize, source: bytecode.Register, dest: bytecode.Register) bool {
+        const instructions = self.proto.instructions.items[start..];
+        if (instructions.len == 0) return false;
+        // Keep evaluation in temporary registers until the final operation.
+        // Short-circuit branches may bypass that operation, so keep their move.
+        for (instructions) |instruction| switch (instruction) {
+            .jmp, .test_op, .test_set, .compare_branch => return false,
+            else => {},
+        };
+        switch (instructions[instructions.len - 1]) {
+            .load_nil => |*register| {
+                if (register.* != source) return false;
+                register.* = dest;
+            },
+            inline .get_global, .get_upvalue => |*op| {
+                if (op.register != source) return false;
+                op.register = dest;
+            },
+            inline .load_bool, .load_const, .move, .get_table, .get_field, .new_table, .closure, .add, .sub, .mul, .div, .idiv, .mod, .pow, .unm, .band, .bor, .bxor, .bnot, .shl, .shr, .eq, .lt, .le, .not, .len, .concat => |*op| {
+                if (op.dest != source) return false;
+                op.dest = dest;
+            },
+            else => return false,
+        }
+        return true;
     }
 
     fn compileLocalDecl(self: *FunctionCompiler, decl: ast.LocalDecl) anyerror!void {
@@ -411,7 +448,7 @@ const FunctionCompiler = struct {
         try self.compileExpr(stmt.condition, condition);
         const scope = self.scopes.items[self.scopes.items.len - 1];
         _ = try self.emit(.{ .close = scope.next_register });
-        const repeat_jump = try self.emit(.{ .test_op = .{ .register = condition, .jump_if_truthy = false, .offset = 0 } });
+        const repeat_jump = try self.emitConditionJump(condition, false);
         self.release(mark);
         try self.leaveScope();
         try self.proto.patchJump(repeat_jump, loop_start);
@@ -609,6 +646,21 @@ const FunctionCompiler = struct {
                         _ = try self.emitWithErrorSite(.{ .get_table = .{ .dest = dest, .table = table, .key = key } }, .index, &.{table_origin}, null);
                         return;
                     }
+                    // A literal key cannot change the receiver while being
+                    // evaluated. Keep direct access to named varargs so their
+                    // read-only form does not need a materialized table.
+                    switch (index.key.*) {
+                        .nil, .boolean, .integer, .float, .string => {
+                            const mark = self.registerMark();
+                            const key = try self.allocReg();
+                            try self.compileExpr(index.key, key);
+                            const table_origin = try self.exprOrigin(index.receiver);
+                            _ = try self.emitWithErrorSite(.{ .get_table = .{ .dest = dest, .table = table, .key = key } }, .index, &.{table_origin}, null);
+                            self.release(mark);
+                            return;
+                        },
+                        else => {},
+                    }
                 }
                 const mark = self.registerMark();
                 const table = try self.allocReg();
@@ -621,9 +673,12 @@ const FunctionCompiler = struct {
             },
             .field => |field| {
                 const mark = self.registerMark();
-                const table = try self.allocReg();
+                const table = self.sourceRegister(field.receiver) orelse receiver: {
+                    const register = try self.allocReg();
+                    try self.compileExpr(field.receiver, register);
+                    break :receiver register;
+                };
                 const table_origin = try self.exprOrigin(field.receiver);
-                try self.compileExpr(field.receiver, table);
                 _ = try self.emitWithErrorSite(.{ .get_field = .{ .dest = dest, .table = table, .name = try self.nameConstant(field.name.name) } }, .index, &.{table_origin}, null);
                 self.release(mark);
             },
@@ -736,7 +791,9 @@ const FunctionCompiler = struct {
         const mark = self.registerMark();
         const direct_left = self.sourceRegister(binary.left);
         const direct_right = self.sourceRegister(binary.right);
-        const use_direct_left = direct_left != null and (direct_right != null or exprIsLiteral(binary.right));
+        // Lua keeps local operands in their registers while evaluating the
+        // right side, which may itself update a captured local.
+        const use_direct_left = direct_left != null;
         const use_direct_right = direct_right != null and direct_right.? != dest;
         const right = if (use_direct_right) direct_right.? else try self.allocReg();
         var left_origin = try self.exprOrigin(binary.left);
@@ -769,9 +826,18 @@ const FunctionCompiler = struct {
         const mark = self.registerMark();
         const condition = try self.allocReg();
         try self.compileExpr(expr, condition);
-        const jump = try self.emit(.{ .test_op = .{ .register = condition, .jump_if_truthy = jump_if_truthy, .offset = 0 } });
+        const jump = try self.emitConditionJump(condition, jump_if_truthy);
         self.release(mark);
         return jump;
+    }
+
+    fn emitConditionJump(self: *FunctionCompiler, condition: bytecode.Register, jump_if_truthy: bool) !usize {
+        // Only truthiness survives a condition. Drop its object reference before
+        // entering either branch: automatic GC conservatively scans temporaries,
+        // and allocation inside a loop can otherwise keep its weak condition
+        // alive indefinitely. Invert the branch to use NOT's boolean result.
+        _ = try self.emit(.{ .not = .{ .dest = condition, .source = condition } });
+        return self.emit(.{ .test_op = .{ .register = condition, .jump_if_truthy = !jump_if_truthy, .offset = 0 } });
     }
 
     fn compileCompareBranch(self: *FunctionCompiler, binary: ast.BinaryExpr, jump_if_truthy: bool) anyerror!?usize {
@@ -1065,23 +1131,10 @@ const FunctionCompiler = struct {
 
     fn loadFromEnvironment(self: *FunctionCompiler, name: []const u8, dest: bytecode.Register) !bool {
         const mark = self.registerMark();
-        const key = try self.allocReg();
-        if (self.lookupLocal("_ENV")) |local| {
-            _ = try self.emit(.{ .load_const = .{ .dest = key, .constant = try self.nameConstant(name) } });
-            _ = try self.emit(.{ .get_table = .{ .dest = dest, .table = local.register, .key = key } });
-            self.release(mark);
-            return true;
-        }
-        if (try self.lookupUpvalue("_ENV")) |upvalue| {
-            const env = try self.allocReg();
-            _ = try self.emit(.{ .get_upvalue = .{ .register = env, .upvalue = upvalue } });
-            _ = try self.emit(.{ .load_const = .{ .dest = key, .constant = try self.nameConstant(name) } });
-            _ = try self.emit(.{ .get_table = .{ .dest = dest, .table = env, .key = key } });
-            self.release(mark);
-            return true;
-        }
-        self.release(mark);
-        return false;
+        defer self.release(mark);
+        const env = try self.environmentRegister() orelse return false;
+        _ = try self.emit(.{ .get_field = .{ .dest = dest, .table = env, .name = try self.nameConstant(name) } });
+        return true;
     }
 
     fn loadGlobalName(self: *FunctionCompiler, name: []const u8, dest: bytecode.Register) !void {
@@ -1106,23 +1159,10 @@ const FunctionCompiler = struct {
 
     fn storeInEnvironment(self: *FunctionCompiler, name: []const u8, value_reg: bytecode.Register) !bool {
         const mark = self.registerMark();
-        const key = try self.allocReg();
-        if (self.lookupLocal("_ENV")) |local| {
-            _ = try self.emit(.{ .load_const = .{ .dest = key, .constant = try self.nameConstant(name) } });
-            _ = try self.emit(.{ .set_table = .{ .table = local.register, .key = key, .value = value_reg } });
-            self.release(mark);
-            return true;
-        }
-        if (try self.lookupUpvalue("_ENV")) |upvalue| {
-            const env = try self.allocReg();
-            _ = try self.emit(.{ .get_upvalue = .{ .register = env, .upvalue = upvalue } });
-            _ = try self.emit(.{ .load_const = .{ .dest = key, .constant = try self.nameConstant(name) } });
-            _ = try self.emit(.{ .set_table = .{ .table = env, .key = key, .value = value_reg } });
-            self.release(mark);
-            return true;
-        }
-        self.release(mark);
-        return false;
+        defer self.release(mark);
+        const env = try self.environmentRegister() orelse return false;
+        _ = try self.emit(.{ .set_field = .{ .table = env, .name = try self.nameConstant(name), .value = value_reg } });
+        return true;
     }
 
     fn lookupLocal(self: *FunctionCompiler, name: []const u8) ?Local {
@@ -1423,14 +1463,6 @@ fn binaryInstruction(op: ast.BinaryOp, dest: bytecode.Register, left: bytecode.R
         .idiv => .{ .idiv = binary },
         .mod => .{ .mod = binary },
         .pow => .{ .pow = binary },
-    };
-}
-
-fn exprIsLiteral(expr: *const ast.Expr) bool {
-    return switch (expr.*) {
-        .nil, .boolean, .integer, .float, .string => true,
-        .grouped => |inner| exprIsLiteral(inner),
-        else => false,
     };
 }
 

@@ -14,7 +14,8 @@ pub const RuntimeError = error{
     UnsupportedOpcode,
 };
 
-pub const Value = union(enum) {
+// Full-byte tags keep the interpreter's frequent type checks to byte loads.
+pub const Value = union(enum(u8)) {
     nil,
     boolean: bool,
     integer: i64,
@@ -410,6 +411,9 @@ pub const UserdataPayload = struct {
     lifetime: ?*AllocatorLifetime,
     references: std.atomic.Value(usize) = .init(1),
     ptr: *anyopaque,
+    /// Known inline storage owned by this payload; external/nested storage is
+    /// accounted by the host allocator, not inferred through opaque pointers.
+    managed_bytes: usize = 0,
     finalizer: ?UserdataFinalizer,
     finalizer_data: ?*const anyopaque,
     dispose: ?UserdataDeinit,
@@ -521,6 +525,7 @@ pub const ApiCallbackContext = struct {
 
     pub fn appendReturn(self: *ApiCallbackContext, value: Value) !void {
         try self.returns.append(self.state.allocator, value);
+        self.state.markValue(value);
     }
 
     pub fn fail(self: *ApiCallbackContext, message: []const u8) RuntimeError {
@@ -537,6 +542,7 @@ pub const ApiCallbackContext = struct {
 
     pub fn raise(self: *ApiCallbackContext, value: Value) error{LuaError} {
         self.error_value = value;
+        self.state.markValue(value);
         return error.LuaError;
     }
 
@@ -640,6 +646,7 @@ pub const Closure = struct {
     constants: ?[]?Value = null,
     stripped_debug: bool = false,
     marked: bool = false,
+    gc: GcMeta = .{},
 };
 
 pub const Upvalue = struct {
@@ -650,6 +657,7 @@ pub const Upvalue = struct {
     is_open: bool = true,
     next: ?*Upvalue = null,
     marked: bool = false,
+    gc: GcMeta = .{},
 };
 
 pub const TableEntry = struct {
@@ -670,6 +678,10 @@ const ValueHashContext = struct {
 };
 
 pub const Table = struct {
+    // A handful of entries is cheaper to search directly than to allocate and
+    // probe a second data structure. Larger tables retain a hash index.
+    const linear_entry_limit = 4;
+
     rollback: ?*@import("rollback.zig").Record(Table) = null,
     array: std.ArrayList(Value) = .empty,
     entries: std.ArrayList(TableEntry) = .empty,
@@ -677,17 +689,19 @@ pub const Table = struct {
     metatable: ?*Table = null,
     metatable_prev: ?*Table = null,
     metatable_next: ?*Table = null,
-    counts_for_gc_count: bool = true,
     marked: bool = false,
+    gc: GcMeta = .{},
     finalizer_registered: bool = false,
     finalizer_next: ?*Table = null,
+    finalizer_prev: ?*Table = null,
+    finalizer_order: u64 = 0,
 
-    pub fn init(allocator: std.mem.Allocator, array_hint: u32, hash_hint: u32) !Table {
+    pub inline fn init(allocator: std.mem.Allocator, array_hint: u32, hash_hint: u32) !Table {
         var table = Table{ .entry_index = TableEntryIndex.init(allocator) };
         errdefer table.deinit(allocator);
         try table.array.ensureTotalCapacity(allocator, array_hint);
         try table.entries.ensureTotalCapacity(allocator, hash_hint);
-        try table.entry_index.ensureTotalCapacity(hash_hint);
+        if (hash_hint > linear_entry_limit) try table.entry_index.ensureTotalCapacity(hash_hint);
         return table;
     }
 
@@ -698,12 +712,40 @@ pub const Table = struct {
         self.* = undefined;
     }
 
-    pub fn get(self: Table, key: Value) Value {
+    pub fn get(self: *const Table, key: Value) Value {
         if (value_mod.arrayIndex(key)) |index| {
             if (index <= self.array.items.len) return self.array.items[index - 1];
         }
-        if (self.entry_index.get(key)) |index| return self.entries.items[index].value;
+        if (self.findEntry(key)) |index| return self.entries.items[index].value;
         return .nil;
+    }
+
+    pub fn findEntry(self: *const Table, key: Value) ?usize {
+        if (self.entry_index.capacity() != 0) return self.entry_index.get(key);
+        for (self.entries.items, 0..) |entry, index| {
+            if (value_mod.valuesEqual(entry.key, key)) return index;
+        }
+        return null;
+    }
+
+    pub fn rebuildEntryIndex(self: *Table) !void {
+        if (self.entry_index.capacity() == 0 and self.entries.items.len <= linear_entry_limit) return;
+        try self.entry_index.ensureTotalCapacity(@intCast(self.entries.items.len));
+        self.entry_index.clearRetainingCapacity();
+        for (self.entries.items, 0..) |entry, index| {
+            self.entry_index.putAssumeCapacityNoClobber(entry.key, index);
+        }
+    }
+
+    /// Insert an absent hash key using reserved storage. The caller must check
+    /// that the key is absent; false means growth or snapshot detachment is needed.
+    pub fn insertHashEntryNoAlloc(self: *Table, key: Value, value: Value) bool {
+        if (self.rollback) |record| if (!record.header.detached) return false;
+        if (value == .nil) return true;
+        if (self.entry_index.capacity() != 0 or self.entries.items.len >= linear_entry_limit or
+            self.entries.items.len == self.entries.capacity) return false;
+        self.entries.appendAssumeCapacity(.{ .key = key, .value = value });
+        return true;
     }
 
     pub fn set(self: *Table, allocator: std.mem.Allocator, key: Value, value: Value) !void {
@@ -727,18 +769,24 @@ pub const Table = struct {
                 return;
             }
         }
-        if (self.entry_index.get(key)) |index| {
-            if (value == .nil) {
-                self.entries.items[index].value = .nil;
-            } else {
-                self.entries.items[index].value = value;
-            }
+        if (self.findEntry(key)) |index| {
+            self.entries.items[index].value = value;
             return;
         }
         if (value != .nil) {
-            try self.entries.append(allocator, .{ .key = key, .value = value });
-            errdefer self.entries.items.len -= 1;
-            try self.entry_index.put(key, self.entries.items.len - 1);
+            // Reserve everything before publishing the entry so allocation
+            // failure cannot leave a partial index behind.
+            try self.entries.ensureUnusedCapacity(allocator, 1);
+            if (self.entry_index.capacity() == 0 and self.entries.items.len == linear_entry_limit) {
+                try self.entry_index.ensureTotalCapacity(linear_entry_limit + 1);
+                for (self.entries.items, 0..) |entry, index| {
+                    self.entry_index.putAssumeCapacityNoClobber(entry.key, index);
+                }
+            }
+            if (self.entry_index.capacity() != 0) {
+                try self.entry_index.put(key, self.entries.items.len);
+            }
+            self.entries.appendAssumeCapacity(.{ .key = key, .value = value });
         }
     }
 
@@ -751,7 +799,7 @@ pub const Table = struct {
             }
             return false;
         }
-        if (self.entry_index.get(key)) |index| {
+        if (self.findEntry(key)) |index| {
             if (self.entries.items[index].value == .nil) return false;
             self.entries.items[index].value = value;
             return true;
@@ -759,7 +807,7 @@ pub const Table = struct {
         return false;
     }
 
-    pub fn len(self: Table) i64 {
+    pub fn len(self: *const Table) i64 {
         var result = self.array.items.len;
         while (result > 0 and self.array.items[result - 1] == .nil) result -= 1;
         if (self.entries.items.len == 0) return @intCast(result);
@@ -771,18 +819,18 @@ pub const Table = struct {
         return @intCast(result);
     }
 
-    pub fn next(self: Table, key: Value) ![2]Value {
+    pub fn next(self: *const Table, key: Value) ![2]Value {
         if (key == .nil) return self.firstEntryAfterArray(0);
         if (value_mod.arrayIndex(key)) |index| {
             if (index <= self.array.items.len) return self.firstEntryAfterArray(index);
         }
-        if (self.entry_index.get(key)) |index| {
+        if (self.findEntry(key)) |index| {
             return self.firstHashEntryFrom(index + 1);
         }
         return error.RuntimeError;
     }
 
-    fn firstEntryAfterArray(self: Table, index: usize) [2]Value {
+    fn firstEntryAfterArray(self: *const Table, index: usize) [2]Value {
         var next_index = index;
         while (next_index < self.array.items.len) {
             next_index += 1;
@@ -792,7 +840,7 @@ pub const Table = struct {
         return self.firstHashEntryFrom(0);
     }
 
-    fn firstHashEntryFrom(self: Table, start: usize) [2]Value {
+    fn firstHashEntryFrom(self: *const Table, start: usize) [2]Value {
         var index = start;
         while (index < self.entries.items.len) : (index += 1) {
             const entry = self.entries.items[index];
@@ -802,7 +850,7 @@ pub const Table = struct {
     }
 
     pub fn removeHashKey(self: *Table, key: Value) void {
-        if (self.entry_index.get(key)) |index| self.removeEntryAt(index);
+        if (self.findEntry(key)) |index| self.removeEntryAt(index);
     }
 
     pub fn removeEntryAt(self: *Table, index: usize) void {
@@ -812,7 +860,7 @@ pub const Table = struct {
         while (next_index < self.entries.items.len) : (next_index += 1) {
             const shifted_index = next_index - 1;
             self.entries.items[shifted_index] = self.entries.items[next_index];
-            self.entry_index.getPtr(self.entries.items[shifted_index].key).?.* = shifted_index;
+            if (self.entry_index.capacity() != 0) self.entry_index.getPtr(self.entries.items[shifted_index].key).?.* = shifted_index;
         }
         self.entries.items.len -= 1;
     }
@@ -837,7 +885,10 @@ pub const Userdata = struct {
     finalizer_data: ?*const anyopaque = null,
     deinit_fn: ?UserdataDeinit = null,
     marked: bool = false,
+    gc: GcMeta = .{},
     finalized: bool = false,
+    finalization_pending: bool = false,
+    finalizer_next: ?*Userdata = null,
 };
 
 pub const Thread = struct {
@@ -887,6 +938,7 @@ pub const Thread = struct {
     resume_parent: ?*Thread = null,
     entry: Value = .nil,
     marked: bool = false,
+    gc: GcMeta = .{},
     started: bool = false,
     is_main: bool = false,
     closing: bool = false,
@@ -948,6 +1000,7 @@ pub const CallFrame = struct {
     varargs: []const Value,
     owns_varargs: bool = false,
     vararg_table_local: Value = .nil,
+    named_vararg_readonly: bool = false,
     last_hook_line: ?usize = null,
     debug_name_override: ?[]const u8 = null,
     debug_namewhat_override: ?[]const u8 = null,
@@ -966,8 +1019,42 @@ pub const CallFrame = struct {
 pub const StringAllocation = struct {
     bytes: []const u8,
     marked: bool = false,
+    gc: GcMeta = .{},
 };
 pub const PointerAllocationIndex = std.AutoHashMap(usize, usize);
+
+/// Collector scratch state never participates in logical rollback dirtiness.
+pub const GcMeta = struct {
+    epoch: u64 = 0,
+    generation: u64 = 0,
+    color: enum { white, gray, black } = .white,
+    age: enum { new, survivor, old } = .new,
+    remembered: bool = false,
+    weak_epoch: u64 = 0,
+    tables_epoch: u64 = 0,
+    has_young: bool = false,
+    storage_bytes: usize = 0,
+};
+
+/// Queue entries own identities, never pointers into growable registries.
+pub const GcObject = union(enum) {
+    table: *Table,
+    userdata: *Userdata,
+    closure: *Closure,
+    upvalue: *Upvalue,
+    thread: *Thread,
+};
+
+pub const GcPhase = enum { pause, propagate, atomic, sweep_threads, sweep_closures, sweep_upvalues, sweep_strings, sweep_userdata, sweep_tables, finalize };
+pub const GcCycle = enum { major, minor };
+pub const GcGenerations = struct {
+    string_allocations: usize = 0,
+    table_allocations: usize = 0,
+    userdata_allocations: usize = 0,
+    closure_allocations: usize = 0,
+    upvalue_allocations: usize = 0,
+    thread_allocations: usize = 0,
+};
 
 pub const GcMode = enum {
     incremental,
@@ -990,12 +1077,21 @@ pub const GcParam = enum {
     stepsize,
 };
 
+/// Collection tuning. Values are percentages except `stepsize`, which is in bytes.
+/// The Zig API accepts values from 0 through maxInt(i32) without rounding.
+/// Lua's `collectgarbage("param", ...)` rounds values to Lua's parameter format.
 pub const GcParams = struct {
+    /// Heap growth before the next minor collection.
     minormul: i64 = 20,
+    /// Percentage of heap growth a major collection must reclaim to return to minor collections.
     majorminor: i64 = 50,
+    /// Heap growth since the last major collection before another is requested; zero disables the transition.
     minormajor: i64 = 70,
+    /// Heap size relative to the last collection before starting another full cycle.
     pause: i64 = 250,
+    /// Work multiplier for each step.
     stepmul: i64 = 200,
+    /// Allocation between steps, in bytes; also used to determine step work.
     stepsize: i64 = 200,
 
     pub fn get(self: GcParams, param: GcParam) i64 {

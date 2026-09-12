@@ -51,10 +51,30 @@ const Counts = struct {
     clua_passed: usize = 0,
     clua_failed: usize = 0,
     zlua_passed: usize = 0,
-    categorized_failed: usize = 0,
+    zlua_failed: usize = 0,
     skipped: usize = 0,
     timed_out: usize = 0,
     unexpected_failed: usize = 0,
+
+    fn recordResult(self: *Counts, runner: Runner, result: process.ProcessResult) bool {
+        if (result.success()) {
+            switch (runner) {
+                .clua => self.clua_passed += 1,
+                .zlua => self.zlua_passed += 1,
+            }
+            return true;
+        }
+        switch (runner) {
+            .clua => self.clua_failed += 1,
+            .zlua => self.zlua_failed += 1,
+        }
+        self.unexpected_failed += 1;
+        return false;
+    }
+
+    fn exitCode(self: Counts) u8 {
+        return if (self.unexpected_failed == 0) 0 else 1;
+    }
 };
 
 pub fn runCli(
@@ -95,7 +115,7 @@ pub fn runCli(
 
     try printSummary(out, counts);
     try out.flush();
-    return if (counts.unexpected_failed == 0) 0 else 1;
+    return counts.exitCode();
 }
 
 fn stableExecutablePath(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ![]u8 {
@@ -202,26 +222,21 @@ fn runIndividualSuite(
         defer zlua_result.deinit(allocator);
 
         if (clua_result.timed_out or zlua_result.timed_out) counts.timed_out += 1;
-        if (clua_result.success()) {
-            counts.clua_passed += 1;
-        } else {
-            counts.clua_failed += 1;
-            counts.unexpected_failed += 1;
+        const clua_passed = counts.recordResult(.clua, clua_result);
+        const zlua_passed = counts.recordResult(.zlua, zlua_result);
+        if (!clua_passed) {
             try out.print("fail clua {s}\n", .{std.fs.path.basename(file)});
             try printProcess(out, "clua", clua_result, true);
-            continue;
         }
 
-        if (zlua_result.success()) {
-            counts.zlua_passed += 1;
+        if (zlua_passed) {
             try out.print("pass {s}\n", .{std.fs.path.basename(file)});
             try printProcess(out, "zlua", zlua_result, options.show_zlua);
         } else {
-            counts.categorized_failed += 1;
-            try out.print("xfail {s} feature={s}\n", .{ std.fs.path.basename(file), classifyFailure(zlua_result) });
-            try printProcess(out, "zlua", zlua_result, options.show_zlua);
+            try out.print("fail zlua {s} feature={s}\n", .{ std.fs.path.basename(file), classifyFailure(zlua_result) });
+            try printProcess(out, "zlua", zlua_result, true);
         }
-        try printProcess(out, "clua", clua_result, options.show_clua);
+        if (clua_passed) try printProcess(out, "clua", clua_result, options.show_clua);
     }
 }
 
@@ -348,7 +363,7 @@ fn printSummary(out: anytype, counts: Counts) !void {
         \\  clua_passed={d}
         \\  clua_failed={d}
         \\  zlua_passed={d}
-        \\  categorized_failed={d}
+        \\  zlua_failed={d}
         \\  skipped={d}
         \\  timed_out={d}
         \\  unexpected_failed={d}
@@ -357,7 +372,7 @@ fn printSummary(out: anytype, counts: Counts) !void {
         counts.clua_passed,
         counts.clua_failed,
         counts.zlua_passed,
-        counts.categorized_failed,
+        counts.zlua_failed,
         counts.skipped,
         counts.timed_out,
         counts.unexpected_failed,
@@ -396,4 +411,25 @@ test "failure classifier maps frontend errors" {
     var result = try process.ownedResult(std.testing.allocator, "", "zlua parser rejected official file\n", 1);
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(std.mem.eql(u8, classifyFailure(result), "frontend.parse"));
+}
+
+test "official failures, signals, and timeouts fail the suite for either interpreter" {
+    const success: process.ProcessResult = .{ .stdout = &.{}, .stderr = &.{}, .exit_code = 0, .signal = null, .timed_out = false };
+    const failures = [_]process.ProcessResult{
+        .{ .stdout = &.{}, .stderr = &.{}, .exit_code = 1, .signal = null, .timed_out = false },
+        .{ .stdout = &.{}, .stderr = &.{}, .exit_code = null, .signal = 6, .timed_out = false },
+        .{ .stdout = &.{}, .stderr = &.{}, .exit_code = null, .signal = null, .timed_out = true },
+    };
+    for ([_]Runner{ .clua, .zlua }) |runner| {
+        for (failures) |failure| {
+            var counts: Counts = .{};
+            try std.testing.expect(counts.recordResult(.clua, success));
+            try std.testing.expect(counts.recordResult(.zlua, success));
+            try std.testing.expectEqual(@as(u8, 0), counts.exitCode());
+            try std.testing.expect(!counts.recordResult(runner, failure));
+            try std.testing.expectEqual(@as(usize, 1), counts.unexpected_failed);
+            try std.testing.expectEqual(@as(usize, 1), if (runner == .clua) counts.clua_failed else counts.zlua_failed);
+            try std.testing.expectEqual(@as(u8, 1), counts.exitCode());
+        }
+    }
 }

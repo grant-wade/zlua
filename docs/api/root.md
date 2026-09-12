@@ -72,6 +72,7 @@
 - [testing.bench.allocation](testing/bench/allocation.md)
 - [testing.bench.c_startup](testing/bench/c_startup.md)
 - [testing.bench.snapshots](testing/bench/snapshots.md)
+- [testing.bench.gc](testing/bench/gc.md)
 - [testing.diff_runner](testing/diff_runner.md)
 - [testing.fixtures](testing/fixtures.md)
 - [testing.expected_failures](testing/expected_failures.md)
@@ -93,6 +94,12 @@
 - [Snapshot](#alias-snapshot)
 - [UserdataSnapshotHooks](#alias-userdatasnapshothooks)
 - [Options](#alias-options)
+- [GcMode](#alias-gcmode)
+- [GcParam](#alias-gcparam)
+- [GcParams](#alias-gcparams)
+- [GcOptions](#alias-gcoptions)
+- [GcBudget](#alias-gcbudget)
+- [GcStepResult](#alias-gcstepresult)
 - [Stdlib](#alias-stdlib)
 - [LibrarySet](#alias-libraryset)
 - [Value](#alias-value)
@@ -246,6 +253,66 @@ pub const Options = api.Options;
 ```
 
 References: [`api.Options`](api.md#type-options)
+
+<a id="alias-gcmode"></a>
+
+## GcMode
+
+```zig
+pub const GcMode = api.GcMode;
+```
+
+References: [`api.GcMode`](api.md#alias-gcmode)
+
+<a id="alias-gcparam"></a>
+
+## GcParam
+
+```zig
+pub const GcParam = api.GcParam;
+```
+
+References: [`api.GcParam`](api.md#alias-gcparam)
+
+<a id="alias-gcparams"></a>
+
+## GcParams
+
+```zig
+pub const GcParams = api.GcParams;
+```
+
+References: [`api.GcParams`](api.md#alias-gcparams)
+
+<a id="alias-gcoptions"></a>
+
+## GcOptions
+
+```zig
+pub const GcOptions = api.GcOptions;
+```
+
+References: [`api.GcOptions`](api.md#type-gcoptions)
+
+<a id="alias-gcbudget"></a>
+
+## GcBudget
+
+```zig
+pub const GcBudget = api.GcBudget;
+```
+
+References: [`api.GcBudget`](api.md#type-gcbudget)
+
+<a id="alias-gcstepresult"></a>
+
+## GcStepResult
+
+```zig
+pub const GcStepResult = api.GcStepResult;
+```
+
+References: [`api.GcStepResult`](api.md#type-gcstepresult)
 
 <a id="alias-stdlib"></a>
 

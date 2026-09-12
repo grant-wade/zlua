@@ -131,7 +131,7 @@ pub fn require(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const values = try state.callCollect(thread, loader, &.{ name_key, loader_data });
     defer state.allocator.free(values);
     const module_value = if (values.len == 0 or values[0] == .nil) Value{ .boolean = true } else values[0];
-    try loaded.set(state.allocator, name_key, module_value);
+    try state.setTableRaw(loaded, name_key, module_value);
     if (loader_data == .nil) {
         try state.returnValues(thread, op.base, op.return_count, &.{module_value});
     } else {

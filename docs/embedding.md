@@ -160,7 +160,29 @@ var lua = try zlua.State.init(allocator, .{
 
 `max_memory` bounds allocations made through the state, including parsing, compilation, runtime objects, API conversion, memory-file copies, and captured output. Initialization may return `error.OutOfMemory` if the limit cannot hold the requested libraries.
 
-Limit failures become Lua errors during execution. `State.stepGc` currently performs a full collection regardless of its budget, and `GcOptions` is reserved.
+Limit failures become Lua errors during execution.
+
+## Garbage Collection
+
+Garbage collection runs automatically. The default generational mode focuses on short-lived objects and collects older objects less often. Most applications can leave the defaults alone.
+
+If your application has a convenient place to do cleanup, you can use incremental mode and advance collection yourself:
+
+```zig
+var lua = try zlua.State.init(allocator, .{
+    .gc = .{ .mode = .incremental, .running = false },
+});
+defer lua.deinit();
+
+// Between requests or frames:
+_ = try lua.stepGc(.{ .steps = 1 });
+```
+
+`stepGc` performs up to the requested number of steps; zero also means one step. It returns `.complete` when a full cycle finishes and `.pending` otherwise. A generational minor collection returns `.pending`. Steps limit the amount of work requested, not elapsed time: a large table or a finalizer can still take longer than expected.
+
+Use `collect()` to finish a full collection, including pending finalizers. Both `collect` and `stepGc` work while automatic collection is stopped. `stopGc()` and `restartGc()` control automatic collection; `isGcRunning()` reports its state.
+
+You can change modes with `setGcMode` and tune collection with `setGcParam`; both return the previous setting. Their query counterparts are `gcMode` and `gcParam`. See [GcParams](api/runtime/types.md#type-gcparams) for parameter names, units, and defaults. Invalid parameter values return `error.InvalidGcParam`.
 
 ## Load and Run Code
 
@@ -532,6 +554,8 @@ The first mutable scope copies the payload before exposing writable storage. A f
 
 Callbacks and host capabilities remain external bindings and must stay valid. Reset cannot undo host output or external mutations. Capture takes ownership of copies of borrowed stdin and read-only memory-file bytes on the source. State-owned memory files, input positions, captured output, host bindings, errors, options, and instruction usage are restored. Host-result allocations and reusable host root capacity are separate from managed allocation cleanup.
 
+Snapshots save GC settings and pending finalizers without running cleanup callbacks. After reset, generational collection focuses on allocations made since the snapshot. Objects from the snapshot are reclaimed during a later full collection when they are no longer reachable.
+
 First writes, allocation-registry detachment, private-allocation cleanup, and eager external resources still have real costs. Use the mutation and full-cycle benchmarks alongside reset-only timings. Runtime setters participate in tracking; direct writes to raw object storage cannot be tracked automatically.
 
 ## Current Boundaries
@@ -540,7 +564,6 @@ First writes, allocation-registry detachment, private-allocation cleanup, and ea
 - Coroutine/thread handles are not in the high-level API.
 - Broad Lua-table-to-Zig-struct decoding is not implemented.
 - There are no `callGlobal` convenience methods; fetch a `Function` and call it.
-- GC step budgeting and tuning are reserved.
 
 Embedding examples under `examples/` cover scripts, library selection, callbacks, sandboxing, bytecode, memory files, userdata, and modules:
 

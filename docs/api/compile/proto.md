@@ -73,6 +73,7 @@
 - [testing.bench.allocation](../testing/bench/allocation.md)
 - [testing.bench.c_startup](../testing/bench/c_startup.md)
 - [testing.bench.snapshots](../testing/bench/snapshots.md)
+- [testing.bench.gc](../testing/bench/gc.md)
 - [testing.diff_runner](../testing/diff_runner.md)
 - [testing.fixtures](../testing/fixtures.md)
 - [testing.expected_failures](../testing/expected_failures.md)
@@ -223,6 +224,7 @@ pub const Proto = struct {
 | [init](#fn-proto-init) | `allocator: std.mem.Allocator` | `Proto` |  |
 | [deinit](#fn-proto-deinit) | `self: *Proto` | `void` |  |
 | [pc](#fn-proto-pc) | `self: Proto` | `usize` |  |
+| [hasReadOnlyNamedVararg](#fn-proto-hasreadonlynamedvararg) | `self: *const Proto` | `bool` | Direct reads of an unmodified named vararg can use the argument slice. Any escape, write, or capture requires the ordinary table representation. |
 | [emit](#fn-proto-emit) | `self: *Proto, instruction: bytecode.Instruction, line: usize` | `!usize` |  |
 | [patchJump](#fn-proto-patchjump) | `self: *Proto, index: usize, target_pc: usize` | `!void` |  |
 | [addConstant](#fn-proto-addconstant) | `self: *Proto, constant: bytecode.Constant` | `!bytecode.ConstantIndex` |  |
@@ -259,6 +261,19 @@ References: [`Proto`](#type-proto)
 
 ```zig
 pub fn pc(self: Proto) usize
+```
+
+References: [`Proto`](#type-proto)
+
+<a id="fn-proto-hasreadonlynamedvararg"></a>
+
+### Proto.hasReadOnlyNamedVararg
+
+Direct reads of an unmodified named vararg can use the argument slice.
+Any escape, write, or capture requires the ordinary table representation.
+
+```zig
+pub fn hasReadOnlyNamedVararg(self: *const Proto) bool
 ```
 
 References: [`Proto`](#type-proto)

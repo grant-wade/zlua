@@ -48,30 +48,30 @@ pub fn getinfo(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const stripped_debug = if (target_closure) |closure| closure.stripped_debug else false;
     const display_source_name = if (stripped_debug) "=?" else source_name;
     const line_range = if (target_closure) |closure| if (closure.stripped_debug) ClosureLineRange{ .defined = closure.proto.defined_line, .last = closure.proto.defined_line } else closureLineRange(closure.proto) else null;
-    try table.set(state.allocator, .{ .string = try state.intern("source") }, .{ .string = try state.intern(display_source_name) });
-    try table.set(state.allocator, .{ .string = try state.intern("short_src") }, .{ .string = try shortSource(state, display_source_name) });
-    try table.set(state.allocator, .{ .string = try state.intern("linedefined") }, .{ .integer = if (line_range) |range| @intCast(range.defined) else 0 });
-    try table.set(state.allocator, .{ .string = try state.intern("lastlinedefined") }, .{ .integer = if (line_range) |range| @intCast(range.last) else 0 });
+    try state.setTableRaw(table, .{ .string = try state.intern("source") }, .{ .string = try state.intern(display_source_name) });
+    try state.setTableRaw(table, .{ .string = try state.intern("short_src") }, .{ .string = try shortSource(state, display_source_name) });
+    try state.setTableRaw(table, .{ .string = try state.intern("linedefined") }, .{ .integer = if (line_range) |range| @intCast(range.defined) else 0 });
+    try state.setTableRaw(table, .{ .string = try state.intern("lastlinedefined") }, .{ .integer = if (line_range) |range| @intCast(range.last) else 0 });
     const nups: i64 = if (target_closure) |closure| blk: {
         const count: i64 = @intCast(closure.upvalues.len);
         break :blk if (target == .integer and count == 1 and !std.mem.eql(u8, what, "main")) 2 else count;
     } else if (nativeUpvalueId(target_func, 0) != null) 1 else 0;
-    try table.set(state.allocator, .{ .string = try state.intern("nups") }, .{ .integer = nups });
-    try table.set(state.allocator, .{ .string = try state.intern("nparams") }, .{ .integer = if (target_closure) |closure| @intCast(closure.proto.param_count) else 0 });
+    try state.setTableRaw(table, .{ .string = try state.intern("nups") }, .{ .integer = nups });
+    try state.setTableRaw(table, .{ .string = try state.intern("nparams") }, .{ .integer = if (target_closure) |closure| @intCast(closure.proto.param_count) else 0 });
     const isvararg = if (target_closure) |closure| closure.proto.is_vararg else target_func != .nil;
-    try table.set(state.allocator, .{ .string = try state.intern("isvararg") }, .{ .boolean = isvararg });
-    try table.set(state.allocator, .{ .string = try state.intern("istailcall") }, .{ .boolean = istailcall });
-    try table.set(state.allocator, .{ .string = try state.intern("what") }, .{ .string = try state.intern(what) });
-    try table.set(state.allocator, .{ .string = try state.intern("currentline") }, .{ .integer = if (stripped_debug and target == .integer) -1 else currentline });
+    try state.setTableRaw(table, .{ .string = try state.intern("isvararg") }, .{ .boolean = isvararg });
+    try state.setTableRaw(table, .{ .string = try state.intern("istailcall") }, .{ .boolean = istailcall });
+    try state.setTableRaw(table, .{ .string = try state.intern("what") }, .{ .string = try state.intern(what) });
+    try state.setTableRaw(table, .{ .string = try state.intern("currentline") }, .{ .integer = if (stripped_debug and target == .integer) -1 else currentline });
     const extraargs: i64 = if (if (target == .integer) state.currentExtraArgs(info_thread, target.integer) else null) |count| @intCast(count) else 0;
-    try table.set(state.allocator, .{ .string = try state.intern("extraargs") }, .{ .integer = extraargs });
+    try state.setTableRaw(table, .{ .string = try state.intern("extraargs") }, .{ .integer = extraargs });
     const Transfer = struct { first: i64, count: i64 };
     const transfer: Transfer = if (target == .integer and target.integer == 2 and thread.hook_running and thread.hook_transfer_count != 0)
         .{ .first = thread.hook_transfer_index_base, .count = @as(i64, @intCast(thread.hook_transfer_count)) }
     else
         .{ .first = @as(i64, 0), .count = @as(i64, 0) };
-    try table.set(state.allocator, .{ .string = try state.intern("ftransfer") }, .{ .integer = transfer.first });
-    try table.set(state.allocator, .{ .string = try state.intern("ntransfer") }, .{ .integer = transfer.count });
+    try state.setTableRaw(table, .{ .string = try state.intern("ftransfer") }, .{ .integer = transfer.first });
+    try state.setTableRaw(table, .{ .string = try state.intern("ntransfer") }, .{ .integer = transfer.count });
     const is_hook_frame = target == .integer and target.integer == 1 and thread.hook_running;
     const namewhat = if (is_hook_frame) "hook" else if (target == .integer) if (state.currentFunctionNameWhat(info_thread, target.integer)) |override| override else if (level_name) |name| blk: {
         const proto_name = if (target_closure) |closure| closure.proto.debug_name else null;
@@ -80,12 +80,12 @@ pub fn getinfo(state: *State, thread: *Thread, op: bytecode.Call) !void {
         const proto_name = if (target_closure) |closure| closure.proto.debug_name else null;
         break :blk if (std.mem.eql(u8, name, "x") and (proto_name == null or !std.mem.eql(u8, proto_name.?, "f"))) "field" else "local";
     } else "";
-    try table.set(state.allocator, .{ .string = try state.intern("namewhat") }, .{ .string = try state.intern(namewhat) });
+    try state.setTableRaw(table, .{ .string = try state.intern("namewhat") }, .{ .string = try state.intern(namewhat) });
     if (!is_hook_frame) if (level_name) |name| {
-        try table.set(state.allocator, .{ .string = try state.intern("name") }, .{ .string = try state.intern(name) });
+        try state.setTableRaw(table, .{ .string = try state.intern("name") }, .{ .string = try state.intern(name) });
     };
-    if (target_func != .nil) try table.set(state.allocator, .{ .string = try state.intern("func") }, target_func);
-    if (std.mem.indexOfScalar(u8, options, 'L') != null) if (target_closure) |closure| try table.set(state.allocator, .{ .string = try state.intern("activelines") }, if (closure.stripped_debug) try state.newTableWithHints(0, 0) else try activeLinesTable(state, closure.proto));
+    if (target_func != .nil) try state.setTableRaw(table, .{ .string = try state.intern("func") }, target_func);
+    if (std.mem.indexOfScalar(u8, options, 'L') != null) if (target_closure) |closure| try state.setTableRaw(table, .{ .string = try state.intern("activelines") }, if (closure.stripped_debug) try state.newTableWithHints(0, 0) else try activeLinesTable(state, closure.proto));
     try state.returnValues(thread, op.base, op.return_count, &.{value});
 }
 
@@ -154,10 +154,10 @@ fn activeLinesTable(state: *State, proto: *const compile.proto.Proto) !Value {
     const value = try state.newTableWithHints(0, @intCast(proto.line_info.items.len));
     for (proto.line_info.items) |info| {
         if (info.line == 0) continue;
-        try value.table.set(state.allocator, .{ .integer = @intCast(info.line) }, .{ .boolean = true });
+        try state.setTableRaw(value.table, .{ .integer = @intCast(info.line) }, .{ .boolean = true });
     }
     if (proto.defined_line != 0) if (closureLineRange(proto)) |range| {
-        try value.table.set(state.allocator, .{ .integer = @intCast(range.last) }, .{ .boolean = true });
+        try state.setTableRaw(value.table, .{ .integer = @intCast(range.last) }, .{ .boolean = true });
     };
     return value;
 }
@@ -172,7 +172,7 @@ pub fn setupvalue(state: *State, thread: *Thread, op: bytecode.Call) !void {
         try state.returnValues(thread, op.base, op.return_count, &.{.nil});
         return;
     };
-    try writeUpvalue(upvalue, runtime.argValue(state, thread, op, 2));
+    try writeUpvalue(state, upvalue, runtime.argValue(state, thread, op, 2));
     const name = if (target.closure.stripped_debug) "(no name)" else target.closure.proto.upvalues.items[index].name;
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(name) }});
 }
@@ -205,6 +205,7 @@ pub fn upvaluejoin(state: *State, thread: *Thread, op: bytecode.Call) !void {
     if (first != .closure or first_index >= first.closure.upvalues.len) return state.failArgumentMessage("debug.upvaluejoin", 1, "invalid upvalue index");
     try @import("../runtime/rollback.zig").closureWritable(first.closure);
     first.closure.upvalues[first_index] = replacement;
+    state.upvalueBarrier(first.closure, replacement);
     try state.returnValues(thread, op.base, op.return_count, &.{});
 }
 
@@ -302,10 +303,12 @@ pub fn setlocal(state: *State, thread: *Thread, op: bytecode.Call) !void {
         },
         .local => |debug_local| {
             local_thread.stack.items[frame.base + debug_local.register] = value;
+            state.threadBarrier(local_thread, value);
             try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(debug_local.name) }});
         },
         .temporary => |register| {
             local_thread.stack.items[frame.base + register] = value;
+            state.threadBarrier(local_thread, value);
             try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern("(temporary)") }});
         },
     }
@@ -315,9 +318,9 @@ pub fn getregistry(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const registry = try state.newTableWithHints(0, 1);
     const hook_key = try state.newTableWithHints(0, 0);
     const metatable = try state.newTableWithHints(0, 1);
-    try metatable.table.set(state.allocator, .{ .string = try state.intern("__mode") }, .{ .string = try state.intern("k") });
+    try state.setTableRaw(metatable.table, .{ .string = try state.intern("__mode") }, .{ .string = try state.intern("k") });
     state.setTableMetatableRaw(hook_key.table, metatable.table);
-    try registry.table.set(state.allocator, .{ .string = try state.intern("_HOOKKEY") }, hook_key);
+    try state.setTableRaw(registry.table, .{ .string = try state.intern("_HOOKKEY") }, hook_key);
     try state.returnValues(thread, op.base, op.return_count, &.{registry});
 }
 
@@ -525,12 +528,14 @@ fn readUpvalue(upvalue: *runtime.Upvalue) Value {
     return if (upvalue.is_open) upvalue.owner.stack.items[upvalue.stack_index] else upvalue.closed;
 }
 
-fn writeUpvalue(upvalue: *runtime.Upvalue, value: Value) !void {
+fn writeUpvalue(state: *State, upvalue: *runtime.Upvalue, value: Value) !void {
     @import("../runtime/rollback.zig").touch(upvalue);
     if (upvalue.is_open) {
         try @import("../runtime/rollback.zig").threadWritable(upvalue.owner);
         upvalue.owner.stack.items[upvalue.stack_index] = value;
+        state.threadBarrier(upvalue.owner, value);
     } else {
         upvalue.closed = value;
+        state.writeBarrier(upvalue, value);
     }
 }

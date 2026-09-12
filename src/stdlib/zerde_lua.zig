@@ -67,7 +67,7 @@ fn fileInteger(file: *runtime.Table, comptime name: []const u8) ?i64 {
 }
 
 fn setPos(state: *State, file: *runtime.Table, pos: usize) !void {
-    try file.set(state.allocator, .{ .string = try state.intern("__zlua_file_pos") }, .{ .integer = @intCast(pos) });
+    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_pos") }, .{ .integer = @intCast(pos) });
 }
 
 fn refreshReadable(state: *State, file: *runtime.Table) !void {
@@ -76,7 +76,7 @@ fn refreshReadable(state: *State, file: *runtime.Table) !void {
     if (std.mem.eql(u8, path, "stdin") or std.mem.eql(u8, path, "stdout") or std.mem.eql(u8, path, "stderr") or isSpecialDevice(path)) return;
     const contents = state.readFileAlloc(path) catch return;
     defer state.allocator.free(contents);
-    try file.set(state.allocator, .{ .string = try state.intern("__zlua_file_content") }, .{ .string = try state.intern(contents) });
+    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_content") }, .{ .string = try state.intern(contents) });
 }
 
 fn isSpecialDevice(path: []const u8) bool {
@@ -86,8 +86,8 @@ fn isSpecialDevice(path: []const u8) bool {
 fn zerdeMetatable(state: *State, name: []const u8) !*Table {
     const value = try state.newTableWithHints(0, 2);
     const table = value.table;
-    try table.set(state.allocator, .{ .string = try state.intern("__metatable") }, .{ .boolean = false });
-    try table.set(state.allocator, .{ .string = try state.intern("__name") }, .{ .string = try state.intern(name) });
+    try state.setTableRaw(table, .{ .string = try state.intern("__metatable") }, .{ .boolean = false });
+    try state.setTableRaw(table, .{ .string = try state.intern("__name") }, .{ .string = try state.intern(name) });
     return table;
 }
 
@@ -187,12 +187,12 @@ pub const LuaSink = struct {
         const frame = &self.stack.items[self.stack.items.len - 1];
         switch (frame.kind) {
             .seq => {
-                try frame.table.set(self.state.allocator, .{ .integer = frame.next_index }, value);
+                try self.state.setTableRaw(frame.table, .{ .integer = frame.next_index }, value);
                 frame.next_index += 1;
             },
             .object => {
                 const name = frame.field_name orelse return error.InvalidZerdeSinkState;
-                try frame.table.set(self.state.allocator, .{ .string = name }, value);
+                try self.state.setTableRaw(frame.table, .{ .string = name }, value);
                 frame.field_name = null;
             },
         }

@@ -104,29 +104,41 @@ test "inline and spilled callback results remain rooted across GC and nested cal
                 try table.set("n", i);
                 try ctx.pushReturn(table);
                 table.deinit();
-                try ctx.state().collect();
+                if (ctx.state().raw_state.step_after_instruction) {
+                    _ = try ctx.state().stepGc(.{});
+                } else try ctx.state().collect();
             }
             var callback = try ctx.arg(1, api.Function);
             defer callback.deinit();
             try ctx.callNonYielding(callback, .{}, void);
-            try ctx.state().collect();
+            if (ctx.state().raw_state.step_after_instruction) {
+                _ = try ctx.state().stepGc(.{});
+            } else try ctx.state().collect();
         }
     };
-    var lua = try api.State.init(a, .{});
-    defer lua.deinit();
-    var function = try lua.register("results", Host.results);
-    defer function.deinit();
-    try lua.setGlobal("results", function);
-    try runLua(&lua,
-        \\for _, n in ipairs({0,1,4,5,8}) do
-        \\ local r = table.pack(results(n, function()
-        \\   local inner = table.pack(results(4, function() collectgarbage() end))
-        \\   assert(inner.n == 4 and inner[4].n == 3)
-        \\ end))
-        \\ assert(r.n == n)
-        \\ for i=1,n do assert(r[i].n == i-1) end
-        \\end
-    );
+    for ([_]bool{ false, true }) |tiny_steps| {
+        var lua = try api.State.init(a, .{});
+        defer lua.deinit();
+        lua.raw_state.step_after_instruction = tiny_steps;
+        if (tiny_steps) {
+            _ = lua.setGcMode(.incremental);
+            _ = try lua.setGcParam(.stepsize, 8);
+            _ = try lua.setGcParam(.stepmul, 100);
+        }
+        var function = try lua.register("results", Host.results);
+        defer function.deinit();
+        try lua.setGlobal("results", function);
+        try runLua(&lua,
+            \\for _, n in ipairs({0,1,4,5,8}) do
+            \\ local r = table.pack(results(n, function()
+            \\   local inner = table.pack(results(4, function() collectgarbage() end))
+            \\   assert(inner.n == 4 and inner[4].n == 3)
+            \\ end))
+            \\ assert(r.n == n)
+            \\ for i=1,n do assert(r[i].n == i-1) end
+            \\end
+        );
+    }
 }
 
 test "non-yielding callback stays on the current thread and unwinds before returning errors" {

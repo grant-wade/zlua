@@ -10,6 +10,30 @@ const Value = runtime.Value;
 const UnaryFn = enum { acos, asin, cos, exp, sin, sqrt, tan };
 const IntegerUnaryFn = enum { ceil, floor };
 
+/// A numeric-only call that cannot allocate, throw, or call back into Lua.
+/// Null delegates coercion, argument errors, and other functions to normal calls.
+pub fn fastUnaryResult(func: runtime.NativeFn, value: Value) ?Value {
+    switch (func) {
+        .math_abs => return switch (value) {
+            .integer => |integer| .{ .integer = if (integer < 0) -%integer else integer },
+            .number => |number| .{ .number = @abs(number) },
+            else => null,
+        },
+        .math_ceil, .math_floor => {
+            if (value == .integer) return value;
+            if (value != .number) return null;
+            const number = if (func == .math_ceil) @ceil(value.number) else @floor(value.number);
+            return if (runtime.floatToInteger(number)) |integer| .{ .integer = integer } else .{ .number = number };
+        },
+        .math_sqrt => return switch (value) {
+            .integer => |integer| .{ .number = @sqrt(@as(f64, @floatFromInt(integer))) },
+            .number => |number| .{ .number = @sqrt(number) },
+            else => null,
+        },
+        else => return null,
+    }
+}
+
 pub fn abs(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const value = runtime.argValue(state, thread, op, 0);
     const result: Value = switch (value) {

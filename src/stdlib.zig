@@ -192,12 +192,14 @@ fn newStaticTable(state: *State, comptime fields: []const StaticField, extra_fie
     };
     const value = try state.newTableWithHints(0, @intCast(fields.len + @as(usize, extra_fields)));
     value.table.entries.appendSliceAssumeCapacity(&entries);
-    for (entries, 0..) |entry, index| value.table.entry_index.putAssumeCapacityNoClobber(entry.key, index);
+    if (value.table.entry_index.capacity() != 0) {
+        for (entries, 0..) |entry, index| value.table.entry_index.putAssumeCapacityNoClobber(entry.key, index);
+    }
     return value;
 }
 
 fn setStaticField(state: *State, table_value: Value, comptime name: []const u8, value: Value) !void {
-    try table_value.table.set(state.allocator, .{ .string = static_strings.get(name) }, value);
+    try state.setTableRaw(table_value.table, .{ .string = static_strings.get(name) }, value);
 }
 
 fn putStaticGlobal(state: *State, comptime name: []const u8, value: Value) !void {
@@ -235,7 +237,7 @@ pub fn installGlobalTableWithHint(state: *State, hash_hint: u32) !void {
         break :blk global.table;
     };
     const key = static_strings.get("_G");
-    try global_table.set(state.allocator, .{ .string = key }, .{ .table = global_table });
+    try state.setTableRaw(global_table, .{ .string = key }, .{ .table = global_table });
 }
 
 fn openBase(state: *State) !void {
@@ -524,8 +526,8 @@ fn openPackage(state: *State, libraries: LibrarySet) !void {
     const loaded = try state.newTableWithHints(0, loaded_count);
     const preload = try state.newTableWithHints(0, 4);
     const searchers = try state.newTableWithHints(2, 0);
-    try searchers.table.set(state.allocator, .{ .integer = 1 }, .{ .native = .package_searcher_preload });
-    try searchers.table.set(state.allocator, .{ .integer = 2 }, .{ .native = .package_searcher_lua });
+    try state.setTableRaw(searchers.table, .{ .integer = 1 }, .{ .native = .package_searcher_preload });
+    try state.setTableRaw(searchers.table, .{ .integer = 2 }, .{ .native = .package_searcher_lua });
     if (libraries.coroutine) try setStaticField(state, loaded, "coroutine", state.getGlobal("coroutine"));
     if (libraries.debug) try setStaticField(state, loaded, "debug", state.getGlobal("debug"));
     if (libraries.io) try setStaticField(state, loaded, "io", state.getGlobal("io"));

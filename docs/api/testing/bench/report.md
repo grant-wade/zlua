@@ -72,6 +72,7 @@
 - [testing.bench.allocation](../../testing/bench/allocation.md)
 - [testing.bench.c_startup](../../testing/bench/c_startup.md)
 - [testing.bench.snapshots](../../testing/bench/snapshots.md)
+- [testing.bench.gc](../../testing/bench/gc.md)
 - [testing.diff_runner](../../testing/diff_runner.md)
 - [testing.fixtures](../../testing/fixtures.md)
 - [testing.expected_failures](../../testing/expected_failures.md)
