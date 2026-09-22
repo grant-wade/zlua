@@ -106,6 +106,11 @@
 - [Ref](#alias-ref)
 - [Table](#alias-table)
 - [Function](#alias-function)
+- [Thread](#alias-thread)
+- [ThreadStatus](#alias-threadstatus)
+- [ResumeResult](#alias-resumeresult)
+- [CallResult](#alias-callresult)
+- [ErrorRef](#alias-errorref)
 - [Context](#alias-context)
 - [Error](#alias-error)
 - [BytecodeLoadOptions](#alias-bytecodeloadoptions)
@@ -373,6 +378,56 @@ pub const Function = api.Function;
 ```
 
 References: [`api.Function`](api.md#type-function)
+
+<a id="alias-thread"></a>
+
+## Thread
+
+```zig
+pub const Thread = api.Thread;
+```
+
+References: [`api.Thread`](api.md#type-thread)
+
+<a id="alias-threadstatus"></a>
+
+## ThreadStatus
+
+```zig
+pub const ThreadStatus = api.ThreadStatus;
+```
+
+References: [`api.ThreadStatus`](api.md#alias-threadstatus)
+
+<a id="alias-resumeresult"></a>
+
+## ResumeResult
+
+```zig
+pub const ResumeResult = api.ResumeResult;
+```
+
+References: [`api.ResumeResult`](api.md#fn-resumeresult)
+
+<a id="alias-callresult"></a>
+
+## CallResult
+
+```zig
+pub const CallResult = api.CallResult;
+```
+
+References: [`api.CallResult`](api.md#fn-callresult)
+
+<a id="alias-errorref"></a>
+
+## ErrorRef
+
+```zig
+pub const ErrorRef = api.ErrorRef;
+```
+
+References: [`api.ErrorRef`](api.md#type-errorref)
 
 <a id="alias-context"></a>
 

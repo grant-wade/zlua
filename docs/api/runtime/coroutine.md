@@ -88,6 +88,11 @@
 
 - [coroutineCreate](#fn-coroutinecreate)
 - [coroutineResume](#fn-coroutineresume)
+- [isYieldable](#fn-isyieldable)
+- [yieldRejection](#fn-yieldrejection)
+- [checkYieldable](#fn-checkyieldable)
+- [exposeThread](#fn-exposethread)
+- [suspendCoroutine](#fn-suspendcoroutine)
 - [coroutineYield](#fn-coroutineyield)
 - [coroutineStatus](#fn-coroutinestatus)
 - [coroutineRunning](#fn-coroutinerunning)
@@ -120,6 +125,50 @@ pub fn coroutineCreate(comptime State: type, self: *State, thread: *Thread, op: 
 
 ```zig
 pub fn coroutineResume(comptime State: type, self: *State, thread: *Thread, op: bytecode.Call) !void
+```
+
+<a id="fn-isyieldable"></a>
+
+## isYieldable
+
+```zig
+pub fn isYieldable(thread: *const Thread) bool
+```
+
+<a id="fn-yieldrejection"></a>
+
+## yieldRejection
+
+Returns the Lua error message explaining why `thread` cannot yield, or null when it can.
+
+```zig
+pub fn yieldRejection(thread: *const Thread) ?[]const u8
+```
+
+<a id="fn-checkyieldable"></a>
+
+## checkYieldable
+
+```zig
+pub fn checkYieldable(comptime State: type, self: *State, thread: *const Thread) !void
+```
+
+<a id="fn-exposethread"></a>
+
+## exposeThread
+
+Marks `thread` as reachable from a Lua value so it outlives its host call.
+
+```zig
+pub fn exposeThread(thread: *Thread) !void
+```
+
+<a id="fn-suspendcoroutine"></a>
+
+## suspendCoroutine
+
+```zig
+pub fn suspendCoroutine(comptime State: type, self: *State, thread: *Thread, op: bytecode.Call, values: []const Value) !void
 ```
 
 <a id="fn-coroutineyield"></a>
@@ -197,6 +246,8 @@ pub fn newCoroutineThread(comptime State: type, self: *State, entry: Value) !*Th
 <a id="fn-closecoroutine"></a>
 
 ## closeCoroutine
+
+Closes `target`. The running thread may close itself; hosts are rejected earlier by `State.closeCoroutine`.
 
 ```zig
 pub fn closeCoroutine(comptime State: type, self: *State, target: *Thread, error_value: ?Value) !?Value

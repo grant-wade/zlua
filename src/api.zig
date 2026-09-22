@@ -18,7 +18,7 @@
 //! const answer = try chunk.call(.{}, i64);
 //! ```
 //!
-//! Handles such as `Table`, `Function`, `Ref`, `Userdata(T)`, `AnyUserdata`,
+//! Handles such as `Table`, `Function`, `Thread`, `Ref`, `Userdata(T)`, `AnyUserdata`,
 //! `ErrorRef`, and `Value` variants that contain handles root their Lua values
 //! while they live. Hosts must call `deinit` on those handles when finished.
 //!
@@ -45,6 +45,7 @@ const runtime = @import("runtime.zig");
 const stdlib = @import("stdlib.zig");
 const rollback_runtime = @import("runtime/rollback.zig");
 const snapshot_runtime = @import("runtime/snapshot.zig");
+const coroutine_runtime = @import("runtime/coroutine.zig");
 const runtime_types = @import("runtime/types.zig");
 
 /// Error set used when an API operation failed because Lua raised a syntax or runtime error.
@@ -772,6 +773,17 @@ pub const State = struct {
         errdefer table.deinit();
         try self.gcBoundary();
         return table;
+    }
+
+    /// Creates a rooted, suspended coroutine without executing `entry`.
+    /// First resume arguments become entry arguments. Deinitialize the returned handle.
+    pub fn newThread(self: *State, entry: Function) !Thread {
+        const raw_entry = try toRuntimeValue(self, entry);
+        const raw = self.raw_state.newCoroutineThread(raw_entry) catch |err| return self.captureLuaError(err);
+        var result = try Thread.fromRuntime(self, .{ .thread = raw });
+        errdefer result.deinit();
+        try self.gcBoundary();
+        return result;
     }
 
     /// Allocates Lua-owned userdata storage initialized with `value`.
@@ -1617,6 +1629,8 @@ pub const Value = union(enum) {
     table: Table,
     /// Rooted Lua function handle.
     function: Function,
+    /// Rooted Lua coroutine handle.
+    thread: Thread,
     /// Rooted Lua userdata handle with unknown Zig payload type.
     userdata: AnyUserdata,
     /// Lua value kind not represented by the high-level API.
@@ -1632,6 +1646,7 @@ pub const Value = union(enum) {
             .table => .{ .table = try Table.fromRuntime(state, value) },
             .closure, .api_callback => .{ .function = try Function.fromRuntime(state, value) },
             .userdata => .{ .userdata = try AnyUserdata.fromRuntime(state, value) },
+            .thread => .{ .thread = try Thread.fromRuntime(state, value) },
             else => .unsupported,
         };
     }
@@ -1642,6 +1657,7 @@ pub const Value = union(enum) {
             .table => |*table| table.deinit(),
             .function => |*function| function.deinit(),
             .userdata => |*userdata| userdata.deinit(),
+            .thread => |*thread| thread.deinit(),
             else => {},
         }
         self.* = undefined;
@@ -1657,6 +1673,7 @@ pub const Value = union(enum) {
             .table => |table| table.rawValue(),
             .function => |function| function.ref.rawValue(),
             .userdata => |userdata| userdata.rawValue(),
+            .thread => |thread| thread.ref.rawValue(),
             .unsupported => error.UnsupportedType,
         };
     }
@@ -1735,6 +1752,29 @@ pub const Context = struct {
         return self.raw.raise(raw_value);
     }
 
+    /// Returns a rooted handle to this callback's coroutine, retained beyond the callback.
+    pub fn thread(self: *Context) !Thread {
+        try coroutine_runtime.exposeThread(self.raw.thread);
+        return Thread.fromRuntime(self.lua, .{ .thread = self.raw.thread });
+    }
+
+    /// Reports whether this callback can yield across the current native boundary.
+    pub fn isYieldable(self: *Context) bool {
+        return coroutine_runtime.isYieldable(self.raw.thread);
+    }
+
+    /// Terminal callback yield: use `return ctx.yield(.{values});`.
+    /// Zig defers and userdata scopes finish before suspension. Resume continues
+    /// Lua after this call with the resume arguments; the Zig body is not reentered.
+    pub fn yield(self: *Context, values: anytype) error{ HostCallbackYield, LuaError, OutOfMemory, InvalidHandle } {
+        if (coroutine_runtime.yieldRejection(self.raw.thread)) |message| return self.raise(message);
+        self.returnValues(values) catch |err| return switch (err) {
+            error.RuntimeError => self.raw.raise(self.raw.state.currentErrorValue()),
+            else => raiseConversionError(err),
+        };
+        return error.HostCallbackYield;
+    }
+
     /// Returns a coroutine token valid only during this callback and until reset.
     pub fn threadIdentity(self: *Context) usize {
         return @intFromPtr(self.raw.thread);
@@ -1796,8 +1836,116 @@ pub const Context = struct {
     }
 };
 
-/// Opaque placeholder for future high-level coroutine/thread handles.
-pub const Thread = opaque {};
+/// Observable Lua coroutine lifecycle.
+pub const ThreadStatus = runtime_types.ThreadStatus;
+
+/// A resume converts only its active branch. Strings are borrowed from the VM;
+/// handles are owned and released by `deinit`. Conversion failure does not rewind execution.
+pub fn ResumeResult(comptime Y: type, comptime R: type) type {
+    return union(enum) {
+        yielded: Y,
+        returned: R,
+
+        /// Releases owned handles in the active result, including tuple fields.
+        pub fn deinit(self: *@This()) void {
+            switch (self.*) {
+                .yielded => |*value| deinitIfOwned(Y, value),
+                .returned => |*value| deinitIfOwned(R, value),
+            }
+            self.* = undefined;
+        }
+    };
+}
+
+/// Rooted, state-bound Lua coroutine. Copies do not create additional owners.
+/// Reset invalidates the handle; destroy it before its state.
+pub const Thread = struct {
+    ref: Ref,
+
+    fn fromRuntime(state: *State, value: runtime.Value) !Thread {
+        return switch (value) {
+            .thread => .{ .ref = try Ref.fromRuntime(state, value) },
+            else => error.TypeMismatch,
+        };
+    }
+
+    /// Releases only the root. Use `close` to unwind pending Lua frames explicitly.
+    pub fn deinit(self: *Thread) void {
+        self.ref.deinit();
+        self.* = undefined;
+    }
+
+    /// Resumes execution, capturing Lua failures on the state as `error.LuaError`.
+    /// Later resume arguments become the suspended call's return values.
+    /// Yielded values convert to `Y`, returned values to `R`.
+    /// Named `resumeThread` because `resume` is a Zig keyword.
+    pub fn resumeThread(self: Thread, args: anytype, comptime Y: type, comptime R: type) !ResumeResult(Y, R) {
+        const result = try self.protectedResume(args, Y, R);
+        return switch (result) {
+            .ok => |value| value,
+            .lua_error => |value| blk: {
+                var failure = value;
+                failure.deinit();
+                break :blk error.LuaError;
+            },
+        };
+    }
+
+    /// Resumes execution and preserves arbitrary Lua error objects as `ErrorRef`.
+    pub fn protectedResume(self: Thread, args: anytype, comptime Y: type, comptime R: type) !CallResult(ResumeResult(Y, R)) {
+        const raw = try self.rawThread();
+        const state = self.ref.state;
+        const raw_args = try convertArgs(state, args);
+        defer state.allocator().free(raw_args);
+        const result = state.raw_state.resumeCoroutine(raw, raw_args) catch |err| {
+            if (err == error.OutOfMemory and state.takeMemoryLimitExceeded()) {
+                return .{ .lua_error = try state.memoryLimitErrorRef() };
+            }
+            return err;
+        };
+        return switch (result) {
+            .success => |values| blk: {
+                defer state.allocator().free(values);
+                break :blk .{ .ok = if (raw.status == .suspended)
+                    .{ .yielded = try fromRuntimeResults(state, values, Y) }
+                else
+                    .{ .returned = try fromRuntimeResults(state, values, R) } };
+            },
+            .failure => |value| blk: {
+                try state.setLastErrorValue(value);
+                break :blk .{ .lua_error = try ErrorRef.fromRuntime(state, value) };
+            },
+        };
+    }
+
+    /// Returns the current lifecycle status.
+    pub fn status(self: Thread) !ThreadStatus {
+        return (try self.rawThread()).status;
+    }
+
+    /// Returns a state-local identity token valid while rooted and until reset.
+    pub fn identity(self: Thread) !usize {
+        return @intFromPtr(try self.rawThread());
+    }
+
+    /// Unwinds pending Lua frames and __close handlers, retaining this handle.
+    /// Rejects main, running, and normal threads; captures Lua failures on the state.
+    pub fn close(self: Thread) !void {
+        const raw = try self.rawThread();
+        const state = self.ref.state;
+        if (state.raw_state.closeCoroutine(raw, null) catch |err| return state.captureLuaError(err)) |failure| {
+            try state.setLastErrorValue(failure);
+            return error.LuaError;
+        }
+    }
+
+    fn rawThread(self: Thread) !*runtime.Thread {
+        return switch (try self.ref.rawValue()) {
+            .thread => |raw| raw,
+            else => error.TypeMismatch,
+        };
+    }
+};
 
 fn validateGcParam(value: i64) !void {
     if (value < 0 or value > std.math.maxInt(i32)) return error.InvalidGcParam;
@@ -2199,13 +2347,14 @@ fn isUserdataHandle(comptime T: type) bool {
 }
 
 fn isOwnedApiValue(comptime T: type) bool {
-    return T == Value or T == Ref or T == Table or T == Function or T == ErrorRef or T == AnyUserdata or isUserdataHandle(T);
+    return T == Value or T == Ref or T == Table or T == Function or T == Thread or T == ErrorRef or T == AnyUserdata or isUserdataHandle(T);
 }
 
 fn expectedLuaType(comptime T: type) []const u8 {
     if (T == Value or T == Ref or T == ErrorRef) return "value";
     if (T == Table) return "table";
     if (T == Function) return "function";
+    if (T == Thread) return "thread";
     if (T == AnyUserdata or isUserdataHandle(T)) return "userdata";
 
     return switch (@typeInfo(T)) {
@@ -2238,6 +2387,7 @@ fn toRuntimeValue(state: *State, value: anytype) !runtime.Value {
     if (T == Value) return switch (value) {
         .table => |v| toRuntimeValue(state, v),
         .function => |v| toRuntimeValue(state, v),
+        .thread => |v| toRuntimeValue(state, v),
         .userdata => |v| toRuntimeValue(state, v),
         .string => |v| .{ .string = try state.raw_state.intern(v) },
         else => value.toRuntime(),
@@ -2246,7 +2396,7 @@ fn toRuntimeValue(state: *State, value: anytype) !runtime.Value {
         try value.validate(state);
         return value.rawValue();
     }
-    if (comptime T == Table or T == Function or T == ErrorRef or T == AnyUserdata or isUserdataHandle(T)) {
+    if (comptime T == Table or T == Function or T == Thread or T == ErrorRef or T == AnyUserdata or isUserdataHandle(T)) {
         try value.ref.validate(state);
         return value.ref.rawValue();
     }
@@ -2325,9 +2475,14 @@ fn fromRuntimeResults(state: *State, results: []const runtime.Value, comptime R:
     if (R == void) return {};
     if (comptime isTupleResult(R)) {
         var values: std.meta.Tuple(R.field_types) = undefined;
+        var initialized: usize = 0;
+        errdefer inline for (R.field_types, 0..) |Field, index| {
+            if (index < initialized) deinitIfOwned(Field, &values[index]);
+        };
         inline for (R.field_types, 0..) |Field, index| {
             const raw = if (index < results.len) results[index] else runtime.Value.nil;
             values[index] = try fromRuntimeValue(state, raw, Field);
+            initialized += 1;
         }
         return .{ .values = values };
     }
@@ -2341,6 +2496,7 @@ fn fromRuntimeValue(state: *State, raw: runtime.Value, comptime T: type) !T {
     if (T == Ref) return Ref.fromRuntime(state, raw);
     if (T == Table) return Table.fromRuntime(state, raw);
     if (T == Function) return Function.fromRuntime(state, raw);
+    if (T == Thread) return Thread.fromRuntime(state, raw);
     if (T == AnyUserdata) return AnyUserdata.fromRuntime(state, raw);
     if (comptime isUserdataHandle(T)) return T.fromRuntime(state, raw);
     if (T == void) return {};
@@ -2397,8 +2553,10 @@ fn isTupleResult(comptime T: type) bool {
 }
 
 fn deinitIfOwned(comptime T: type, value: *T) void {
-    if (comptime isOwnedApiValue(T)) {
+    if (comptime isOwnedApiValue(T) or isTupleResult(T)) {
         value.deinit();
+    } else if (comptime @typeInfo(T) == .optional) {
+        if (value.*) |*payload| deinitIfOwned(@typeInfo(T).optional.child, payload);
     }
 }
 
@@ -4965,4 +5123,5 @@ test "api userdata table index and Lua iteration metamethods" {
 
 test {
     _ = @import("testing/api_host_tests.zig");
+    _ = @import("testing/api_thread_tests.zig");
 }

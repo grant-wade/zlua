@@ -105,7 +105,7 @@ defer chunk.deinit();
 const answer = try chunk.call(.{}, i64);
 ```
 
-Handles such as `Table`, `Function`, `Ref`, `Userdata(T)`, `AnyUserdata`,
+Handles such as `Table`, `Function`, `Thread`, `Ref`, `Userdata(T)`, `AnyUserdata`,
 `ErrorRef`, and `Value` variants that contain handles root their Lua values
 while they live. Hosts must call `deinit` on those handles when finished.
 
@@ -135,6 +135,7 @@ and should not be treated as a stable embedding contract.
 - [Userdata](#fn-userdata)
 - [CallResult](#fn-callresult)
 - [Tuple](#fn-tuple)
+- [ResumeResult](#fn-resumeresult)
 
 ## Types
 
@@ -195,6 +196,7 @@ and should not be treated as a stable embedding contract.
 - [GcParam](#alias-gcparam)
 - [GcParams](#alias-gcparams)
 - [DoOptions](#alias-dooptions)
+- [ThreadStatus](#alias-threadstatus)
 
 <a id="type-error"></a>
 
@@ -885,6 +887,7 @@ pub const State = struct {
 | [registerTyped](#fn-state-registertyped) | `self: *State, name: []const u8, comptime function: anytype` | `!Function` | Creates a Lua function handle from a typed Zig function. |
 | [registerUserdataInitializerWith](#fn-state-registeruserdatainitializerwith) | `self: *State, comptime T: type, name: []const u8, comptime initializer: anytype, comptime options: UserdataOptions(T)` | `!Function` | Creates a Lua function handle that constructs auto-bound userdata using &#96;initializer&#96;. |
 | [createTable](#fn-state-createtable) | `self: *State, options: TableOptions` | `!Table` | Creates a rooted Lua table handle with optional capacity hints. |
+| [newThread](#fn-state-newthread) | `self: *State, entry: Function` | `!Thread` | Creates a rooted, suspended coroutine without executing &#96;entry&#96;. First resume arguments become entry arguments. Deinitialize the returned handle. |
 | [newUserdata](#fn-state-newuserdata) | `self: *State, comptime T: type, value: T, options: UserdataOptions(T)` | `!Userdata(T)` | Allocates Lua-owned userdata storage initialized with &#96;value&#96;. |
 | [newUserdataAuto](#fn-state-newuserdataauto) | `self: *State, comptime T: type, value: T, options: UserdataOptions(T)` | `!Userdata(T)` | Allocates Lua-owned userdata and installs eligible methods declared on &#96;T&#96;. |
 | [newUserdataPtr](#fn-state-newuserdataptr) | `self: *State, comptime T: type, ptr: *T, options: UserdataPtrOptions(T)` | `!Userdata(T)` | Wraps host-owned storage as Lua userdata without taking ownership of &#96;ptr&#96;. |
@@ -1216,6 +1219,19 @@ pub fn createTable(self: *State, options: TableOptions) !Table
 ```
 
 References: [`State`](#type-state), [`TableOptions`](#type-tableoptions), [`Table`](#type-table)
+
+<a id="fn-state-newthread"></a>
+
+### State.newThread
+
+Creates a rooted, suspended coroutine without executing `entry`.
+First resume arguments become entry arguments. Deinitialize the returned handle.
+
+```zig
+pub fn newThread(self: *State, entry: Function) !Thread
+```
+
+References: [`State`](#type-state), [`Function`](#type-function), [`Thread`](#type-thread)
 
 <a id="fn-state-newuserdata"></a>
 
@@ -1873,6 +1889,8 @@ pub const Value = union(enum) {
     table: Table,
     /// Rooted Lua function handle.
     function: Function,
+    /// Rooted Lua coroutine handle.
+    thread: Thread,
     /// Rooted Lua userdata handle with unknown Zig payload type.
     userdata: AnyUserdata,
     /// Lua value kind not represented by the high-level API.
@@ -1932,6 +1950,9 @@ pub const Context = struct {
 | [pushReturn](#fn-context-pushreturn) | `self: *Context, value: anytype` | `!void` | Appends one converted Lua return value for the current callback. |
 | [returnValues](#fn-context-returnvalues) | `self: *Context, values: anytype` | `!void` | Replaces callback returns with &#96;values&#96;. |
 | [raise](#fn-context-raise) | `self: *Context, value: anytype` | `error` | Raises a Lua error using &#96;value&#96; as the error object. |
+| [thread](#fn-context-thread) | `self: *Context` | `!Thread` | Returns a rooted handle to this callback's coroutine, retained beyond the callback. |
+| [isYieldable](#fn-context-isyieldable) | `self: *Context` | `bool` | Reports whether this callback can yield across the current native boundary. |
+| [yield](#fn-context-yield) | `self: *Context, values: anytype` | `error` | Terminal callback yield: use &#96;return ctx.yield(.{values});&#96;. Zig defers and userdata scopes finish before suspension. Resume continues Lua after this call with the resume arguments; the Zig body is not reentered. |
 | [threadIdentity](#fn-context-threadidentity) | `self: *Context` | `usize` | Returns a coroutine token valid only during this callback and until reset. |
 | [callNonYielding](#fn-context-callnonyielding) | `self: *Context, function: Function, args: anytype, comptime R: type` | `!R` | Calls Lua on this callback's coroutine with its current budget; yielding is forbidden. Lua errors propagate unchanged after cleanup, including __close. Completed effects remain. |
 
@@ -2021,6 +2042,44 @@ pub fn raise(self: *Context, value: anytype) error{ LuaError, OutOfMemory, Inval
 
 References: [`Context`](#type-context)
 
+<a id="fn-context-thread"></a>
+
+### Context.thread
+
+Returns a rooted handle to this callback's coroutine, retained beyond the callback.
+
+```zig
+pub fn thread(self: *Context) !Thread
+```
+
+References: [`Context`](#type-context), [`Thread`](#type-thread)
+
+<a id="fn-context-isyieldable"></a>
+
+### Context.isYieldable
+
+Reports whether this callback can yield across the current native boundary.
+
+```zig
+pub fn isYieldable(self: *Context) bool
+```
+
+References: [`Context`](#type-context)
+
+<a id="fn-context-yield"></a>
+
+### Context.yield
+
+Terminal callback yield: use `return ctx.yield(.{values});`.
+Zig defers and userdata scopes finish before suspension. Resume continues
+Lua after this call with the resume arguments; the Zig body is not reentered.
+
+```zig
+pub fn yield(self: *Context, values: anytype) error{ HostCallbackYield, LuaError, OutOfMemory, InvalidHandle }
+```
+
+References: [`Context`](#type-context)
+
 <a id="fn-context-threadidentity"></a>
 
 ### Context.threadIdentity
@@ -2046,13 +2105,124 @@ pub fn callNonYielding(self: *Context, function: Function, args: anytype, compti
 
 References: [`Context`](#type-context), [`Function`](#type-function)
 
+<a id="alias-threadstatus"></a>
+
+## ThreadStatus
+
+Observable Lua coroutine lifecycle.
+
+```zig
+pub const ThreadStatus = runtime_types.ThreadStatus;
+```
+
+<a id="fn-resumeresult"></a>
+
+## ResumeResult
+
+A resume converts only its active branch. Strings are borrowed from the VM;
+handles are owned and released by `deinit`. Conversion failure does not rewind execution.
+
+```zig
+pub fn ResumeResult(comptime Y: type, comptime R: type) type
+```
+
 <a id="type-thread"></a>
 
 ## Thread
 
-Opaque placeholder for future high-level coroutine/thread handles.
+Rooted, state-bound Lua coroutine. Copies do not create additional owners.
+Reset invalidates the handle; destroy it before its state.
 
 ```zig
-pub const Thread = opaque {};
+pub const Thread = struct {
+    ref: Ref,
+};
 ```
+
+### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [deinit](#fn-thread-deinit) | `self: *Thread` | `void` | Releases only the root. Use &#96;close&#96; to unwind pending Lua frames explicitly. |
+| [resumeThread](#fn-thread-resumethread) | `self: Thread, args: anytype, comptime Y: type, comptime R: type` | `!ResumeResult(Y, R)` | Resumes execution, capturing Lua failures on the state as &#96;error.LuaError&#96;. Later resume arguments become the suspended call's return values. Yielded values convert to &#96;Y&#96;, returned values to &#96;R&#96;. Named &#96;resumeThread&#96; because &#96;resume&#96; is a Zig keyword. |
+| [protectedResume](#fn-thread-protectedresume) | `self: Thread, args: anytype, comptime Y: type, comptime R: type` | `!CallResult(ResumeResult(Y, R))` | Resumes execution and preserves arbitrary Lua error objects as &#96;ErrorRef&#96;. |
+| [status](#fn-thread-status) | `self: Thread` | `!ThreadStatus` | Returns the current lifecycle status. |
+| [identity](#fn-thread-identity) | `self: Thread` | `!usize` | Returns a state-local identity token valid while rooted and until reset. |
+| [close](#fn-thread-close) | `self: Thread` | `!void` | Unwinds pending Lua frames and __close handlers, retaining this handle. Rejects main, running, and normal threads; captures Lua failures on the state. |
+
+<a id="fn-thread-deinit"></a>
+
+### Thread.deinit
+
+Releases only the root. Use `close` to unwind pending Lua frames explicitly.
+
+```zig
+pub fn deinit(self: *Thread) void
+```
+
+References: [`Thread`](#type-thread)
+
+<a id="fn-thread-resumethread"></a>
+
+### Thread.resumeThread
+
+Resumes execution, capturing Lua failures on the state as `error.LuaError`.
+Later resume arguments become the suspended call's return values.
+Yielded values convert to `Y`, returned values to `R`.
+Named `resumeThread` because `resume` is a Zig keyword.
+
+```zig
+pub fn resumeThread(self: Thread, args: anytype, comptime Y: type, comptime R: type) !ResumeResult(Y, R)
+```
+
+References: [`Thread`](#type-thread)
+
+<a id="fn-thread-protectedresume"></a>
+
+### Thread.protectedResume
+
+Resumes execution and preserves arbitrary Lua error objects as `ErrorRef`.
+
+```zig
+pub fn protectedResume(self: Thread, args: anytype, comptime Y: type, comptime R: type) !CallResult(ResumeResult(Y, R))
+```
+
+References: [`Thread`](#type-thread)
+
+<a id="fn-thread-status"></a>
+
+### Thread.status
+
+Returns the current lifecycle status.
+
+```zig
+pub fn status(self: Thread) !ThreadStatus
+```
+
+References: [`Thread`](#type-thread), [`ThreadStatus`](#alias-threadstatus)
+
+<a id="fn-thread-identity"></a>
+
+### Thread.identity
+
+Returns a state-local identity token valid while rooted and until reset.
+
+```zig
+pub fn identity(self: Thread) !usize
+```
+
+References: [`Thread`](#type-thread)
+
+<a id="fn-thread-close"></a>
+
+### Thread.close
+
+Unwinds pending Lua frames and __close handlers, retaining this handle.
+Rejects main, running, and normal threads; captures Lua failures on the state.
+
+```zig
+pub fn close(self: Thread) !void
+```
+
+References: [`Thread`](#type-thread)
 

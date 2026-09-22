@@ -137,6 +137,7 @@ pub const BenchmarkReport = struct {
     timeout_ms: u64 = 0,
     clua: EngineReport = .{},
     zlua: EngineReport = .{},
+    zlua_snapshot: EngineReport = .{},
 };
 ```
 
