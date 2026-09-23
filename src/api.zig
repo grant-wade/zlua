@@ -1729,7 +1729,7 @@ pub const Context = struct {
         if (index >= self.argCount()) return null;
         const raw = self.raw.callbackArgValue(index);
         if (raw == .nil) return null;
-        return self.arg(index, T);
+        return self.arg(index, ?T);
     }
 
     /// Appends one converted Lua return value for the current callback.
