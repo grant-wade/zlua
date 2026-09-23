@@ -332,7 +332,7 @@ defer clamp_fn.deinit();
 try lua.setGlobal("clamp", clamp_fn);
 ```
 
-`Context.callNonYielding(function, args, R)` calls Lua on the callback’s coroutine using its current instruction budget. Yielding is forbidden. Lua errors propagate unchanged after cleanup, including `__close`; completed effects remain. `Context.threadIdentity()` returns a coroutine token valid only during the callback and invalidated by reset.
+`Context.callNonYielding(function, args, R)` calls Lua on the callback’s coroutine using its current instruction budget. Yielding is forbidden. Lua errors propagate unchanged after cleanup, including `__close`; completed effects remain. `Context.coroutineIdentity()` returns a coroutine token valid only during the callback and invalidated by reset.
 
 ## Calling and Errors
 
@@ -359,6 +359,56 @@ switch (result) {
     },
 }
 ```
+
+## Coroutines
+
+`newCoroutine(function)` creates a suspended coroutine without running it. `resumeCoroutine(args, Yield, Return)` runs it until it yields or returns. The first resume passes `args` to the function; later resumes pass them back as the results of the pending yield. Use `Tuple` for multiple values and `void` to ignore them:
+
+```zig
+var chunk = try lua.loadString(
+    \\coroutine.yield("show dialogue")
+    \\return "story finished"
+, .{ .name = "=story.lua" });
+defer chunk.deinit();
+
+var story = try lua.newCoroutine(chunk);
+defer story.deinit();
+
+while (try story.status() == .suspended) {
+    var step = try story.resumeCoroutine(.{}, []const u8, []const u8);
+    defer step.deinit();
+    switch (step) {
+        .yielded => |text| std.debug.print("yielded: {s}\n", .{text}),
+        .returned => |text| std.debug.print("returned: {s}\n", .{text}),
+    }
+}
+```
+
+Always `switch` on the result rather than reading a field after checking the tag; the inactive field is undefined.
+
+- `status()` returns `.suspended`, `.running`, `.normal`, or `.dead`. Only suspended coroutines can be resumed.
+- Lua failures return `error.LuaError`. Use `protectedResume` to receive the error as a value, like `protectedCall`.
+- `deinit` each result to release its handles. Strings are borrowed VM slices, so copy any you need to keep.
+- A conversion error leaves the coroutine where Lua stopped. Its side effects are not undone.
+- `deinit` only drops the handle. Call `close()` first to run pending `__close` handlers on a suspended coroutine you are abandoning. Use `protectedClose()` to retain a Lua error value raised during closing, and deinitialize its `ErrorRef`.
+- Coroutine handles behave like other handles. They can be stored in globals and tables, passed as arguments, or read through `Value.coroutine`. Inside a callback, `ctx.coroutine()` returns the running coroutine.
+
+### Yielding from Callbacks
+
+A callback can suspend its coroutine with `return ctx.yield(values)`:
+
+```zig
+fn askUser(ctx: *zlua.Context) !void {
+    const prompt = try ctx.arg(0, []const u8);
+    return ctx.yield(.{prompt});
+}
+```
+
+When Lua runs `local answer = ask_user("Open the door?")`, Zig receives the prompt as `.yielded`. Resuming with `.{"yes"}` makes `ask_user` return `"yes"`. The callback's defers run before the coroutine suspends, and the Zig function is never reentered. Typed callbacks and userdata methods that return an error union can yield the same way.
+
+Yields work through nested Lua calls, `pcall`, iterators, `__pairs`, and most metamethods. `ctx.isYieldable()` reports whether the current callback can yield. It cannot yield under `Function.call`, `doString`, the main thread, `Context.callNonYielding`, `ipairs` reading `__index`, `close()`, or a finalizer.
+
+Snapshots capture suspended threads, and each worker resumes its own copy. Reset restores the suspended state, but it cannot cancel work the host already started. [`coroutine_story.zig`](../examples/coroutine_story.zig) runs both examples.
 
 ## Userdata
 
@@ -561,11 +611,11 @@ First writes, allocation-registry detachment, private-allocation cleanup, and ea
 ## Current Boundaries
 
 - No stable raw runtime wrapper is exposed.
-- Coroutine/thread handles are not in the high-level API.
+- A Zig callback cannot call Lua that yields and then continue running; `Context.yield` must be the callback's last action.
 - Broad Lua-table-to-Zig-struct decoding is not implemented.
 - There are no `callGlobal` convenience methods; fetch a `Function` and call it.
 
-Embedding examples under `examples/` cover scripts, library selection, callbacks, sandboxing, bytecode, memory files, userdata, and modules:
+Embedding examples under `examples/` cover scripts, library selection, callbacks, sandboxing, bytecode, memory files, userdata, modules, and coroutines:
 
 ```sh
 zig build examples

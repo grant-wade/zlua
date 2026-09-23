@@ -106,6 +106,11 @@
 - [Ref](#alias-ref)
 - [Table](#alias-table)
 - [Function](#alias-function)
+- [Coroutine](#alias-coroutine)
+- [CoroutineStatus](#alias-coroutinestatus)
+- [ResumeResult](#alias-resumeresult)
+- [CallResult](#alias-callresult)
+- [ErrorRef](#alias-errorref)
 - [Context](#alias-context)
 - [Error](#alias-error)
 - [BytecodeLoadOptions](#alias-bytecodeloadoptions)
@@ -147,7 +152,7 @@
 ## version
 
 ```zig
-pub const version = "0.5.4";
+pub const version = "0.6.0";
 ```
 
 <a id="const-lua_target_version"></a>
@@ -373,6 +378,56 @@ pub const Function = api.Function;
 ```
 
 References: [`api.Function`](api.md#type-function)
+
+<a id="alias-coroutine"></a>
+
+## Coroutine
+
+```zig
+pub const Coroutine = api.Coroutine;
+```
+
+References: [`api.Coroutine`](api.md#type-coroutine)
+
+<a id="alias-coroutinestatus"></a>
+
+## CoroutineStatus
+
+```zig
+pub const CoroutineStatus = api.CoroutineStatus;
+```
+
+References: [`api.CoroutineStatus`](api.md#alias-coroutinestatus)
+
+<a id="alias-resumeresult"></a>
+
+## ResumeResult
+
+```zig
+pub const ResumeResult = api.ResumeResult;
+```
+
+References: [`api.ResumeResult`](api.md#fn-resumeresult)
+
+<a id="alias-callresult"></a>
+
+## CallResult
+
+```zig
+pub const CallResult = api.CallResult;
+```
+
+References: [`api.CallResult`](api.md#fn-callresult)
+
+<a id="alias-errorref"></a>
+
+## ErrorRef
+
+```zig
+pub const ErrorRef = api.ErrorRef;
+```
+
+References: [`api.ErrorRef`](api.md#type-errorref)
 
 <a id="alias-context"></a>
 

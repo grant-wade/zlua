@@ -105,7 +105,7 @@ defer chunk.deinit();
 const answer = try chunk.call(.{}, i64);
 ```
 
-Handles such as `Table`, `Function`, `Ref`, `Userdata(T)`, `AnyUserdata`,
+Handles such as `Table`, `Function`, `Coroutine`, `Ref`, `Userdata(T)`, `AnyUserdata`,
 `ErrorRef`, and `Value` variants that contain handles root their Lua values
 while they live. Hosts must call `deinit` on those handles when finished.
 
@@ -135,6 +135,7 @@ and should not be treated as a stable embedding contract.
 - [Userdata](#fn-userdata)
 - [CallResult](#fn-callresult)
 - [Tuple](#fn-tuple)
+- [ResumeResult](#fn-resumeresult)
 
 ## Types
 
@@ -165,7 +166,7 @@ and should not be treated as a stable embedding contract.
 - [ErrorRef](#type-errorref)
 - [Value](#type-value)
 - [Context](#type-context)
-- [Thread](#type-thread)
+- [Coroutine](#type-coroutine)
 
 ## Constants
 
@@ -195,6 +196,7 @@ and should not be treated as a stable embedding contract.
 - [GcParam](#alias-gcparam)
 - [GcParams](#alias-gcparams)
 - [DoOptions](#alias-dooptions)
+- [CoroutineStatus](#alias-coroutinestatus)
 
 <a id="type-error"></a>
 
@@ -885,6 +887,7 @@ pub const State = struct {
 | [registerTyped](#fn-state-registertyped) | `self: *State, name: []const u8, comptime function: anytype` | `!Function` | Creates a Lua function handle from a typed Zig function. |
 | [registerUserdataInitializerWith](#fn-state-registeruserdatainitializerwith) | `self: *State, comptime T: type, name: []const u8, comptime initializer: anytype, comptime options: UserdataOptions(T)` | `!Function` | Creates a Lua function handle that constructs auto-bound userdata using &#96;initializer&#96;. |
 | [createTable](#fn-state-createtable) | `self: *State, options: TableOptions` | `!Table` | Creates a rooted Lua table handle with optional capacity hints. |
+| [newCoroutine](#fn-state-newcoroutine) | `self: *State, entry: Function` | `!Coroutine` | Creates a rooted, suspended coroutine without executing &#96;entry&#96;. First resume arguments become entry arguments. Deinitialize the returned handle. |
 | [newUserdata](#fn-state-newuserdata) | `self: *State, comptime T: type, value: T, options: UserdataOptions(T)` | `!Userdata(T)` | Allocates Lua-owned userdata storage initialized with &#96;value&#96;. |
 | [newUserdataAuto](#fn-state-newuserdataauto) | `self: *State, comptime T: type, value: T, options: UserdataOptions(T)` | `!Userdata(T)` | Allocates Lua-owned userdata and installs eligible methods declared on &#96;T&#96;. |
 | [newUserdataPtr](#fn-state-newuserdataptr) | `self: *State, comptime T: type, ptr: *T, options: UserdataPtrOptions(T)` | `!Userdata(T)` | Wraps host-owned storage as Lua userdata without taking ownership of &#96;ptr&#96;. |
@@ -1216,6 +1219,19 @@ pub fn createTable(self: *State, options: TableOptions) !Table
 ```
 
 References: [`State`](#type-state), [`TableOptions`](#type-tableoptions), [`Table`](#type-table)
+
+<a id="fn-state-newcoroutine"></a>
+
+### State.newCoroutine
+
+Creates a rooted, suspended coroutine without executing `entry`.
+First resume arguments become entry arguments. Deinitialize the returned handle.
+
+```zig
+pub fn newCoroutine(self: *State, entry: Function) !Coroutine
+```
+
+References: [`State`](#type-state), [`Function`](#type-function), [`Coroutine`](#type-coroutine)
 
 <a id="fn-state-newuserdata"></a>
 
@@ -1787,7 +1803,7 @@ References: [`AnyUserdata`](#type-anyuserdata)
 
 ## CallResult
 
-Result type returned by `Function.protectedCall`.
+Result type for protected calls and coroutine operations.
 
 ```zig
 pub fn CallResult(comptime R: type) type
@@ -1873,6 +1889,8 @@ pub const Value = union(enum) {
     table: Table,
     /// Rooted Lua function handle.
     function: Function,
+    /// Rooted Lua coroutine handle.
+    coroutine: Coroutine,
     /// Rooted Lua userdata handle with unknown Zig payload type.
     userdata: AnyUserdata,
     /// Lua value kind not represented by the high-level API.
@@ -1932,7 +1950,10 @@ pub const Context = struct {
 | [pushReturn](#fn-context-pushreturn) | `self: *Context, value: anytype` | `!void` | Appends one converted Lua return value for the current callback. |
 | [returnValues](#fn-context-returnvalues) | `self: *Context, values: anytype` | `!void` | Replaces callback returns with &#96;values&#96;. |
 | [raise](#fn-context-raise) | `self: *Context, value: anytype` | `error` | Raises a Lua error using &#96;value&#96; as the error object. |
-| [threadIdentity](#fn-context-threadidentity) | `self: *Context` | `usize` | Returns a coroutine token valid only during this callback and until reset. |
+| [coroutine](#fn-context-coroutine) | `self: *Context` | `!Coroutine` | Returns a rooted handle to this callback's coroutine, retained beyond the callback. |
+| [isYieldable](#fn-context-isyieldable) | `self: *Context` | `bool` | Reports whether this callback can yield across the current native boundary. |
+| [yield](#fn-context-yield) | `self: *Context, values: anytype` | `error` | Terminal callback yield: use &#96;return ctx.yield(.{values});&#96;. Zig defers and userdata scopes finish before suspension. Resume continues Lua after this call with the resume arguments; the Zig body is not reentered. |
+| [coroutineIdentity](#fn-context-coroutineidentity) | `self: *Context` | `usize` | Returns a coroutine token valid only during this callback and until reset. |
 | [callNonYielding](#fn-context-callnonyielding) | `self: *Context, function: Function, args: anytype, comptime R: type` | `!R` | Calls Lua on this callback's coroutine with its current budget; yielding is forbidden. Lua errors propagate unchanged after cleanup, including __close. Completed effects remain. |
 
 <a id="fn-context-state"></a>
@@ -2021,14 +2042,52 @@ pub fn raise(self: *Context, value: anytype) error{ LuaError, OutOfMemory, Inval
 
 References: [`Context`](#type-context)
 
-<a id="fn-context-threadidentity"></a>
+<a id="fn-context-coroutine"></a>
 
-### Context.threadIdentity
+### Context.coroutine
+
+Returns a rooted handle to this callback's coroutine, retained beyond the callback.
+
+```zig
+pub fn coroutine(self: *Context) !Coroutine
+```
+
+References: [`Context`](#type-context), [`Coroutine`](#type-coroutine)
+
+<a id="fn-context-isyieldable"></a>
+
+### Context.isYieldable
+
+Reports whether this callback can yield across the current native boundary.
+
+```zig
+pub fn isYieldable(self: *Context) bool
+```
+
+References: [`Context`](#type-context)
+
+<a id="fn-context-yield"></a>
+
+### Context.yield
+
+Terminal callback yield: use `return ctx.yield(.{values});`.
+Zig defers and userdata scopes finish before suspension. Resume continues
+Lua after this call with the resume arguments; the Zig body is not reentered.
+
+```zig
+pub fn yield(self: *Context, values: anytype) error{ HostCallbackYield, LuaError, OutOfMemory, InvalidHandle }
+```
+
+References: [`Context`](#type-context)
+
+<a id="fn-context-coroutineidentity"></a>
+
+### Context.coroutineIdentity
 
 Returns a coroutine token valid only during this callback and until reset.
 
 ```zig
-pub fn threadIdentity(self: *Context) usize
+pub fn coroutineIdentity(self: *Context) usize
 ```
 
 References: [`Context`](#type-context)
@@ -2046,13 +2105,138 @@ pub fn callNonYielding(self: *Context, function: Function, args: anytype, compti
 
 References: [`Context`](#type-context), [`Function`](#type-function)
 
-<a id="type-thread"></a>
+<a id="alias-coroutinestatus"></a>
 
-## Thread
+## CoroutineStatus
 
-Opaque placeholder for future high-level coroutine/thread handles.
+Observable Lua coroutine lifecycle.
 
 ```zig
-pub const Thread = opaque {};
+pub const CoroutineStatus = runtime_types.ThreadStatus;
 ```
+
+<a id="fn-resumeresult"></a>
+
+## ResumeResult
+
+A resume converts only its active branch. Strings are borrowed from the VM;
+handles are owned and released by `deinit`. Conversion failure does not rewind execution.
+
+```zig
+pub fn ResumeResult(comptime Y: type, comptime R: type) type
+```
+
+<a id="type-coroutine"></a>
+
+## Coroutine
+
+Rooted, state-bound Lua coroutine. Copies do not create additional owners.
+Reset invalidates the handle; destroy it before its state.
+
+```zig
+pub const Coroutine = struct {
+    ref: Ref,
+};
+```
+
+### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [deinit](#fn-coroutine-deinit) | `self: *Coroutine` | `void` | Releases only the root. Use &#96;close&#96; to unwind pending Lua frames explicitly. |
+| [resumeCoroutine](#fn-coroutine-resumecoroutine) | `self: Coroutine, args: anytype, comptime Y: type, comptime R: type` | `!ResumeResult(Y, R)` | Resumes execution, capturing Lua failures on the state as &#96;error.LuaError&#96;. Later resume arguments become the suspended call's return values. Yielded values convert to &#96;Y&#96;, returned values to &#96;R&#96;. Named &#96;resumeCoroutine&#96; because &#96;resume&#96; is a Zig keyword. |
+| [protectedResume](#fn-coroutine-protectedresume) | `self: Coroutine, args: anytype, comptime Y: type, comptime R: type` | `!CallResult(ResumeResult(Y, R))` | Resumes execution and preserves arbitrary Lua error objects as &#96;ErrorRef&#96;. |
+| [status](#fn-coroutine-status) | `self: Coroutine` | `!CoroutineStatus` | Returns the current lifecycle status. |
+| [identity](#fn-coroutine-identity) | `self: Coroutine` | `!usize` | Returns a state-local identity token valid while rooted and until reset. |
+| [close](#fn-coroutine-close) | `self: Coroutine` | `!void` | Unwinds pending Lua frames and __close handlers, retaining this handle. Rejects main, running, and normal coroutines; captures Lua failures on the state. |
+| [protectedClose](#fn-coroutine-protectedclose) | `self: Coroutine` | `!CallResult(void)` | Closes the coroutine and preserves an arbitrary Lua error object as &#96;ErrorRef&#96;. Deinitialize the returned error handle when finished. |
+
+<a id="fn-coroutine-deinit"></a>
+
+### Coroutine.deinit
+
+Releases only the root. Use `close` to unwind pending Lua frames explicitly.
+
+```zig
+pub fn deinit(self: *Coroutine) void
+```
+
+References: [`Coroutine`](#type-coroutine)
+
+<a id="fn-coroutine-resumecoroutine"></a>
+
+### Coroutine.resumeCoroutine
+
+Resumes execution, capturing Lua failures on the state as `error.LuaError`.
+Later resume arguments become the suspended call's return values.
+Yielded values convert to `Y`, returned values to `R`.
+Named `resumeCoroutine` because `resume` is a Zig keyword.
+
+```zig
+pub fn resumeCoroutine(self: Coroutine, args: anytype, comptime Y: type, comptime R: type) !ResumeResult(Y, R)
+```
+
+References: [`Coroutine`](#type-coroutine)
+
+<a id="fn-coroutine-protectedresume"></a>
+
+### Coroutine.protectedResume
+
+Resumes execution and preserves arbitrary Lua error objects as `ErrorRef`.
+
+```zig
+pub fn protectedResume(self: Coroutine, args: anytype, comptime Y: type, comptime R: type) !CallResult(ResumeResult(Y, R))
+```
+
+References: [`Coroutine`](#type-coroutine)
+
+<a id="fn-coroutine-status"></a>
+
+### Coroutine.status
+
+Returns the current lifecycle status.
+
+```zig
+pub fn status(self: Coroutine) !CoroutineStatus
+```
+
+References: [`Coroutine`](#type-coroutine), [`CoroutineStatus`](#alias-coroutinestatus)
+
+<a id="fn-coroutine-identity"></a>
+
+### Coroutine.identity
+
+Returns a state-local identity token valid while rooted and until reset.
+
+```zig
+pub fn identity(self: Coroutine) !usize
+```
+
+References: [`Coroutine`](#type-coroutine)
+
+<a id="fn-coroutine-close"></a>
+
+### Coroutine.close
+
+Unwinds pending Lua frames and __close handlers, retaining this handle.
+Rejects main, running, and normal coroutines; captures Lua failures on the state.
+
+```zig
+pub fn close(self: Coroutine) !void
+```
+
+References: [`Coroutine`](#type-coroutine)
+
+<a id="fn-coroutine-protectedclose"></a>
+
+### Coroutine.protectedClose
+
+Closes the coroutine and preserves an arbitrary Lua error object as `ErrorRef`.
+Deinitialize the returned error handle when finished.
+
+```zig
+pub fn protectedClose(self: Coroutine) !CallResult(void)
+```
+
+References: [`Coroutine`](#type-coroutine)
 

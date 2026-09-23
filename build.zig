@@ -147,6 +147,7 @@ pub fn build(b: *std.Build) void {
         .{ .key = "snapshot_adventure", .name = "zlua-embed-snapshot-adventure", .path = "examples/snapshot_adventure.zig" },
         .{ .key = "snapshot_adversarial", .name = "zlua-embed-snapshot-adversarial", .path = "examples/snapshot_adversarial.zig" },
         .{ .key = "snapshot_reset", .name = "zlua-embed-snapshot-reset", .path = "examples/snapshot_reset.zig" },
+        .{ .key = "coroutine_story", .name = "zlua-embed-coroutine-story", .path = "examples/coroutine_story.zig" },
         .{ .key = "run_script", .name = "zlua-embed-run-script", .path = "examples/run_script.zig" },
         .{ .key = "select_libraries", .name = "zlua-embed-select-libraries", .path = "examples/select_libraries.zig" },
         .{ .key = "register_function", .name = "zlua-embed-register-function", .path = "examples/register_function.zig" },

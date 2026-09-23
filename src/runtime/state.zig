@@ -1680,6 +1680,7 @@ pub const State = struct {
         defer self.active_api_callback = context.parent;
 
         dispatch(&context) catch |err| switch (err) {
+            error.HostCallbackYield => return coroutine_mod.suspendCoroutine(State, self, thread, op, context.returns.items()),
             error.RuntimeError, error.StackOverflow, error.UnsupportedOpcode => return err,
             error.LuaError => return self.failValue(context.error_value orelse .{ .string = try self.intern("host callback raised an error") }),
             error.OutOfMemory => return err,
@@ -4286,12 +4287,11 @@ pub const State = struct {
     }
 
     pub fn closeCoroutine(self: *State, target: *Thread, error_value: ?Value) !?Value {
-        try rollback_mod.threadWritable(target);
+        if (target.status == .running and !target.is_main) return self.fail("cannot close a running coroutine");
         return coroutine_mod.closeCoroutine(State, self, target, error_value);
     }
 
     pub fn resumeCoroutine(self: *State, target: *Thread, args: []const Value) !CoroutineResumeResult {
-        try rollback_mod.threadWritable(target);
         return coroutine_mod.resumeCoroutine(State, self, target, args);
     }
 
