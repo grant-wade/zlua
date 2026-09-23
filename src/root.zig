@@ -1,4 +1,4 @@
-pub const version = "0.5.4";
+pub const version = "0.6.0";
 pub const lua_target_version = "Lua 5.5";
 
 pub const frontend = @import("frontend.zig");
@@ -25,8 +25,8 @@ pub const Value = api.Value;
 pub const Ref = api.Ref;
 pub const Table = api.Table;
 pub const Function = api.Function;
-pub const Thread = api.Thread;
-pub const ThreadStatus = api.ThreadStatus;
+pub const Coroutine = api.Coroutine;
+pub const CoroutineStatus = api.CoroutineStatus;
 pub const ResumeResult = api.ResumeResult;
 pub const CallResult = api.CallResult;
 pub const ErrorRef = api.ErrorRef;

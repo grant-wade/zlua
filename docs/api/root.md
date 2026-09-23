@@ -106,8 +106,8 @@
 - [Ref](#alias-ref)
 - [Table](#alias-table)
 - [Function](#alias-function)
-- [Thread](#alias-thread)
-- [ThreadStatus](#alias-threadstatus)
+- [Coroutine](#alias-coroutine)
+- [CoroutineStatus](#alias-coroutinestatus)
 - [ResumeResult](#alias-resumeresult)
 - [CallResult](#alias-callresult)
 - [ErrorRef](#alias-errorref)
@@ -152,7 +152,7 @@
 ## version
 
 ```zig
-pub const version = "0.5.4";
+pub const version = "0.6.0";
 ```
 
 <a id="const-lua_target_version"></a>
@@ -379,25 +379,25 @@ pub const Function = api.Function;
 
 References: [`api.Function`](api.md#type-function)
 
-<a id="alias-thread"></a>
+<a id="alias-coroutine"></a>
 
-## Thread
-
-```zig
-pub const Thread = api.Thread;
-```
-
-References: [`api.Thread`](api.md#type-thread)
-
-<a id="alias-threadstatus"></a>
-
-## ThreadStatus
+## Coroutine
 
 ```zig
-pub const ThreadStatus = api.ThreadStatus;
+pub const Coroutine = api.Coroutine;
 ```
 
-References: [`api.ThreadStatus`](api.md#alias-threadstatus)
+References: [`api.Coroutine`](api.md#type-coroutine)
+
+<a id="alias-coroutinestatus"></a>
+
+## CoroutineStatus
+
+```zig
+pub const CoroutineStatus = api.CoroutineStatus;
+```
+
+References: [`api.CoroutineStatus`](api.md#alias-coroutinestatus)
 
 <a id="alias-resumeresult"></a>
 

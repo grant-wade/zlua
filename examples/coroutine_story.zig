@@ -17,11 +17,11 @@ pub fn main() !void {
         \\return "story finished"
     , .{ .name = "=story.lua" });
     defer chunk.deinit();
-    var story = try lua.newThread(chunk);
+    var story = try lua.newCoroutine(chunk);
     defer story.deinit();
 
     while (try story.status() == .suspended) {
-        var step = try story.resumeThread(.{}, []const u8, []const u8);
+        var step = try story.resumeCoroutine(.{}, []const u8, []const u8);
         defer step.deinit();
         switch (step) {
             .yielded => |text| std.debug.print("yielded: {s}\n", .{text}),
@@ -37,16 +37,16 @@ pub fn main() !void {
         \\return "You chose: " .. answer
     , .{ .name = "=dialogue.lua" });
     defer dialogue.deinit();
-    var exchange = try lua.newThread(dialogue);
+    var exchange = try lua.newCoroutine(dialogue);
     defer exchange.deinit();
-    var prompt = try exchange.resumeThread(.{}, []const u8, []const u8);
+    var prompt = try exchange.resumeCoroutine(.{}, []const u8, []const u8);
     defer prompt.deinit();
     const question = switch (prompt) {
         .yielded => |text| text,
         .returned => return error.ExpectedPrompt,
     };
     std.debug.print("{s}\n", .{question});
-    var answer = try exchange.resumeThread(.{"yes"}, []const u8, []const u8);
+    var answer = try exchange.resumeCoroutine(.{"yes"}, []const u8, []const u8);
     defer answer.deinit();
     switch (answer) {
         .returned => |text| std.debug.print("{s}\n", .{text}),

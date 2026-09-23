@@ -332,7 +332,7 @@ defer clamp_fn.deinit();
 try lua.setGlobal("clamp", clamp_fn);
 ```
 
-`Context.callNonYielding(function, args, R)` calls Lua on the callback’s coroutine using its current instruction budget. Yielding is forbidden. Lua errors propagate unchanged after cleanup, including `__close`; completed effects remain. `Context.threadIdentity()` returns a coroutine token valid only during the callback and invalidated by reset.
+`Context.callNonYielding(function, args, R)` calls Lua on the callback’s coroutine using its current instruction budget. Yielding is forbidden. Lua errors propagate unchanged after cleanup, including `__close`; completed effects remain. `Context.coroutineIdentity()` returns a coroutine token valid only during the callback and invalidated by reset.
 
 ## Calling and Errors
 
@@ -360,9 +360,9 @@ switch (result) {
 }
 ```
 
-## Threads and Coroutines
+## Coroutines
 
-`newThread(function)` creates a suspended coroutine without running it. `resumeThread(args, Yield, Return)` runs it until it yields or returns. The first resume passes `args` to the function; later resumes pass them back as the results of the pending yield. Use `Tuple` for multiple values and `void` to ignore them:
+`newCoroutine(function)` creates a suspended coroutine without running it. `resumeCoroutine(args, Yield, Return)` runs it until it yields or returns. The first resume passes `args` to the function; later resumes pass them back as the results of the pending yield. Use `Tuple` for multiple values and `void` to ignore them:
 
 ```zig
 var chunk = try lua.loadString(
@@ -371,11 +371,11 @@ var chunk = try lua.loadString(
 , .{ .name = "=story.lua" });
 defer chunk.deinit();
 
-var story = try lua.newThread(chunk);
+var story = try lua.newCoroutine(chunk);
 defer story.deinit();
 
 while (try story.status() == .suspended) {
-    var step = try story.resumeThread(.{}, []const u8, []const u8);
+    var step = try story.resumeCoroutine(.{}, []const u8, []const u8);
     defer step.deinit();
     switch (step) {
         .yielded => |text| std.debug.print("yielded: {s}\n", .{text}),
@@ -386,12 +386,12 @@ while (try story.status() == .suspended) {
 
 Always `switch` on the result rather than reading a field after checking the tag; the inactive field is undefined.
 
-- `status()` returns `.suspended`, `.running`, `.normal`, or `.dead`. Only suspended threads can be resumed.
+- `status()` returns `.suspended`, `.running`, `.normal`, or `.dead`. Only suspended coroutines can be resumed.
 - Lua failures return `error.LuaError`. Use `protectedResume` to receive the error as a value, like `protectedCall`.
 - `deinit` each result to release its handles. Strings are borrowed VM slices, so copy any you need to keep.
-- A conversion error leaves the thread where Lua stopped. Its side effects are not undone.
-- `deinit` only drops the handle. Call `close()` first to run pending `__close` handlers on a suspended thread you are abandoning.
-- Thread handles behave like other handles. They can be stored in globals and tables, passed as arguments, or read through `Value.thread`. Inside a callback, `ctx.thread()` returns the running coroutine.
+- A conversion error leaves the coroutine where Lua stopped. Its side effects are not undone.
+- `deinit` only drops the handle. Call `close()` first to run pending `__close` handlers on a suspended coroutine you are abandoning. Use `protectedClose()` to retain a Lua error value raised during closing, and deinitialize its `ErrorRef`.
+- Coroutine handles behave like other handles. They can be stored in globals and tables, passed as arguments, or read through `Value.coroutine`. Inside a callback, `ctx.coroutine()` returns the running coroutine.
 
 ### Yielding from Callbacks
 

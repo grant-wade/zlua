@@ -144,13 +144,13 @@ test "inline and spilled callback results remain rooted across GC and nested cal
 test "non-yielding callback stays on the current thread and unwinds before returning errors" {
     const Host = struct {
         fn call(ctx: *api.Context) !void {
-            const thread = ctx.threadIdentity();
+            const thread = ctx.coroutineIdentity();
             var callback = try ctx.arg(0, api.Function);
             defer callback.deinit();
             ctx.callNonYielding(callback, .{}, void) catch |err| {
                 // __close has run before the host can release its lock.
                 try std.testing.expect(try ctx.state().getGlobal("closed", bool));
-                try std.testing.expectEqual(thread, ctx.threadIdentity());
+                try std.testing.expectEqual(thread, ctx.coroutineIdentity());
                 return err;
             };
         }

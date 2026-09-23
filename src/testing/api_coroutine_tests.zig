@@ -4,10 +4,10 @@ const a = std.testing.allocator;
 
 fn ask(ctx: *api.Context) !void {
     try std.testing.expect(ctx.isYieldable());
-    var current = try ctx.thread();
+    var current = try ctx.coroutine();
     defer current.deinit();
-    try std.testing.expectEqual(api.ThreadStatus.running, try current.status());
-    try std.testing.expectEqual(ctx.threadIdentity(), try current.identity());
+    try std.testing.expectEqual(api.CoroutineStatus.running, try current.status());
+    try std.testing.expectEqual(ctx.coroutineIdentity(), try current.identity());
     return ctx.yield(.{@as(i64, 10)});
 }
 
@@ -23,33 +23,33 @@ test "thread lifecycle converts only active branches and preserves resume argume
         \\return 'finished'
     , .{});
     defer chunk.deinit();
-    var thread = try lua.newThread(chunk);
+    var thread = try lua.newCoroutine(chunk);
     defer thread.deinit();
-    try std.testing.expectEqual(api.ThreadStatus.suspended, try thread.status());
+    try std.testing.expectEqual(api.CoroutineStatus.suspended, try thread.status());
     try std.testing.expectEqual(null, try lua.getGlobal("started", ?bool));
     const Yield = api.Tuple(&.{ i64, ?i64 });
-    var first = try thread.resumeThread(.{41}, Yield, []const u8);
+    var first = try thread.resumeCoroutine(.{41}, Yield, []const u8);
     defer first.deinit();
     try std.testing.expectEqual(41, first.yielded.get(0));
     try std.testing.expectEqual(null, first.yielded.get(1));
-    var second = try thread.resumeThread(.{42}, Yield, []const u8);
+    var second = try thread.resumeCoroutine(.{42}, Yield, []const u8);
     defer second.deinit();
     try std.testing.expectEqual(42, second.yielded.get(0));
-    var last = try thread.resumeThread(.{}, Yield, []const u8);
+    var last = try thread.resumeCoroutine(.{}, Yield, []const u8);
     defer last.deinit();
     try std.testing.expectEqualStrings("finished", last.returned);
-    try std.testing.expectEqual(api.ThreadStatus.dead, try thread.status());
-    try std.testing.expectError(error.LuaError, thread.resumeThread(.{}, void, void));
+    try std.testing.expectEqual(api.CoroutineStatus.dead, try thread.status());
+    try std.testing.expectError(error.LuaError, thread.resumeCoroutine(.{}, void, void));
     try thread.close();
 
     var dialogue = try lua.loadString("coroutine.yield('dialogue')", .{});
     defer dialogue.deinit();
-    var story = try lua.newThread(dialogue);
+    var story = try lua.newCoroutine(dialogue);
     defer story.deinit();
-    var line = try story.resumeThread(.{}, []const u8, void);
+    var line = try story.resumeCoroutine(.{}, []const u8, void);
     defer line.deinit();
     try std.testing.expectEqualStrings("dialogue", line.yielded);
-    var done = try story.resumeThread(.{}, []const u8, void);
+    var done = try story.resumeCoroutine(.{}, []const u8, void);
     defer done.deinit();
     try std.testing.expect(done == .returned);
 }
@@ -58,40 +58,40 @@ test "thread handles round trip through globals tables dynamic values tuples and
     var lua = try api.State.init(a, .{});
     defer lua.deinit();
     try lua.doString("co = coroutine.create(function(t) coroutine.yield(t); return t end)", .{});
-    var thread = try lua.getGlobal("co", api.Thread);
+    var thread = try lua.getGlobal("co", api.Coroutine);
     defer thread.deinit();
     var value = try lua.push(thread);
     defer value.deinit();
-    try std.testing.expectEqual(try thread.identity(), try value.thread.identity());
-    var read = try lua.read(value, api.Thread);
+    try std.testing.expectEqual(try thread.identity(), try value.coroutine.identity());
+    var read = try lua.read(value, api.Coroutine);
     defer read.deinit();
     var table = try lua.createTable(.{});
     defer table.deinit();
     try table.set(thread, value);
-    var stored = try table.get(thread, api.Thread);
+    var stored = try table.get(thread, api.Coroutine);
     defer stored.deinit();
     try std.testing.expectEqual(try thread.identity(), try stored.identity());
     var echo = try lua.registerTyped("echo", struct {
-        fn call(t: api.Thread) api.Thread {
+        fn call(t: api.Coroutine) api.Coroutine {
             return t;
         }
     }.call);
     defer echo.deinit();
-    var echoed = try echo.call(.{thread}, api.Thread);
+    var echoed = try echo.call(.{thread}, api.Coroutine);
     defer echoed.deinit();
     try std.testing.expectEqual(try thread.identity(), try echoed.identity());
-    const Threads = api.Tuple(&.{ api.Thread, ?api.Thread });
-    var first = try thread.resumeThread(.{thread}, Threads, api.Thread);
+    const Threads = api.Tuple(&.{ api.Coroutine, ?api.Coroutine });
+    var first = try thread.resumeCoroutine(.{thread}, Threads, api.Coroutine);
     defer first.deinit();
     try std.testing.expectEqual(try thread.identity(), try first.yielded.get(0).identity());
     try std.testing.expectEqual(null, first.yielded.get(1));
-    var last = try thread.resumeThread(.{}, Threads, api.Thread);
+    var last = try thread.resumeCoroutine(.{}, Threads, api.Coroutine);
     defer last.deinit();
     try std.testing.expectEqual(try thread.identity(), try last.returned.identity());
     var other = try api.State.init(a, .{});
     defer other.deinit();
     try std.testing.expectError(error.InvalidHandle, other.setGlobal("thread", value));
-    try std.testing.expectError(error.InvalidHandle, other.newThread(echo));
+    try std.testing.expectError(error.InvalidHandle, other.newCoroutine(echo));
 }
 
 test "callback current thread survives host retirement and rejects main lifecycle operations" {
@@ -100,20 +100,20 @@ test "callback current thread survives host retirement and rejects main lifecycl
     var callback = try lua.register("current", struct {
         fn call(ctx: *api.Context) !void {
             try std.testing.expect(!ctx.isYieldable());
-            var thread = try ctx.thread();
+            var thread = try ctx.coroutine();
             defer thread.deinit();
             try ctx.returnValues(thread);
         }
     }.call);
     defer callback.deinit();
-    var retained = try callback.call(.{}, api.Thread);
+    var retained = try callback.call(.{}, api.Coroutine);
     defer retained.deinit();
     const identity = try retained.identity();
     try lua.collect();
     try std.testing.expectEqual(identity, try retained.identity());
-    try std.testing.expectEqual(api.ThreadStatus.dead, try retained.status());
+    try std.testing.expectEqual(api.CoroutineStatus.dead, try retained.status());
     try std.testing.expectError(error.LuaError, retained.close());
-    try std.testing.expectError(error.LuaError, retained.resumeThread(.{}, void, void));
+    try std.testing.expectError(error.LuaError, retained.resumeCoroutine(.{}, void, void));
 }
 
 test "plain typed and entry callbacks yield after defers without reentering Zig" {
@@ -132,24 +132,24 @@ test "plain typed and entry callbacks yield after defers without reentering Zig"
     try lua.setGlobal("typed", typed);
     var chunk = try lua.loadString("local n = ask(); local answer = typed('prompt'); return n + answer", .{});
     defer chunk.deinit();
-    var thread = try lua.newThread(chunk);
+    var thread = try lua.newCoroutine(chunk);
     defer thread.deinit();
-    var first = try thread.resumeThread(.{}, i64, i64);
+    var first = try thread.resumeCoroutine(.{}, i64, i64);
     defer first.deinit();
     try std.testing.expectEqual(10, first.yielded);
-    var second = try thread.resumeThread(.{20}, []const u8, i64);
+    var second = try thread.resumeCoroutine(.{20}, []const u8, i64);
     defer second.deinit();
     try std.testing.expectEqualStrings("prompt", second.yielded);
     try std.testing.expect(try lua.getGlobal("cleaned", bool));
-    var last = try thread.resumeThread(.{22}, void, i64);
+    var last = try thread.resumeCoroutine(.{22}, void, i64);
     defer last.deinit();
     try std.testing.expectEqual(42, last.returned);
-    var entry = try lua.newThread(plain);
+    var entry = try lua.newCoroutine(plain);
     defer entry.deinit();
-    var entry_first = try entry.resumeThread(.{}, i64, i64);
+    var entry_first = try entry.resumeCoroutine(.{}, i64, i64);
     defer entry_first.deinit();
     try std.testing.expectEqual(10, entry_first.yielded);
-    var entry_last = try entry.resumeThread(.{42}, void, i64);
+    var entry_last = try entry.resumeCoroutine(.{42}, void, i64);
     defer entry_last.deinit();
     try std.testing.expectEqual(42, entry_last.returned);
 }
@@ -177,16 +177,16 @@ test "host yield preserves Lua protected iterator metamethod tail and scope clos
     for (sources) |source| {
         var chunk = try lua.loadString(source, .{});
         defer chunk.deinit();
-        var thread = try lua.newThread(chunk);
+        var thread = try lua.newCoroutine(chunk);
         defer thread.deinit();
-        var first = thread.resumeThread(.{}, i64, i64) catch |err| {
+        var first = thread.resumeCoroutine(.{}, i64, i64) catch |err| {
             std.debug.print("yield source: {s}\n", .{source});
             return err;
         };
         defer first.deinit();
         try std.testing.expectEqual(10, first.yielded);
         try lua.collect();
-        var last = try thread.resumeThread(.{42}, void, i64);
+        var last = try thread.resumeCoroutine(.{42}, void, i64);
         defer last.deinit();
         try std.testing.expectEqual(42, last.returned);
     }
@@ -194,7 +194,7 @@ test "host yield preserves Lua protected iterator metamethod tail and scope clos
 
 fn uncheckedYield(ctx: *api.Context) !void {
     try std.testing.expect(!ctx.isYieldable());
-    var current = try ctx.thread();
+    var current = try ctx.coroutine();
     defer current.deinit();
     try std.testing.expectError(error.LuaError, current.close());
     return ctx.yield(.{42});
@@ -226,29 +226,29 @@ test "non yielding host native close and finalizer boundaries reject callback yi
         \\return 42
     , .{});
     defer chunk.deinit();
-    var thread = try lua.newThread(chunk);
+    var thread = try lua.newCoroutine(chunk);
     defer thread.deinit();
-    var result = try thread.resumeThread(.{}, void, i64);
+    var result = try thread.resumeCoroutine(.{}, void, i64);
     defer result.deinit();
     try std.testing.expectEqual(42, result.returned);
     var closing = try lua.loadString("local guard <close> = setmetatable({}, {__close=ask}); coroutine.yield()", .{});
     defer closing.deinit();
-    var close_thread = try lua.newThread(closing);
+    var close_thread = try lua.newCoroutine(closing);
     defer close_thread.deinit();
-    var yielded = try close_thread.resumeThread(.{}, void, void);
+    var yielded = try close_thread.resumeCoroutine(.{}, void, void);
     defer yielded.deinit();
     try std.testing.expectError(error.LuaError, close_thread.close());
-    try std.testing.expectEqual(api.ThreadStatus.dead, try close_thread.status());
+    try std.testing.expectEqual(api.CoroutineStatus.dead, try close_thread.status());
     try lua.doString("setmetatable({}, {__gc=function() local ok, err=pcall(ask); assert(not ok and err:find('yield')); finalized=true end})", .{});
     try lua.collect();
     try std.testing.expect(try lua.getGlobal("finalized", bool));
 }
 
-test "thread close retains arbitrary errors and deinit only releases its root" {
+test "coroutine close retains arbitrary errors and deinit only releases its root" {
     var lua = try api.State.init(a, .{});
     defer lua.deinit();
     try lua.doString("marker={}; co=coroutine.create(function() error(marker) end)", .{});
-    var thread = try lua.getGlobal("co", api.Thread);
+    var thread = try lua.getGlobal("co", api.Coroutine);
     defer thread.deinit();
     var result = try thread.protectedResume(.{}, void, void);
     try std.testing.expect(result == .lua_error);
@@ -265,16 +265,23 @@ test "thread close retains arbitrary errors and deinit only releases its root" {
     defer captured_value.deinit();
     try std.testing.expectEqual(try marker.identity(), try captured_value.table.identity());
     try lua.doString("co=coroutine.create(function() local guard <close> = setmetatable({}, {__close=function() closed=true; error(marker) end}); coroutine.yield() end)", .{});
-    var pending = try lua.getGlobal("co", api.Thread);
-    var first = try pending.resumeThread(.{}, void, void);
+    var pending = try lua.getGlobal("co", api.Coroutine);
+    var first = try pending.resumeCoroutine(.{}, void, void);
     first.deinit();
     pending.deinit();
     try std.testing.expectEqual(null, try lua.getGlobal("closed", ?bool));
-    pending = try lua.getGlobal("co", api.Thread);
+    pending = try lua.getGlobal("co", api.Coroutine);
     defer pending.deinit();
-    try std.testing.expectError(error.LuaError, pending.close());
+    var close_result = try pending.protectedClose();
+    try std.testing.expect(close_result == .lua_error);
+    defer close_result.lua_error.deinit();
+    var close_value = try close_result.lua_error.value();
+    defer close_value.deinit();
+    try lua.collect();
+    try std.testing.expectEqual(try marker.identity(), try close_value.table.identity());
     try std.testing.expect(try lua.getGlobal("closed", bool));
-    try std.testing.expectEqual(api.ThreadStatus.dead, try pending.status());
+    try std.testing.expectEqual(api.CoroutineStatus.dead, try pending.status());
+    try std.testing.expect((try pending.protectedClose()) == .ok);
     try pending.close();
 }
 
@@ -283,18 +290,18 @@ test "conversion failures advance thread and release partial tuple handles" {
     defer lua.deinit();
     var chunk = try lua.loadString("coroutine.yield({}, {}, 'bad'); return {}, nil", .{});
     defer chunk.deinit();
-    var thread = try lua.newThread(chunk);
+    var thread = try lua.newCoroutine(chunk);
     defer thread.deinit();
     const roots = lua.raw_state.activeRootCount();
-    try std.testing.expectError(error.TypeMismatch, thread.resumeThread(.{}, api.Tuple(&.{ api.Table, ?api.Table, i64 }), void));
+    try std.testing.expectError(error.TypeMismatch, thread.resumeCoroutine(.{}, api.Tuple(&.{ api.Table, ?api.Table, i64 }), void));
     try std.testing.expectEqual(roots, lua.raw_state.activeRootCount());
-    try std.testing.expectEqual(api.ThreadStatus.suspended, try thread.status());
-    var result = try thread.resumeThread(.{}, void, api.Tuple(&.{ api.Table, ?api.Table }));
+    try std.testing.expectEqual(api.CoroutineStatus.suspended, try thread.status());
+    var result = try thread.resumeCoroutine(.{}, void, api.Tuple(&.{ api.Table, ?api.Table }));
     try lua.collect();
     try result.returned.get(0).set("retained", true);
     result.deinit();
     try std.testing.expectEqual(roots, lua.raw_state.activeRootCount());
-    try std.testing.expectEqual(api.ThreadStatus.dead, try thread.status());
+    try std.testing.expectEqual(api.CoroutineStatus.dead, try thread.status());
 }
 
 test "suspended host yield values survive GC snapshots independent resumes and reset" {
@@ -312,11 +319,11 @@ test "suspended host yield values survive GC snapshots independent resumes and r
     try lua.setGlobal("ask", callback);
     var chunk = try lua.loadString("local answer=ask(); return answer + 1", .{});
     defer chunk.deinit();
-    var thread = try lua.newThread(chunk);
+    var thread = try lua.newCoroutine(chunk);
     defer thread.deinit();
     try lua.setGlobal("co", thread);
     lua.raw_state.collect_after_instruction = true;
-    var first = try thread.resumeThread(.{}, api.Table, i64);
+    var first = try thread.resumeCoroutine(.{}, api.Table, i64);
     defer first.deinit();
     try lua.collect();
     try std.testing.expectEqual(42, try first.yielded.get("value", i64));
@@ -325,21 +332,21 @@ test "suspended host yield values survive GC snapshots independent resumes and r
     for (0..2) |i| {
         var worker = try snapshot.newState(a);
         defer worker.deinit();
-        var co = try worker.getGlobal("co", api.Thread);
+        var co = try worker.getGlobal("co", api.Coroutine);
         defer co.deinit();
-        var returned = try co.resumeThread(.{i}, void, i64);
+        var returned = try co.resumeCoroutine(.{i}, void, i64);
         defer returned.deinit();
         try std.testing.expectEqual(@as(i64, @intCast(i + 1)), returned.returned);
         try worker.reset();
         try std.testing.expectError(error.InvalidHandle, co.status());
         try std.testing.expectError(error.InvalidHandle, co.close());
-        try std.testing.expectError(error.InvalidHandle, co.resumeThread(.{}, void, void));
-        var reset = try worker.getGlobal("co", api.Thread);
+        try std.testing.expectError(error.InvalidHandle, co.resumeCoroutine(.{}, void, void));
+        var reset = try worker.getGlobal("co", api.Coroutine);
         defer reset.deinit();
         try reset.close();
     }
-    try std.testing.expectEqual(api.ThreadStatus.suspended, try thread.status());
-    var last = try thread.resumeThread(.{41}, void, i64);
+    try std.testing.expectEqual(api.CoroutineStatus.suspended, try thread.status());
+    var last = try thread.resumeCoroutine(.{41}, void, i64);
     defer last.deinit();
     try std.testing.expectEqual(42, last.returned);
     try lua.collect();
@@ -351,16 +358,16 @@ test "running and normal threads reject host lifecycle changes while Lua self cl
     defer lua.deinit();
     var check = try lua.register("check", struct {
         fn call(ctx: *api.Context) !void {
-            var current = try ctx.thread();
+            var current = try ctx.coroutine();
             defer current.deinit();
             try std.testing.expectError(error.LuaError, current.close());
-            try std.testing.expectError(error.LuaError, current.resumeThread(.{}, void, void));
-            var parent = try ctx.arg(0, api.Thread);
+            try std.testing.expectError(error.LuaError, current.resumeCoroutine(.{}, void, void));
+            var parent = try ctx.arg(0, api.Coroutine);
             defer parent.deinit();
-            try std.testing.expectEqual(api.ThreadStatus.normal, try parent.status());
+            try std.testing.expectEqual(api.CoroutineStatus.normal, try parent.status());
             try std.testing.expectError(error.LuaError, parent.close());
-            try std.testing.expectError(error.LuaError, parent.resumeThread(.{}, void, void));
-            try std.testing.expectEqual(api.ThreadStatus.running, try current.status());
+            try std.testing.expectError(error.LuaError, parent.resumeCoroutine(.{}, void, void));
+            try std.testing.expectEqual(api.CoroutineStatus.running, try current.status());
             return ctx.yield(.{});
         }
     }.call);
@@ -402,17 +409,17 @@ test "userdata method scopes finish before host yield and rejected conversion ne
     try lua.setGlobal("payload", payload);
     var chunk = try lua.loadString("return payload:ask()", .{});
     defer chunk.deinit();
-    var thread = try lua.newThread(chunk);
+    var thread = try lua.newCoroutine(chunk);
     defer thread.deinit();
     try lua.setGlobal("co", thread);
-    var first = try thread.resumeThread(.{}, i64, i64);
+    var first = try thread.resumeCoroutine(.{}, i64, i64);
     defer first.deinit();
     try std.testing.expectEqual(1, first.yielded);
     try std.testing.expect(lua.raw_state.userdata_scope == null);
     try std.testing.expectEqual(1, try payload.withRead({}, Payload.read));
     var snapshot = try lua.snapshot(a);
     defer snapshot.deinit();
-    var last = try thread.resumeThread(.{42}, void, i64);
+    var last = try thread.resumeCoroutine(.{42}, void, i64);
     defer last.deinit();
     try std.testing.expectEqual(42, last.returned);
 
@@ -425,9 +432,9 @@ test "userdata method scopes finish before host yield and rejected conversion ne
     try lua.setGlobal("bad", bad);
     var bad_chunk = try lua.loadString("local ok, err=pcall(bad); assert(not ok and err:find('integer')); return 42", .{});
     defer bad_chunk.deinit();
-    var bad_thread = try lua.newThread(bad_chunk);
+    var bad_thread = try lua.newCoroutine(bad_chunk);
     defer bad_thread.deinit();
-    var result = try bad_thread.resumeThread(.{}, void, i64);
+    var result = try bad_thread.resumeCoroutine(.{}, void, i64);
     defer result.deinit();
     try std.testing.expectEqual(42, result.returned);
 }
@@ -437,12 +444,12 @@ test "thread startup stack limits and cumulative instruction failures become Lua
     defer lua.deinit();
     var chunk = try lua.loadString("return 1,2,3,4,5", .{});
     defer chunk.deinit();
-    var thread = try lua.newThread(chunk);
+    var thread = try lua.newCoroutine(chunk);
     defer thread.deinit();
     var failure = try thread.protectedResume(.{}, void, void);
     try std.testing.expect(failure == .lua_error);
     defer failure.lua_error.deinit();
-    try std.testing.expectEqual(api.ThreadStatus.dead, try thread.status());
+    try std.testing.expectEqual(api.CoroutineStatus.dead, try thread.status());
     const message = try failure.lua_error.message();
     defer a.free(message);
     try std.testing.expect(std.mem.indexOf(u8, message, "stack overflow") != null);
@@ -452,17 +459,17 @@ test "thread startup stack limits and cumulative instruction failures become Lua
     defer budgeted.deinit();
     var loop = try budgeted.loadString("while true do coroutine.yield(1) end", .{});
     defer loop.deinit();
-    var worker = try budgeted.newThread(loop);
+    var worker = try budgeted.newCoroutine(loop);
     defer worker.deinit();
     var count: usize = 0;
-    while (worker.resumeThread(.{}, i64, void)) |result| {
+    while (worker.resumeCoroutine(.{}, i64, void)) |result| {
         var owned = result;
         owned.deinit();
         count += 1;
         try std.testing.expect(count < 30);
     } else |err| try std.testing.expectEqual(error.LuaError, err);
     try std.testing.expect(count > 1);
-    try std.testing.expectEqual(api.ThreadStatus.dead, try worker.status());
+    try std.testing.expectEqual(api.CoroutineStatus.dead, try worker.status());
 }
 
 test "allocation failures during thread creation resume and suspension leave valid lifecycle state" {
@@ -484,18 +491,18 @@ test "allocation failures during thread creation resume and suspension leave val
         failing.fail_index = failing.alloc_index + offset;
         const run = struct {
             fn call(state: *api.State, entry: api.Function) !void {
-                var thread = try state.newThread(entry);
+                var thread = try state.newCoroutine(entry);
                 defer thread.deinit();
-                var first = thread.resumeThread(.{}, api.Table, api.Table) catch |err| {
+                var first = thread.resumeCoroutine(.{}, api.Table, api.Table) catch |err| {
                     const status = try thread.status();
                     try std.testing.expect(status == .dead or status == .suspended);
                     return err;
                 };
                 defer first.deinit();
                 try std.testing.expect(first == .yielded);
-                var last = try thread.resumeThread(.{first.yielded}, void, api.Table);
+                var last = try thread.resumeCoroutine(.{first.yielded}, void, api.Table);
                 defer last.deinit();
-                try std.testing.expectEqual(api.ThreadStatus.dead, try thread.status());
+                try std.testing.expectEqual(api.CoroutineStatus.dead, try thread.status());
             }
         }.call;
         run(&lua, callback) catch |err| {
@@ -516,7 +523,7 @@ test "callback yield memory limit errors are protected Lua failures without susp
         }
     }.call);
     defer callback.deinit();
-    var thread = try lua.newThread(callback);
+    var thread = try lua.newCoroutine(callback);
     defer thread.deinit();
     var result = try thread.protectedResume(.{}, void, void);
     try std.testing.expect(result == .lua_error);
@@ -524,5 +531,69 @@ test "callback yield memory limit errors are protected Lua failures without susp
     const message = try result.lua_error.message();
     defer lua.allocator().free(message);
     try std.testing.expect(std.mem.indexOf(u8, message, "memory limit") != null);
-    try std.testing.expectEqual(api.ThreadStatus.dead, try thread.status());
+    try std.testing.expectEqual(api.CoroutineStatus.dead, try thread.status());
+}
+
+test "interleaved host yields survive repeated collection without leaking roots" {
+    const thread_count = 16;
+    const rounds = 64;
+    var lua = try api.State.init(a, .{});
+    defer lua.deinit();
+    var ask_fn = try lua.register("ask", struct {
+        fn call(ctx: *api.Context) !void {
+            var table = try ctx.state().createTable(.{});
+            defer table.deinit();
+            const id = try ctx.arg(0, i64);
+            const step = try ctx.arg(1, i64);
+            try table.set("id", id);
+            try table.set("step", step);
+            return ctx.yield(.{table});
+        }
+    }.call);
+    defer ask_fn.deinit();
+    try lua.setGlobal("ask", ask_fn);
+    var chunk = try lua.loadString(
+        \\local id = ...
+        \\for step = 1, 64 do
+        \\    assert(ask(id, step) == id * 1000 + step)
+        \\end
+        \\return id
+    , .{});
+    defer chunk.deinit();
+
+    var threads: [thread_count]api.Coroutine = undefined;
+    var created: usize = 0;
+    defer for (threads[0..created]) |*thread| thread.deinit();
+    for (&threads) |*thread| {
+        thread.* = try lua.newCoroutine(chunk);
+        created += 1;
+        try std.testing.expectEqual(api.CoroutineStatus.suspended, try thread.status());
+    }
+    const roots = lua.raw_state.activeRootCount();
+    for (0..rounds) |round| {
+        for (0..thread_count) |offset| {
+            const id = (offset + round) % thread_count;
+            const step: i64 = @intCast(round + 1);
+            var result = if (round == 0)
+                try threads[id].resumeCoroutine(.{@as(i64, @intCast(id))}, api.Table, i64)
+            else
+                try threads[id].resumeCoroutine(.{@as(i64, @intCast(id)) * 1000 + @as(i64, @intCast(round))}, api.Table, i64);
+            defer result.deinit();
+            try std.testing.expect(result == .yielded);
+            try std.testing.expectEqual(@as(i64, @intCast(id)), try result.yielded.get("id", i64));
+            try std.testing.expectEqual(step, try result.yielded.get("step", i64));
+        }
+        if (round % 8 == 0) try lua.collect();
+        try std.testing.expectEqual(roots, lua.raw_state.activeRootCount());
+    }
+    for (&threads, 0..) |*thread, id| {
+        var result = try thread.resumeCoroutine(.{@as(i64, @intCast(id)) * 1000 + @as(i64, rounds)}, void, i64);
+        defer result.deinit();
+        try std.testing.expect(result == .returned);
+        try std.testing.expectEqual(@as(i64, @intCast(id)), result.returned);
+        try std.testing.expectEqual(api.CoroutineStatus.dead, try thread.status());
+        try thread.close();
+    }
+    try lua.collect();
+    try std.testing.expectEqual(roots, lua.raw_state.activeRootCount());
 }
