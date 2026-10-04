@@ -712,6 +712,7 @@ pub const State = struct {
     }
 
     /// Converts a high-level Lua `Value` to the requested Zig type.
+    /// A `[]const u8` result borrows VM memory; see `Value.string`.
     pub fn read(self: *State, value: Value, comptime T: type) !T {
         return fromRuntimeValue(self, try toRuntimeValue(self, value), T);
     }
@@ -725,6 +726,7 @@ pub const State = struct {
     }
 
     /// Reads a global variable and converts it to `T`.
+    /// A `[]const u8` result borrows VM memory; see `Value.string`.
     pub fn getGlobal(self: *State, name: []const u8, comptime T: type) !T {
         return fromRuntimeValue(self, self.raw_state.getGlobal(name), T);
     }
@@ -859,15 +861,57 @@ pub const State = struct {
         return self.createTable(.{ .hash_hint = 4 });
     }
 
-    /// Adds `module` to `package.loaded` so `require(name)` returns it.
-    pub fn preloadModule(self: *State, name: []const u8, module: Table) !void {
-        try self.ensurePackageLibrary();
-
-        var package = try self.getGlobal("package", Table);
-        defer package.deinit();
-        var loaded = try package.get("loaded", Table);
+    /// Stores `module` in `package.loaded[name]` so `require(name)` returns it
+    /// without running a loader. Opens the package library if needed.
+    pub fn setLoadedModule(self: *State, name: []const u8, module: anytype) !void {
+        var loaded = try self.packageField("loaded");
         defer loaded.deinit();
         try loaded.set(name, module);
+    }
+
+    /// Installs `loader` as `package.preload[name]`. Opens the package library if needed.
+    ///
+    /// The first `require(name)` calls `loader(name, ":preload:")` and caches
+    /// its first result (or `true`) in `package.loaded[name]`; later calls
+    /// return the cached module. The host keeps its own `loader` handle.
+    pub fn preloadModule(self: *State, name: []const u8, loader: Function) !void {
+        var preload = try self.packageField("preload");
+        defer preload.deinit();
+        try preload.set(name, loader);
+    }
+
+    /// Registers `loader` like `registerTyped` and installs it with `preloadModule`.
+    ///
+    /// `loader` builds the module lazily on the first `require(name)`. It may
+    /// take `*Context`, the module name, and the loader data `":preload:"`,
+    /// and it usually returns a `Table`; returned handles are released after
+    /// conversion.
+    pub fn preloadModuleFn(self: *State, name: []const u8, comptime loader: anytype) !void {
+        var function = try self.registerTyped(name, loader);
+        defer function.deinit();
+        try self.preloadModule(name, function);
+    }
+
+    /// Calls the package library's `require(name)` and converts its result to `T`.
+    ///
+    /// Opens the package library if needed and uses the built-in `require`
+    /// even if Lua code replaced the global. Use `Tuple(&.{ M, []const u8 })`
+    /// to also read the loader data. Lua failures return `error.LuaError`.
+    /// Loaders run like `Function.call` and cannot yield.
+    pub fn require(self: *State, name: []const u8, comptime T: type) !T {
+        try self.ensurePackageLibrary();
+        self.bindDispatch();
+        const raw_name = runtime.Value{ .string = try self.raw_state.intern(name) };
+        const results = self.raw_state.callFunction(.{ .native = .require }, &.{raw_name}) catch |err| return self.captureLuaError(err);
+        defer self.allocator().free(results);
+        return fromRuntimeResults(self, results, T);
+    }
+
+    fn packageField(self: *State, name: []const u8) !Table {
+        try self.ensurePackageLibrary();
+        var package = try self.getGlobal("package", Table);
+        defer package.deinit();
+        return package.get(name, Table);
     }
 
     /// Sets `package.path`, opening the package library first if needed.
@@ -1203,7 +1247,8 @@ pub const Snapshot = struct {
     }
 };
 
-/// Rooted handle to any Lua value.
+/// Rooted handle to any Lua value, including strings: a `Ref` keeps a string's
+/// bytes alive, unlike `Value.string`.
 pub const Ref = struct {
     state: *State,
     index: usize,
@@ -1252,21 +1297,76 @@ pub const Table = struct {
         self.* = undefined;
     }
 
-    /// Reads `key` from the table and converts the result to `T`.
+    /// Reads `t[key]` like Lua indexing and converts the result to `T`.
+    ///
+    /// Honors `__index` tables and functions. Function metamethods run like
+    /// `Function.call` and cannot yield; their failures return `error.LuaError`.
+    /// A `[]const u8` result borrows VM memory; see `Value.string`.
     pub fn get(self: Table, key: anytype, comptime T: type) !T {
+        const state = self.ref.state;
         const raw = try self.rawValue();
-        const raw_key = try toRuntimeValue(self.ref.state, key);
-        const raw_value = self.ref.state.raw_state.getTableValue(raw, raw_key) catch |err| return self.ref.state.captureLuaError(err);
-        return fromRuntimeValue(self.ref.state, raw_value, T);
+        const raw_key = try toRuntimeValue(state, key);
+        const raw_value = indexTable(state, raw.table, raw_key) catch |err| return state.captureLuaError(err);
+        return fromRuntimeValue(state, raw_value, T);
     }
 
-    /// Converts and assigns `value` at `key` in the table.
+    /// Converts `value` and assigns `t[key] = value` like Lua assignment.
+    ///
+    /// Honors `__newindex` tables and functions when `key` is absent. Function
+    /// metamethods run like `Function.call` and cannot yield. A nil or NaN key
+    /// that reaches a raw store returns `error.LuaError`. Use `rawSet` to bypass
+    /// metamethods.
     pub fn set(self: Table, key: anytype, value: anytype) !void {
+        const state = self.ref.state;
         const raw = try self.rawValue();
-        const raw_key = try toRuntimeValue(self.ref.state, key);
-        const raw_value = try toRuntimeValue(self.ref.state, value);
-        self.ref.state.raw_state.setTableValue(raw, raw_key, raw_value) catch |err| return self.ref.state.captureLuaError(err);
-        try self.ref.state.gcBoundary();
+        const raw_key = try toRuntimeValue(state, key);
+        const raw_value = try toRuntimeValue(state, value);
+        assignTable(state, raw.table, raw_key, raw_value) catch |err| return state.captureLuaError(err);
+        try state.gcBoundary();
+    }
+
+    /// Converts `value` and assigns `t[key] = value` without invoking `__newindex`,
+    /// like Lua `rawset`. A nil or NaN key returns `error.LuaError`.
+    pub fn rawSet(self: Table, key: anytype, value: anytype) !void {
+        const state = self.ref.state;
+        const raw = try self.rawValue();
+        const raw_key = try toRuntimeValue(state, key);
+        const raw_value = try toRuntimeValue(state, value);
+        storeRaw(state, raw.table, try writableTableKey(state, raw_key), raw_value) catch |err| return state.captureLuaError(err);
+        try state.gcBoundary();
+    }
+
+    /// Appends `value` at raw index `rawLen() + 1` without invoking metamethods.
+    /// Appending nil leaves the table unchanged.
+    pub fn append(self: Table, value: anytype) !void {
+        const state = self.ref.state;
+        const raw = try self.rawValue();
+        const raw_value = try toRuntimeValue(state, value);
+        const length = raw.table.len();
+        if (length == std.math.maxInt(i64)) return state.captureLuaError(state.raw_state.fail("table overflow"));
+        storeRaw(state, raw.table, .{ .integer = length + 1 }, raw_value) catch |err| return state.captureLuaError(err);
+        try state.gcBoundary();
+    }
+
+    /// Returns the length like Lua `#t`, honoring `__len`.
+    ///
+    /// A `__len` function runs like `Function.call` and cannot yield. As with
+    /// `luaL_len`, a result that is not an integer returns `error.LuaError`.
+    pub fn len(self: Table) !i64 {
+        const state = self.ref.state;
+        const raw = try self.rawValue();
+        const handler = (state.raw_state.getMetamethod(raw, "__len") catch |err| return state.captureLuaError(err)) orelse return raw.table.len();
+        const result = callFirstResult(state, handler, &.{ raw, raw }) catch |err| return state.captureLuaError(err);
+        return switch (result) {
+            .integer => |integer| integer,
+            .number => |number| runtime.floatToInteger(number),
+            else => null,
+        } orelse return state.captureLuaError(state.raw_state.fail("object length is not an integer"));
+    }
+
+    /// Returns the raw border length without invoking `__len`, like Lua `rawlen`.
+    pub fn rawLen(self: Table) !i64 {
+        return (try self.rawValue()).table.len();
     }
 
     /// Returns a state-local token, valid while rooted and until reset.
@@ -1281,15 +1381,57 @@ pub const Table = struct {
         return try Table.fromRuntime(self.ref.state, .{ .table = meta });
     }
 
-    /// Reads an entry without invoking __index.
-    pub fn rawGet(self: Table, key: anytype, comptime T: type) !T {
+    /// Replaces or removes (`null`) the metatable.
+    ///
+    /// Like `lua_setmetatable`, this ignores `__metatable` protection, which
+    /// only guards Lua's `setmetatable`. A `__gc` field present now marks the
+    /// table for finalization, and a `__mode` field makes it weak.
+    pub fn setMetatable(self: Table, metatable: ?Table) !void {
+        const state = self.ref.state;
         const raw = try self.rawValue();
-        return fromRuntimeValue(self.ref.state, raw.table.get(try toRuntimeValue(self.ref.state, key)), T);
+        const raw_metatable: runtime.Value = if (metatable) |table| try toRuntimeValue(state, table) else .nil;
+        state.raw_state.setDebugMetatableValue(raw, raw_metatable) catch |err| return state.captureLuaError(err);
     }
 
+    /// Reads an entry without invoking __index.
+    /// A `[]const u8` result borrows VM memory; see `Value.string`.
+    pub fn rawGet(self: Table, key: anytype, comptime T: type) !T {
+        const state = self.ref.state;
+        const raw = try self.rawValue();
+        const raw_key = readableTableKey(try toRuntimeValue(state, key)) orelse return fromRuntimeValue(state, .nil, T);
+        return fromRuntimeValue(state, raw.table.get(raw_key), T);
+    }
+
+    /// Reads raw entries `1..rawLen()` into a new slice allocated with `allocator`.
+    ///
+    /// Elements convert like `rawGet`; a hole or wrong type returns
+    /// `error.TypeMismatch` unless `T` is optional. The caller frees the slice
+    /// and deinitializes handle elements such as `Table` or `Value`. `[]const u8`
+    /// elements borrow VM memory that this table keeps alive only while it holds
+    /// them; see `Value.string`.
+    pub fn toSlice(self: Table, comptime T: type, allocator: std.mem.Allocator) ![]T {
+        const state = self.ref.state;
+        const table = (try self.rawValue()).table;
+        const count = std.math.cast(usize, table.len()) orelse return error.OutOfMemory;
+        const items = try allocator.alloc(T, count);
+        errdefer allocator.free(items);
+        var initialized: usize = 0;
+        errdefer for (items[0..initialized]) |*item| deinitIfOwned(T, item);
+        for (items, 1..) |*item, index| {
+            item.* = try fromRuntimeValue(state, table.get(.{ .integer = @intCast(index) }), T);
+            initialized += 1;
+        }
+        return items;
+    }
+
+    /// Key/value pair produced by `rawNext` or an `Iterator`.
+    /// String fields borrow VM memory; see `Value.string`.
     pub const Entry = struct {
         key: Value,
         value: Value,
+
+        /// Releases the handles of an entry returned by `rawNext`.
+        /// Entries returned by `Iterator.next` are owned by the iterator.
         pub fn deinit(self: *Entry) void {
             self.key.deinit();
             self.value.deinit();
@@ -1297,15 +1439,195 @@ pub const Table = struct {
     };
 
     /// Iterates without metamethods. Start with null or Value.nil, then pass the previous key.
-    /// Deinitialize each entry and avoid structural changes during traversal.
+    /// Deinitialize each entry. Prefer `rawIterator`, which also keeps the
+    /// previous key alive; see it for mutation rules.
     pub fn rawNext(self: Table, key: anytype) !?Entry {
+        const state = self.ref.state;
         const raw = try self.rawValue();
-        const pair = raw.table.next(try toRuntimeValue(self.ref.state, key)) catch |err| return self.ref.state.captureLuaError(err);
+        const raw_key = readableTableKey(try toRuntimeValue(state, key)) orelse runtime.Value.nil;
+        const pair = raw.table.next(raw_key) catch return state.captureLuaError(state.raw_state.fail("invalid key to 'next'"));
         if (pair[0] == .nil) return null;
-        var owned_key = try Value.fromRuntime(self.ref.state, pair[0]);
+        var owned_key = try Value.fromRuntime(state, pair[0]);
         errdefer owned_key.deinit();
-        return .{ .key = owned_key, .value = try Value.fromRuntime(self.ref.state, pair[1]) };
+        return .{ .key = owned_key, .value = try Value.fromRuntime(state, pair[1]) };
     }
+
+    /// Returns an iterator over raw entries without invoking metamethods, like
+    /// Lua `next`. Deinitialize the iterator; it owns the entries it returns.
+    ///
+    /// During traversal you may assign to existing fields, including assigning
+    /// nil to clear them. Adding new keys is undefined: entries may be skipped
+    /// or repeated, or `next` may return `error.LuaError` for an invalid key.
+    pub fn rawIterator(self: Table) !Iterator {
+        const raw = try self.rawValue();
+        var iterator = Iterator.init(self.ref.state, .raw);
+        errdefer iterator.deinit();
+        try iterator.store(.target, raw);
+        return iterator;
+    }
+
+    /// Returns an iterator like Lua `pairs(t)`. Deinitialize it; it owns the
+    /// entries it returns.
+    ///
+    /// Without `__pairs`, this is `rawIterator`. Otherwise `__pairs(t)` runs
+    /// immediately, and each `next` calls the returned iterator function like
+    /// a generic `for`. These calls run like `Function.call` and cannot yield.
+    /// A fourth `__pairs` result is a closing value: its `__close` runs when
+    /// iteration ends, fails, or `Iterator.close` is called, but not on `deinit`.
+    pub fn pairs(self: Table) !Iterator {
+        const state = self.ref.state;
+        const raw = try self.rawValue();
+        const handler = (state.raw_state.getMetamethod(raw, "__pairs") catch |err| return state.captureLuaError(err)) orelse return self.rawIterator();
+        const results = state.raw_state.callFunction(handler, &.{raw}) catch |err| return state.captureLuaError(err);
+        defer state.allocator().free(results);
+        const result = struct {
+            fn at(values: []const runtime.Value, index: usize) runtime.Value {
+                return if (index < values.len) values[index] else .nil;
+            }
+        }.at;
+        var iterator = Iterator.init(state, .call);
+        errdefer iterator.deinit();
+        try iterator.store(.target, result(results, 0));
+        try iterator.store(.invariant, result(results, 1));
+        try iterator.store(.control, result(results, 2));
+        const closing = result(results, 3);
+        if (runtime.truthy(closing)) {
+            const close_handler = state.raw_state.getMetamethod(closing, "__close") catch |err| return state.captureLuaError(err);
+            if (close_handler == null) return state.captureLuaError(state.raw_state.fail("variable '(for state)' got a non-closable value"));
+            try iterator.store(.closing, closing);
+        }
+        return iterator;
+    }
+
+    /// Traversal state returned by `Table.rawIterator` and `Table.pairs`.
+    ///
+    /// The iterator roots the table or iterator function, its state, the
+    /// current key and value, and any closing value. It owns each returned
+    /// `Entry` until the next call to `next`, `close`, or `deinit`; do not
+    /// deinitialize entries. Push a value with `State.push` to keep a handle
+    /// beyond that point. Reset invalidates the iterator.
+    pub const Iterator = struct {
+        state: *State,
+        generation: u64,
+        mode: Mode,
+        roots: [slot_count]?usize = @splat(null),
+        entry: ?Entry = null,
+        done: bool = false,
+
+        const Mode = enum { raw, call };
+        const Slot = enum { target, invariant, control, value, closing };
+        const slot_count = reflection.fieldsOf(Slot).len;
+
+        fn init(state: *State, mode: Mode) Iterator {
+            return .{ .state = state, .generation = state.generation, .mode = mode };
+        }
+
+        /// Advances and returns the next entry, or null when traversal ends.
+        ///
+        /// The previous entry is released first. Strings in the returned entry
+        /// stay valid until the next call to `next`, `close`, or `deinit`.
+        pub fn next(self: *Iterator) !?Entry {
+            try self.validate();
+            self.releaseEntry();
+            if (self.done) return null;
+            const state = self.state;
+            state.bindDispatch();
+            const pair: [2]runtime.Value = switch (self.mode) {
+                .raw => self.rooted(.target).table.next(self.rooted(.control)) catch {
+                    self.done = true;
+                    return state.captureLuaError(state.raw_state.fail("invalid key to 'next'"));
+                },
+                .call => try self.callIterator(),
+            };
+            if (pair[0] == .nil) {
+                self.release(.control);
+                self.release(.value);
+                try self.finish(.nil);
+                return null;
+            }
+            try self.store(.control, pair[0]);
+            try self.store(.value, pair[1]);
+            var key = try Value.fromRuntime(state, pair[0]);
+            errdefer key.deinit();
+            self.entry = .{ .key = key, .value = try Value.fromRuntime(state, pair[1]) };
+            return self.entry.?;
+        }
+
+        /// Ends traversal early, running a pending `__pairs` closing value's
+        /// `__close` like a generic `for` exited with `break`. Call `deinit` afterwards.
+        pub fn close(self: *Iterator) !void {
+            try self.validate();
+            self.releaseEntry();
+            self.release(.control);
+            self.release(.value);
+            try self.finish(.nil);
+        }
+
+        /// Releases the iterator's roots and current entry without calling Lua.
+        pub fn deinit(self: *Iterator) void {
+            if (self.generation == self.state.generation) {
+                self.releaseEntry();
+                for (self.roots) |root| if (root) |index| self.state.raw_state.unrootValue(index);
+            }
+            self.* = undefined;
+        }
+
+        fn validate(self: *const Iterator) !void {
+            if (self.generation != self.state.generation) return error.InvalidHandle;
+        }
+
+        fn callIterator(self: *Iterator) ![2]runtime.Value {
+            const state = self.state;
+            const results = state.raw_state.callFunction(self.rooted(.target), &.{ self.rooted(.invariant), self.rooted(.control) }) catch |err| {
+                const failure = state.captureLuaError(err);
+                self.release(.control);
+                self.release(.value);
+                if (failure == error.LuaError) try self.finish(state.lastErrorValue()) else self.done = true;
+                return failure;
+            };
+            defer state.allocator().free(results);
+            return .{
+                if (results.len > 0) results[0] else .nil,
+                if (results.len > 1) results[1] else .nil,
+            };
+        }
+
+        // Runs a pending closing value at most once, as a generic `for` does.
+        fn finish(self: *Iterator, failure: runtime.Value) !void {
+            self.done = true;
+            const index = self.roots[@intFromEnum(Slot.closing)] orelse return;
+            self.roots[@intFromEnum(Slot.closing)] = null;
+            const state = self.state;
+            defer state.raw_state.unrootValue(index);
+            const closing = state.raw_state.rootedValue(index);
+            const handler = (state.raw_state.getMetamethod(closing, "__close") catch |err| return state.captureLuaError(err)) orelse return;
+            const results = state.raw_state.callFunction(handler, &.{ closing, failure }) catch |err| return state.captureLuaError(err);
+            state.allocator().free(results);
+        }
+
+        fn rooted(self: *const Iterator, slot: Slot) runtime.Value {
+            const index = self.roots[@intFromEnum(slot)] orelse return .nil;
+            return self.state.raw_state.rootedValue(index);
+        }
+
+        // Nil is never rooted: the runtime treats nil root slots as free.
+        fn store(self: *Iterator, slot: Slot, value: runtime.Value) !void {
+            self.release(slot);
+            if (value == .nil) return;
+            self.roots[@intFromEnum(slot)] = try self.state.raw_state.rootValue(value);
+        }
+
+        fn release(self: *Iterator, slot: Slot) void {
+            const index = self.roots[@intFromEnum(slot)] orelse return;
+            self.state.raw_state.unrootValue(index);
+            self.roots[@intFromEnum(slot)] = null;
+        }
+
+        fn releaseEntry(self: *Iterator) void {
+            if (self.entry) |*entry| entry.deinit();
+            self.entry = null;
+        }
+    };
 
     fn rawValue(self: Table) !runtime.Value {
         const raw = try self.ref.rawValue();
@@ -1313,6 +1635,83 @@ pub const Table = struct {
         return raw;
     }
 };
+
+// PUC Lua's MAXTAGLOOP bound for __index/__newindex table chains.
+const max_metamethod_chain = 2000;
+
+fn readableTableKey(key: runtime.Value) ?runtime.Value {
+    return switch (key) {
+        .nil => null,
+        .number => |number| if (std.math.isNan(number)) null else if (runtime.floatToInteger(number)) |integer| .{ .integer = integer } else key,
+        else => key,
+    };
+}
+
+fn writableTableKey(state: *State, key: runtime.Value) !runtime.Value {
+    return switch (key) {
+        .nil => state.captureLuaError(state.raw_state.fail("table index is nil")),
+        .number => |number| if (std.math.isNan(number)) state.captureLuaError(state.raw_state.fail("table index is NaN")) else readableTableKey(key).?,
+        else => key,
+    };
+}
+
+// Calls a Lua value on a host thread and returns its first result.
+fn callFirstResult(state: *State, callable: runtime.Value, args: []const runtime.Value) !runtime.Value {
+    const results = try state.raw_state.callFunction(callable, args);
+    defer state.allocator().free(results);
+    return if (results.len == 0) .nil else results[0];
+}
+
+// Mirrors the runtime's table indexing, but calls function metamethods on a
+// host thread because API calls have no active Lua thread.
+fn indexTable(state: *State, start: *runtime.Table, key: runtime.Value) !runtime.Value {
+    var table = start;
+    const lookup = readableTableKey(key);
+    for (0..max_metamethod_chain) |_| {
+        if (lookup) |raw_key| {
+            const found = table.get(raw_key);
+            if (found != .nil) return found;
+        }
+        const handler = try state.raw_state.getMetamethod(.{ .table = table }, "__index") orelse return .nil;
+        switch (handler) {
+            .table => |next| table = next,
+            else => return callFirstResult(state, handler, &.{ .{ .table = table }, key }),
+        }
+    }
+    return state.raw_state.fail("'__index' chain too long; possible loop");
+}
+
+fn assignTable(state: *State, start: *runtime.Table, key: runtime.Value, value: runtime.Value) !void {
+    var table = start;
+    const lookup = readableTableKey(key);
+    for (0..max_metamethod_chain) |_| {
+        const existing = if (lookup) |raw_key| table.get(raw_key) != .nil else false;
+        const handler = if (existing) null else try state.raw_state.getMetamethod(.{ .table = table }, "__newindex");
+        const metamethod = handler orelse {
+            const raw_key = lookup orelse return state.raw_state.fail(if (key == .nil) "table index is nil" else "table index is NaN");
+            return storeRaw(state, table, raw_key, value);
+        };
+        switch (metamethod) {
+            .table => |next| table = next,
+            else => {
+                _ = try callFirstResult(state, metamethod, &.{ .{ .table = table }, key, value });
+                return;
+            },
+        }
+    }
+    return state.raw_state.fail("'__newindex' chain too long; possible loop");
+}
+
+// Raw store with the runtime's snapshot copy-on-write and GC write barrier.
+// Existing keys are updated in place so traversal order is preserved.
+fn storeRaw(state: *State, table: *runtime.Table, key: runtime.Value, value: runtime.Value) !void {
+    if (table.rollback != null and table.get(key) != .nil) {
+        try rollback_runtime.tableWritable(table);
+        state.raw_state.noteTableCapacityDelta(table, 0);
+    }
+    if (!table.setExistingNonNil(key, value)) try state.raw_state.setTableRaw(table, key, value);
+    state.raw_state.writeTableBarrier(table, key, value);
+}
 
 /// Rooted handle to a Lua function or loaded chunk.
 pub const Function = struct {
@@ -1332,6 +1731,8 @@ pub const Function = struct {
     }
 
     /// Calls the function with tuple arguments and converts the first or tuple result to `R`.
+    /// `[]const u8` results borrow VM memory and may be collected by the next
+    /// GC-capable API call if nothing references them; see `Value.string`.
     ///
     /// Lua failures are returned as `error.LuaError` and captured on the state.
     pub fn call(self: Function, args: anytype, comptime R: type) !R {
@@ -1346,6 +1747,7 @@ pub const Function = struct {
     }
 
     /// Calls the function and returns Lua failures as an `ErrorRef` instead of `error.LuaError`.
+    /// Successful results convert and borrow strings as in `call`.
     pub fn protectedCall(self: Function, args: anytype, comptime R: type) !CallResult(R) {
         try self.ref.validate(self.ref.state);
         self.ref.state.bindDispatch();
@@ -1624,7 +2026,11 @@ pub const Value = union(enum) {
     integer: i64,
     /// Lua floating-point number.
     number: f64,
-    /// Lua string bytes interned in the state.
+    /// Lua string bytes borrowed from the state; not copied and not rooted.
+    /// Valid while Lua can reach the string (a global, table field, live stack
+    /// slot, or `Ref` root). Once unreachable, any API call that may collect
+    /// (Lua calls, writes, `collect`, `stepGc`) can free it; `deinit` and
+    /// `reset` always invalidate it. Copy it, or read the value as a `Ref`, to keep it.
     string: []const u8,
     /// Rooted Lua table handle.
     table: Table,
@@ -1720,6 +2126,7 @@ pub const Context = struct {
     }
 
     /// Reads required argument `index` and converts it to `T`.
+    /// A `[]const u8` argument borrows VM memory valid until the callback returns.
     pub fn arg(self: *Context, index: usize, comptime T: type) !T {
         const raw = self.raw.callbackArgValue(index);
         return fromRuntimeValue(self.lua, raw, T) catch |err| return self.argConversionError(index, T, raw, err);
@@ -3069,7 +3476,7 @@ test "api globals tables arrays and structs build Lua environments" {
     try std.testing.expectEqualStrings("sandbox", try features.get(2, []const u8));
 }
 
-test "api preloaded module is returned by require" {
+test "api loaded module is returned by require" {
     var lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
@@ -3077,7 +3484,7 @@ test "api preloaded module is returned by require" {
     defer host.deinit();
     try host.set("name", "host-module");
     try host.set("version", 3);
-    try lua.preloadModule("host", host);
+    try lua.setLoadedModule("host", host);
 
     try lua.doString(
         \\local host = require('host')
@@ -5136,4 +5543,5 @@ test "api userdata table index and Lua iteration metamethods" {
 test {
     _ = @import("testing/api_host_tests.zig");
     _ = @import("testing/api_coroutine_tests.zig");
+    _ = @import("testing/api_table_tests.zig");
 }

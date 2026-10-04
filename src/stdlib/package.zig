@@ -115,7 +115,10 @@ pub fn require(state: *State, thread: *Thread, op: bytecode.Call) !void {
 
     var loader = preload.get(name_key);
     var loader_data: Value = .nil;
-    if (loader == .nil) {
+    if (loader != .nil) {
+        // Lua 5.5 passes ":preload:" as loader data for package.preload entries.
+        loader_data = .{ .string = try state.intern(":preload:") };
+    } else {
         const path_value = package.get(.{ .string = try state.intern("path") });
         if (path_value != .string) return state.failArgumentType("require", 1, "package.path string", path_value);
         const path = path_value.string;
@@ -132,11 +135,7 @@ pub fn require(state: *State, thread: *Thread, op: bytecode.Call) !void {
     defer state.allocator.free(values);
     const module_value = if (values.len == 0 or values[0] == .nil) Value{ .boolean = true } else values[0];
     try state.setTableRaw(loaded, name_key, module_value);
-    if (loader_data == .nil) {
-        try state.returnValues(thread, op.base, op.return_count, &.{module_value});
-    } else {
-        try state.returnValues(thread, op.base, op.return_count, &.{ module_value, loader_data });
-    }
+    try state.returnValues(thread, op.base, op.return_count, &.{ module_value, loader_data });
 }
 
 pub fn searchpath(state: *State, thread: *Thread, op: bytecode.Call) !void {
@@ -165,7 +164,7 @@ pub fn searcherPreload(state: *State, thread: *Thread, op: bytecode.Call) !void 
     if (loader == .nil) {
         try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern("no field package.preload") }});
     } else {
-        try state.returnValues(thread, op.base, op.return_count, &.{loader});
+        try state.returnValues(thread, op.base, op.return_count, &.{ loader, .{ .string = try state.intern(":preload:") } });
     }
 }
 

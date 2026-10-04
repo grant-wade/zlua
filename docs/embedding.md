@@ -272,9 +272,20 @@ var result = try chunk.call(.{}, Result);
 defer result.deinit();
 ```
 
-`Table`, `Function`, `Ref`, userdata, `ErrorRef`, and values/tuples containing them own registry roots. Call `deinit` when finished. Assigning a handle into Lua does not consume the host's root.
+`Table`, `Function`, `Coroutine`, `Ref`, userdata, `ErrorRef`, and values/tuples containing them own registry roots. Call `deinit` when finished. Assigning a handle into Lua does not consume the host's root.
 
-Dynamic `zlua.Value` can represent nil, booleans, numbers, strings, tables, functions, and userdata. Other runtime-only values appear as `.unsupported`.
+Dynamic `zlua.Value` can represent nil, booleans, numbers, strings, tables, functions, coroutines, and userdata. Other runtime-only values appear as `.unsupported`.
+
+### Borrowed Strings
+
+A `[]const u8` read from Lua is not copied. This includes results from `getGlobal`, `read`, `Table.get`, `Table.rawGet`, `Table.toSlice`, `Function.call`, `State.require`, `Context.arg`, and `Value.string`, including strings inside tuples and table entries. The slice points at a string owned by the VM's garbage collector:
+
+- It stays valid while Lua can still reach the string, for example through a global, a table field, or a live stack slot. A string read from `config.title` stays valid until that field is overwritten and a collection runs.
+- Once nothing references the string, any API call that may collect can free it. This includes `collect`, `stepGc`, calls into Lua, and API writes such as `set`, `setGlobal`, `push`, or `createTable`. Pure reads such as `get` with no metamethods do not collect. For example, `chunk.call(.{}, []const u8)` that returns `"a" .. x` gives a string nothing else references, so use it before the next such call.
+- A string passed to a callback stays valid until the callback returns.
+- `deinit` and a successful `reset` invalidate every borrowed slice.
+
+A `Value` does not root a string. To keep a string, copy it with an allocator (`allocator.dupe(u8, text)`), or read it as a `Ref`, which roots any value, and call `ref.value()` while the `Ref` lives. `Table.Iterator` roots the current key and value until the next step. The same rules apply to [coroutine results](#coroutines) and [after reset](#reset-and-lifetimes).
 
 ## Tables and Modules
 
@@ -287,18 +298,54 @@ try config.set("max_players", 8);
 try lua.setGlobal("config", config);
 ```
 
-`createModule` creates a table; `preloadModule` adds it to `package.loaded`, opening `package` if needed:
+`Table.get` and `Table.set` behave like Lua `t[k]` and `t[k] = v`. They honor `__index` and `__newindex`, whether those are tables or functions. `set` calls `__newindex` only when the key is absent. Function metamethods run like `Function.call`, so they cannot yield, and a failure returns `error.LuaError`.
+
+The raw operations skip metamethods. They are `rawGet`, `rawSet`, `rawLen`, `append`, `toSlice`, and `rawIterator`. `len()` is Lua `#t`. It honors `__len` and rejects a non-integer result, as `luaL_len` does. `append(value)` stores at `rawLen() + 1`. `setMetatable(meta)` replaces the metatable, and `setMetatable(null)` removes it. Like `lua_setmetatable`, it ignores `__metatable` protection. `getMetatable()` likewise ignores protection. A `__gc` field already present in the new metatable registers the table for finalization, and a `__mode` field makes it weak. All writes use the runtime's GC write barriers and snapshot copy-on-write, so `reset` restores them.
+
+`toSlice(T, allocator)` reads the raw sequence `1..rawLen()` into a new slice:
 
 ```zig
-var host = try lua.createModule("host");
-defer host.deinit();
-try host.set("version", 1);
-try lua.preloadModule("host", host);
+const scores = try list.toSlice(i64, allocator);
+defer allocator.free(scores);
 ```
 
-`Table.rawGet(key, T)` and `Table.rawNext(previous_key)` bypass metamethods. Start traversal with `null` or `Value.nil`, deinitialize each returned `Entry`, and avoid structural changes during traversal.
+Elements convert like `rawGet`. A hole or a wrong type returns `error.TypeMismatch`; use `?T` to allow holes. When `T` is a handle type such as `Table` or `Value`, deinitialize each element before freeing the slice. `[]const u8` elements are [borrowed](#borrowed-strings).
 
-`Table.getMetatable()` returns a rooted handle even when `__metatable` protects the table. `Table.identity()` returns a state-local token valid while the table is rooted, until reset.
+Iterate with `rawIterator()`, which works like `next`, or `pairs()`, which works like Lua `pairs`:
+
+```zig
+var it = try inventory.pairs();
+defer it.deinit();
+while (try it.next()) |entry| {
+    std.debug.print("{s} = {d}\n", .{ entry.key.string, entry.value.integer });
+}
+```
+
+The iterator roots the table, the current key and value, and any `__pairs` state. A collection during the loop is therefore safe. Each `Entry` belongs to the iterator and stays valid until the next `next`, `close`, or `deinit`. Do not deinitialize entries. To keep a handle beyond that, copy it with `lua.push(entry.value)`.
+
+During raw traversal you may assign to existing fields, including setting them to nil. Adding new keys is undefined: entries may be skipped or repeated, or `next` may return `error.LuaError` for an invalid key. When a table has a `__pairs` metamethod, `pairs()` calls it immediately, and each `next` calls the returned iterator function. These calls cannot yield. A fourth `__pairs` result is a closing value. Its `__close` runs when iteration ends or fails, or on `it.close()`, as a generic `for` would run it. `deinit` alone never calls Lua. Lower-level `rawNext(previous_key)` returns entries that the caller must deinitialize. It does not keep the previous key alive.
+
+`Table.identity()` returns a state-local token that stays valid while the table is rooted, until reset.
+
+### Modules
+
+`setLoadedModule(name, module)` stores an already built value in `package.loaded[name]`. `preloadModule(name, loader)` installs a `Function` in `package.preload[name]`. Nothing runs until the first `require(name)`. That call runs `loader(name, ":preload:")` and caches the result, or `true` if the loader returns nothing. Later calls return the cached module. `preloadModuleFn` registers a Zig function as the loader, with parameters converted as in `registerTyped`. All three open the `package` library if needed.
+
+```zig
+fn openHost(ctx: *zlua.Context, name: []const u8) !zlua.Table {
+    var module = try ctx.state().createModule(name);
+    errdefer module.deinit();
+    try module.set("version", 1);
+    return module; // released after conversion
+}
+
+try lua.preloadModuleFn("host", openHost);
+
+var host = try lua.require("host", zlua.Table); // runs openHost once
+defer host.deinit();
+```
+
+`State.require(name, T)` calls the package library's built-in `require`, even if Lua code has replaced the global. It converts the result to `T`. Use `zlua.Tuple(&.{ M, []const u8 })` to also read the loader data. Loader failures return `error.LuaError`.
 
 ## Host Callbacks
 

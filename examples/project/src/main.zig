@@ -65,7 +65,7 @@ pub fn main() !void {
     defer rules.deinit();
     try rules.set("starting_budget", 150);
     try rules.set("warning_at", 40);
-    try lua.preloadModule("rules", rules);
+    try lua.setLoadedModule("rules", rules);
 
     try lua.addMemoryFile("plugins/planner.lua",
         \\local M = {}
