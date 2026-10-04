@@ -119,11 +119,37 @@ pub fn runCli(
 }
 
 fn stableExecutablePath(allocator: std.mem.Allocator, io: std.Io, path: []const u8) ![]u8 {
-    if (std.mem.indexOfScalar(u8, path, '/') == null) return allocator.dupe(u8, path);
+    if (std.fs.path.dirname(path) == null) return allocator.dupe(u8, path);
     if (std.fs.path.isAbsolute(path)) return allocator.dupe(u8, path);
     const cwd = try std.process.currentPathAlloc(io, allocator);
     defer allocator.free(cwd);
     return std.fs.path.join(allocator, &.{ cwd, path });
+}
+
+test "official suite makes relative executable paths independent of child cwd" {
+    const allocator = std.testing.allocator;
+    const cwd = try std.process.currentPathAlloc(std.testing.io, allocator);
+    defer allocator.free(cwd);
+
+    const native_path = "." ++ std.fs.path.sep_str ++ "zig-out" ++ std.fs.path.sep_str ++ "bin" ++ std.fs.path.sep_str ++ "lua5.5.exe";
+    for ([_][]const u8{ native_path, "./zig-out/bin/lua5.5.exe" }) |relative_path| {
+        const path = try stableExecutablePath(allocator, std.testing.io, relative_path);
+        defer allocator.free(path);
+        try std.testing.expect(std.fs.path.isAbsolute(path));
+        try std.testing.expect(std.mem.startsWith(u8, path, cwd));
+        try std.testing.expectEqualStrings("lua5.5.exe", std.fs.path.basename(path));
+
+        const unchanged = try stableExecutablePath(allocator, std.Io.failing, path);
+        defer allocator.free(unchanged);
+        try std.testing.expectEqualStrings(path, unchanged);
+    }
+}
+
+test "official suite preserves executable names for PATH lookup" {
+    const allocator = std.testing.allocator;
+    const path = try stableExecutablePath(allocator, std.Io.failing, "lua5.5");
+    defer allocator.free(path);
+    try std.testing.expectEqualStrings("lua5.5", path);
 }
 
 fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !Options {
