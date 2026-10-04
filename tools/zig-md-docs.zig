@@ -1307,13 +1307,7 @@ fn symbolHref(allocator: Allocator, current_module: []const u8, symbol: SymbolEn
 }
 
 fn modulePathDepth(module_path: []const u8) usize {
-    const dirname = std.fs.path.dirname(module_path) orelse return 0;
-    if (dirname.len == 0 or std.mem.eql(u8, dirname, ".")) return 0;
-    var depth: usize = 1;
-    for (dirname) |byte| {
-        if (byte == std.fs.path.sep) depth += 1;
-    }
-    return depth;
+    return std.mem.count(u8, module_path, "/");
 }
 
 fn scanReference(text: []const u8, start: usize) usize {
@@ -1426,8 +1420,9 @@ fn moduleOutputRelativePath(allocator: Allocator, module_name: []const u8) ![]co
 
     var out = std.ArrayList(u8).empty;
     defer out.deinit(allocator);
+    // These paths also appear in Markdown links, so always use URL separators.
     for (module_name) |byte| {
-        try out.append(allocator, if (byte == '.') std.fs.path.sep else byte);
+        try out.append(allocator, if (byte == '.') '/' else byte);
     }
     try out.appendSlice(allocator, ".md");
     return out.toOwnedSlice(allocator);
@@ -1498,6 +1493,25 @@ test "root module output path is stable" {
     const root_path = try moduleOutputRelativePath(allocator, "root");
     defer allocator.free(root_path);
     try std.testing.expectEqualStrings("root.md", root_path);
+}
+
+test "nested module links use URL separators and correct depth" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    try std.testing.expectEqualStrings("codec/json/parser.md", try moduleOutputRelativePath(allocator, "codec.json.parser"));
+    try std.testing.expectEqualStrings("../../README.md", try indexHref(allocator, "codec.json.parser"));
+    try std.testing.expectEqualStrings("../../codec/xml.md", try moduleHref(allocator, "codec.json.parser", "codec.xml"));
+
+    const symbol = SymbolEntry{
+        .name = "Parser",
+        .key = "codec.xml.Parser",
+        .module_name = "codec.xml",
+        .anchor = "type-parser",
+        .kind = .type,
+    };
+    try std.testing.expectEqualStrings("../../codec/xml.md#type-parser", try symbolHref(allocator, "codec.json.parser", symbol, false));
 }
 
 test "module navigation lists all documents without previous and next" {
