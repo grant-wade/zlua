@@ -1,0 +1,66 @@
+split max=0	1	"a,b,c"
+rsplit max=0	1	"a,b,c"
+split max=-1	3	"a" "b" "c"
+split max=-5	3	"a" "b" "c"
+rsplit max=-1	3	"a" "b" "c"
+split max=1	2	"a" "b,c"
+rsplit max=1	2	"a,b" "c"
+split max=2	3	"a" "b" "c"
+split max=10	3	"a" "b" "c"
+rsplit max=10	3	"a" "b" "c"
+split max=nil	3	"a" "b" "c"
+split max=2.0	3	"a" "b" "c"
+split max='1'	2	"a" "b,c"
+split max=maxint	2	"a" "b"
+split max=minint	2	"a" "b"
+ws max=0	1	"a b  "
+rws max=0	1	"  a b"
+ws max=-1	3	"a" "b" "c"
+ws max=1	2	"a" "b  c "
+rws max=1	2	" a  b" "c"
+ws max=2	3	"a" "b" "c d"
+rws max=2	3	"a b" "c" "d"
+ws max=9	2	"a" "b"
+ws max=0 blank	0	
+lead	2	"" "a"
+trail	2	"a" ""
+both	3	"" "a" ""
+only sep	2	"" ""
+only seps	4	"" "" "" ""
+rsplit only seps	4	"" "" "" ""
+lead max=1	2	"" "a,b"
+rtrail max=1	2	"a,b" ""
+multi	3	"a" "b" "c"
+rmulti	2	"a::b" "c"
+multi lead	3	"" "a" ""
+overlap	3	"" "" ""
+roverlap	3	"a" "" ""
+sep longer	1	"ab"
+sep equal	2	"" ""
+sep missing	1	"abc"
+plain dot	3	"a" "b" "c"
+plain percent	2	"a" "b c"
+plain class	2	"a" "b,c"
+plain anchor	3	"" "a" "b"
+empty sep	1	""
+empty rsep	1	""
+empty ws	0	
+empty rws	0	
+empty max=0	1	""
+ws kinds	7	"a" "b" "c" "d" "e" "f" "g"
+ws nbsp	1	4
+ws nul	2	"a\0b" "c"
+nul sep	3	"a" "b" "c"
+method	3	"x" "y" "z"
+rmethod	2	"x-y" "z"
+empty separator	false	bad argument #2 to 'string.split' (empty separator)
+rsplit empty separator	false	bad argument #2 to 'string.rsplit' (empty separator)
+method empty separator	false	bad argument #1 to 'string.split' (empty separator)
+number source	false	bad argument #1 to 'string.split' (string expected, got number)
+nil source	false	bad argument #1 to 'string.split' (string expected, got nil)
+table source	false	bad argument #1 to 'string.rsplit' (string expected, got table)
+number separator	false	bad argument #2 to 'string.split' (string expected, got number)
+boolean separator	false	bad argument #2 to 'string.split' (string expected, got boolean)
+string maxsplit	false	bad argument #3 to 'string.split' (number expected, got string)
+float maxsplit	false	bad argument #3 to 'string.split' (number has no integer representation)
+table maxsplit	false	bad argument #3 to 'string.rsplit' (number expected, got table)

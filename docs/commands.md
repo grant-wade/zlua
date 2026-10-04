@@ -117,8 +117,8 @@ just diff [options] [path]
 | `--timeout-ms=N` | Per-process timeout; default `5000`. |
 | `--show-clua`, `--show-zlua` | Print engine output. |
 | `--gc-stress` | Collect aggressively during zlua execution. |
+| `--gc-step-stress` | Run incremental collection steps during zlua execution. |
 | `--debug-errors` | Enable zlua internal diagnostics. |
-| `--bless`, `--update-expected-failures` | Accepted no-ops; fixture updates remain manual. |
 
 CLua discovery is: explicit option, `ZLUA_CLUA`, `zig-out/bin/lua5.5`, then a Lua 5.5 binary on `PATH`.
 
@@ -136,6 +136,7 @@ just extensions [options] [path]
 | `--stdlib MODE`, `--stdlib=MODE` | Library selection; defaults to `safe`. `fs` fixtures use `full`. |
 | `--timeout-ms=N` | Per-process timeout; default `5000`. |
 | `--show-output` | Print fixture stdout and stderr. |
+| `--bless` | Rewrite `.out`, `.err`, and `.exit` expectations from the actual run and list changed files. |
 
 ### Official Suite
 
@@ -150,7 +151,7 @@ just official [options] [files...]
 | `--clua PATH`, `--clua=PATH` | Reference interpreter. |
 | `--zlua PATH`, `--zlua=PATH` | zlua executable. |
 | `--suite-path PATH`, `--suite-path=PATH` | Alternate extracted test directory. |
-| `--mode=basic|complete|internal` | Prelude mode. `internal` is currently skipped. |
+| `--mode=basic|complete` | Prelude mode. `internal` is rejected because `testC` builds are not supported. |
 | `--timeout-ms=N` | Per-process timeout; `0` means none. |
 | `--memory-limit-mb=N` | Linux child cap; `0` means none. |
 | `--show-clua`, `--show-zlua` | Print engine output. |

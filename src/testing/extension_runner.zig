@@ -11,18 +11,22 @@ const Options = struct {
     zlua: ?[]const u8 = null,
     stdlib: []const u8 = "safe",
     show_output: bool = false,
+    bless: bool = false,
     timeout_ms: u64 = 5000,
 };
 
 const Counts = struct {
     passed: usize = 0,
     failed: usize = 0,
+    blessed: usize = 0,
 };
 
 const Expected = struct {
     stdout: []u8,
     stderr: []u8,
     exit_code: u8,
+    /// True when `<fixture>.out` does not exist yet (only allowed with `--bless`).
+    stdout_missing: bool = false,
 
     fn deinit(self: *Expected, allocator: std.mem.Allocator) void {
         allocator.free(self.stdout);
@@ -58,12 +62,22 @@ pub fn runCli(
     var counts: Counts = .{};
     for (tests.items) |path| try runOne(allocator, io, out, zlua_exe, path, options, &counts);
 
-    try out.print(
-        \\summary:
-        \\  passed={d}
-        \\  failed={d}
-        \\
-    , .{ counts.passed, counts.failed });
+    if (options.bless) {
+        try out.print(
+            \\summary:
+            \\  passed={d}
+            \\  blessed={d}
+            \\  failed={d}
+            \\
+        , .{ counts.passed, counts.blessed, counts.failed });
+    } else {
+        try out.print(
+            \\summary:
+            \\  passed={d}
+            \\  failed={d}
+            \\
+        , .{ counts.passed, counts.failed });
+    }
     try out.flush();
 
     return if (counts.failed == 0) 0 else 1;
@@ -88,6 +102,8 @@ fn parseArgs(args: []const []const u8) !Options {
             options.stdlib = arg[9..];
         } else if (std.mem.eql(u8, arg, "--show-output")) {
             options.show_output = true;
+        } else if (std.mem.eql(u8, arg, "--bless")) {
+            options.bless = true;
         } else if (std.mem.startsWith(u8, arg, "--timeout-ms=")) {
             options.timeout_ms = try std.fmt.parseInt(u64, arg[13..], 10);
         } else if (std.mem.startsWith(u8, arg, "--")) {
@@ -108,7 +124,7 @@ fn runOne(
     options: Options,
     counts: *Counts,
 ) !void {
-    var expected = try readExpected(allocator, io, path);
+    var expected = try readExpected(allocator, io, path, options.bless);
     defer expected.deinit(allocator);
 
     const parent = std.fs.path.dirname(path) orelse "";
@@ -118,11 +134,16 @@ fn runOne(
     defer result.deinit(allocator);
 
     const passed = !result.timed_out and result.signal == null and result.exit_code == expected.exit_code and
+        !expected.stdout_missing and
         normalizer.textEqual(result.stdout, expected.stdout) and normalizer.textEqual(result.stderr, expected.stderr);
 
     if (passed) {
         counts.passed += 1;
         try out.print("pass {s}\n", .{path});
+    } else if (options.bless and !result.timed_out and result.signal == null and result.exit_code != null) {
+        counts.blessed += 1;
+        try out.print("bless {s}\n", .{path});
+        try blessFixture(allocator, io, out, path, expected, result);
     } else {
         counts.failed += 1;
         try out.print("fail {s}\n", .{path});
@@ -134,7 +155,18 @@ fn runOne(
     }
 }
 
-fn readExpected(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !Expected {
+/// Rewrites `<fixture>.out`, `.err`, and `.exit` to match an actual run.
+/// `.out` always exists; `.err` and `.exit` exist only for non-empty stderr
+/// and a nonzero exit status. Files whose contents already match are left
+/// untouched so line-ending-only differences do not churn.
+fn blessFixture(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    out: anytype,
+    path: []const u8,
+    expected: Expected,
+    actual: process.ProcessResult,
+) !void {
     const stdout_path = try std.fmt.allocPrint(allocator, "{s}.out", .{path});
     defer allocator.free(stdout_path);
     const stderr_path = try std.fmt.allocPrint(allocator, "{s}.err", .{path});
@@ -142,7 +174,51 @@ fn readExpected(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !Exp
     const exit_path = try std.fmt.allocPrint(allocator, "{s}.exit", .{path});
     defer allocator.free(exit_path);
 
-    const stdout = try Dir.cwd().readFileAlloc(io, stdout_path, allocator, .limited(1024 * 1024));
+    if (expected.stdout_missing or !normalizer.textEqual(expected.stdout, actual.stdout)) {
+        try Dir.cwd().writeFile(io, .{ .sub_path = stdout_path, .data = actual.stdout });
+        try out.print("  wrote {s}\n", .{stdout_path});
+    }
+
+    if (!normalizer.textEqual(expected.stderr, actual.stderr)) {
+        if (actual.stderr.len == 0) {
+            try Dir.cwd().deleteFile(io, stderr_path);
+            try out.print("  removed {s}\n", .{stderr_path});
+        } else {
+            try Dir.cwd().writeFile(io, .{ .sub_path = stderr_path, .data = actual.stderr });
+            try out.print("  wrote {s}\n", .{stderr_path});
+        }
+    }
+
+    const exit_code = actual.exit_code.?;
+    if (exit_code != expected.exit_code) {
+        if (exit_code == 0) {
+            try Dir.cwd().deleteFile(io, exit_path);
+            try out.print("  removed {s}\n", .{exit_path});
+        } else {
+            var buffer: [8]u8 = undefined;
+            const text = try std.fmt.bufPrint(&buffer, "{d}\n", .{exit_code});
+            try Dir.cwd().writeFile(io, .{ .sub_path = exit_path, .data = text });
+            try out.print("  wrote {s}\n", .{exit_path});
+        }
+    }
+}
+
+fn readExpected(allocator: std.mem.Allocator, io: std.Io, path: []const u8, allow_missing_stdout: bool) !Expected {
+    const stdout_path = try std.fmt.allocPrint(allocator, "{s}.out", .{path});
+    defer allocator.free(stdout_path);
+    const stderr_path = try std.fmt.allocPrint(allocator, "{s}.err", .{path});
+    defer allocator.free(stderr_path);
+    const exit_path = try std.fmt.allocPrint(allocator, "{s}.exit", .{path});
+    defer allocator.free(exit_path);
+
+    var stdout_missing = false;
+    const stdout = Dir.cwd().readFileAlloc(io, stdout_path, allocator, .limited(1024 * 1024)) catch |err| switch (err) {
+        error.FileNotFound => if (allow_missing_stdout) blk: {
+            stdout_missing = true;
+            break :blk try allocator.dupe(u8, "");
+        } else return err,
+        else => return err,
+    };
     errdefer allocator.free(stdout);
     const stderr = Dir.cwd().readFileAlloc(io, stderr_path, allocator, .limited(1024 * 1024)) catch |err| switch (err) {
         error.FileNotFound => try allocator.dupe(u8, ""),
@@ -151,7 +227,7 @@ fn readExpected(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !Exp
     errdefer allocator.free(stderr);
     const exit_code = try readExpectedExit(allocator, io, exit_path);
 
-    return .{ .stdout = stdout, .stderr = stderr, .exit_code = exit_code };
+    return .{ .stdout = stdout, .stderr = stderr, .exit_code = exit_code, .stdout_missing = stdout_missing };
 }
 
 fn readExpectedExit(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !u8 {
@@ -190,4 +266,12 @@ test "argument parser accepts zlua and path" {
     const options = try parseArgs(&args);
     try std.testing.expectEqualStrings("zig-out/bin/zlua", options.zlua.?);
     try std.testing.expectEqualStrings("tests/extensions/json", options.path);
+    try std.testing.expect(!options.bless);
+}
+
+test "argument parser accepts bless" {
+    const args = [_][]const u8{ "--bless", "tests/extensions/string" };
+    const options = try parseArgs(&args);
+    try std.testing.expect(options.bless);
+    try std.testing.expectEqualStrings("tests/extensions/string", options.path);
 }

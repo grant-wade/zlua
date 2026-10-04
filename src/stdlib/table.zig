@@ -12,7 +12,7 @@ pub fn concat(state: *State, thread: *Thread, op: bytecode.Call) !void {
     _ = try state.expectArgumentTable(thread, op, "table.concat", 0);
     const sep = if (op.arg_count >= 2 and runtime.argValue(state, thread, op, 1) != .nil) try state.expectArgumentString(thread, op, "table.concat", 1) else "";
     const start = if (op.arg_count >= 3) runtime.toInteger(runtime.argValue(state, thread, op, 2)) orelse 1 else 1;
-    const len = runtime.toInteger(try state.lengthOf(thread, table_value)) orelse return state.fail("object length is not an integer");
+    const len = try lengthInteger(state, thread, table_value);
     const stop = if (op.arg_count >= 4) runtime.toInteger(runtime.argValue(state, thread, op, 3)) orelse len else len;
     var out = std.ArrayList(u8).empty;
     defer out.deinit(state.allocator);
@@ -29,6 +29,18 @@ pub fn concat(state: *State, thread: *Thread, op: bytecode.Call) !void {
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(out.items) }});
 }
 
+/// Like `luaL_len`: `#value` (honoring `__len`) converted to an integer.
+/// Integral floats and numeric strings are accepted.
+fn lengthInteger(state: *State, thread: *Thread, table_value: Value) !i64 {
+    const length = try state.lengthOf(thread, table_value);
+    const integer = switch (length) {
+        .number => |number| runtime.floatToInteger(number),
+        .string => runtime.toInteger(length) orelse if (runtime.toNumber(length)) |number| runtime.floatToInteger(number) else |_| null,
+        else => runtime.toInteger(length),
+    };
+    return integer orelse state.fail("object length is not an integer");
+}
+
 fn concatIndexError(state: *State, index: i64) ![]const u8 {
     var out = std.ArrayList(u8).empty;
     defer out.deinit(state.allocator);
@@ -41,7 +53,7 @@ fn concatIndexError(state: *State, index: i64) ![]const u8 {
 pub fn dedup(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const table_value = runtime.argValue(state, thread, op, 0);
     _ = try state.expectArgumentTable(thread, op, "table.dedup", 0);
-    const len = runtime.toInteger(try state.lengthOf(thread, table_value)) orelse return state.fail("object length is not an integer");
+    const len = try lengthInteger(state, thread, table_value);
     if (len > 1_000_000) return state.fail("array too big");
     const count: u32 = if (len > 0) @intCast(len) else 0;
 
@@ -72,7 +84,7 @@ pub fn insert(state: *State, thread: *Thread, op: bytecode.Call) !void {
     if (op.arg_count < 2 or op.arg_count > 3) return state.failArgumentMessage("table.insert", 1, "wrong number of arguments");
     const table_value = runtime.argValue(state, thread, op, 0);
     _ = try state.expectArgumentTable(thread, op, "table.insert", 0);
-    const len = runtime.toInteger(try state.lengthOf(thread, table_value)) orelse return state.fail("object length is not an integer");
+    const len = try lengthInteger(state, thread, table_value);
     const pos = if (op.arg_count == 2) len +% 1 else runtime.toInteger(runtime.argValue(state, thread, op, 1)) orelse return state.failArgumentMessage("table.insert", 2, "position out of bounds");
     const value = if (op.arg_count == 2) runtime.argValue(state, thread, op, 1) else runtime.argValue(state, thread, op, 2);
     if (op.arg_count == 3 and (pos < 1 or pos > len + 1)) return state.failArgumentMessage("table.insert", 2, "position out of bounds");
@@ -129,7 +141,7 @@ pub fn pack(state: *State, thread: *Thread, op: bytecode.Call) !void {
 pub fn remove(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const table_value = runtime.argValue(state, thread, op, 0);
     _ = try state.expectArgumentTable(thread, op, "table.remove", 0);
-    const len = runtime.toInteger(try state.lengthOf(thread, table_value)) orelse return state.fail("object length is not an integer");
+    const len = try lengthInteger(state, thread, table_value);
     const pos = if (op.arg_count >= 2) runtime.toInteger(runtime.argValue(state, thread, op, 1)) orelse return state.failArgumentMessage("table.remove", 2, "position out of bounds") else len;
     if (op.arg_count >= 2 and (pos < 0 or (pos == 0 and len != 0) or (pos > len and (len == std.math.maxInt(i64) or pos != len + 1)))) return state.failArgumentMessage("table.remove", 2, "position out of bounds");
     if (pos > len) {
@@ -150,7 +162,7 @@ pub fn sort(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const table_value = runtime.argValue(state, thread, op, 0);
     _ = try state.expectArgumentTable(thread, op, "table.sort", 0);
     const comparator = if (op.arg_count >= 2) runtime.argValue(state, thread, op, 1) else Value.nil;
-    const len = runtime.toInteger(try state.lengthOf(thread, table_value)) orelse return state.fail("object length is not an integer");
+    const len = try lengthInteger(state, thread, table_value);
     if (len > 1_000_000) return state.fail("array too big");
     if (len > 1) {
         const count: usize = @intCast(len);
@@ -197,7 +209,7 @@ pub fn unpack(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const table_value = runtime.argValue(state, thread, op, 0);
     _ = try state.expectArgumentTable(thread, op, "table.unpack", 0);
     const start = if (op.arg_count >= 2) runtime.toInteger(runtime.argValue(state, thread, op, 1)) orelse 1 else 1;
-    const len = runtime.toInteger(try state.lengthOf(thread, table_value)) orelse return state.fail("object length is not an integer");
+    const len = try lengthInteger(state, thread, table_value);
     const stop = if (op.arg_count >= 3) runtime.toInteger(runtime.argValue(state, thread, op, 2)) orelse len else len;
     if (@as(i128, stop) - @as(i128, start) + 1 > 1_000_000) return state.fail("too many results to unpack");
     var values = std.ArrayList(Value).empty;

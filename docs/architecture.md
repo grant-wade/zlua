@@ -120,12 +120,12 @@ Each thread owns a value stack and `CallFrame` stack. Calls enter through helper
 ```text
 value + arguments
   -> invokeValue
-  -> Lua frame, C closure, native function, or __call
+  -> Lua frame, built-in native, host API callback, or __call
   -> runThreadUntil
   -> adjust results for the caller
 ```
 
-Protected calls save enough state to restore stacks, frames, results, and prior error information. This path supports Lua `pcall`/`xpcall`, Zig `Function.protectedCall`, and C `lua_pcallk`.
+Protected calls save enough state to restore stacks, frames, results, and prior error information. This path supports Lua `pcall`/`xpcall` and Zig `Function.protectedCall`.
 
 Yielding is continuation-based. Threads retain continuation records for protected calls, generic loops, branches, tail calls, and single calls so execution can resume in the correct opcode after a native call or metamethod yields.
 
@@ -203,7 +203,7 @@ Changes should preserve these rules:
 - Static strings must have process lifetime and never enter state-owned deallocation paths.
 - Standard-library startup changes must update capacity hints, the static-string catalog, and startup tests together.
 - Protected calls must restore stack, frame, result, and error state.
-- C/runtime value conversion must preserve table identity and cycles.
+- Zig API/runtime value conversion must preserve table identity and cycles.
 - Host effects remain explicit capabilities.
 - Binary chunks and VM layouts remain internal.
 - Performance work must still pass differential, extension, official, and embedding tests.

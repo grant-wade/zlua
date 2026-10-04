@@ -52,17 +52,28 @@ setmetatable            tonumber tostring     type    warn   xpcall
 | `debug` | `gethook`, `getinfo`, `getlocal`, `getregistry`, `getupvalue`, `getuservalue`, `sethook`, `setlocal`, `setmetatable`, `setupvalue`, `setuservalue`, `traceback`, `upvalueid`, `upvaluejoin` |
 | `package` | `config`, `cpath`, `loaded`, `path`, `preload`, `searchers`, `searchpath`; also `dofile`, `loadfile`, and `require` globals |
 
+`table.create(nseq[, nrec])` is the standard Lua 5.5 constructor: it returns an empty table preallocated for `nseq` array elements and `nrec` other fields. Both sizes must be integers from 0 to 2^31-1.
+
 `collectgarbage` supports Lua 5.5's incremental and generational modes, with generational mode as the default. Use `collectgarbage("collect")` for a full collection or `collectgarbage("step", bytes)` to advance it. Explicit collection works even after `collectgarbage("stop")`. Memory counts and collection timing may differ from C Lua. For host-side controls, see [Garbage Collection](embedding.md#garbage-collection).
 
 ### zlua Additions to Core Libraries
 
 | Function | Behavior |
 | --- | --- |
-| `table.create(array_hint[, hash_hint])` | Creates an empty table with capacity hints. |
 | `table.dedup(values)` | Returns unique array elements in first-occurrence order using raw key equality; non-array fields are ignored. |
 | `string.strip(value[, chars])` | Removes leading/trailing ASCII whitespace or bytes from `chars`. |
 | `string.split(value[, separator[, maxsplit]])` | Splits from the left; omitted separator means ASCII whitespace. |
 | `string.rsplit(value[, separator[, maxsplit]])` | Same operation starting from the right. |
+
+These helpers follow Python's `str.split`/`str.rsplit`/`str.strip` conventions:
+
+- `separator` is plain text, not a Lua pattern, and may be several bytes long; matches do not overlap. An empty separator raises an argument error.
+- With a separator, leading, trailing, and adjacent separators produce empty strings (`split(",a,", ",")` is `{"", "a", ""}`), and an empty input returns `{""}`.
+- With no separator (or `nil`), runs of ASCII space, `\t`, `\n`, `\r`, `\v`, and `\f` separate fields, leading and trailing whitespace is ignored, and empty or all-whitespace input returns `{}`.
+- `maxsplit` limits the number of splits, and the unsplit remainder is kept as the last (`split`) or first (`rsplit`) piece. `0` returns the input as one piece; in whitespace mode the remainder loses only the whitespace on the side splitting starts from (`split("  a b  ", nil, 1)` is `{"a", "b  "}`). A negative value or `nil` means unlimited, and a limit above the number of separators has no effect.
+- `chars` is a set of bytes stripped from either end, not a prefix, suffix, or pattern. An empty `chars` removes nothing.
+
+`table.dedup` reads `values[1]` through `#values` with ordinary indexing, so `__len` and `__index` are honored, and returns a new sequence without a metatable. `nil` entries are skipped. Values are compared as raw table keys: `__eq` is ignored, `1` and `1.0` are duplicates, and every NaN is kept. Lengths above 1,000,000 raise an error.
 
 
 ## Host-Facing Libraries
@@ -140,6 +151,8 @@ JSON, TOML, and MessagePack writers share table-shape rules:
 - String-keyed tables become objects/maps.
 - Cycles, sparse arrays, mixed array/object tables, unsupported values, non-string object keys, and non-finite numbers are rejected.
 
+JSON and TOML integer literals decode as Lua integers, literals with a fraction or exponent as floats, and MessagePack integer types as integers. Integers outside the 64-bit signed range raise an error rather than becoming floats (for example `json.read("9223372036854775808")`, a TOML integer overflow, or a MessagePack `uint64` above `math.maxinteger`). A JSON float literal too large for a double, such as `1e400`, decodes as `math.huge` and therefore cannot be written back.
+
 ### JSON
 
 ```lua
@@ -150,7 +163,7 @@ print(json.write(value, { pretty = true, indent = 2 }))
 
 | Member | Behavior |
 | --- | --- |
-| `json.read(input)` | Decodes null, booleans, numbers, strings, arrays, and objects. Integers stay integers when representable. |
+| `json.read(input)` | Decodes null, booleans, numbers, strings, arrays, and objects. Integer literals become Lua integers. |
 | `json.write(value[, options])` | Encodes a value. Options are `pretty` and non-negative `indent`. |
 | `json.null` | Sentinel for JSON null. Lua `nil` also encodes as null. |
 

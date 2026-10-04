@@ -3159,7 +3159,9 @@ pub const State = struct {
             .native_rawlen => try self.returnValues(thread, resolved.base, resolved.return_count, &.{try self.rawLen(argValue(self, thread, resolved, 0))}),
             .native_next => {
                 const values = try self.nextValues(argValue(self, thread, resolved, 0), argValue(self, thread, resolved, 1));
-                try self.returnValues(thread, resolved.base, resolved.return_count, &values);
+                // Like Lua's `next`, an exhausted traversal returns a single nil.
+                const count: usize = if (values[0] == .nil) 1 else 2;
+                try self.returnValues(thread, resolved.base, resolved.return_count, values[0..count]);
             },
             .native_pairs => {
                 if (resolved.arg_count == 0) return self.failArgumentMessage("pairs", 1, "value expected");
@@ -3182,9 +3184,10 @@ pub const State = struct {
                 try self.returnValues(thread, resolved.base, resolved.return_count, values[0..if (values[0] == .nil) @as(usize, 1) else 2]);
             },
             .native_table_create => {
-                const array_hint = try self.tableCreateHint(argValue(self, thread, resolved, 0), 1);
-                const hash_hint = if (resolved.arg_count >= 2) try self.tableCreateHint(argValue(self, thread, resolved, 1), 2) else 0;
-                if (hash_hint == std.math.maxInt(i32)) return self.fail("table overflow");
+                const array_hint = try self.tableCreateHint(thread, resolved, 0);
+                const hash_hint = try self.tableCreateHint(thread, resolved, 1);
+                // Lua's hash part holds at most 2^MAXHBITS (2^30) nodes.
+                if (hash_hint > 1 << 30) return self.fail("table overflow");
                 try self.returnValues(thread, resolved.base, resolved.return_count, &.{try self.newTableWithHints(array_hint, hash_hint)});
             },
             .native_select => try self.selectValues(thread, resolved),
@@ -3212,7 +3215,7 @@ pub const State = struct {
                     try self.returnValues(thread, resolved.base, resolved.return_count, values);
                 } else {
                     const values = try stdlib.string.gmatchNext(self, .{ .table = state_table });
-                    try self.returnValues(thread, resolved.base, resolved.return_count, values[0..2]);
+                    try self.returnValues(thread, resolved.base, resolved.return_count, values.slice());
                 }
             },
             .native => |native| try self.callNative(native, thread, resolved),
@@ -4426,6 +4429,7 @@ pub const State = struct {
         const state = self.get(thread, op.base + 1);
         const control = self.get(thread, op.base + 2);
         var fixed: [2]Value = undefined;
+        var gmatch_values: stdlib.string.GmatchValues = undefined;
         var owned_values: ?[]Value = null;
         defer if (owned_values) |values| self.allocator.free(values);
         const values: []const Value = switch (iterator) {
@@ -4442,8 +4446,8 @@ pub const State = struct {
             },
             .native => |native| switch (native) {
                 .string_gmatch_iter => blk: {
-                    fixed = try stdlib.string.gmatchNext(self, state);
-                    break :blk fixed[0..2];
+                    gmatch_values = try stdlib.string.gmatchNext(self, state);
+                    break :blk gmatch_values.slice();
                 },
                 .utf8_codes_iter => blk: {
                     fixed = try stdlib.utf8.codesNext(self, state, control);
@@ -4565,11 +4569,28 @@ pub const State = struct {
         };
     }
 
-    fn tableCreateHint(self: *State, value: Value, arg_index: u8) !u32 {
-        const integer = toInteger(value) orelse return self.fail("number expected");
-        if (integer < 0 or integer > std.math.maxInt(i32)) {
-            return self.fail(if (arg_index == 1) "bad argument #1 to 'table.create' (out of range)" else "bad argument #2 to 'table.create' (out of range)");
-        }
+    /// Mirrors `luaL_checkinteger`/`luaL_optinteger` plus the `INT_MAX`
+    /// range check used by Lua 5.5's `table.create(nseq [, nrec])`.
+    fn tableCreateHint(self: *State, thread: *Thread, op: bytecode.Call, index: u16) !u32 {
+        const function_name = "table.create";
+        const arg_number = index + 1;
+        const value = argValue(self, thread, op, index);
+        const integer: i64 = switch (value) {
+            .integer => |integer| integer,
+            .number => |number| floatToInteger(number) orelse return self.failArgumentMessage(function_name, arg_number, "number has no integer representation"),
+            .string => |string| parseIntegerStrict(string) orelse blk: {
+                const number = toNumberMaybe(value) orelse return self.failArgumentType(function_name, arg_number, "number", value);
+                break :blk floatToInteger(number) orelse return self.failArgumentMessage(function_name, arg_number, "number has no integer representation");
+            },
+            .nil => blk: {
+                // `nrec` is optional; `nseq` distinguishes nil from no value.
+                if (index == 1) break :blk 0;
+                if (index >= op.arg_count) return self.failArgument(function_name, arg_number, .{ .expected = .{ .expected = "number", .actual = "no value" } });
+                return self.failArgumentType(function_name, arg_number, "number", value);
+            },
+            else => return self.failArgumentType(function_name, arg_number, "number", value),
+        };
+        if (integer < 0 or integer > std.math.maxInt(i32)) return self.failArgumentMessage(function_name, arg_number, "out of range");
         return @intCast(integer);
     }
 

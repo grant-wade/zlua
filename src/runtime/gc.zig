@@ -250,7 +250,7 @@ pub fn currentAllocationTotal(comptime State: type, self: *State) usize {
 }
 
 pub fn tableCapacityBytes(table: *const Table) usize {
-    return table.array.capacity * @sizeOf(Value) + table.entries.capacity * @sizeOf(TableEntry) + table.entry_index.capacity() * (@sizeOf(Value) + @sizeOf(usize) + 1);
+    return table.array.capacity * @sizeOf(Value) + table.entries.capacity * @sizeOf(TableEntry) + @as(usize, table.entry_index.capacity()) * (@sizeOf(Value) + @sizeOf(usize) + 1);
 }
 
 pub fn tableGcBytes(table: *const Table) usize {

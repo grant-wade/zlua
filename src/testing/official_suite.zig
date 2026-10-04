@@ -19,7 +19,7 @@ const Options = struct {
     memory_limit_mb: u64 = 0,
 };
 
-const Mode = enum { basic, complete, internal };
+const Mode = enum { basic, complete };
 const Runner = enum { clua, zlua };
 
 const official_basic_prelude = "_U=true; _soft=true; _port=true; _nomsg=true; T=nil; ARG=arg";
@@ -85,7 +85,10 @@ pub fn runCli(
     args: []const []const u8,
 ) !u8 {
     const options = parseArgs(allocator, args) catch |err| {
-        try stderrPrint(io, "test-official: {s}\n", .{@errorName(err)});
+        switch (err) {
+            error.InternalModeUnsupported => try stderrPrint(io, "test-official: --mode=internal requires testC builds, which are not supported\n", .{}),
+            else => try stderrPrint(io, "test-official: {s}\n", .{@errorName(err)}),
+        }
         return 2;
     };
     defer allocator.free(options.file_args);
@@ -202,6 +205,9 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !Options {
 }
 
 fn parseMode(value: []const u8) !Mode {
+    // Upstream's internal mode needs CLua and zlua built with the testC
+    // library (`T`), which this harness does not provide.
+    if (std.mem.eql(u8, value, "internal")) return error.InternalModeUnsupported;
     return std.meta.stringToEnum(Mode, value) orelse error.InvalidMode;
 }
 
@@ -214,12 +220,6 @@ fn runIndividualSuite(
     options: Options,
     counts: *Counts,
 ) !void {
-    if (options.mode == .internal) {
-        counts.skipped += 1;
-        try out.print("skip internal (testC-enabled CLua/zlua builds are not wired yet)\n", .{});
-        return;
-    }
-
     try out.print("mode: {s} official files\n", .{@tagName(options.mode)});
     if (options.memory_limit_mb != 0) {
         try out.print("memory-limit: {d} MiB per child process\n", .{options.memory_limit_mb});
@@ -331,7 +331,6 @@ fn runOfficialFile(
     const prelude = switch (options.mode) {
         .basic => official_basic_prelude,
         .complete => official_complete_prelude,
-        .internal => unreachable,
     };
     var argv = std.ArrayList([]const u8).empty;
     defer argv.deinit(allocator);
@@ -420,6 +419,11 @@ test "argument parser accepts complete mode and limits" {
     try std.testing.expectEqual(Mode.complete, options.mode);
     try std.testing.expectEqual(@as(u64, 10), options.timeout_ms);
     try std.testing.expectEqual(@as(u64, 256), options.memory_limit_mb);
+}
+
+test "argument parser rejects internal mode" {
+    const args = [_][]const u8{"--mode=internal"};
+    try std.testing.expectError(error.InternalModeUnsupported, parseArgs(std.testing.allocator, &args));
 }
 
 test "argument parser collects official file args" {

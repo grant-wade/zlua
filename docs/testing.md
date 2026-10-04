@@ -84,8 +84,6 @@ just diff --show-clua --show-zlua tests/diff/runtime/errors.lua
 
 Use `--gc-stress` to look for values that are collected too early, or `--gc-step-stress` to test changes made between collection steps. Add `--feature=gc` to run just the GC fixtures. Both modes respect Lua's stop/restart controls.
 
-`--bless` and `--update-expected-failures` are accepted but are currently no-ops.
-
 ### Expected Failures
 
 Expected failures can be declared in fixture metadata or `tests/fixtures/expected_failures.toml`. They require a reason, and an expected failure that starts passing is reported as a failure so stale entries are removed. The inventory is currently empty.
@@ -102,6 +100,12 @@ just extensions --show-output tests/extensions/fs/basic.lua
 
 The harness uses safe libraries by default and full libraries for fixtures under `tests/extensions/fs`.
 
+`--bless` rewrites expectations from the actual run instead of failing: it writes `<fixture>.lua.out`, writes `.err` only when stderr is non-empty and `.exit` only when the exit status is nonzero, and removes stale `.err`/`.exit` files. Each changed file is printed, and files that already match are left alone. Timeouts and signals are never blessed. Review the resulting diff before committing it.
+
+```sh
+just extensions --bless tests/extensions/string/split_edges.lua
+```
+
 ## Official Suite
 
 Downloaded tests live under `.zlua-deps/lua-5.5.0-tests`. The default run uses every top-level `.lua` file except `all.lua` with the basic compatibility prelude.
@@ -115,7 +119,7 @@ just official --mode=complete strings.lua
 zig build test-official -Dofficial-memory-limit-mb=0
 ```
 
-The build step applies a 256 MiB child-process cap on Linux by default and no cap elsewhere. It also limits each child to 120 seconds (`-Dofficial-timeout-ms=0` disables this). The allocator-exhaustion test `heavy.lua` is skipped on macOS and Windows because the harness cannot cap child memory there. The `files.lua` prelude emulates `/dev/full` on those platforms and maps `/dev/null` to `NUL` on Windows. Direct harness runs default to no timeout or memory cap. `--mode=internal` is parsed but skipped because `testC` builds are not wired.
+The build step applies a 256 MiB child-process cap on Linux by default and no cap elsewhere. It also limits each child to 120 seconds (`-Dofficial-timeout-ms=0` disables this). The allocator-exhaustion test `heavy.lua` is skipped on macOS and Windows because the harness cannot cap child memory there. The `files.lua` prelude emulates `/dev/full` on those platforms and maps `/dev/null` to `NUL` on Windows. Direct harness runs default to no timeout or memory cap. `--mode=internal` is rejected because it requires `testC` builds of both interpreters, which are not supported.
 
 Differential and extension output comparisons treat CRLF and LF as equivalent; lone carriage returns, spaces, and missing final newlines remain significant. Fixtures normalize platform-dependent paths explicitly where they print or assert them.
 

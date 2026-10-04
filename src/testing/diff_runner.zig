@@ -108,10 +108,6 @@ fn parseArgs(args: []const []const u8) !Options {
             options.clua = args[index];
         } else if (std.mem.startsWith(u8, arg, "--clua=")) {
             options.clua = arg[7..];
-        } else if (std.mem.eql(u8, arg, "--bless")) {
-            // Accepted for command stability; fixtures remain source-of-truth in milestone 0.
-        } else if (std.mem.eql(u8, arg, "--update-expected-failures")) {
-            // Accepted for command stability; registry updates are intentionally manual for now.
         } else if (std.mem.startsWith(u8, arg, "--stage=")) {
             options.stage = try metadata.parseStage(arg[8..]);
         } else if (std.mem.startsWith(u8, arg, "--feature=")) {

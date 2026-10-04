@@ -368,10 +368,21 @@ pub fn gmatch(state: *State, thread: *Thread, op: bytecode.Call) !void {
 
 pub fn gmatchIter(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const values = try gmatchNext(state, runtime.argValue(state, thread, op, 0));
-    try state.returnValues(thread, op.base, op.return_count, values[0..2]);
+    try state.returnValues(thread, op.base, op.return_count, values.slice());
 }
 
-pub fn gmatchNext(state: *State, state_value: Value) ![2]Value {
+/// Results of one `string.gmatch` step: every capture (or the whole match),
+/// or no values once the subject is exhausted.
+pub const GmatchValues = struct {
+    buffer: [max_captures]Value = undefined,
+    len: usize = 0,
+
+    pub fn slice(self: *const GmatchValues) []const Value {
+        return self.buffer[0..self.len];
+    }
+};
+
+pub fn gmatchNext(state: *State, state_value: Value) !GmatchValues {
     const state_table = try state.expectTable(state_value);
     const source = try state.expectString(state_table.get(.{ .string = "s" }));
     const pattern = try state.expectString(state_table.get(.{ .string = "p" }));
@@ -380,9 +391,9 @@ pub fn gmatchNext(state: *State, state_value: Value) ![2]Value {
     const capture_pattern = positionAndWholeCapturePattern(pattern);
     const search_pattern = capture_pattern orelse pattern;
     const found = while (true) {
-        const current = (try simplePatternFind(state, source, search_pattern, @intCast(@max(pos, 0)))) orelse return .{ .nil, .nil };
+        const current = (try simplePatternFind(state, source, search_pattern, @intCast(@max(pos, 0)))) orelse return .{};
         if (current.range.start == current.range.end and previous_match_end != null and previous_match_end.? == current.range.start) {
-            if (current.range.end >= source.len) return .{ .nil, .nil };
+            if (current.range.end >= source.len) return .{};
             pos = @intCast(current.range.end + 1);
             continue;
         }
@@ -390,10 +401,23 @@ pub fn gmatchNext(state: *State, state_value: Value) ![2]Value {
     };
     try state.setTableRaw(state_table, .{ .string = try state.intern("i") }, .{ .integer = @intCast(if (found.range.end > found.range.start) found.range.end else found.range.end + 1) });
     try state.setTableRaw(state_table, .{ .string = try state.intern("last") }, .{ .integer = @intCast(found.range.end) });
-    if (capture_pattern != null) return .{ .{ .integer = @intCast(found.range.start + 1) }, .{ .string = try state.intern(source[found.range.start..found.range.end]) } };
-    var values = [_]Value{ .nil, .nil };
-    try writeMatchValues(state, source, found, values[0..]);
-    return values;
+    var result = GmatchValues{};
+    if (capture_pattern != null) {
+        result.buffer[0] = .{ .integer = @intCast(found.range.start + 1) };
+        result.buffer[1] = .{ .string = try state.intern(source[found.range.start..found.range.end]) };
+        result.len = 2;
+        return result;
+    }
+    if (found.captures.count == 0) {
+        result.buffer[0] = .{ .string = try state.intern(source[found.range.start..found.range.end]) };
+        result.len = 1;
+        return result;
+    }
+    for (found.captures.slots[0..found.captures.count], 0..) |slot, index| {
+        result.buffer[index] = try captureValue(state, source, slot);
+    }
+    result.len = found.captures.count;
+    return result;
 }
 
 fn positionAndWholeCapturePattern(pattern: []const u8) ?[]const u8 {
@@ -609,13 +633,6 @@ fn appendCaptureValues(state: *State, values: *std.ArrayList(Value), source: []c
     for (captures.slots[0..captures.count]) |slot| try values.append(state.allocator, try captureValue(state, source, slot));
 }
 
-fn writeMatchValues(state: *State, source: []const u8, matched: Match, values: []Value) !void {
-    var list = std.ArrayList(Value).empty;
-    defer list.deinit(state.allocator);
-    try appendMatchValues(state, &list, source, matched);
-    for (values, 0..) |*value, index| value.* = if (index < list.items.len) list.items[index] else .nil;
-}
-
 fn captureValue(state: *State, source: []const u8, slot: CaptureSlot) !Value {
     return switch (slot) {
         .range => |range| .{ .string = try state.intern(source[range.start..range.end]) },
@@ -791,8 +808,8 @@ fn splitImpl(state: *State, thread: *Thread, op: bytecode.Call, from_right: bool
         null
     else
         try state.expectArgumentString(thread, op, function_name, 1);
-    const maxsplit = if (op.arg_count >= 3) try integerArgument(state, thread, op, function_name, 2) else -1;
-    if (separator) |bytes| if (bytes.len == 0) return state.fail("empty separator");
+    const maxsplit = if (op.arg_count >= 3 and runtime.argValue(state, thread, op, 2) != .nil) try integerArgument(state, thread, op, function_name, 2) else -1;
+    if (separator) |bytes| if (bytes.len == 0) return state.failArgumentMessage(function_name, state.argumentDisplayIndex(thread, function_name, 1), "empty separator");
 
     var pieces = std.ArrayList([]const u8).empty;
     defer pieces.deinit(state.allocator);
