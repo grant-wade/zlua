@@ -4,7 +4,6 @@ const lua_deps_root = ".zlua-deps";
 const lua_source_root = lua_deps_root ++ "/lua-5.5.0/src";
 
 const EmbeddingExample = struct {
-    key: []const u8,
     name: []const u8,
     path: []const u8,
 };
@@ -15,7 +14,6 @@ pub fn build(b: *std.Build) void {
     const default_official_memory_limit_mb: u64 = if (b.graph.host.result.os.tag == .linux) 256 else 0;
     const official_memory_limit_mb = b.option(u64, "official-memory-limit-mb", "Memory cap per official-suite child process in MiB (0 disables; Linux only)") orelse default_official_memory_limit_mb;
     const official_timeout_ms = b.option(u64, "official-timeout-ms", "Timeout per official-suite child process in milliseconds (0 disables)") orelse 120_000;
-    const example_filters = b.args orelse &[_][]const u8{};
 
     const lua_deps_step = addFetchLuaStep(b);
     const zerde_dep = b.dependency("zerde", .{
@@ -144,25 +142,24 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(bench_exe);
 
     const embedding_examples = [_]EmbeddingExample{
-        .{ .key = "snapshot_adventure", .name = "zlua-embed-snapshot-adventure", .path = "examples/snapshot_adventure.zig" },
-        .{ .key = "snapshot_adversarial", .name = "zlua-embed-snapshot-adversarial", .path = "examples/snapshot_adversarial.zig" },
-        .{ .key = "snapshot_reset", .name = "zlua-embed-snapshot-reset", .path = "examples/snapshot_reset.zig" },
-        .{ .key = "coroutine_story", .name = "zlua-embed-coroutine-story", .path = "examples/coroutine_story.zig" },
-        .{ .key = "run_script", .name = "zlua-embed-run-script", .path = "examples/run_script.zig" },
-        .{ .key = "select_libraries", .name = "zlua-embed-select-libraries", .path = "examples/select_libraries.zig" },
-        .{ .key = "register_function", .name = "zlua-embed-register-function", .path = "examples/register_function.zig" },
-        .{ .key = "typed_host_function", .name = "zlua-embed-typed-host-function", .path = "examples/typed_host_function.zig" },
-        .{ .key = "plugin_sandbox", .name = "zlua-embed-plugin-sandbox", .path = "examples/plugin_sandbox.zig" },
-        .{ .key = "bytecode_roundtrip", .name = "zlua-embed-bytecode-roundtrip", .path = "examples/bytecode_roundtrip.zig" },
-        .{ .key = "memory_rw_files", .name = "zlua-embed-memory-rw-files", .path = "examples/memory_rw_files.zig" },
-        .{ .key = "userdata_counter", .name = "zlua-embed-userdata-counter", .path = "examples/userdata_counter.zig" },
-        .{ .key = "userdata_auto", .name = "zlua-embed-userdata-auto", .path = "examples/userdata_auto.zig" },
-        .{ .key = "typed_userdata_initializer", .name = "zlua-embed-typed-userdata-initializer", .path = "examples/typed_userdata_initializer.zig" },
-        .{ .key = "preload_module", .name = "zlua-embed-preload-module", .path = "examples/preload_module.zig" },
+        .{ .name = "zlua-embed-snapshot-adventure", .path = "examples/snapshot_adventure.zig" },
+        .{ .name = "zlua-embed-snapshot-adversarial", .path = "examples/snapshot_adversarial.zig" },
+        .{ .name = "zlua-embed-snapshot-reset", .path = "examples/snapshot_reset.zig" },
+        .{ .name = "zlua-embed-coroutine-story", .path = "examples/coroutine_story.zig" },
+        .{ .name = "zlua-embed-run-script", .path = "examples/run_script.zig" },
+        .{ .name = "zlua-embed-select-libraries", .path = "examples/select_libraries.zig" },
+        .{ .name = "zlua-embed-register-function", .path = "examples/register_function.zig" },
+        .{ .name = "zlua-embed-typed-host-function", .path = "examples/typed_host_function.zig" },
+        .{ .name = "zlua-embed-plugin-sandbox", .path = "examples/plugin_sandbox.zig" },
+        .{ .name = "zlua-embed-bytecode-roundtrip", .path = "examples/bytecode_roundtrip.zig" },
+        .{ .name = "zlua-embed-memory-rw-files", .path = "examples/memory_rw_files.zig" },
+        .{ .name = "zlua-embed-userdata-counter", .path = "examples/userdata_counter.zig" },
+        .{ .name = "zlua-embed-userdata-auto", .path = "examples/userdata_auto.zig" },
+        .{ .name = "zlua-embed-typed-userdata-initializer", .path = "examples/typed_userdata_initializer.zig" },
+        .{ .name = "zlua-embed-preload-module", .path = "examples/preload_module.zig" },
     };
 
     const examples_step = b.step("examples", "Compile and run all embedding examples, requiring exit code 0");
-    const run_example_step = b.step("run-example", "Run embedding examples, or selected examples passed after --");
     for (embedding_examples) |example| {
         const example_exe = b.addExecutable(.{
             .name = example.name,
@@ -178,15 +175,11 @@ pub fn build(b: *std.Build) void {
         // is cached. Run treats nonzero exits and abnormal termination as errors.
         run_example.stdio = .inherit;
         examples_step.dependOn(&run_example.step);
-
-        if (example_filters.len == 0 or exampleMatchesAny(example, example_filters)) {
-            run_example_step.dependOn(&run_example.step);
-        }
     }
     const run_step = b.step("run", "Run zlua");
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| run_cmd.addArgs(args);
+    addPassthruArgs(b, run_cmd);
     run_step.dependOn(&run_cmd.step);
 
     const run_diff_step = b.step("run-test-diff", "Run CLua differential harness");
@@ -194,7 +187,7 @@ pub fn build(b: *std.Build) void {
     run_diff_cmd.step.dependOn(b.getInstallStep());
     run_diff_cmd.addArg("--clua");
     run_diff_cmd.addArtifactArg(clua_exe);
-    if (b.args) |args| run_diff_cmd.addArgs(args);
+    addPassthruArgs(b, run_diff_cmd);
     run_diff_step.dependOn(&run_diff_cmd.step);
 
     const run_extensions_step = b.step("run-test-extensions", "Run zlua extension fixture harness");
@@ -202,7 +195,7 @@ pub fn build(b: *std.Build) void {
     run_extensions_cmd.step.dependOn(b.getInstallStep());
     run_extensions_cmd.addArg("--zlua");
     run_extensions_cmd.addArtifactArg(exe);
-    if (b.args) |args| run_extensions_cmd.addArgs(args);
+    addPassthruArgs(b, run_extensions_cmd);
     run_extensions_step.dependOn(&run_extensions_cmd.step);
 
     const run_official_step = b.step("run-test-official", "Run official Lua 5.5 suite harness");
@@ -212,7 +205,7 @@ pub fn build(b: *std.Build) void {
     run_official_cmd.addArtifactArg(clua_exe);
     run_official_cmd.addArg("--zlua");
     run_official_cmd.addArtifactArg(exe);
-    if (b.args) |args| run_official_cmd.addArgs(args);
+    addPassthruArgs(b, run_official_cmd);
     run_official_step.dependOn(&run_official_cmd.step);
 
     const bench_step = b.step("bench", "Run all benchmark families sequentially");
@@ -228,7 +221,7 @@ pub fn build(b: *std.Build) void {
     run_bench.addArg("--clua-c");
     run_bench.addArtifactArg(clua_startup_bench_exe);
     run_bench.addArg("--c-build=ReleaseFast");
-    if (b.args) |args| run_bench.addArgs(args);
+    addPassthruArgs(b, run_bench);
     bench_step.dependOn(&run_bench.step);
 
     const test_step = b.step("test", "Run unit tests");
@@ -305,7 +298,7 @@ pub fn build(b: *std.Build) void {
     extensions_cmd.step.dependOn(b.getInstallStep());
     extensions_cmd.addArg("--zlua");
     extensions_cmd.addArtifactArg(exe);
-    if (b.args) |args| extensions_cmd.addArgs(args);
+    addPassthruArgs(b, extensions_cmd);
     extensions_step.dependOn(&extensions_cmd.step);
 
     const official_step = b.step("test-official", "Run full official Lua 5.5 suite dashboard under a memory cap");
@@ -371,10 +364,16 @@ pub fn build(b: *std.Build) void {
     });
     const run_doc_server = b.addRunArtifact(doc_server);
     run_doc_server.step.dependOn(&install_docs.step);
-    if (b.args) |args| run_doc_server.addArgs(args);
+    addPassthruArgs(b, run_doc_server);
 
     const doc_serve_step = b.step("docs-serve", "Generate docs and serve zig-out/docs over HTTP");
     doc_serve_step.dependOn(&run_doc_server.step);
+
+    const check_tools_step = b.step("check-tools", "Compile documentation tools and test the Markdown generator");
+    check_tools_step.dependOn(&md_docgen.step);
+    check_tools_step.dependOn(&doc_server.step);
+    const md_docgen_tests = b.addTest(.{ .root_module = md_docgen.root_module });
+    check_tools_step.dependOn(&b.addRunArtifact(md_docgen_tests).step);
 }
 
 fn addFetchLuaStep(b: *std.Build) *std.Build.Step {
@@ -509,22 +508,10 @@ fn cluaCFlags(target: std.Build.ResolvedTarget) []const []const u8 {
     };
 }
 
-fn exampleMatches(example: EmbeddingExample, filter: []const u8) bool {
-    if (std.mem.eql(u8, filter, example.key)) return true;
-    if (std.mem.eql(u8, filter, example.name)) return true;
-    if (std.mem.eql(u8, filter, example.path)) return true;
-
-    const basename = std.fs.path.basename(example.path);
-    if (std.mem.eql(u8, filter, basename)) return true;
-    if (std.mem.endsWith(u8, basename, ".zig")) {
-        return std.mem.eql(u8, filter, basename[0 .. basename.len - ".zig".len]);
+fn addPassthruArgs(b: *std.Build, run: *std.Build.Step.Run) void {
+    if (@hasDecl(std.Build.Step.Run, "addPassthruArgs")) {
+        run.addPassthruArgs();
+    } else if (b.args) |args| {
+        run.addArgs(args);
     }
-    return false;
-}
-
-fn exampleMatchesAny(example: EmbeddingExample, filters: []const []const u8) bool {
-    for (filters) |filter| {
-        if (exampleMatches(example, filter)) return true;
-    }
-    return false;
 }

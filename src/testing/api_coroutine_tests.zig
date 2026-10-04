@@ -517,7 +517,7 @@ test "callback yield memory limit errors are protected Lua failures without susp
     var lua = try api.State.init(a, .{ .stdlib = .base, .limits = .{ .max_memory = 128 * 1024 } });
     defer lua.deinit();
     var callback = try lua.register("large", struct {
-        const payload = [_]u8{'x'} ** (512 * 1024);
+        const payload: [512 * 1024]u8 = @splat('x');
         fn call(ctx: *api.Context) !void {
             return ctx.yield(.{payload[0..]});
         }

@@ -27,7 +27,7 @@ Most recipes wrap a similarly named build step:
 | `just docs`, `just docs-serve`, `just docs-serve-pub` | Build Zig HTML docs and optionally serve them locally. The public form binds `0.0.0.0`. |
 | `just fetch-lua` | Download Lua 5.5 source and tests. |
 | `just test`, `just ci` | Run Zig tests or the complete check. |
-| `just example [filters...]` | Run all or selected embedding examples. |
+| `just examples` | Compile and run all embedding examples. |
 | `just run [args...]` | Run the zlua CLI. |
 | `just version`, `just clua-version` | Print zlua or downloaded Lua version information. |
 | `just diff [args...]` | Run differential tests with `--debug-errors`. |
@@ -37,14 +37,16 @@ Most recipes wrap a similarly named build step:
 | `just fmt` | Format top-level source, testing, build, and example files. |
 | `just clean` | Remove `zig-out/` and `.zig-cache/`. |
 
-Example filters accept a key, executable name, path, basename, or basename without `.zig`.
+Use Zig `0.16.0` for formatting, for example `just --set zig /path/to/zig-0.16.0/zig fmt`.
+The Zig `0.17.0` formatter can introduce syntax that `0.16.0` cannot parse.
 
 ## Build Options
 
 | Option | Meaning |
 | --- | --- |
 | `-Dtarget=<target>` | Zig target selection. |
-| `-Doptimize=<mode>` | `Debug`, `ReleaseSafe`, `ReleaseFast`, or `ReleaseSmall`. |
+| `--release=safe`, `--release=fast`, `--release=small` | Select a release mode on either supported Zig version. The default is a debug build. |
+| `-Doptimize=<mode>` | Zig 0.16: `Debug`, `ReleaseSafe`, `ReleaseFast`, `ReleaseSmall`. Zig 0.17: `debug`, `safe`, `fast`, `small`. |
 | `-Dofficial-memory-limit-mb=<n>` | Child cap for official tests on Linux. Defaults to `256` on Linux and `0` elsewhere; `0` disables it. |
 
 ## Build Steps
@@ -56,11 +58,11 @@ Example filters accept a key, executable name, path, basename, or basename witho
 | `run -- [args...]` | Run the zlua CLI. |
 | `docs` | Generate Zig HTML docs under `zig-out/docs`. |
 | `docs-md` | Regenerate Markdown API docs under `docs/api/`. |
+| `check-tools` | Compile the documentation tools and run documentation-generator tests. |
 | `docs-serve -- [host] [port]` | Serve `zig-out/docs`; defaults to `127.0.0.1:8000`. |
 | `test` | Run Zig unit tests and the freestanding smoke test. |
 | `test-freestanding` | Build the x86_64 freestanding custom-host smoke test; run it on x86_64 Linux hosts. |
-| `examples` | Compile every embedding example. |
-| `run-example -- [filters...]` | Run all or selected examples. |
+| `examples` | Compile and run every embedding example. |
 | `test-diff` | Run all CLua differential fixtures. |
 | `run-test-diff -- [args...]` | Run the differential harness with filters/options. |
 | `test-extensions` | Run all zlua extension fixtures. |

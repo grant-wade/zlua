@@ -359,7 +359,7 @@ fn parseModule(
         0,
     );
 
-    var tree = try Ast.parse(allocator, source, .zig);
+    var tree = try Ast.parse(allocator, source, if (@hasDecl(Ast, "ParseOptions")) .{} else .zig);
     defer tree.deinit(allocator);
 
     if (tree.errors.len != 0) {
@@ -1612,7 +1612,7 @@ test "enum fields collect and render inline with docs" {
         \\};
     ;
 
-    var tree = try Ast.parse(allocator, source, .zig);
+    var tree = try Ast.parse(allocator, source, if (@hasDecl(Ast, "ParseOptions")) .{} else .zig);
     defer tree.deinit(allocator);
 
     var decls = std.ArrayList(DeclDocs).empty;
@@ -1654,7 +1654,7 @@ test "tuple struct fields collect and render inline with docs" {
         \\};
     ;
 
-    var tree = try Ast.parse(allocator, source, .zig);
+    var tree = try Ast.parse(allocator, source, if (@hasDecl(Ast, "ParseOptions")) .{} else .zig);
     defer tree.deinit(allocator);
 
     var decls = std.ArrayList(DeclDocs).empty;
@@ -1698,7 +1698,7 @@ test "error set fields collect and render inline with docs" {
         \\};
     ;
 
-    var tree = try Ast.parse(allocator, source, .zig);
+    var tree = try Ast.parse(allocator, source, if (@hasDecl(Ast, "ParseOptions")) .{} else .zig);
     defer tree.deinit(allocator);
 
     var decls = std.ArrayList(DeclDocs).empty;

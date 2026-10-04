@@ -152,7 +152,7 @@
 ## version
 
 ```zig
-pub const version = "0.6.0";
+pub const version = "0.6.1";
 ```
 
 <a id="const-lua_target_version"></a>
@@ -678,4 +678,3 @@ pub const ProcessStatus = api.ProcessStatus;
 ```
 
 References: [`api.ProcessStatus`](api.md#alias-processstatus)
-

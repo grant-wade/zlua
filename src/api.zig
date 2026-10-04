@@ -41,6 +41,7 @@
 //! and should not be treated as a stable embedding contract.
 
 const std = @import("std");
+const reflection = @import("reflection.zig");
 const runtime = @import("runtime.zig");
 const stdlib = @import("stdlib.zig");
 const rollback_runtime = @import("runtime/rollback.zig");
@@ -421,7 +422,7 @@ pub const State = struct {
     /// The allocator must remain valid until `deinit`. The default options open
     /// safe libraries with sandboxed host capabilities.
     pub fn init(state_allocator: std.mem.Allocator, options: Options) !State {
-        inline for (@typeInfo(GcParam).@"enum".fields) |f| try validateGcParam(options.gc.params.get(@field(GcParam, f.name)));
+        inline for (reflection.fieldsOf(GcParam)) |f| try validateGcParam(options.gc.params.get(@field(GcParam, f)));
         var memory_limit_allocator: ?*MemoryLimitAllocator = null;
         errdefer if (memory_limit_allocator) |allocator_ptr| state_allocator.destroy(allocator_ptr);
 
@@ -1481,13 +1482,13 @@ pub fn Userdata(comptime T: type) type {
             try self.ref.validate(self.ref.state);
             if (@typeInfo(Source) != .@"struct") @compileError("bindMethods requires a struct type");
 
-            inline for (@typeInfo(Source).@"struct".decls) |decl| {
-                const member = @field(Source, decl.name);
+            inline for (reflection.declarationNames(Source)) |decl| {
+                const member = @field(Source, decl);
                 if (comptime isUserdataMethod(T, @TypeOf(member))) {
-                    if (comptime isMetamethodName(decl.name)) {
-                        try self.metamethod(decl.name, member);
+                    if (comptime isMetamethodName(decl)) {
+                        try self.metamethod(decl, member);
                     } else {
-                        try self.method(decl.name, member);
+                        try self.method(decl, member);
                     }
                 }
             }
@@ -1688,7 +1689,7 @@ pub fn Tuple(comptime types: []const type) type {
         pub const field_types = types;
 
         /// Converted tuple values.
-        values: std.meta.Tuple(types),
+        values: @Tuple(types),
 
         /// Releases any owned handles stored in tuple fields.
         pub fn deinit(self: *@This()) void {
@@ -1828,7 +1829,7 @@ pub const Context = struct {
         const T = @TypeOf(values);
         const info = @typeInfo(T);
         if (info == .@"struct" and info.@"struct".is_tuple) {
-            inline for (info.@"struct".fields, 0..) |_, index| try self.pushReturn(values[index]);
+            inline for (reflection.fieldNames(info.@"struct"), 0..) |_, index| try self.pushReturn(values[index]);
             return;
         }
 
@@ -2047,14 +2048,14 @@ fn callTyped(comptime function: anytype, ctx: *Context) !void {
         else => @compileError("registerTyped requires a function or function pointer"),
     };
 
-    if (function_info.is_var_args) @compileError("registerTyped does not support varargs functions");
+    if (reflection.isVariadic(function_info)) @compileError("registerTyped does not support varargs functions");
 
     var args: std.meta.ArgsTuple(SignatureType) = undefined;
-    var scopes: ArgumentScopes(function_info.params.len) = .{};
+    var scopes: ArgumentScopes(reflection.paramTypes(function_info).len) = .{};
     defer scopes.deinit(ctx);
     var lua_arg_index: usize = 0;
-    inline for (function_info.params, 0..) |param, index| {
-        const Param = param.type orelse @compileError("registerTyped requires typed parameters");
+    inline for (reflection.paramTypes(function_info), 0..) |param, index| {
+        const Param = param orelse @compileError("registerTyped requires typed parameters");
         if (Param == *Context) {
             args[index] = ctx;
         } else {
@@ -2108,14 +2109,14 @@ fn callUserdataInitializer(comptime T: type, comptime initializer: anytype, comp
         else => @compileError("userdata initializers require a function or function pointer"),
     };
 
-    if (function_info.is_var_args) @compileError("userdata initializers do not support varargs functions");
+    if (reflection.isVariadic(function_info)) @compileError("userdata initializers do not support varargs functions");
 
     var args: std.meta.ArgsTuple(SignatureType) = undefined;
-    var scopes: ArgumentScopes(function_info.params.len) = .{};
+    var scopes: ArgumentScopes(reflection.paramTypes(function_info).len) = .{};
     defer scopes.deinit(ctx);
     var lua_arg_index: usize = 0;
-    inline for (function_info.params, 0..) |param, index| {
-        const Param = param.type orelse @compileError("userdata initializer parameters must be typed");
+    inline for (reflection.paramTypes(function_info), 0..) |param, index| {
+        const Param = param orelse @compileError("userdata initializer parameters must be typed");
         if (Param == *Context) {
             args[index] = ctx;
         } else {
@@ -2163,18 +2164,18 @@ fn callUserdataMethod(comptime T: type, comptime function: anytype, ctx: *Contex
         else => @compileError("userdata methods require a function or function pointer"),
     };
 
-    if (function_info.is_var_args) @compileError("userdata methods do not support varargs functions");
-    if (function_info.params.len == 0) @compileError("userdata methods require a receiver parameter");
-    const Receiver = function_info.params[0].type orelse @compileError("userdata method receiver must be typed");
+    if (reflection.isVariadic(function_info)) @compileError("userdata methods do not support varargs functions");
+    if (reflection.paramTypes(function_info).len == 0) @compileError("userdata methods require a receiver parameter");
+    const Receiver = reflection.paramTypes(function_info)[0] orelse @compileError("userdata method receiver must be typed");
     if (comptime !isUserdataReceiver(T, Receiver)) @compileError("userdata method receiver must be *T or *const T");
 
     var args: std.meta.ArgsTuple(SignatureType) = undefined;
-    var scopes: ArgumentScopes(function_info.params.len) = .{};
+    var scopes: ArgumentScopes(reflection.paramTypes(function_info).len) = .{};
     defer scopes.deinit(ctx);
     args[0] = try scopes.arg(ctx, 0, Receiver);
     var lua_arg_index: usize = 1;
-    inline for (function_info.params[1..], 1..) |param, index| {
-        const Param = param.type orelse @compileError("userdata method parameters must be typed");
+    inline for (reflection.paramTypes(function_info)[1..], 1..) |param, index| {
+        const Param = param orelse @compileError("userdata method parameters must be typed");
         if (Param == *Context) {
             args[index] = ctx;
         } else {
@@ -2219,22 +2220,13 @@ fn isUserdataMethod(comptime T: type, comptime FunctionType: type) bool {
         else => return false,
     };
 
-    if (function_info.is_var_args or function_info.params.len == 0) return false;
-    const Receiver = function_info.params[0].type orelse return false;
+    if (reflection.isVariadic(function_info) or reflection.paramTypes(function_info).len == 0) return false;
+    const Receiver = reflection.paramTypes(function_info)[0] orelse return false;
     return isUserdataReceiver(T, Receiver);
 }
 
 fn isUserdataReceiver(comptime T: type, comptime Receiver: type) bool {
-    return switch (@typeInfo(Receiver)) {
-        .pointer => |pointer| pointer.size == .one and
-            pointer.child == T and
-            !pointer.is_volatile and
-            pointer.alignment == null and
-            pointer.address_space == .generic and
-            !pointer.is_allowzero and
-            pointer.sentinel_ptr == null,
-        else => false,
-    };
+    return Receiver == *T or Receiver == *const T;
 }
 
 fn isMetamethodName(comptime name: []const u8) bool {
@@ -2267,7 +2259,7 @@ fn checkScopeResult(comptime T: type) void {
         .pointer => @compileError("userdata scope results cannot contain pointers; copy the required value inside the scope"),
         .optional => |o| checkScopeResult(o.child),
         .array => |a| checkScopeResult(a.child),
-        .@"struct", .@"union" => inline for (std.meta.fields(T)) |field| checkScopeResult(field.type),
+        .@"struct", .@"union" => inline for (reflection.fieldsOf(T)) |field| checkScopeResult(@FieldType(T, field)),
         else => {},
     }
 }
@@ -2294,7 +2286,7 @@ fn ArgumentScopes(comptime capacity: usize) type {
                 if (comptime pointer.size == .one and @typeInfo(pointer.child) == .@"struct") {
                     if (raw == .userdata and raw.userdata.type_id == typeId(pointer.child)) {
                         if (raw.userdata.payload) |p| if (p.snapshot_tracking == .scoped) {
-                            try beginUserdataScope(&ctx.lua.raw_state, &self.entries[self.len], raw.userdata, pointer.is_const);
+                            try beginUserdataScope(&ctx.lua.raw_state, &self.entries[self.len], raw.userdata, reflection.isConstPointer(pointer));
                             self.len += 1;
                         };
                         return @ptrCast(@alignCast(raw.userdata.ptr));
@@ -2395,7 +2387,7 @@ fn convertArgs(state: *State, args: anytype) ![]runtime.Value {
     const info = @typeInfo(Args);
     if (info != .@"struct" or !info.@"struct".is_tuple) @compileError("calls require tuple arguments: .{ ... }");
 
-    const fields = info.@"struct".fields;
+    const fields = reflection.fieldNames(info.@"struct");
     const raw_args = try state.allocator().alloc(runtime.Value, fields.len);
     errdefer state.allocator().free(raw_args);
     inline for (fields, 0..) |_, index| raw_args[index] = try toRuntimeValue(state, args[index]);
@@ -2467,14 +2459,14 @@ fn arrayToRuntimeValue(state: *State, values: anytype) !runtime.Value {
 }
 
 fn structToRuntimeValue(state: *State, value: anytype, comptime info: std.builtin.Type.Struct) !runtime.Value {
-    if (info.is_tuple) return tupleToRuntimeValue(state, value, info.fields.len);
+    if (info.is_tuple) return tupleToRuntimeValue(state, value, reflection.fieldNames(info).len);
 
-    const hash_hint = std.math.cast(u32, info.fields.len) orelse return error.IntegerOutOfRange;
+    const hash_hint = std.math.cast(u32, reflection.fieldNames(info).len) orelse return error.IntegerOutOfRange;
 
     const table = state.raw_state.newTableWithHints(0, hash_hint) catch |err| return state.captureLuaError(err);
-    inline for (info.fields) |field| {
-        const raw_key = runtime.Value{ .string = try state.raw_state.intern(field.name) };
-        const raw_value = try toRuntimeValue(state, @field(value, field.name));
+    inline for (reflection.fieldNames(info)) |field| {
+        const raw_key = runtime.Value{ .string = try state.raw_state.intern(field) };
+        const raw_value = try toRuntimeValue(state, @field(value, field));
         state.raw_state.setTableValue(table, raw_key, raw_value) catch |err| return state.captureLuaError(err);
     }
     return table;
@@ -2494,7 +2486,7 @@ fn tupleToRuntimeValue(state: *State, value: anytype, comptime len: usize) !runt
 fn fromRuntimeResults(state: *State, results: []const runtime.Value, comptime R: type) !R {
     if (R == void) return {};
     if (comptime isTupleResult(R)) {
-        var values: std.meta.Tuple(R.field_types) = undefined;
+        var values: @Tuple(R.field_types) = undefined;
         var initialized: usize = 0;
         errdefer inline for (R.field_types, 0..) |Field, index| {
             if (index < initialized) deinitIfOwned(Field, &values[index]);
@@ -3220,7 +3212,7 @@ test "api host callback can raise Lua error values" {
 
 test "api memory limit applies to host callback return conversion" {
     const Callbacks = struct {
-        const payload = [_]u8{'x'} ** (512 * 1024);
+        const payload: [512 * 1024]u8 = @splat('x');
 
         fn large(ctx: *Context) !void {
             try ctx.returnValues(payload[0..]);
@@ -4708,7 +4700,7 @@ test "api memory limit applies to stdlib temporaries" {
 
 test "api memory limit applies to memory filesystem read copies" {
     const BigFile = struct {
-        const contents = [_]u8{'x'} ** (256 * 1024);
+        const contents: [256 * 1024]u8 = @splat('x');
     };
     const files = [_]MemoryFile{
         .{ .path = "large.lua", .contents = BigFile.contents[0..] },
@@ -5031,7 +5023,7 @@ test "api userdata pairs and ipairs use explicit and automatic metamethods" {
             return self.values[@intCast(index - 1)];
         }
 
-        pub fn __pairs(self: *const @This(), ctx: *Context) !std.meta.Tuple(&.{ Ref, Table }) {
+        pub fn __pairs(self: *const @This(), ctx: *Context) !@Tuple(&.{ Ref, Table }) {
             if (self.fail) return ctx.raise("pairs failed");
             var table = try ctx.state().createTable(.{});
             errdefer table.deinit();
@@ -5083,7 +5075,7 @@ test "api userdata pairs and ipairs use explicit and automatic metamethods" {
             , .{});
         }
     }
-    var failing = try lua.newUserdataAuto(Sequence, .{ .values = .{null} ** 4, .fail = true }, .{});
+    var failing = try lua.newUserdataAuto(Sequence, .{ .values = @splat(null), .fail = true }, .{});
     defer failing.deinit();
     try lua.setGlobal("failing", failing);
     try lua.doString(

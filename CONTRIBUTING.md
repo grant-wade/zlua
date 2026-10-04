@@ -4,7 +4,7 @@ zlua is compatibility-driven. When Lua-visible behavior is in question, use the 
 
 ## Setup
 
-Use Zig `0.16.0`.
+Use Zig `0.16.0` or `0.17.0`. Validate compatibility changes with both versions.
 
 ```sh
 zig version
@@ -26,13 +26,14 @@ For behavior changes:
 Default CI-equivalent check:
 
 ```sh
-zig build ci
+zig build ci test-wasm check-tools
 ```
 
-Format touched Zig files:
+Format touched Zig files with Zig `0.16.0`. The `0.17.0` formatter rewrites some
+builtins into forms that `0.16.0` cannot parse. Point `just` at the older compiler:
 
 ```sh
-just fmt
+just --set zig /path/to/zig-0.16.0/zig fmt
 ```
 
 ## Docs

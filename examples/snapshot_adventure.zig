@@ -1,4 +1,4 @@
-//! Run: zig build run-example -- snapshot_adventure
+//! Run: zig build examples
 //! Try several futures from one suspended coroutine, then replay the best one.
 const std = @import("std");
 const zlua = @import("zlua");

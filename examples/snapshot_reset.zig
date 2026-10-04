@@ -1,4 +1,4 @@
-//! Run: zig build run-example -Doptimize=ReleaseFast -- snapshot_reset
+//! Run: zig build examples --release=fast
 const std = @import("std");
 const zlua = @import("zlua");
 const Timestamp = std.Io.Timestamp;

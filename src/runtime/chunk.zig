@@ -1,4 +1,5 @@
 const std = @import("std");
+const reflection = @import("../reflection.zig");
 const compile = @import("../compile.zig");
 const types = @import("types.zig");
 
@@ -491,7 +492,7 @@ pub fn BinaryChunkReader(comptime State: type) type {
 
         fn readEnum(self: *Self, comptime T: type) !T {
             const tag = try self.readByte();
-            if (tag >= std.meta.fields(T).len) return self.state.fail("bad binary chunk");
+            if (tag >= reflection.fieldsOf(T).len) return self.state.fail("bad binary chunk");
             return @enumFromInt(tag);
         }
 

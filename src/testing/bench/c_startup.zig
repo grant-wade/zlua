@@ -1,4 +1,5 @@
 const std = @import("std");
+const reflection = @import("../../reflection.zig");
 const process = @import("../process.zig");
 const results = @import("results.zig");
 const Options = @import("options.zig").Options;
@@ -87,8 +88,8 @@ fn collectCase(allocator: std.mem.Allocator, io: std.Io, options: Options, suite
     const parsed = try std.json.parseFromSlice(WorkerReport, allocator, run.stdout, .{});
     defer parsed.deinit();
     if (parsed.value.protocol_version != 1 or parsed.value.samples.len != iterations) return error.InvalidWorkerReport;
-    inline for (std.meta.fields(Phases)) |field| {
-        const phase_name = field.name;
+    inline for (reflection.fieldsOf(Phases)) |field| {
+        const phase_name = field;
         if (!(std.mem.eql(u8, phase_name, "register-3") and host == 0)) {
             const metrics = try allocator.alloc(results.Metric, iterations);
             defer allocator.free(metrics);

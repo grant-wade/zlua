@@ -1,4 +1,4 @@
-//! Run: zig build run-example -- coroutine_story
+//! Run: zig build examples
 //! Drive a loaded script and a terminal host callback from Zig.
 const std = @import("std");
 const zlua = @import("zlua");

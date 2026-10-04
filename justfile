@@ -28,7 +28,7 @@ fetch-lua:
 
 # Build with ReleaseSafe optimization.
 release:
-    {{zig}} build -Doptimize=ReleaseSafe
+    {{zig}} build --release=safe
 
 # Run all unit tests.
 test:
@@ -38,12 +38,13 @@ test:
 ci:
     {{zig}} build ci
 
-# Run all embedding examples, or selected examples by file name.
-example *args:
-    {{zig}} build run-example -- {{args}}
+# Compile and run all embedding examples.
+examples:
+    {{zig}} build examples
 
-# Format Zig sources.
+# Format Zig sources (use Zig 0.16 to preserve compatibility).
 fmt:
+    @case "$({{zig}} version)" in 0.16.*) ;; *) echo 'Use Zig 0.16 for formatting: just --set zig /path/to/zig-0.16.0/zig fmt' >&2; exit 1 ;; esac
     {{zig}} fmt build.zig src/*.zig src/testing/*.zig examples/*.zig
 
 # Run zlua through the Zig build runner.

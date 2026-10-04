@@ -269,6 +269,14 @@ pub const panic = struct {
         panicExit();
     }
 
+    pub fn unexpectedErrorCode(_: anyerror) noreturn {
+        panicExit();
+    }
+
+    pub fn loadUninstantiableType() noreturn {
+        panicExit();
+    }
+
     pub fn integerOutOfBounds() noreturn {
         panicExit();
     }

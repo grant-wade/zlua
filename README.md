@@ -2,7 +2,7 @@
 
 zlua is a source-compatible Lua 5.5 implementation written in Zig. You can use it as a command-line interpreter or embed it in a Zig application with control over what Lua can access.
 
-zlua is pre-1.0 and currently targets Zig `0.16.0`. The Zig embedding API is the main public interface; internals and binary chunks may still change.
+zlua is pre-1.0 and supports Zig `0.16.0` and `0.17.0`. The Zig embedding API is the main public interface; internals and binary chunks may still change.
 
 Development is hosted on GitHub. Codeberg is a source mirror.
 
@@ -11,7 +11,7 @@ Development is hosted on GitHub. Codeberg is a source mirror.
 1. Add zlua to your Zig package dependencies:
 
 ```sh
-zig fetch --save git+https://github.com/grant-wade/zlua#v0.6.0
+zig fetch --save git+https://github.com/grant-wade/zlua#v0.6.1
 ```
 
 2. Wire the dependency into your executable in `build.zig`:
@@ -103,13 +103,6 @@ Compile and run the Zig embedding examples:
 
 ```sh
 zig build examples
-```
-
-Run a specific zlua embedding example:
-
-```sh
-zig build run-example -- snapshot_reset
-zig build run-example -- snapshot_adventure
 ```
 
 Run the full check suite:

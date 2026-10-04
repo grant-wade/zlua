@@ -1,6 +1,7 @@
 //! In-memory graph copying. No collector or Lua code runs here. Destination
 //! shells are registered before references are populated, preserving identity.
 const std = @import("std");
+const reflection = @import("../reflection.zig");
 const types = @import("types.zig");
 const State = @import("state.zig").State;
 const Proto = @import("../compile/proto.zig").Proto;
@@ -112,7 +113,7 @@ const Copier = struct {
             .pointer => |p| if (p.size == .one and (p.child == types.Table or p.child == types.Userdata or p.child == types.Closure or p.child == types.Upvalue or p.child == types.Thread or p.child == Proto)) try self.mapped(old) else @compileError("unclassified snapshot pointer: " ++ @typeName(T)),
             .@"struct" => blk: {
                 var result: T = undefined;
-                inline for (@typeInfo(T).@"struct".fields) |f| @field(result, f.name) = try self.remap(@field(old, f.name));
+                inline for (reflection.fieldsOf(T)) |f| @field(result, f) = try self.remap(@field(old, f));
                 break :blk result;
             },
             .@"union" => switch (old) {
@@ -353,23 +354,23 @@ const Policy = struct {
 pub fn review(comptime T: type, comptime policy: Policy) void {
     comptime {
         var count: usize = 0;
-        for (std.meta.fields(Policy)) |category| {
-            var names = std.mem.tokenizeScalar(u8, @field(policy, category.name), ' ');
+        for (reflection.fieldsOf(Policy)) |category| {
+            var names = std.mem.tokenizeScalar(u8, @field(policy, category), ' ');
             while (names.next()) |name| {
                 if (!@hasField(T, name)) @compileError("obsolete snapshot policy: " ++ @typeName(T) ++ "." ++ name);
                 count += 1;
             }
         }
-        if (count != std.meta.fields(T).len) @compileError("review snapshot fields for " ++ @typeName(T));
-        for (std.meta.fields(T)) |field| {
+        if (count != reflection.fieldsOf(T).len) @compileError("review snapshot fields for " ++ @typeName(T));
+        for (reflection.fieldsOf(T)) |field| {
             var matches: usize = 0;
-            for (std.meta.fields(Policy)) |category| {
-                var names = std.mem.tokenizeScalar(u8, @field(policy, category.name), ' ');
+            for (reflection.fieldsOf(Policy)) |category| {
+                var names = std.mem.tokenizeScalar(u8, @field(policy, category), ' ');
                 while (names.next()) |name| {
-                    if (std.mem.eql(u8, field.name, name)) matches += 1;
+                    if (std.mem.eql(u8, field, name)) matches += 1;
                 }
             }
-            if (matches != 1) @compileError("missing/duplicate snapshot policy: " ++ @typeName(T) ++ "." ++ field.name);
+            if (matches != 1) @compileError("missing/duplicate snapshot policy: " ++ @typeName(T) ++ "." ++ field);
         }
     }
 }
