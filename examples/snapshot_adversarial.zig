@@ -1,4 +1,4 @@
-//! Run: zig build run-example -- snapshot_adversarial
+//! Run: zig build examples
 const std = @import("std");
 const zlua = @import("zlua");
 

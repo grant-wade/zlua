@@ -1,12 +1,12 @@
 .{
     .name = .zlua,
-    .version = "0.6.0",
+    .version = "0.6.1",
     .fingerprint = 0xcf671dd1c69d54b,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .zerde = .{
-            .url = "git+https://codeberg.org/gron/zerde?ref=v0.3.1#58dd9aa671d093f69bc79500d8d7ccd6ad855ce9",
-            .hash = "zerde-0.3.1-r7zGa2_XDADfC1aXOf3DN-fLExdmoa37OLQF6egw8_FT",
+            .url = "git+https://codeberg.org/gron/zerde?ref=v0.3.2#22cc699f6ef3b4277325e1c5768d4ee1cc4a12cf",
+            .hash = "zerde-0.3.2-r7zGawDsDAD88mv-CNQoN6mi9qICWtZNHiGKaKlDjy8_",
         },
     },
     .paths = .{

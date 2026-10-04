@@ -619,9 +619,7 @@ Embedding examples under `examples/` cover scripts, library selection, callbacks
 
 ```sh
 zig build examples
-zig build run-example
-zig build run-example -- plugin_sandbox
-just example userdata_auto
+just examples
 ```
 
 Example compilation and execution are part of `zig build ci`.

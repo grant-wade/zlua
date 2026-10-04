@@ -1,4 +1,5 @@
 const std = @import("std");
+const reflection = @import("../reflection.zig");
 const rollback = @import("rollback.zig");
 const compile = @import("../compile.zig");
 const types = @import("types.zig");
@@ -654,7 +655,7 @@ pub fn normalizeBaseline(comptime State: type, self: *State) void {
     self.gc_major_pending = false;
     self.gc_phase = .pause;
     self.gc_sweep_cursor = 0;
-    inline for (@typeInfo(types.GcGenerations).@"struct".fields) |f| @field(self.gc_old, f.name) = @field(self, f.name).items.len;
+    inline for (reflection.fieldsOf(types.GcGenerations)) |f| @field(self.gc_old, f) = @field(self, f).items.len;
     self.gc_major_base = self.gc_known_total;
     resetAutoGcThreshold(State, self);
 }
@@ -1244,8 +1245,8 @@ pub fn removeRegistryItem(comptime State: type, self: *State, comptime field: []
 
 fn promoteYoung(comptime State: type, self: *State) void {
     // No old-generation iteration: survivors are partitioned in place.
-    inline for (@typeInfo(types.GcGenerations).@"struct".fields) |f| {
-        const field = f.name;
+    inline for (reflection.fieldsOf(types.GcGenerations)) |f| {
+        const field = f;
         const strings = comptime std.mem.eql(u8, field, "string_allocations");
         var i = @field(self.gc_old, field);
         while (i < @field(self, field).items.len) : (i += 1) {

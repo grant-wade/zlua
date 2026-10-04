@@ -18,18 +18,20 @@ Lua-visible behavior is checked against the official Lua 5.5 C implementation bu
 
 ## GitHub Actions
 
-Every push runs `zig build test test-wasm` on Linux x64. Pull requests targeting
-`main` run `zig build ci test-wasm` on Linux, macOS, and Windows, each on x64 and
-ARM64 native runners. The full matrix can also be started manually.
+Every push runs `zig build ci test-wasm check-tools` with Zig `0.16.0` and `0.17.0`
+on Linux and macOS (x64 and ARM64), plus Windows x64. The full matrix can also
+be started manually. Each job also builds, runs, and tests the downstream
+embedding project in `examples/project` against the current checkout.
 
 The `PR checks` job succeeds only when the entire full-suite matrix passes; failed,
 cancelled, or skipped matrix jobs prevent it from passing. Select `PR checks` as
 the required status check in the branch protection rule or ruleset for `main`.
 
-CI uses the Zig version declared in `build.zig.zon`. The setup action caches Zig
-downloads and build outputs, with separate build caches for each OS, architecture,
-and dependency manifest. Full-suite jobs also cache Lua source and test downloads.
-New commits cancel older runs for the same event and branch or pull request.
+The minimum Zig version in `build.zig.zon` stays at `0.16.0`; CI explicitly tests
+both supported versions. The setup action caches Zig downloads and build outputs,
+with separate build caches for each compiler version, OS, architecture, and
+dependency manifest. Full-suite jobs also cache Lua source and test downloads.
+New commits cancel older runs for the same event and branch.
 
 ## Lua 5.5 Reference
 

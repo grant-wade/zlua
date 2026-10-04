@@ -29,7 +29,9 @@ pub fn build(b: *std.Build) void {
 
     run_cmd.step.dependOn(b.getInstallStep());
 
-    if (b.args) |args| {
+    if (@hasDecl(std.Build.Step.Run, "addPassthruArgs")) {
+        run_cmd.addPassthruArgs();
+    } else if (b.args) |args| {
         run_cmd.addArgs(args);
     }
 

@@ -1,5 +1,6 @@
 //! Worker-local rollback. Retained storage is deliberately absent from GC roots.
 const std = @import("std");
+const reflection = @import("../reflection.zig");
 const types = @import("types.zig");
 const State = @import("state.zig").State;
 const Proto = @import("../compile/proto.zig").Proto;
@@ -248,8 +249,8 @@ pub const Journal = struct {
     /// Called before GC enters its infallible destructive phases.
     pub fn prepareCollection(self: *Journal, state: *State) !void {
         if (state.gc_cycle == .major) return self.detachRegistries(state);
-        inline for (@typeInfo(types.GcGenerations).@"struct".fields) |f| {
-            if (@field(state, f.name).items.len != @field(state.gc_old, f.name)) return self.detachRegistries(state);
+        inline for (reflection.fieldsOf(types.GcGenerations)) |f| {
+            if (@field(state, f).items.len != @field(state.gc_old, f)) return self.detachRegistries(state);
         }
     }
 

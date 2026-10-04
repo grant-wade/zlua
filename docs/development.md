@@ -1,6 +1,6 @@
 # Development
 
-zlua targets Zig `0.16.0`. The package depends on `zerde`; the build also downloads Lua 5.5 source and official tests into the ignored `.zlua-deps/` directory. A system Lua installation is not required.
+zlua supports Zig `0.16.0` and `0.17.0`. The package depends on `zerde`; the build also downloads Lua 5.5 source and official tests into the ignored `.zlua-deps/` directory. A system Lua installation is not required.
 
 ## Repository Map
 

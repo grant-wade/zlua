@@ -13,12 +13,13 @@ concurrency:
 
 jobs:
   test:
-    name: Full suite (${{ matrix.os }})
+    name: Full suite (${{ matrix.os }}, Zig ${{ matrix.zig }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
+        zig: ["0.16.0", "0.17.0"]
         os:
           - ubuntu-24.04
           - ubuntu-24.04-arm
@@ -32,14 +33,18 @@ jobs:
       - uses: actions/checkout@v7.0.1
       - uses: mlugg/setup-zig@v2.2.1
         with:
-          cache-key: ${{ runner.arch }}-${{ hashFiles('build.zig.zon') }}
+          version: ${{ matrix.zig }}
+          cache-key: ${{ matrix.zig }}-${{ runner.arch }}-${{ hashFiles('build.zig.zon') }}
       - name: Cache Lua dependencies
         uses: actions/cache@v6.1.0
         with:
           path: .zlua-deps
           key: ${{ runner.os }}-lua-${{ hashFiles('tools/fetch-lua.sh') }}
       - name: Full test suite and WASM smoke test
-        run: zig build ci test-wasm --summary all
+        run: zig build ci test-wasm check-tools --summary all
+      - name: Downstream embedding project
+        working-directory: examples/project
+        run: zig build run test --summary all
 
   pr-check:
     name: PR checks

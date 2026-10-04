@@ -1,4 +1,5 @@
 const std = @import("std");
+const reflection = @import("../reflection.zig");
 const api = @import("../api.zig");
 const a = std.testing.allocator;
 
@@ -1402,7 +1403,7 @@ test "snapshot and reset preserve suspended userdata pairs normalization and clo
 }
 
 test "snapshot capture and reset between collector phases invalidate only collector metadata" {
-    const phases = @typeInfo(@import("../runtime/types.zig").GcPhase).@"enum".fields;
+    const phases = reflection.fieldsOf(@import("../runtime/types.zig").GcPhase);
     inline for (phases) |phase| {
         var lua = try api.State.init(std.testing.allocator, .{});
         defer lua.deinit();
@@ -1411,9 +1412,9 @@ test "snapshot capture and reset between collector phases invalidate only collec
         lua.raw_state.gc_mode = .incremental;
         var baseline = try lua.snapshot(std.testing.allocator);
         defer baseline.deinit();
-        if (comptime !std.mem.eql(u8, phase.name, "pause")) {
+        if (comptime !std.mem.eql(u8, phase, "pause")) {
             var steps: usize = 0;
-            while (lua.raw_state.gc_phase != @field(@import("../runtime/types.zig").GcPhase, phase.name)) : (steps += 1) {
+            while (lua.raw_state.gc_phase != @field(@import("../runtime/types.zig").GcPhase, phase)) : (steps += 1) {
                 try std.testing.expect(steps < 10000);
                 _ = try lua.raw_state.stepGc(1);
             }
@@ -1421,8 +1422,8 @@ test "snapshot capture and reset between collector phases invalidate only collec
         try lua.reset();
         try std.testing.expectEqual(@as(usize, 0), lua.raw_state.rollback.?.last_restored_objects);
         try std.testing.expectEqual(.pause, lua.raw_state.gc_phase);
-        if (comptime !std.mem.eql(u8, phase.name, "pause")) {
-            while (lua.raw_state.gc_phase != @field(@import("../runtime/types.zig").GcPhase, phase.name)) _ = try lua.raw_state.stepGc(1);
+        if (comptime !std.mem.eql(u8, phase, "pause")) {
+            while (lua.raw_state.gc_phase != @field(@import("../runtime/types.zig").GcPhase, phase)) _ = try lua.raw_state.stepGc(1);
         }
         var captured = try lua.snapshot(std.testing.allocator);
         defer captured.deinit();
