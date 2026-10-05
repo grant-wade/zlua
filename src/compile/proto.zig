@@ -1,5 +1,6 @@
 const std = @import("std");
 const bytecode = @import("bytecode.zig");
+const RuntimeValue = @import("../runtime/types.zig").Value;
 
 pub const LineInfo = struct {
     line: usize,
@@ -73,6 +74,15 @@ pub const Proto = struct {
     defined_line: usize = 0,
     last_defined_line: usize = 0,
     has_to_close_locals: bool = false,
+    /// Runtime metadata derived once when the runtime loads the prototype
+    /// tree (see `runtime/value.zig` `prepareProtoTree`). Prepared prototypes
+    /// are immutable afterwards and may be shared by snapshot workers. The
+    /// defaults select the general VM paths for unprepared prototypes.
+    runtime_prepared: bool = false,
+    named_vararg_readonly: bool = false,
+    /// Decoded non-string constants, indexed like `constants`. A `.string`
+    /// slot means the value is per-State (interned) and uses the closure cache.
+    constant_values: []const RuntimeValue = &.{},
 
     pub fn init(allocator: std.mem.Allocator) Proto {
         return .{

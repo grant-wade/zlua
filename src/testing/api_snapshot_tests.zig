@@ -18,6 +18,45 @@ test "snapshot accepts stateless allocator with undefined context" {
     try lua.doString("assert(value == 40)", .{});
 }
 
+test "snapshot reset keeps metamethod absence caches consistent" {
+    var lua = try api.State.init(a, .{ .stdlib = .full });
+    defer lua.deinit();
+    try lua.doString(
+        \\empty_mt = {}
+        \\full_mt = {__index = function(_, k) return "idx:" .. k end, __len = function() return 7 end}
+        \\a = setmetatable({}, empty_mt)
+        \\b = setmetatable({}, full_mt)
+        \\assert(a.k == nil and #a == 0 and b.k == "idx:k" and #b == 7)
+    , .{});
+    var snapshot = try lua.snapshot(a);
+    defer snapshot.deinit();
+    var worker = try snapshot.newState(a);
+    defer worker.deinit();
+    for (0..3) |_| {
+        // Cache absences, then add events to the baseline metatables.
+        try worker.doString(
+            \\for _ = 1, 3 do assert(a.k == nil and #a == 0) end
+            \\empty_mt.__index = function(_, k) return "new:" .. k end
+            \\empty_mt.__len = function() return 3 end
+            \\assert(a.k == "new:k" and #a == 3)
+            \\full_mt.__index, full_mt.__len = nil, nil
+            \\for _ = 1, 3 do assert(b.k == nil and #b == 0) end
+        , .{});
+        try worker.reset();
+        try worker.doString("assert(a.k == nil and #a == 0 and b.k == 'idx:k' and #b == 7)", .{});
+        try worker.reset();
+    }
+    for (0..2) |_| {
+        try lua.doString(
+            \\for _ = 1, 3 do assert(a.k == nil) end
+            \\rawset(empty_mt, "__index", function() return 1 end)
+            \\assert(a.k == 1)
+        , .{});
+        try lua.reset();
+        try lua.doString("assert(a.k == nil and b.k == 'idx:k')", .{});
+    }
+}
+
 test "reset without baseline fails" {
     var lua = try api.State.init(a, .{});
     defer lua.deinit();

@@ -153,7 +153,9 @@ const Copier = struct {
             a.destroy(new);
         }
         try self.map.put(@intFromPtr(old), @intFromPtr(new));
-        inline for (.{ "max_registers", "param_count", "is_vararg", "named_vararg", "defined_line", "last_defined_line", "has_to_close_locals" }) |name| @field(new, name) = @field(old, name);
+        inline for (.{ "max_registers", "param_count", "is_vararg", "named_vararg", "defined_line", "last_defined_line", "has_to_close_locals", "runtime_prepared", "named_vararg_readonly" }) |name| @field(new, name) = @field(old, name);
+        // Decoded constants are scalars; string slots are markers without storage.
+        new.constant_values = try new.arena.allocator().dupe(types.Value, old.constant_values);
         new.source_name = try self.text(old.source_name);
         new.debug_name = try self.remap(old.debug_name);
         new.instructions = try self.list(@import("../compile/bytecode.zig").Instruction, old.instructions.items);
@@ -397,7 +399,7 @@ comptime {
         .copied = "array entries finalizer_registered finalizer_order",
         .remapped = "metatable metatable_prev metatable_next finalizer_next finalizer_prev",
         .rebuilt = "entry_index",
-        .transient = "rollback marked gc",
+        .transient = "rollback marked gc metamethod_absent",
     });
     review(types.Closure, .{
         .remapped = "proto upvalues constants",
@@ -417,7 +419,7 @@ comptime {
     });
     review(Proto, .{
         .rebuilt = "allocator arena",
-        .copied = "constants instructions line_info locals upvalues error_sites max_registers param_count is_vararg named_vararg source_name debug_name defined_line last_defined_line has_to_close_locals",
+        .copied = "constants instructions line_info locals upvalues error_sites max_registers param_count is_vararg named_vararg source_name debug_name defined_line last_defined_line has_to_close_locals runtime_prepared named_vararg_readonly constant_values",
         .remapped = "children",
     });
     review(types.Value, .{ .remapped = "string table userdata closure thread coroutine_wrapper gmatch_iterator", .external = "nil boolean integer number native_print native_tostring native_getmetatable native_setmetatable native_rawequal native_rawget native_rawset native_rawlen native_next native_pairs native_ipairs native_ipairs_iter native_table_create native_select native_assert native_error native_pcall native_xpcall native_collectgarbage native_debug_traceback native_coroutine_create native_coroutine_resume native_coroutine_yield native_coroutine_status native_coroutine_running native_coroutine_isyieldable native_coroutine_close native_coroutine_wrap native api_callback" });

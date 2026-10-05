@@ -300,7 +300,7 @@ pub fn prepareClosureFrame(comptime State: type, self: *State, thread: *Thread, 
     for (0..copied) |index| thread.stack.items[frame_base + index] = thread.stack.items[source_base + 1 + index];
     for (copied..register_count) |index| thread.stack.items[frame_base + index] = .nil;
 
-    const readonly_vararg = closure.proto.hasReadOnlyNamedVararg();
+    const readonly_vararg = closure.proto.named_vararg_readonly;
     if (closure.proto.named_vararg and !readonly_vararg) {
         thread.stack.items[frame_base + param_count] = try self.namedVarargTable(varargs);
     }

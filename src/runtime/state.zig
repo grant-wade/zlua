@@ -319,7 +319,8 @@ pub const State = struct {
         self.* = undefined;
     }
 
-    pub fn execute(self: *State, proto: *const proto_mod.Proto) !void {
+    pub fn execute(self: *State, proto: *proto_mod.Proto) !void {
+        try value_mod.prepareProtoTree(proto);
         try self.executeClosure(try self.newRootClosure(proto));
     }
 
@@ -492,22 +493,26 @@ pub const State = struct {
         defer self.execution_depth -= 1;
         try rollback_mod.threadWritable(thread);
         while (thread.frames.items.len > target_frame_count) {
-            if (thread.pending_unwind_error != null and thread.frames.items.len == thread.pending_unwind_resume_frame_count) {
-                const error_value = thread.pending_unwind_error.?;
-                const target = thread.pending_unwind_target_frame_count;
-                thread.pending_unwind_error = null;
-                try self.closeFramesTo(thread, target, error_value);
-                return self.throwValue(error_value);
-            }
-            if (try self.completeReadyPairsContinuation(thread)) continue;
-            if (try self.completeReadyCallOneContinuation(thread)) continue;
-            if (try self.completeReadyProtectedContinuation(thread)) continue;
-            if (try self.completeReadyTailCallContinuation(thread)) continue;
-            if (try self.completeReadyGenericForContinuation(thread)) continue;
-            if (thread.pending_yield_hook_return) {
-                thread.pending_yield_hook_return = false;
-                try self.callHook(thread, "return");
-                continue;
+            // One combined test keeps the common case to a few loads; the
+            // ordered checks below are unchanged when any of them can fire.
+            if (thread.pending_unwind_error != null or thread.pending_yield_hook_return or hasPendingContinuations(thread)) {
+                if (thread.pending_unwind_error != null and thread.frames.items.len == thread.pending_unwind_resume_frame_count) {
+                    const error_value = thread.pending_unwind_error.?;
+                    const target = thread.pending_unwind_target_frame_count;
+                    thread.pending_unwind_error = null;
+                    try self.closeFramesTo(thread, target, error_value);
+                    return self.throwValue(error_value);
+                }
+                if (try self.completeReadyPairsContinuation(thread)) continue;
+                if (try self.completeReadyCallOneContinuation(thread)) continue;
+                if (try self.completeReadyProtectedContinuation(thread)) continue;
+                if (try self.completeReadyTailCallContinuation(thread)) continue;
+                if (try self.completeReadyGenericForContinuation(thread)) continue;
+                if (thread.pending_yield_hook_return) {
+                    thread.pending_yield_hook_return = false;
+                    try self.callHook(thread, "return");
+                    continue;
+                }
             }
             var frame = &thread.frames.items[thread.frames.items.len - 1];
             const proto = frame.proto;
@@ -521,8 +526,11 @@ pub const State = struct {
             frame.pc += 1;
             try self.checkExecutionLimits(thread);
             if (self.options.trace_vm) try self.traceInstruction(frame.*, pc, instruction);
-            try self.callLineHook(thread);
-            try self.callCountHook(thread);
+            // Both hooks require an installed hook function.
+            if (thread.hook != .nil) {
+                try self.callLineHook(thread);
+                try self.callCountHook(thread);
+            }
 
             frame = &thread.frames.items[thread.frames.items.len - 1];
             const base = frame.base;
@@ -531,7 +539,7 @@ pub const State = struct {
             switch (instruction) {
                 .load_nil => |dest| stack[base + dest] = .nil,
                 .load_bool => |op| stack[base + op.dest] = .{ .boolean = op.value },
-                .load_const => |op| stack[base + op.dest] = try self.closureConstant(frame.closure, op.constant),
+                .load_const => |op| stack[base + op.dest] = try self.protoConstant(frame.closure, proto, op.constant),
                 .move => |op| stack[base + op.dest] = stack[base + op.source],
                 .get_global => |op| stack[base + op.register] = self.getGlobalValue(constantString(proto, op.name)),
                 .set_global => |op| try self.setGlobal(constantString(proto, op.name), stack[base + op.register]),
@@ -816,8 +824,19 @@ pub const State = struct {
                 },
                 .load_const => {
                     const op = instructions[pc].load_const;
-                    const constants = frame.closure.constants orelse break :fast_loop;
-                    stack[op.dest] = constants[op.constant] orelse break :fast_loop;
+                    // Executed prototypes with constants are prepared, so the
+                    // index is in bounds (safety-checked in debug builds). Read
+                    // through `frame` and pointers: keeping `proto` live or
+                    // copying the union to a local spills the dispatch state.
+                    const decoded = &frame.proto.constant_values[op.constant];
+                    if (decoded.* != .string) {
+                        stack[op.dest] = decoded.*;
+                    } else {
+                        const constants = frame.closure.constants orelse break :fast_loop;
+                        const cached = &constants[op.constant];
+                        if (cached.* == null) break :fast_loop;
+                        stack[op.dest] = cached.*.?;
+                    }
                     pc += 1;
                     continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
@@ -1197,18 +1216,12 @@ pub const State = struct {
                     // stops at host call boundaries before executing a caller.
                     const can_return = thread.pending_unwind_error == null and
                         !thread.pending_yield_hook_return and
-                        thread.pairs_continuations.items.len == 0 and
-                        thread.call_one_continuations.items.len == 0 and
-                        thread.protected_continuations.items.len == 0 and
-                        thread.tail_call_continuations.items.len == 0 and
-                        thread.generic_for_continuations.items.len == 0;
+                        !hasPendingContinuations(thread);
                     if (!can_return or thread.hook_return or frame_index <= target_frame_count) break :fast_loop;
                     if (op.count == bytecode.multret_count or frame.return_count == bytecode.multret_count or
                         frame.owns_varargs or frame.pending_returns != null) break :fast_loop;
-                    var current = thread.open_upvalues;
-                    while (current) |upvalue| : (current = upvalue.next) {
-                        if (upvalue.is_open and upvalue.stack_index >= frame.base) break :fast_loop;
-                    }
+                    // Open upvalues are sorted by descending stack index.
+                    if (thread.open_upvalues) |upvalue| if (upvalue.stack_index >= frame.base) break :fast_loop;
                     const return_start = frame.return_start;
                     const return_count = frame.return_count;
                     if (return_start + return_count > thread.stack.items.len or
@@ -1230,10 +1243,7 @@ pub const State = struct {
                     // An open upvalue in an outer scope does not require work at
                     // this boundary. Only leave the loop when something closes.
                     const first = frame.base + register;
-                    var current = thread.open_upvalues;
-                    while (current) |upvalue| : (current = upvalue.next) {
-                        if (upvalue.is_open and upvalue.stack_index >= first) break :fast_loop;
-                    }
+                    if (thread.open_upvalues) |upvalue| if (upvalue.stack_index >= first) break :fast_loop;
                     pc += 1;
                     if (pc >= instructions.len) break :fast_loop;
                     continue :fast_loop std.meta.activeTag(instructions[pc]);
@@ -1304,12 +1314,12 @@ pub const State = struct {
         if (table.rollback) |record| if (!record.header.detached) return false;
         if (index <= table.array.items.len) {
             const slot = &table.array.items[index - 1];
-            if (slot.* == .nil and table.metatable != null) return false;
+            if (slot.* == .nil and !noNewindexMetamethod(table)) return false;
             slot.* = value;
             self.writeTableBarrier(table, key_value, value);
             return true;
         }
-        if (table.metatable != null or value == .nil) return false;
+        if (value == .nil or !noNewindexMetamethod(table)) return false;
         if (index == table.array.items.len + 1 and index <= table.array.capacity) {
             table.array.appendAssumeCapacity(value);
             table.removeHashKey(key_value);
@@ -1325,12 +1335,15 @@ pub const State = struct {
         if (table.rollback) |record| if (!record.header.detached) return false;
         if (table.findEntry(key)) |index| {
             const slot = &table.entries.items[index].value;
-            if (slot.* == .nil and table.metatable != null) return false;
+            if (slot.* == .nil) {
+                if (!noNewindexMetamethod(table)) return false;
+                table.invalidateMetaEvents();
+            }
             slot.* = value;
             self.writeTableBarrier(table, key, value);
             return true;
         }
-        if (table.metatable != null or !table.insertHashEntryNoAlloc(key, value)) return false;
+        if (!noNewindexMetamethod(table) or !table.insertHashEntryNoAlloc(key, value)) return false;
         self.writeTableBarrier(table, key, value);
         return true;
     }
@@ -1344,14 +1357,14 @@ pub const State = struct {
         try rollback_mod.tableWritable(table);
         if (index <= table.array.items.len) {
             const slot = &table.array.items[index - 1];
-            if (slot.* != .nil or table.metatable == null) {
+            if (slot.* != .nil or noNewindexMetamethod(table)) {
                 slot.* = value;
                 self.writeTableBarrier(table, key_value, value);
                 return true;
             }
             return false;
         }
-        if (table.metatable != null or value == .nil) return false;
+        if (value == .nil or !noNewindexMetamethod(table)) return false;
         if (index == table.array.items.len + 1) {
             const old_capacity_bytes = tableCapacityBytes(table);
             try table.array.append(self.allocator, value);
@@ -1416,7 +1429,7 @@ pub const State = struct {
             self.writeTableBarrier(table, key, value);
             return true;
         }
-        if (table.metatable != null) return false;
+        if (!noNewindexMetamethod(table)) return false;
         if (value == .nil) return true;
         try self.setTableRaw(table, key, value);
         self.writeTableBarrier(table, key, value);
@@ -2187,6 +2200,7 @@ pub const State = struct {
         };
         errdefer proto.deinit();
         if (source_name) |name| try setProtoSourceName(proto, name);
+        try value_mod.prepareProtoTree(proto);
         try self.registerAllocation("proto_allocations", proto);
         errdefer {
             const removed = self.proto_allocations.pop().?;
@@ -2216,6 +2230,7 @@ pub const State = struct {
             self.allocator.destroy(proto);
         }
         if (reader.pos != source.len) return self.fail("bad binary chunk");
+        try value_mod.prepareProtoTree(proto);
         try self.registerAllocation("proto_allocations", proto);
         errdefer {
             _ = self.proto_allocations.pop();
@@ -2271,6 +2286,16 @@ pub const State = struct {
             .number => |lexeme| .{ .number = try parseLuaNumber(lexeme) },
             .string => |lexeme| .{ .string = try self.decodeStringLiteral(lexeme) },
         };
+    }
+
+    /// Prepared prototypes decode scalar constants once. Strings are interned
+    /// per State, so they remain in each closure's lazily allocated cache.
+    inline fn protoConstant(self: *State, closure: *Closure, proto: *const proto_mod.Proto, index: bytecode.ConstantIndex) !Value {
+        if (index < proto.constant_values.len) {
+            const decoded = proto.constant_values[index];
+            if (decoded != .string) return decoded;
+        }
+        return self.closureConstant(closure, index);
     }
 
     fn closureConstant(self: *State, closure: *Closure, index: bytecode.ConstantIndex) !Value {
@@ -2500,6 +2525,7 @@ pub const State = struct {
 
         const closure = try self.allocator.create(Closure);
         errdefer self.allocator.destroy(closure);
+        assertProtoPrepared(proto);
         closure.* = .{ .proto = proto, .upvalues = upvalues };
         try self.registerAllocation("closure_allocations", closure);
         self.noteAllocation(@sizeOf(Closure));
@@ -2532,6 +2558,7 @@ pub const State = struct {
         }
 
         const closure = try self.allocator.create(Closure);
+        assertProtoPrepared(proto);
         closure.* = .{ .proto = proto, .upvalues = upvalues, .stripped_debug = stripped_debug };
         errdefer self.allocator.destroy(closure);
         try self.registerAllocation("closure_allocations", closure);
@@ -2551,6 +2578,7 @@ pub const State = struct {
         }
 
         const closure = try self.allocator.create(Closure);
+        assertProtoPrepared(proto);
         closure.* = .{ .proto = proto, .upvalues = upvalues, .stripped_debug = parent.closure.stripped_debug };
         errdefer self.allocator.destroy(closure);
         try self.registerAllocation("closure_allocations", closure);
@@ -2558,18 +2586,30 @@ pub const State = struct {
         return .{ .closure = closure };
     }
 
+    /// Open upvalues are kept sorted by descending stack index, so closing a
+    /// frame only visits the upvalues it closes.
     fn captureUpvalue(self: *State, thread: *Thread, stack_index: usize) !*Upvalue {
+        var previous: ?*Upvalue = null;
         var current = thread.open_upvalues;
         while (current) |upvalue| : (current = upvalue.next) {
-            if (upvalue.is_open and upvalue.stack_index == stack_index) return upvalue;
+            if (upvalue.stack_index <= stack_index) {
+                if (upvalue.stack_index == stack_index) return upvalue;
+                break;
+            }
+            previous = upvalue;
         }
 
         const upvalue = try self.allocator.create(Upvalue);
         errdefer self.allocator.destroy(upvalue);
-        upvalue.* = .{ .owner = thread, .stack_index = stack_index, .next = thread.open_upvalues };
+        upvalue.* = .{ .owner = thread, .stack_index = stack_index, .next = current };
         try self.registerAllocation("upvalue_allocations", upvalue);
         self.noteAllocation(@sizeOf(Upvalue));
-        thread.open_upvalues = upvalue;
+        if (previous) |prev| {
+            rollback_mod.touch(prev);
+            prev.next = upvalue;
+        } else {
+            thread.open_upvalues = upvalue;
+        }
         return upvalue;
     }
 
@@ -2595,27 +2635,18 @@ pub const State = struct {
     }
 
     pub fn closeUpvalues(self: *State, thread: *Thread, first_stack_index: usize) void {
-        var previous: ?*Upvalue = null;
-        var current = thread.open_upvalues;
-        while (current) |upvalue| {
-            const next = upvalue.next;
-            if (upvalue.is_open and upvalue.stack_index >= first_stack_index) {
-                rollback_mod.touch(upvalue);
-                rollback_mod.touch(thread);
-                upvalue.closed = thread.stack.items[upvalue.stack_index];
-                self.writeBarrier(upvalue, upvalue.closed);
-                upvalue.is_open = false;
-                upvalue.next = null;
-                if (previous) |prev| {
-                    rollback_mod.touch(prev);
-                    prev.next = next;
-                } else {
-                    thread.open_upvalues = next;
-                }
-            } else {
-                previous = upvalue;
-            }
-            current = next;
+        // The list is sorted by descending stack index (see captureUpvalue),
+        // so the upvalues to close form a prefix.
+        while (thread.open_upvalues) |upvalue| {
+            if (upvalue.stack_index < first_stack_index) break;
+            std.debug.assert(upvalue.is_open);
+            rollback_mod.touch(upvalue);
+            rollback_mod.touch(thread);
+            upvalue.closed = thread.stack.items[upvalue.stack_index];
+            self.writeBarrier(upvalue, upvalue.closed);
+            upvalue.is_open = false;
+            thread.open_upvalues = upvalue.next;
+            upvalue.next = null;
         }
     }
 
@@ -2623,7 +2654,7 @@ pub const State = struct {
         const value = self.get(thread, register);
         if (value == .nil) return;
         if (value == .boolean and !value.boolean) return;
-        if ((try self.getMetamethod(value, "__close")) == null) {
+        if ((try self.getMetaEvent(value, .__close)) == null) {
             const frame = thread.frames.items[thread.frames.items.len - 1];
             thread.stack.items[frame.base + register] = .nil;
             if (self.toBeClosedLocalName(thread, register)) |name| {
@@ -2653,7 +2684,7 @@ pub const State = struct {
         const value = thread.stack.items[absolute_register];
         if (value == .nil) return;
         if (value == .boolean and !value.boolean) return;
-        const metamethod = (try self.getMetamethod(value, "__close")) orelse {
+        const metamethod = (try self.getMetaEvent(value, .__close)) orelse {
             thread.stack.items[absolute_register] = .nil;
             return self.fail("metamethod 'close'");
         };
@@ -2797,7 +2828,7 @@ pub const State = struct {
             if (!local.to_close) continue;
             if (!localActiveAt(local, source_pc) or localActiveAt(local, target_pc)) continue;
             const value = thread.stack.items[frame.base + local.register];
-            if (value != .nil and !(value == .boolean and !value.boolean) and (try self.getMetamethod(value, "__close")) == null) continue;
+            if (value != .nil and !(value == .boolean and !value.boolean) and (try self.getMetaEvent(value, .__close)) == null) continue;
 
             self.closeToBeClosedRegister(thread, local.register, pending_error) catch |err| {
                 if (isRuntimeError(err)) {
@@ -2900,7 +2931,7 @@ pub const State = struct {
             if (value != .nil) return value;
         }
 
-        const metamethod = try self.getMetamethod(table_value, "__index") orelse {
+        const metamethod = try self.getMetaEvent(table_value, .__index) orelse {
             if (table_value == .table) return .nil;
             return self.failIndexTypeError(thread, table_value);
         };
@@ -2923,7 +2954,7 @@ pub const State = struct {
             if (value != .nil) return value;
         }
 
-        const metamethod = try self.getMetamethod(table_value, "__index") orelse {
+        const metamethod = try self.getMetaEvent(table_value, .__index) orelse {
             if (table_value == .table) return .nil;
             return self.failIndexTypeError(thread, table_value);
         };
@@ -2980,7 +3011,7 @@ pub const State = struct {
             }
         }
 
-        const metamethod = try self.getMetamethod(table_value, "__newindex") orelse {
+        const metamethod = try self.getMetaEvent(table_value, .__newindex) orelse {
             if (table_value == .table) {
                 try self.setTableRaw(table_value.table, key, value);
                 self.writeTableBarrier(table_value.table, key, value);
@@ -3015,7 +3046,7 @@ pub const State = struct {
             }
         }
 
-        const metamethod = try self.getMetamethod(table_value, "__newindex") orelse {
+        const metamethod = try self.getMetaEvent(table_value, .__newindex) orelse {
             if (table_value == .table) {
                 try self.setTableRaw(table_value.table, key, value);
                 self.writeTableBarrier(table_value.table, key, value);
@@ -3056,11 +3087,11 @@ pub const State = struct {
     pub fn lengthOf(self: *State, thread: *Thread, value: Value) !Value {
         return switch (value) {
             .string => |string| .{ .integer = @intCast(string.len) },
-            .table => |table| if ((try self.getMetamethod(value, "__len"))) |metamethod|
+            .table => |table| if ((try self.getMetaEvent(value, .__len))) |metamethod|
                 try self.callOneMetamethod(thread, "__len", metamethod, &.{ value, value })
             else
                 .{ .integer = table.len() },
-            else => if ((try self.getMetamethod(value, "__len"))) |metamethod|
+            else => if ((try self.getMetaEvent(value, .__len))) |metamethod|
                 try self.callOneMetamethod(thread, "__len", metamethod, &.{ value, value })
             else
                 self.fail("attempt to get length of a non-string value"),
@@ -3168,7 +3199,7 @@ pub const State = struct {
             .native_pairs => {
                 if (resolved.arg_count == 0) return self.failArgumentMessage("pairs", 1, "value expected");
                 const value = argValue(self, thread, resolved, 0);
-                if (try self.getMetamethod(value, "__pairs")) |metamethod| {
+                if (try self.getMetaEvent(value, .__pairs)) |metamethod| {
                     thread.native_call_depth -= 1;
                     defer thread.native_call_depth += 1;
                     try self.callPairsMetamethod(thread, resolved, metamethod, value);
@@ -3222,7 +3253,7 @@ pub const State = struct {
             },
             .native => |native| try self.callNative(native, thread, resolved),
             else => {
-                const metamethod = try self.getMetamethod(callee, "__call") orelse return self.failCallTypeError(thread, callee, call_name, call_namewhat);
+                const metamethod = try self.getMetaEvent(callee, .__call) orelse return self.failCallTypeError(thread, callee, call_name, call_namewhat);
                 try self.prependCallArgument(thread, resolved, metamethod, callee);
                 try self.invokeValue(thread, .{ .base = resolved.base, .arg_count = resolved.arg_count + 1, .return_count = resolved.return_count }, depth + 1);
             },
@@ -3371,7 +3402,7 @@ pub const State = struct {
             return self.intern(file_name.items);
         }
 
-        if (try self.getMetamethod(value, "__tostring")) |metamethod| {
+        if (try self.getMetaEvent(value, .__tostring)) |metamethod| {
             const result = try self.callOneResult(thread, metamethod, &.{value});
             return switch (result) {
                 .string => |string| string,
@@ -3379,7 +3410,7 @@ pub const State = struct {
             };
         }
 
-        if (try self.getMetamethod(value, "__name")) |name| {
+        if (try self.getMetaEvent(value, .__name)) |name| {
             if (name == .string) {
                 var named = std.ArrayList(u8).empty;
                 defer named.deinit(self.allocator);
@@ -3449,6 +3480,7 @@ pub const State = struct {
     }
 
     pub fn getMetamethod(self: *State, value: Value, name: []const u8) !?Value {
+        if (types.MetaEvent.fromName(name)) |event| return self.getMetaEvent(value, event);
         const metatable = switch (value) {
             .table => |table| table.metatable orelse return null,
             .userdata => |userdata| userdata.metatable orelse return null,
@@ -3459,6 +3491,21 @@ pub const State = struct {
             else => return null,
         };
         const metamethod = metatable.get(.{ .string = name });
+        return if (metamethod == .nil) null else metamethod;
+    }
+
+    /// `getMetamethod` for a known event; metatables cache absent events.
+    pub fn getMetaEvent(self: *State, value: Value, event: types.MetaEvent) !?Value {
+        const metatable = switch (value) {
+            .table => |table| table.metatable orelse return null,
+            .userdata => |userdata| userdata.metatable orelse return null,
+            .string => self.string_metatable orelse return null,
+            .integer, .number => self.number_metatable orelse return null,
+            .boolean => self.boolean_metatable orelse return null,
+            .nil => self.nil_metatable orelse return null,
+            else => return null,
+        };
+        const metamethod = metatable.metaEvent(event);
         return if (metamethod == .nil) null else metamethod;
     }
 
@@ -3480,13 +3527,17 @@ pub const State = struct {
 
     pub fn luaTypeNameForError(self: *State, value: Value) []const u8 {
         if (isFileValue(value)) return "FILE*";
-        if (self.getMetamethod(value, "__name") catch null) |name| {
+        if (self.getMetaEvent(value, .__name) catch null) |name| {
             if (name == .string) return name.string;
         }
         return luaTypeName(value);
     }
 
     fn getEitherMetamethod(self: *State, lhs: Value, rhs: Value, name: []const u8) !?Value {
+        if (types.MetaEvent.fromName(name)) |event| {
+            if (try self.getMetaEvent(lhs, event)) |metamethod| return metamethod;
+            return self.getMetaEvent(rhs, event);
+        }
         if (try self.getMetamethod(lhs, name)) |metamethod| return metamethod;
         return self.getMetamethod(rhs, name);
     }
@@ -3618,13 +3669,13 @@ pub const State = struct {
         const value = self.get(thread, op.source);
         switch (value) {
             .string => |string| self.set(thread, op.dest, .{ .integer = @intCast(string.len) }),
-            .table => |table| if ((try self.getMetamethod(value, "__len"))) |metamethod| {
+            .table => |table| if ((try self.getMetaEvent(value, .__len))) |metamethod| {
                 const result = try self.callOneMetamethodWithContinuation(thread, "__len", metamethod, &.{ value, value }, .{ .value = self.absoluteRegister(thread, op.dest) });
                 self.set(thread, op.dest, result);
             } else {
                 self.set(thread, op.dest, .{ .integer = table.len() });
             },
-            else => if ((try self.getMetamethod(value, "__len"))) |metamethod| {
+            else => if ((try self.getMetaEvent(value, .__len))) |metamethod| {
                 const result = try self.callOneMetamethodWithContinuation(thread, "__len", metamethod, &.{ value, value }, .{ .value = self.absoluteRegister(thread, op.dest) });
                 self.set(thread, op.dest, result);
             } else {
@@ -3714,7 +3765,7 @@ pub const State = struct {
             }
 
             if (depth > max_metamethod_depth) return self.fail("'__call' chain too long");
-            const metamethod = try self.getMetamethod(callee, "__call") orelse break;
+            const metamethod = try self.getMetaEvent(callee, .__call) orelse break;
             try self.prependCallArgument(thread, resolved, metamethod, callee);
             resolved.arg_count += 1;
             depth += 1;
@@ -5347,7 +5398,12 @@ inline fn rawIntegerBitwiseOpFast(lhs: Value, rhs: Value, comptime op: BinaryOp)
 }
 
 fn equalityHasMetamethod(lhs: Value, rhs: Value) bool {
-    return (lhs == .table and rhs == .table) or (lhs == .userdata and rhs == .userdata);
+    return switch (lhs) {
+        // Tables whose metatables are absent or known to lack `__eq` compare raw.
+        .table => |table| rhs == .table and !(noMetaEvent(table, .__eq) and noMetaEvent(rhs.table, .__eq)),
+        .userdata => rhs == .userdata,
+        else => false,
+    };
 }
 
 fn rawCompareBranchResult(lhs: Value, rhs: Value, op: bytecode.CompareBranchOp) ?bool {
@@ -5940,8 +5996,38 @@ fn fastTableArrayGet(table_value: Value, key_value: Value) ?Value {
     const table = table_value.table;
     if (index > table.array.items.len) return null;
     const value = table.array.items[index - 1];
-    if (value != .nil or table.metatable == null) return value;
+    if (value != .nil or noIndexMetamethod(table)) return value;
     return null;
+}
+
+/// True when the table has no metatable or its metatable is known to lack
+/// `event`. Unknown absence returns false so the caller takes the general
+/// path, which performs (and caches) the lookup.
+inline fn noMetaEvent(table: *const Table, comptime event: types.MetaEvent) bool {
+    const metatable = table.metatable orelse return true;
+    return metatable.metaEventAbsent(event);
+}
+
+inline fn noIndexMetamethod(table: *const Table) bool {
+    return noMetaEvent(table, .__index);
+}
+
+inline fn noNewindexMetamethod(table: *const Table) bool {
+    return noMetaEvent(table, .__newindex);
+}
+
+/// The fast loop indexes `constant_values` directly, so every prototype that
+/// can run LOAD_CONST must have been prepared (`value.prepareProtoTree`).
+fn assertProtoPrepared(proto: *const proto_mod.Proto) void {
+    std.debug.assert(proto.runtime_prepared or proto.constants.items.len == 0);
+}
+
+inline fn hasPendingContinuations(thread: *const Thread) bool {
+    return (thread.pairs_continuations.items.len |
+        thread.call_one_continuations.items.len |
+        thread.protected_continuations.items.len |
+        thread.tail_call_continuations.items.len |
+        thread.generic_for_continuations.items.len) != 0;
 }
 
 fn fastTableRawGet(table_value: Value, key_value: Value) ?Value {
@@ -5949,14 +6035,23 @@ fn fastTableRawGet(table_value: Value, key_value: Value) ?Value {
     if (table_value != .table or key_value != .string) return null;
     const table = table_value.table;
     const value = table.get(key_value);
-    if (value != .nil or table.metatable == null) return value;
+    if (value != .nil) return value;
+    const metatable = table.metatable orelse return value;
+    // Follow one `__index` table, the usual class layout. Anything else uses
+    // the general path, which also caches an absent `__index`.
+    if (metatable.metaEventAbsent(.__index)) return value;
+    const handler = metatable.metaEvent(.__index);
+    if (handler == .nil) return value;
+    if (handler != .table) return null;
+    const inherited = handler.table.get(key_value);
+    if (inherited != .nil or noIndexMetamethod(handler.table)) return inherited;
     return null;
 }
 
 fn fastLengthNoMetamethod(value: Value) ?Value {
     return switch (value) {
         .string => |string| .{ .integer = @intCast(string.len) },
-        .table => |table| if (table.metatable == null) .{ .integer = table.len() } else null,
+        .table => |table| if (noMetaEvent(table, .__len)) .{ .integer = table.len() } else null,
         else => null,
     };
 }

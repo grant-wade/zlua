@@ -297,6 +297,29 @@ pub fn appendLuaString(allocator: std.mem.Allocator, out: *std.ArrayList(u8), va
     }
 }
 
+/// Derive per-prototype runtime metadata once, before any closure of the tree
+/// runs. Prepared prototypes are never written again, so snapshot workers may
+/// share them. Prototypes that skip this keep defaults selecting general paths.
+pub fn prepareProtoTree(proto: *proto_mod.Proto) !void {
+    if (proto.runtime_prepared) return;
+    for (proto.children.items) |child| try prepareProtoTree(child);
+    const values = try proto.arena.allocator().alloc(Value, proto.constants.items.len);
+    for (proto.constants.items, values) |constant, *value| {
+        value.* = switch (constant) {
+            .nil => .nil,
+            .boolean => |boolean| .{ .boolean = boolean },
+            // Malformed lexemes keep their lazy load-time error.
+            .integer => |lexeme| parseIntegerLiteral(lexeme) catch .{ .string = "" },
+            .number => |lexeme| if (parseLuaNumber(lexeme)) |number| .{ .number = number } else |_| .{ .string = "" },
+            // Strings are interned per State and cached by each closure.
+            .string => .{ .string = "" },
+        };
+    }
+    proto.constant_values = values;
+    proto.named_vararg_readonly = proto.hasReadOnlyNamedVararg();
+    proto.runtime_prepared = true;
+}
+
 pub fn localActiveAt(local: proto_mod.LocalDebug, pc: usize) bool {
     return local.start_pc <= pc and (local.end_pc == 0 or pc < local.end_pc);
 }

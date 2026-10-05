@@ -677,6 +677,46 @@ const ValueHashContext = struct {
     }
 };
 
+/// Metamethod events whose absence a metatable caches in
+/// `Table.metamethod_absent`. Tag names are the event keys.
+pub const MetaEvent = enum(u5) {
+    __index,
+    __newindex,
+    __len,
+    __eq,
+    __call,
+    __add,
+    __sub,
+    __mul,
+    __div,
+    __mod,
+    __pow,
+    __unm,
+    __idiv,
+    __band,
+    __bor,
+    __bxor,
+    __shl,
+    __shr,
+    __bnot,
+    __lt,
+    __le,
+    __concat,
+    __close,
+    __tostring,
+    __name,
+    __pairs,
+
+    pub fn fromName(name: []const u8) ?MetaEvent {
+        if (name.len < 4 or name[0] != '_' or name[1] != '_') return null;
+        return std.meta.stringToEnum(MetaEvent, name);
+    }
+
+    inline fn bit(event: MetaEvent) u32 {
+        return @as(u32, 1) << @intFromEnum(event);
+    }
+};
+
 pub const Table = struct {
     // A handful of entries is cheaper to search directly than to allocate and
     // probe a second data structure. Larger tables retain a hash index.
@@ -695,6 +735,11 @@ pub const Table = struct {
     finalizer_next: ?*Table = null,
     finalizer_prev: ?*Table = null,
     finalizer_order: u64 = 0,
+    /// Bit `e` set: this table, used as a metatable, has a nil raw value for
+    /// `MetaEvent` `e`. Only absence is cached. Every hash-part write that can
+    /// turn a nil value non-nil clears the whole set, so a set bit is never
+    /// stale. Array writes cannot affect string keys.
+    metamethod_absent: u32 = 0,
 
     pub inline fn init(allocator: std.mem.Allocator, array_hint: u32, hash_hint: u32) !Table {
         var table = Table{ .entry_index = TableEntryIndex.init(allocator) };
@@ -718,6 +763,23 @@ pub const Table = struct {
         }
         if (self.findEntry(key)) |index| return self.entries.items[index].value;
         return .nil;
+    }
+
+    pub inline fn metaEventAbsent(self: *const Table, event: MetaEvent) bool {
+        return self.metamethod_absent & event.bit() != 0;
+    }
+
+    /// Raw lookup of a metamethod in this metatable, caching absence.
+    pub fn metaEvent(self: *Table, event: MetaEvent) Value {
+        if (self.metaEventAbsent(event)) return .nil;
+        const value = self.get(.{ .string = @tagName(event) });
+        if (value == .nil) self.metamethod_absent |= event.bit();
+        return value;
+    }
+
+    /// Call before writing a hash slot that may currently hold nil.
+    pub inline fn invalidateMetaEvents(self: *Table) void {
+        self.metamethod_absent = 0;
     }
 
     pub fn findEntry(self: *const Table, key: Value) ?usize {
@@ -744,6 +806,7 @@ pub const Table = struct {
         if (value == .nil) return true;
         if (self.entry_index.capacity() != 0 or self.entries.items.len >= linear_entry_limit or
             self.entries.items.len == self.entries.capacity) return false;
+        self.invalidateMetaEvents();
         self.entries.appendAssumeCapacity(.{ .key = key, .value = value });
         return true;
     }
@@ -769,6 +832,7 @@ pub const Table = struct {
                 return;
             }
         }
+        self.invalidateMetaEvents();
         if (self.findEntry(key)) |index| {
             self.entries.items[index].value = value;
             return;
