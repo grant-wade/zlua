@@ -2361,6 +2361,8 @@ pub const State = struct {
                         value = value * 10 + lexeme[index] - '0';
                         index += 1;
                     }
+                    // The lexer rejects these; binary chunks bypass it.
+                    if (value > 255) return self.fail("decimal escape too large");
                     try out.append(self.allocator, @intCast(value));
                 },
                 'z' => while (index < lexeme.len - 1 and std.ascii.isWhitespace(lexeme[index])) : (index += 1) {},

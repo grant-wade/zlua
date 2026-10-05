@@ -15,6 +15,8 @@ const executeSourceWithOptions = runtime.executeSourceWithOptions;
 const valuesEqual = runtime.valuesEqual;
 const appendBinaryChunkHeader = runtime.appendBinaryChunkHeader;
 const dumpClosureBinary = runtime.dumpClosureBinary;
+const bytecode = @import("../compile.zig").bytecode;
+const proto_mod = @import("../compile.zig").proto;
 
 test "small table growth preserves existing entries on allocation failure" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, tableGrowthAllocationScenario, .{});
@@ -536,6 +538,480 @@ test "PUC binary chunks are rejected explicitly" {
     const detail = try state.errorDetailAlloc(std.testing.allocator, error.RuntimeError);
     defer std.testing.allocator.free(detail);
     try std.testing.expect(std.mem.indexOf(u8, detail, "unsupported PUC Lua binary chunk") != null);
+}
+
+const Opcode = std.meta.Tag(bytecode.Instruction);
+
+// Exercises every opcode family the compiler emits.
+const verified_chunk_program =
+    \\local log = {}
+    \\local function add(...)
+    \\  for i = 1, select("#", ...) do log[#log + 1] = tostring((select(i, ...))) end
+    \\end
+    \\local function varargs(first, ...)
+    \\  local a, b = ...
+    \\  local packed = { ... }
+    \\  return first, a, b, #packed, ...
+    \\end
+    \\add(varargs(1, 2, 3, 4))
+    \\local function named(...args) return args.n, args[1] end
+    \\add(named("x", "y"))
+    \\local function counter(start)
+    \\  local total = start
+    \\  return function(step)
+    \\    total = total + step + #log * 0
+    \\    return total
+    \\  end
+    \\end
+    \\local tick = counter(10)
+    \\add(tick(1), tick(2))
+    \\local sum = 0
+    \\for i = 10, 1, -3 do sum = sum + i end
+    \\for k, v in ipairs({ 5, 6, 7 }) do sum = sum + k * v end
+    \\for word in string.gmatch("a b c", "%a+") do add(word) end
+    \\add(sum)
+    \\local closed = {}
+    \\do
+    \\  local resource <close> = setmetatable({}, { __close = function() closed[#closed + 1] = "closed" end })
+    \\  add(resource ~= nil)
+    \\end
+    \\add(closed[1])
+    \\local fns = {}
+    \\for i = 1, 3 do fns[i] = function() return i end end
+    \\add(fns[1]() + fns[3]())
+    \\local n = 0
+    \\::top::
+    \\n = n + 1
+    \\if n < 3 then goto top end
+    \\add(n)
+    \\local object = { value = 4 }
+    \\function object:scaled(factor) return self.value * factor end
+    \\add(object:scaled(3))
+    \\local function three() return 1, 2, 3 end
+    \\local list = { 0, three() }
+    \\local keyed = { [1 + 1] = "two", name = "n", three() }
+    \\add(#list, keyed[2], keyed.name, #keyed)
+    \\local x, y, flag, maybe = 7, 2, true, nil
+    \\add(x + y, x - y, x * y, x / y, x // y, x % y, x ^ y, -x)
+    \\add(x & y, x | y, x ~ y, ~x, x << y, x >> y)
+    \\add(x == y, x < y, x <= y, not x, #"abc", "a" .. x .. y, [[long]])
+    \\if x > y and y >= 1 then add("cmp") end
+    \\if maybe then add("never") end
+    \\add(maybe or "default", flag and y)
+    \\while x > 5 do x = x - 1 end
+    \\repeat y = y + 1 until y >= 4
+    \\add(x, y)
+    \\do global answer = 41 end
+    \\answer = answer + 1
+    \\add(answer)
+    \\local t = {}
+    \\t[1] = "a"; t.k = "v"; t[x] = y
+    \\add(t[1], t.k, t[x])
+    \\local function tail(depth) if depth == 0 then return "tail" end return tail(depth - 1) end
+    \\add(tail(3))
+    \\return table.concat(log, ",")
+;
+
+fn collectOpcodes(proto: *const proto_mod.Proto, seen: *std.EnumSet(Opcode)) void {
+    for (proto.instructions.items) |instruction| seen.insert(std.meta.activeTag(instruction));
+    for (proto.children.items) |child| collectOpcodes(child, seen);
+}
+
+fn runLoadedString(state: *State, closure: *runtime.Closure) ![]const u8 {
+    const values = try state.callLoadedClosure(closure, &.{});
+    defer state.allocator.free(values);
+    try std.testing.expectEqual(@as(usize, 1), values.len);
+    return std.testing.allocator.dupe(u8, values[0].string);
+}
+
+test "zlua binary chunks verify and round-trip every compiled opcode family" {
+    var source_state = try State.init(std.testing.allocator);
+    defer source_state.deinit();
+    const loaded = try source_state.loadSourceAsClosure(verified_chunk_program);
+
+    var seen: std.EnumSet(Opcode) = .empty;
+    collectOpcodes(loaded.closure.proto, &seen);
+    // Generic loops advance in tfor_prep, and globals resolve through _ENV.
+    const never_emitted = [_]Opcode{ .tfor_call, .get_global, .set_global };
+    for (std.enums.values(Opcode)) |opcode| {
+        const expected = std.mem.indexOfScalar(Opcode, &never_emitted, opcode) == null;
+        if (expected != seen.contains(opcode)) std.debug.print("opcode coverage mismatch: {s}\n", .{@tagName(opcode)});
+        try std.testing.expectEqual(expected, seen.contains(opcode));
+    }
+
+    const expected = try runLoadedString(&source_state, loaded.closure);
+    defer std.testing.allocator.free(expected);
+
+    for ([_]bool{ false, true }) |strip| {
+        var dump = std.ArrayList(u8).empty;
+        defer dump.deinit(std.testing.allocator);
+        try dumpClosureBinary(std.testing.allocator, &dump, loaded.closure, strip);
+
+        var target_state = try State.init(std.testing.allocator);
+        defer target_state.deinit();
+        const reloaded = try target_state.loadBinaryDump(dump.items, .{ .table = target_state.global_table.? });
+        const actual = try runLoadedString(&target_state, reloaded.closure);
+        defer std.testing.allocator.free(actual);
+        try std.testing.expectEqualStrings(expected, actual);
+    }
+}
+
+const ChunkMutation = enum {
+    register,
+    constant_index,
+    name_constant,
+    jump_past_end,
+    jump_before_start,
+    branch_past_end,
+    child_index,
+    upvalue_index,
+    captured_register,
+    captured_upvalue,
+    call_arguments,
+    numeric_for_base,
+    generic_for_variables,
+    return_range,
+    vararg_range,
+    set_list_range,
+    check_close_register,
+    new_table_hint,
+    param_count,
+    named_vararg_register,
+    local_register,
+    error_site_pc,
+    long_string,
+    integer_lexeme,
+};
+
+const InstructionSite = struct {
+    proto: *proto_mod.Proto,
+    pc: usize,
+
+    fn op(self: InstructionSite) *bytecode.Instruction {
+        return &self.proto.instructions.items[self.pc];
+    }
+
+    fn registers(self: InstructionSite) u16 {
+        return self.proto.max_registers;
+    }
+};
+
+fn findSite(proto: *proto_mod.Proto, opcode: Opcode) ?InstructionSite {
+    for (proto.instructions.items, 0..) |instruction, pc| {
+        if (std.meta.activeTag(instruction) == opcode) return .{ .proto = proto, .pc = pc };
+    }
+    for (proto.children.items) |child| if (findSite(child, opcode)) |site| return site;
+    return null;
+}
+
+fn findCapture(proto: *proto_mod.Proto, in_stack: bool) ?struct { parent: *proto_mod.Proto, upvalue: *proto_mod.UpvalueDesc } {
+    for (proto.children.items) |child| {
+        for (child.upvalues.items) |*upvalue| {
+            if (upvalue.in_stack == in_stack) return .{ .parent = proto, .upvalue = upvalue };
+        }
+        if (findCapture(child, in_stack)) |capture| return capture;
+    }
+    return null;
+}
+
+fn findConstant(proto: *proto_mod.Proto, tag: std.meta.Tag(bytecode.Constant)) ?*bytecode.Constant {
+    for (proto.constants.items) |*constant| if (constant.* == tag) return constant;
+    return null;
+}
+
+fn findProto(proto: *proto_mod.Proto, comptime matches: fn (*const proto_mod.Proto) bool) ?*proto_mod.Proto {
+    if (matches(proto)) return proto;
+    for (proto.children.items) |child| if (findProto(child, matches)) |found| return found;
+    return null;
+}
+
+fn hasNamedVararg(proto: *const proto_mod.Proto) bool {
+    return proto.named_vararg;
+}
+
+/// Breaks one invariant the verifier checks. Returns false if the program
+/// lacks the construct, so the caller can insist each mutation applied.
+fn applyChunkMutation(root: *proto_mod.Proto, mutation: ChunkMutation) !bool {
+    switch (mutation) {
+        .register => {
+            const site = findSite(root, .move) orelse return false;
+            site.op().move.dest = site.registers();
+        },
+        .constant_index => {
+            const site = findSite(root, .load_const) orelse return false;
+            site.op().load_const.constant = @intCast(site.proto.constants.items.len);
+        },
+        .name_constant => {
+            const site = findSite(root, .get_field) orelse return false;
+            try site.proto.constants.append(site.proto.allocator, .nil);
+            site.op().get_field.name = @intCast(site.proto.constants.items.len - 1);
+        },
+        .jump_past_end => {
+            const site = findSite(root, .jmp) orelse return false;
+            site.op().jmp = @intCast(site.proto.instructions.items.len - site.pc);
+        },
+        .jump_before_start => {
+            const site = findSite(root, .jmp) orelse return false;
+            site.op().jmp = -@as(i32, @intCast(site.pc + 2));
+        },
+        .branch_past_end => {
+            const site = findSite(root, .compare_branch) orelse return false;
+            site.op().compare_branch.offset = @intCast(site.proto.instructions.items.len - site.pc);
+        },
+        .child_index => {
+            const site = findSite(root, .closure) orelse return false;
+            site.op().closure.proto = @intCast(site.proto.children.items.len);
+        },
+        .upvalue_index => {
+            const site = findSite(root, .get_upvalue) orelse return false;
+            site.op().get_upvalue.upvalue = @intCast(site.proto.upvalues.items.len);
+        },
+        .captured_register => {
+            const capture = findCapture(root, true) orelse return false;
+            capture.upvalue.index = capture.parent.max_registers;
+        },
+        .captured_upvalue => {
+            const capture = findCapture(root, false) orelse return false;
+            capture.upvalue.index = @intCast(capture.parent.upvalues.items.len);
+        },
+        .call_arguments => {
+            const site = findSite(root, .call) orelse return false;
+            site.op().call = .{ .base = site.registers() - 1, .arg_count = 1, .return_count = 0 };
+        },
+        .numeric_for_base => {
+            const site = findSite(root, .for_loop) orelse return false;
+            site.op().for_loop.base = site.registers() - 2;
+        },
+        .generic_for_variables => {
+            const site = findSite(root, .tfor_prep) orelse return false;
+            site.op().tfor_prep.variable_count = site.registers();
+        },
+        .return_range => {
+            const site = findSite(root, .ret) orelse return false;
+            site.op().ret = .{ .first = site.registers() - 1, .count = 2 };
+        },
+        .vararg_range => {
+            const site = findSite(root, .vararg) orelse return false;
+            site.op().vararg = .{ .dest = site.registers() - 1, .count = 2 };
+        },
+        .set_list_range => {
+            const site = findSite(root, .set_list) orelse return false;
+            site.op().set_list.first = site.registers() - 1;
+            site.op().set_list.count = 2;
+        },
+        .check_close_register => {
+            const site = findSite(root, .check_close) orelse return false;
+            site.op().check_close = site.registers();
+        },
+        .new_table_hint => {
+            const site = findSite(root, .new_table) orelse return false;
+            site.op().new_table.array_hint = std.math.maxInt(u32);
+        },
+        .param_count => root.param_count = root.max_registers + 1,
+        .named_vararg_register => {
+            const proto = findProto(root, hasNamedVararg) orelse return false;
+            proto.max_registers = proto.param_count;
+        },
+        .local_register => {
+            if (root.locals.items.len == 0) return false;
+            root.locals.items[0].register = root.max_registers;
+        },
+        .error_site_pc => {
+            if (root.error_sites.items.len == 0) return false;
+            root.error_sites.items[0].pc = root.instructions.items.len;
+        },
+        .long_string => {
+            const constant = findConstant(root, .string) orelse return false;
+            constant.* = .{ .string = "[==" };
+        },
+        .integer_lexeme => {
+            const constant = findConstant(root, .integer) orelse return false;
+            constant.* = .{ .integer = "1x" };
+        },
+    }
+    return true;
+}
+
+test "zlua binary chunks with out-of-range operands are rejected" {
+    for (std.enums.values(ChunkMutation)) |mutation| {
+        var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .none });
+        defer state.deinit();
+        const loaded = try state.loadSourceAsClosure(verified_chunk_program);
+        const root: *proto_mod.Proto = @constCast(loaded.closure.proto);
+        if (!try applyChunkMutation(root, mutation)) {
+            std.debug.print("mutation did not apply: {s}\n", .{@tagName(mutation)});
+            return error.TestUnexpectedResult;
+        }
+
+        var dump = std.ArrayList(u8).empty;
+        defer dump.deinit(std.testing.allocator);
+        try dumpClosureBinary(std.testing.allocator, &dump, loaded.closure, false);
+        _ = state.loadBinaryDump(dump.items, .nil) catch |err| {
+            try std.testing.expectEqual(error.RuntimeError, err);
+            const detail = try state.errorDetailAlloc(std.testing.allocator, err);
+            defer std.testing.allocator.free(detail);
+            try std.testing.expect(std.mem.indexOf(u8, detail, "bad binary chunk") != null);
+            continue;
+        };
+        std.debug.print("mutation was accepted: {s}\n", .{@tagName(mutation)});
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "truncated and oversized zlua binary chunks are rejected" {
+    var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .none });
+    defer state.deinit();
+    const loaded = try state.loadSourceAsClosure(
+        \\local scale = 2
+        \\return function(...)
+        \\  local t = { ... }
+        \\  for i = 1, #t do t[i] = t[i] * scale end
+        \\  return t
+        \\end
+    );
+    var dump = std.ArrayList(u8).empty;
+    defer dump.deinit(std.testing.allocator);
+    try dumpClosureBinary(std.testing.allocator, &dump, loaded.closure, false);
+
+    for (0..dump.items.len) |len| {
+        try std.testing.expectError(error.RuntimeError, state.loadBinaryDump(dump.items[0..len], .nil));
+    }
+    try dump.append(std.testing.allocator, 0);
+    try std.testing.expectError(error.RuntimeError, state.loadBinaryDump(dump.items, .nil));
+}
+
+fn appendNestedProtoChunk(out: *std.ArrayList(u8), depth: usize) !void {
+    const allocator = std.testing.allocator;
+    try appendBinaryChunkHeader(allocator, out);
+    try out.appendSlice(allocator, binary_chunk_payload_magic);
+    try out.append(allocator, 0);
+    for (0..depth) |level| {
+        // Only the root names its source; children inherit it.
+        if (level == 0) try out.appendSlice(allocator, &.{ 1, 0, 0, 0, 0 }) else try out.append(allocator, 0);
+        try out.append(allocator, 0);
+        try out.appendNTimes(allocator, 0, 8 + 8 + 2 + 2 + 1 + 1 + 5 * 4);
+        const child_count: u8 = if (level + 1 < depth) 1 else 0;
+        try out.appendSlice(allocator, &.{ child_count, 0, 0, 0 });
+    }
+}
+
+test "zlua binary chunks bound counts and nesting before allocating" {
+    var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .none });
+    defer state.deinit();
+
+    var huge_count = std.ArrayList(u8).empty;
+    defer huge_count.deinit(std.testing.allocator);
+    try appendBinaryChunkHeader(std.testing.allocator, &huge_count);
+    try huge_count.appendSlice(std.testing.allocator, binary_chunk_payload_magic);
+    try huge_count.appendSlice(std.testing.allocator, &.{ 0, 1, 0, 0, 0, 0, 0 });
+    try huge_count.appendNTimes(std.testing.allocator, 0, 8 + 8 + 2 + 2 + 1 + 1);
+    try huge_count.appendSlice(std.testing.allocator, &.{ 0xff, 0xff, 0xff, 0xff });
+    try std.testing.expectError(error.RuntimeError, state.loadBinaryDump(huge_count.items, .nil));
+    const detail = try state.errorDetailAlloc(std.testing.allocator, error.RuntimeError);
+    defer std.testing.allocator.free(detail);
+    try std.testing.expect(std.mem.indexOf(u8, detail, "truncated binary chunk") != null);
+
+    var nested = std.ArrayList(u8).empty;
+    defer nested.deinit(std.testing.allocator);
+    try appendNestedProtoChunk(&nested, 200);
+    _ = try state.loadBinaryDump(nested.items, .nil);
+    nested.clearRetainingCapacity();
+    try appendNestedProtoChunk(&nested, 201);
+    try std.testing.expectError(error.RuntimeError, state.loadBinaryDump(nested.items, .nil));
+}
+
+test "load reports malformed binary chunks to Lua" {
+    var result = try executeSource(std.testing.allocator,
+        \\local dumped = string.dump(function(a) return a + 1 end)
+        \\print(load(dumped:sub(1, -2), "cut", "b"))
+        \\print(load(dumped .. "x", "extra", "b"))
+        \\print(load(dumped, "whole", "b")(1))
+    );
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(?u8, 0), result.exit_code);
+    try std.testing.expectEqualStrings("nil\ttruncated binary chunk\nnil\tbad binary chunk\n2\n", result.stdout);
+}
+
+// Locals, upvalues, loops and tables only: corrupted chunks must not reach
+// host-facing library functions.
+const corrupted_chunk_program =
+    \\local function iter(limit, control)
+    \\  if control < limit then return control + 1, control * 2 end
+    \\end
+    \\local acc = 0
+    \\for i, v in iter, 5, 0 do acc = acc + i + v end
+    \\for i = 1, 10, 3 do acc = acc + i end
+    \\local function make(n)
+    \\  local up = n
+    \\  return function(x) up = up + x; return up end
+    \\end
+    \\local f = make(3)
+    \\acc = acc + f(1) + f(2)
+    \\local function spread(...) local a, b = ...; return b, a, ... end
+    \\local x, y, z = spread(1, 2, 3)
+    \\local list = { spread(4, 5) }
+    \\list.k = #list
+    \\list[1] = list.k
+    \\do local c <close> = nil end
+    \\local object = { v = 1 }
+    \\function object:get(d) return self.v + d end
+    \\acc = acc + object:get(1) + acc // 3 + acc % 7 + (acc << 1 >> 1) + (acc & 3 | 1 ~ 2)
+    \\if acc > 3 and acc <= 1000 or acc == 7 then acc = acc + 1 end
+    \\while acc > 100 do acc = acc - 50 end
+    \\return acc, x, y, z, #list, "s" .. acc, not acc, -acc, 2 ^ 2, acc / 2
+;
+
+test "randomly corrupted zlua binary chunks load safely or fail" {
+    var dump = std.ArrayList(u8).empty;
+    defer dump.deinit(std.testing.allocator);
+    {
+        var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .none });
+        defer state.deinit();
+        const loaded = try state.loadSourceAsClosure(corrupted_chunk_program);
+        try dumpClosureBinary(std.testing.allocator, &dump, loaded.closure, false);
+    }
+    var header = std.ArrayList(u8).empty;
+    defer header.deinit(std.testing.allocator);
+    try appendBinaryChunkHeader(std.testing.allocator, &header);
+    const payload_start = header.items.len + binary_chunk_payload_magic.len;
+
+    const mutated = try std.testing.allocator.alloc(u8, dump.items.len);
+    defer std.testing.allocator.free(mutated);
+    var prng = std.Random.DefaultPrng.init(0x7a6c_7561_6263);
+    const random = prng.random();
+    var loaded_count: usize = 0;
+    for (0..2000) |_| {
+        @memcpy(mutated, dump.items);
+        for (0..random.intRangeAtMost(usize, 1, 4)) |_| {
+            const index = random.intRangeLessThan(usize, payload_start, mutated.len);
+            if (random.boolean()) {
+                mutated[index] ^= @as(u8, 1) << random.int(u3);
+            } else {
+                mutated[index] = random.int(u8);
+            }
+        }
+
+        var state = try State.initWithOptions(std.testing.allocator, .{
+            .stdlib = .none,
+            .max_instructions = 10_000,
+            .max_call_frames = 64,
+            .max_stack_values = 4096,
+        });
+        defer state.deinit();
+        const environment = try state.newTableWithHints(0, 0);
+        const loaded = state.loadBinaryDump(mutated, environment) catch |err| {
+            try std.testing.expectEqual(error.RuntimeError, err);
+            continue;
+        };
+        loaded_count += 1;
+        if (state.callLoadedClosure(loaded.closure, &.{})) |values| {
+            state.allocator.free(values);
+        } else |_| {}
+    }
+    // Corruption that keeps the chunk well formed, such as in line numbers,
+    // must still run safely.
+    try std.testing.expect(loaded_count > 0);
 }
 
 test "official closure upvalue edge cases" {

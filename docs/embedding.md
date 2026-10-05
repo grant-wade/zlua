@@ -238,7 +238,11 @@ defer cached.deinit();
 const value = try cached.call(.{2}, i64);
 ```
 
-The format is version-sensitive and is not compatible with PUC Lua `luac` chunks.
+The format is internal to zlua, version-sensitive, and not compatible with PUC Lua `luac` chunks.
+
+Every load structurally verifies the chunk before it can run: register operands and ranges must fit the function's register count, constant, upvalue and nested-function indexes must exist, jump targets must stay inside the function, and counts and nesting depth must fit the input. Malformed or truncated chunks fail to load with `bad binary chunk` or `truncated binary chunk` instead of reaching the VM, so corrupted bytes cannot cause memory-unsafe execution.
+
+Verification does not prove that a chunk came from the zlua compiler or that it behaves sensibly. A crafted chunk that passes can still loop, allocate, raise errors, or compute surprising values. Run untrusted bytecode with the same instruction, memory and capability limits you would apply to untrusted source.
 
 ## Values and Handles
 

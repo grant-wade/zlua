@@ -178,6 +178,8 @@ Load-time failures use `errors.Diagnostic`. Runtime failures use `RuntimeErrorPa
 
 zlua binary chunks serialize protos for zlua-to-zlua use. `string.dump`, `Function.dumpBytecode`, and `State.loadBytecode` use this format. It is version-sensitive, does not promise `luac` compatibility, and is not a stable external ABI.
 
+The VM indexes registers, constants, upvalues, child protos and jump targets without bounds checks. `verifyProto` in `src/runtime/chunk.zig` checks each decoded proto against those invariants before a loaded chunk can run, so new opcodes and new operand uses must extend it.
+
 ## Testing Architecture
 
 The test harnesses are Zig build artifacts under `src/testing/`:
@@ -206,4 +208,5 @@ Changes should preserve these rules:
 - Zig API/runtime value conversion must preserve table identity and cycles.
 - Host effects remain explicit capabilities.
 - Binary chunks and VM layouts remain internal.
+- Loaded binary chunks are verified before they run.
 - Performance work must still pass differential, extension, official, and embedding tests.
