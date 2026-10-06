@@ -647,6 +647,7 @@ pub const State = struct {
                 .unm => |op| try self.unaryOpToRegister(thread, op, .unm),
                 .bnot => |op| try self.unaryOpToRegister(thread, op, .bnot),
                 .concat => |op| try self.binaryOpToRegister(thread, op, .concat),
+                .concat_range => |op| try self.concatRangeToRegister(thread, op),
                 .eq => |op| {
                     const lhs = stack[base + op.left];
                     const rhs = stack[base + op.right];
@@ -2330,7 +2331,12 @@ pub const State = struct {
     }
 
     pub fn allocateString(self: *State, bytes: []const u8) ![]const u8 {
-        const allocated = try self.allocator.dupe(u8, bytes);
+        return self.adoptString(try self.allocator.dupe(u8, bytes));
+    }
+
+    /// Registers `allocated`, which must come from `self.allocator`, as a
+    /// collectable string. Frees it on failure.
+    fn adoptString(self: *State, allocated: []u8) ![]const u8 {
         errdefer self.allocator.free(allocated);
         try self.registerAllocation("string_allocations", StringAllocation{ .bytes = allocated });
         errdefer {
@@ -3099,11 +3105,59 @@ pub const State = struct {
     }
 
     fn concatValues(self: *State, lhs: Value, rhs: Value) !Value {
-        var out = std.ArrayList(u8).empty;
-        defer out.deinit(self.allocator);
-        try appendLuaString(self.allocator, &out, lhs);
-        try appendLuaString(self.allocator, &out, rhs);
-        return .{ .string = try self.allocateString(out.items) };
+        return self.concatStringValues(&.{ lhs, rhs });
+    }
+
+    /// Joins strings and numbers into a single exactly sized allocation.
+    fn concatStringValues(self: *State, values: []const Value) !Value {
+        var scratch: [value_mod.max_number_text_len]u8 = undefined;
+        var total: usize = 0;
+        for (values) |value| total += switch (value) {
+            .string => |string| string.len,
+            else => value_mod.formatNumber(&scratch, value).len,
+        };
+        const bytes = try self.allocator.alloc(u8, total);
+        var offset: usize = 0;
+        for (values) |value| {
+            const text = switch (value) {
+                .string => |string| string,
+                else => value_mod.formatNumber(&scratch, value),
+            };
+            @memcpy(bytes[offset..][0..text.len], text);
+            offset += text.len;
+        }
+        return .{ .string = try self.adoptString(bytes) };
+    }
+
+    fn concatRangeToRegister(self: *State, thread: *Thread, op: bytecode.ConcatRange) !void {
+        const base = thread.frames.items[thread.frames.items.len - 1].base;
+        try self.finishConcatRange(thread, base + op.dest, base + op.first, op.count);
+    }
+
+    /// Joins stack slots `first..first+count` right to left like PUC
+    /// `luaV_concat`: each run of trailing strings and numbers becomes one
+    /// string, and otherwise the last two operands go to `__concat`. Partial
+    /// results stay in the operand slots so a yielding metamethod can resume.
+    pub fn finishConcatRange(self: *State, thread: *Thread, dest: usize, first: usize, count_in: usize) !void {
+        var count = count_in;
+        while (count > 1) {
+            const operands = thread.stack.items[first .. first + count];
+            var run: usize = 0;
+            while (run < count and luaStringLike(operands[count - 1 - run])) run += 1;
+            if (run >= 2) {
+                const joined = try self.concatStringValues(operands[count - run ..]);
+                thread.stack.items[first + count - run] = joined;
+                count -= run - 1;
+                continue;
+            }
+            const lhs = operands[count - 2];
+            const rhs = operands[count - 1];
+            const metamethod = (try self.getEitherMetamethod(lhs, rhs, "__concat")) orelse return self.failConcatRangeTypeError(thread, lhs, rhs, count - 2);
+            const result = try self.callOneMetamethodWithContinuation(thread, "__concat", metamethod, &.{ lhs, rhs }, .{ .concat = .{ .dest = dest, .first = first, .count = count - 1 } });
+            count -= 1;
+            thread.stack.items[first + count - 1] = result;
+        }
+        thread.stack.items[dest] = thread.stack.items[first];
     }
 
     fn callValue(self: *State, thread: *Thread, op: bytecode.Call) !void {
@@ -4997,6 +5051,19 @@ pub const State = struct {
                 self.appendSiteOrigin(&detail, site, operand_index, false) catch return self.fail("attempt to perform operation on unsupported values");
             },
         }
+        return self.failRuntimeDetail(thread, detail.items);
+    }
+
+    /// Names the offending operand by its position in the `concat_range`,
+    /// as PUC names the register. A slot that held a string constant can
+    /// report it once a metamethod result replaced it.
+    fn failConcatRangeTypeError(self: *State, thread: *Thread, lhs: Value, rhs: Value, lhs_index: usize) RuntimeError {
+        var detail = std.ArrayList(u8).empty;
+        defer detail.deinit(self.allocator);
+        const operand_index = if (!luaStringLike(lhs)) lhs_index else lhs_index + 1;
+        const bad_value = if (!luaStringLike(lhs)) lhs else rhs;
+        appendFmt(self.allocator, &detail, "attempt to concatenate a {s} value", .{self.luaTypeNameForError(bad_value)}) catch return self.fail("attempt to perform operation on unsupported values");
+        self.appendSiteOrigin(&detail, self.currentErrorSite(thread), operand_index, true) catch return self.fail("attempt to perform operation on unsupported values");
         return self.failRuntimeDetail(thread, detail.items);
     }
 

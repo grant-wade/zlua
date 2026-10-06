@@ -594,7 +594,7 @@ const verified_chunk_program =
     \\local x, y, flag, maybe = 7, 2, true, nil
     \\add(x + y, x - y, x * y, x / y, x // y, x % y, x ^ y, -x)
     \\add(x & y, x | y, x ~ y, ~x, x << y, x >> y)
-    \\add(x == y, x < y, x <= y, not x, #"abc", "a" .. x .. y, [[long]])
+    \\add(x == y, x < y, x <= y, not x, #"abc", "a" .. x .. y, x .. y, [[long]])
     \\if x > y and y >= 1 then add("cmp") end
     \\if maybe then add("never") end
     \\add(maybe or "default", flag and y)
@@ -673,6 +673,7 @@ const ChunkMutation = enum {
     return_range,
     vararg_range,
     set_list_range,
+    concat_range,
     check_close_register,
     new_table_hint,
     param_count,
@@ -798,6 +799,10 @@ fn applyChunkMutation(root: *proto_mod.Proto, mutation: ChunkMutation) !bool {
             const site = findSite(root, .set_list) orelse return false;
             site.op().set_list.first = site.registers() - 1;
             site.op().set_list.count = 2;
+        },
+        .concat_range => {
+            const site = findSite(root, .concat_range) orelse return false;
+            site.op().concat_range.first = site.registers() - 1;
         },
         .check_close_register => {
             const site = findSite(root, .check_close) orelse return false;
@@ -1344,4 +1349,14 @@ test "changing weak modes after propagation retraces newly strong edges" {
     try state.setTableRaw(metatable.table, .{ .string = "__mode" }, .{ .string = "v" });
     try state.collectGarbage();
     try std.testing.expect(weak.table.get(.{ .string = "item" }) == .nil);
+}
+
+const value_mod = @import("value.zig");
+
+test "formatNumber fits extreme floats" {
+    var buffer: [value_mod.max_number_text_len]u8 = undefined;
+    for ([_]f64{ -std.math.floatMax(f64), -std.math.floatTrueMin(f64), -2.2250738585072009e-308, -1.2345678901234567e-300 }) |number| {
+        const text = value_mod.formatNumber(&buffer, .{ .number = number });
+        try std.testing.expectEqual(number, try std.fmt.parseFloat(f64, text));
+    }
 }

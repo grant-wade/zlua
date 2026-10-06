@@ -225,6 +225,11 @@ fn appendBinaryInstruction(allocator: std.mem.Allocator, out: *std.ArrayList(u8)
             try appendBinaryU16(allocator, out, op.variable_count);
             try appendBinaryI32(allocator, out, op.offset);
         },
+        .concat_range => |op| {
+            try appendBinaryU16(allocator, out, op.dest);
+            try appendBinaryU16(allocator, out, op.first);
+            try appendBinaryU16(allocator, out, op.count);
+        },
     }
 }
 
@@ -352,6 +357,7 @@ fn verifyInstruction(proto: *const proto_mod.Proto, instruction: bytecode.Instru
             (if (op.count == bytecode.multret_count) op.first < registers else registerRange(registers, op.first, op.count)),
         .add, .sub, .mul, .div, .idiv, .mod, .pow, .band, .bor, .bxor, .shl, .shr, .eq, .lt, .le, .concat => |op| op.dest < registers and op.left < registers and op.right < registers,
         .unm, .bnot, .not, .len => |op| op.dest < registers and op.source < registers,
+        .concat_range => |op| op.dest < registers and op.count >= 2 and registerRange(registers, op.first, op.count),
         .jmp => |offset| validJump(proto, pc, offset),
         .compare_branch => |op| op.left < registers and op.right < registers and validJump(proto, pc, op.offset),
         .test_op => |op| op.register < registers and validJump(proto, pc, op.offset),
@@ -585,7 +591,14 @@ pub fn BinaryChunkReader(comptime State: type) type {
                 .tfor_prep => .{ .tfor_prep = .{ .base = try self.readU16(), .variable_count = try self.readU16(), .offset = try self.readI32() } },
                 .tfor_call => .{ .tfor_call = .{ .base = try self.readU16(), .variable_count = try self.readU16(), .offset = try self.readI32() } },
                 .tfor_loop => .{ .tfor_loop = .{ .base = try self.readU16(), .variable_count = try self.readU16(), .offset = try self.readI32() } },
+                .concat_range => .{ .concat_range = try self.readConcatRange() },
             };
+        }
+
+        fn readConcatRange(self: *Self) !bytecode.ConcatRange {
+            const op: bytecode.ConcatRange = .{ .dest = try self.readU16(), .first = try self.readU16(), .count = try self.readU16() };
+            if (op.count < 2) return self.state.fail("bad binary chunk");
+            return op;
         }
 
         fn readUnary(self: *Self) !bytecode.Unary {

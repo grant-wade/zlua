@@ -91,6 +91,9 @@ pub const Instruction = union(enum(u8)) {
     tfor_prep: GenericFor,
     tfor_call: GenericFor,
     tfor_loop: GenericFor,
+
+    // Appended so the serialized tags of older instructions stay stable.
+    concat_range: ConcatRange,
 };
 
 pub const LoadBool = struct {
@@ -176,6 +179,15 @@ pub const Binary = struct {
     dest: Register,
     left: Register,
     right: Register,
+};
+
+/// Concatenates `count` (at least 2) consecutive registers starting at
+/// `first` right to left, like PUC OP_CONCAT, and stores the result in
+/// `dest`. Operand registers are scratch space for partial results.
+pub const ConcatRange = struct {
+    dest: Register,
+    first: Register,
+    count: u16,
 };
 
 pub const CompareBranchOp = enum {

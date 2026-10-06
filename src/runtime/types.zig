@@ -626,7 +626,17 @@ pub const CallOneContinuationResult = union(enum) {
     inverted_truthy: usize,
     branch_truthy: BranchContinuation,
     branch_inverted_truthy: BranchContinuation,
+    concat: ConcatContinuation,
     discard,
+};
+
+/// A `concat_range` suspended in a `__concat` metamethod. Slots are
+/// absolute stack indices; the metamethod result becomes the last of the
+/// `count` operands still to be joined starting at `first`.
+pub const ConcatContinuation = struct {
+    dest: usize,
+    first: usize,
+    count: usize,
 };
 
 pub const CallOneContinuation = struct {

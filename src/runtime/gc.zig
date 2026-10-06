@@ -486,6 +486,7 @@ fn atomic(comptime State: type, self: *State) !void {
     if (self.rollback) |journal| {
         try journal.prepareCollection(self);
         try prepareRollbackTableWrites(State, self);
+        if (!self.mark_all_stack_registers) for (self.thread_allocations.items) |thread| try rollback.threadWritable(thread);
         for (self.userdata_allocations.items[if (self.gc_cycle == .minor) self.gc_old.userdata_allocations else 0..]) |userdata| {
             if (!isMarked(State, self, userdata) and !userdata.finalized and userdata.finalizer != null) try rollback.userdataWritable(userdata);
         }
@@ -497,6 +498,19 @@ fn atomic(comptime State: type, self: *State) !void {
     convergeEphemerons(State, self);
     clearWeakTables(State, self);
     clearDeadHashKeys(State, self);
+    if (!self.mark_all_stack_registers) clearUnmarkedStackSlots(State, self);
+}
+
+/// A precise collection marks only active locals, so other stack slots can
+/// still name objects it is about to free. Later conservative steps scan
+/// whole stacks; clearing those slots keeps them from marking freed memory.
+fn clearUnmarkedStackSlots(comptime State: type, self: *State) void {
+    for (self.thread_allocations.items) |thread| {
+        if (!isMarked(State, self, thread)) continue;
+        for (thread.stack.items) |*slot| {
+            if (valueIsCollectableUnmarked(State, self, slot.*)) slot.* = .nil;
+        }
+    }
 }
 
 /// A basic step bounds propagation by references and sweeping by objects.

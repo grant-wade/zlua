@@ -113,6 +113,10 @@ pub fn completeReadyCallOneContinuation(comptime State: type, self: *State, thre
             thread.last_transfer_count = 0;
             try self.jumpIfBranchResult(thread, !truthy(value), branch.jump_if_truthy, branch.offset);
         },
+        .concat => |pending| {
+            thread.stack.items[pending.first + pending.count - 1] = value;
+            try self.finishConcatRange(thread, pending.dest, pending.first, pending.count);
+        },
         .discard => {},
     }
     return true;

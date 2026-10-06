@@ -459,8 +459,10 @@ pub fn appendValue(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value:
     switch (value) {
         .nil => try out.appendSlice(allocator, "nil"),
         .boolean => |boolean| try out.appendSlice(allocator, if (boolean) "true" else "false"),
-        .integer => |integer| try appendFmt(allocator, out, "{d}", .{integer}),
-        .number => |number| try appendNumber(allocator, out, number),
+        .integer, .number => {
+            var buffer: [max_number_text_len]u8 = undefined;
+            try out.appendSlice(allocator, formatNumber(&buffer, value));
+        },
         .string => |string| try out.appendSlice(allocator, string),
         .table => |table| if (isFileValue(value)) {
             if (isClosedFileValue(value)) {
@@ -544,9 +546,25 @@ pub fn freeProtectedResult(allocator: std.mem.Allocator, result: ProtectedCallRe
 }
 
 pub fn appendNumber(allocator: std.mem.Allocator, out: *std.ArrayList(u8), number: f64) !void {
-    try appendFmt(allocator, out, "{d}", .{number});
-    if (@floor(number) == number and std.math.isFinite(number)) {
-        try out.appendSlice(allocator, ".0");
+    var buffer: [max_number_text_len]u8 = undefined;
+    try out.appendSlice(allocator, formatNumber(&buffer, .{ .number = number }));
+}
+
+/// Fits the longest decimal rendering of any f64 (subnormals expand to
+/// about 343 bytes) plus a sign and a ".0" suffix.
+pub const max_number_text_len = 400;
+
+/// Renders an integer or float value as `tostring` and concatenation do.
+pub fn formatNumber(buffer: *[max_number_text_len]u8, value: Value) []const u8 {
+    switch (value) {
+        .integer => |integer| return std.fmt.bufPrint(buffer, "{d}", .{integer}) catch unreachable,
+        .number => |number| {
+            const text = std.fmt.bufPrint(buffer, "{d}", .{number}) catch unreachable;
+            if (@floor(number) != number or !std.math.isFinite(number)) return text;
+            buffer[text.len..][0..2].* = ".0".*;
+            return buffer[0 .. text.len + 2];
+        },
+        else => unreachable,
     }
 }
 
