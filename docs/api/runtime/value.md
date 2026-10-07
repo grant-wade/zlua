@@ -21,12 +21,10 @@
 - [compile.resolver](../compile/resolver.md)
 - [compile.bytecode](../compile/bytecode.md)
 - [compile.proto](../compile/proto.md)
-- [compile.compiler](../compile/compiler.md)
-- [compile.disasm](../compile/disasm.md)
-- [api](../api.md)
+- [runtime.types](../runtime/types.md)
 - [runtime](../runtime.md)
 - [runtime.chunk](../runtime/chunk.md)
-- [runtime.types](../runtime/types.md)
+- [reflection](../reflection.md)
 - [runtime.value](../runtime/value.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
@@ -37,6 +35,7 @@
 - [runtime.debug](../runtime/debug.md)
 - [runtime.gc](../runtime/gc.md)
 - [runtime.host](../runtime/host.md)
+- [runtime.timezone](../runtime/timezone.md)
 - [stdlib](../stdlib.md)
 - [stdlib.base](../stdlib/base.md)
 - [stdlib.table](../stdlib/table.md)
@@ -45,9 +44,9 @@
 - [stdlib.utf8](../stdlib/utf8.md)
 - [stdlib.coroutine](../stdlib/coroutine.md)
 - [stdlib.debug](../stdlib/debug.md)
-- [stdlib.package](../stdlib/package.md)
 - [stdlib.io](../stdlib/io.md)
 - [stdlib.os](../stdlib/os.md)
+- [stdlib.package](../stdlib/package.md)
 - [stdlib.json](../stdlib/json.md)
 - [stdlib.zerde_lua](../stdlib/zerde_lua.md)
 - [stdlib.toml](../stdlib/toml.md)
@@ -58,6 +57,10 @@
 - [runtime.vm](../runtime/vm.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
+- [compile.compiler](../compile/compiler.md)
+- [compile.fold](../compile/fold.md)
+- [compile.disasm](../compile/disasm.md)
+- [api](../api.md)
 - [runtime.snapshot](../runtime/snapshot.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
@@ -99,6 +102,7 @@
 - [shortNativeName](#fn-shortnativename)
 - [debugValueTypeName](#fn-debugvaluetypename)
 - [appendLuaString](#fn-appendluastring)
+- [prepareProtoTree](#fn-prepareprototree)
 - [localActiveAt](#fn-localactiveat)
 - [parseIntegerLiteral](#fn-parseintegerliteral)
 - [parseIntegerStrict](#fn-parseintegerstrict)
@@ -115,8 +119,13 @@
 - [appendNamedValue](#fn-appendnamedvalue)
 - [freeProtectedResult](#fn-freeprotectedresult)
 - [appendNumber](#fn-appendnumber)
+- [formatNumber](#fn-formatnumber)
 - [appendFmt](#fn-appendfmt)
 - [hexValue](#fn-hexvalue)
+
+## Constants
+
+- [max_number_text_len](#const-max_number_text_len)
 
 ## Aliases
 
@@ -276,6 +285,18 @@ pub fn appendLuaString(allocator: std.mem.Allocator, out: *std.ArrayList(u8), va
 
 References: [`Value`](#alias-value)
 
+<a id="fn-prepareprototree"></a>
+
+## prepareProtoTree
+
+Derive per-prototype runtime metadata once, before any closure of the tree
+runs. Prepared prototypes are never written again, so snapshot workers may
+share them. Prototypes that skip this keep defaults selecting general paths.
+
+```zig
+pub fn prepareProtoTree(proto: *proto_mod.Proto) !void
+```
+
 <a id="fn-localactiveat"></a>
 
 ## localActiveAt
@@ -421,6 +442,29 @@ References: [`ProtectedCallResult`](#alias-protectedcallresult)
 ```zig
 pub fn appendNumber(allocator: std.mem.Allocator, out: *std.ArrayList(u8), number: f64) !void
 ```
+
+<a id="const-max_number_text_len"></a>
+
+## max_number_text_len
+
+Fits the longest decimal rendering of any f64 (subnormals expand to
+about 343 bytes) plus a sign and a ".0" suffix.
+
+```zig
+pub const max_number_text_len = 400;
+```
+
+<a id="fn-formatnumber"></a>
+
+## formatNumber
+
+Renders an integer or float value as `tostring` and concatenation do.
+
+```zig
+pub fn formatNumber(buffer: *[max_number_text_len]u8, value: Value) []const u8
+```
+
+References: [`Value`](#alias-value)
 
 <a id="fn-appendfmt"></a>
 

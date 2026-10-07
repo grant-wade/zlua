@@ -21,12 +21,10 @@
 - [compile.resolver](../compile/resolver.md)
 - [compile.bytecode](../compile/bytecode.md)
 - [compile.proto](../compile/proto.md)
-- [compile.compiler](../compile/compiler.md)
-- [compile.disasm](../compile/disasm.md)
-- [api](../api.md)
+- [runtime.types](../runtime/types.md)
 - [runtime](../runtime.md)
 - [runtime.chunk](../runtime/chunk.md)
-- [runtime.types](../runtime/types.md)
+- [reflection](../reflection.md)
 - [runtime.value](../runtime/value.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
@@ -37,6 +35,7 @@
 - [runtime.debug](../runtime/debug.md)
 - [runtime.gc](../runtime/gc.md)
 - [runtime.host](../runtime/host.md)
+- [runtime.timezone](../runtime/timezone.md)
 - [stdlib](../stdlib.md)
 - [stdlib.base](../stdlib/base.md)
 - [stdlib.table](../stdlib/table.md)
@@ -45,9 +44,9 @@
 - [stdlib.utf8](../stdlib/utf8.md)
 - [stdlib.coroutine](../stdlib/coroutine.md)
 - [stdlib.debug](../stdlib/debug.md)
-- [stdlib.package](../stdlib/package.md)
 - [stdlib.io](../stdlib/io.md)
 - [stdlib.os](../stdlib/os.md)
+- [stdlib.package](../stdlib/package.md)
 - [stdlib.json](../stdlib/json.md)
 - [stdlib.zerde_lua](../stdlib/zerde_lua.md)
 - [stdlib.toml](../stdlib/toml.md)
@@ -58,6 +57,10 @@
 - [runtime.vm](../runtime/vm.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
+- [compile.compiler](../compile/compiler.md)
+- [compile.fold](../compile/fold.md)
+- [compile.disasm](../compile/disasm.md)
+- [api](../api.md)
 - [runtime.snapshot](../runtime/snapshot.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
@@ -87,6 +90,7 @@
 ## Functions
 
 - [deinitDirectoryEntries](#fn-deinitdirectoryentries)
+- [fileError](#fn-fileerror)
 
 ## Types
 
@@ -101,11 +105,20 @@
 - [EnvironmentCapability](#type-environmentcapability)
 - [CustomEnvironment](#type-customenvironment)
 - [ClockCapability](#type-clockcapability)
+- [FixedClock](#type-fixedclock)
+- [UtcOffset](#type-utcoffset)
 - [CustomClock](#type-customclock)
 - [ProcessCapability](#type-processcapability)
 - [CustomProcess](#type-customprocess)
 - [ProcessResult](#type-processresult)
 - [ProcessStatus](#type-processstatus)
+- [PopenResult](#type-popenresult)
+- [ExitRequest](#type-exitrequest)
+- [FileError](#type-fileerror)
+
+## Constants
+
+- [default_max_file_bytes](#const-default_max_file_bytes)
 
 <a id="type-memoryfile"></a>
 
@@ -508,9 +521,41 @@ pub const CustomEnvironment = struct {
 ```zig
 pub const ClockCapability = union(enum) {
     disabled,
+    /// Fixed Unix timestamp. Local time is UTC and `os.clock` returns 0.
     fixed: i64,
+    /// Fixed Unix timestamp with an explicit local-time offset and CPU time.
+    fixed_local: FixedClock,
+    /// Host wall clock, process CPU time, and local time zone.
     system,
     custom: CustomClock,
+};
+```
+
+<a id="type-fixedclock"></a>
+
+## FixedClock
+
+```zig
+pub const FixedClock = struct {
+    now: i64,
+    /// Local-time offset in seconds east of UTC.
+    utc_offset: i32 = 0,
+    is_dst: bool = false,
+    /// Value returned by `os.clock`.
+    cpu_seconds: f64 = 0,
+};
+```
+
+<a id="type-utcoffset"></a>
+
+## UtcOffset
+
+Local-time offset for one instant, in seconds east of UTC.
+
+```zig
+pub const UtcOffset = struct {
+    offset: i32 = 0,
+    is_dst: bool = false,
 };
 ```
 
@@ -522,6 +567,10 @@ pub const ClockCapability = union(enum) {
 pub const CustomClock = struct {
     context: ?*anyopaque = null,
     now: *const fn (context: ?*anyopaque) anyerror!i64,
+    /// Processor time in seconds for `os.clock`; null returns 0.
+    cpu: ?*const fn (context: ?*anyopaque) anyerror!f64 = null,
+    /// Local-time offset for a Unix timestamp; null treats local time as UTC.
+    utc_offset: ?*const fn (context: ?*anyopaque, timestamp: i64) anyerror!UtcOffset = null,
 };
 ```
 
@@ -545,6 +594,13 @@ pub const ProcessCapability = union(enum) {
 pub const CustomProcess = struct {
     context: ?*anyopaque = null,
     execute: *const fn (context: ?*anyopaque, command: []const u8) anyerror!ProcessResult,
+    /// Runs a command for `io.popen`. Read mode passes null input and returns
+    /// the command's stdout allocated with `allocator`; write mode passes the
+    /// bytes written to the handle when it closes. Null makes `io.popen` unsupported.
+    popen: ?*const fn (context: ?*anyopaque, allocator: std.mem.Allocator, command: []const u8, input: ?[]const u8) anyerror!PopenResult = null,
+    /// Observes `os.exit` before the state unwinds with `error.LuaExit`.
+    /// Returning an error raises a Lua error instead of exiting.
+    exit: ?*const fn (context: ?*anyopaque, code: i32, close: bool) anyerror!void = null,
 };
 ```
 
@@ -569,4 +625,68 @@ pub const ProcessStatus = enum {
     signal,
 };
 ```
+
+<a id="type-popenresult"></a>
+
+## PopenResult
+
+```zig
+pub const PopenResult = struct {
+    /// Command stdout in read mode, owned by the allocator passed to the callback.
+    output: []const u8 = "",
+    result: ProcessResult,
+};
+```
+
+<a id="type-exitrequest"></a>
+
+## ExitRequest
+
+Exit requested by `os.exit`; the state unwinds with `error.LuaExit`.
+
+```zig
+pub const ExitRequest = struct {
+    code: i32,
+    /// Lua asked for the state to be closed before the process exits.
+    close: bool,
+};
+```
+
+<a id="const-default_max_file_bytes"></a>
+
+## default_max_file_bytes
+
+Default per-file read limit shared by `io`, `loadfile`, `dofile`, `require`, and `fs`.
+
+```zig
+pub const default_max_file_bytes: usize = 256 * 1024 * 1024;
+```
+
+<a id="type-fileerror"></a>
+
+## FileError
+
+A strerror-style message and errno value for a failed host file operation.
+
+```zig
+pub const FileError = struct {
+    message: []const u8,
+    errno: i64,
+    /// The file could be opened but not read, such as a directory or an oversized file.
+    read_phase: bool = false,
+};
+```
+
+<a id="fn-fileerror"></a>
+
+## fileError
+
+Maps filesystem errors from std, memory filesystems, and custom callbacks
+to C-library messages and POSIX errno values.
+
+```zig
+pub fn fileError(err: anyerror) FileError
+```
+
+References: [`FileError`](#type-fileerror)
 

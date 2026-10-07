@@ -21,12 +21,10 @@
 - [compile.resolver](../compile/resolver.md)
 - [compile.bytecode](../compile/bytecode.md)
 - [compile.proto](../compile/proto.md)
-- [compile.compiler](../compile/compiler.md)
-- [compile.disasm](../compile/disasm.md)
-- [api](../api.md)
+- [runtime.types](../runtime/types.md)
 - [runtime](../runtime.md)
 - [runtime.chunk](../runtime/chunk.md)
-- [runtime.types](../runtime/types.md)
+- [reflection](../reflection.md)
 - [runtime.value](../runtime/value.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
@@ -37,6 +35,7 @@
 - [runtime.debug](../runtime/debug.md)
 - [runtime.gc](../runtime/gc.md)
 - [runtime.host](../runtime/host.md)
+- [runtime.timezone](../runtime/timezone.md)
 - [stdlib](../stdlib.md)
 - [stdlib.base](../stdlib/base.md)
 - [stdlib.table](../stdlib/table.md)
@@ -45,9 +44,9 @@
 - [stdlib.utf8](../stdlib/utf8.md)
 - [stdlib.coroutine](../stdlib/coroutine.md)
 - [stdlib.debug](../stdlib/debug.md)
-- [stdlib.package](../stdlib/package.md)
 - [stdlib.io](../stdlib/io.md)
 - [stdlib.os](../stdlib/os.md)
+- [stdlib.package](../stdlib/package.md)
 - [stdlib.json](../stdlib/json.md)
 - [stdlib.zerde_lua](../stdlib/zerde_lua.md)
 - [stdlib.toml](../stdlib/toml.md)
@@ -58,6 +57,10 @@
 - [runtime.vm](../runtime/vm.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
+- [compile.compiler](../compile/compiler.md)
+- [compile.fold](../compile/fold.md)
+- [compile.disasm](../compile/disasm.md)
+- [api](../api.md)
 - [runtime.snapshot](../runtime/snapshot.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
@@ -107,6 +110,7 @@
 - [SetList](#type-setlist)
 - [Unary](#type-unary)
 - [Binary](#type-binary)
+- [ConcatRange](#type-concatrange)
 - [CompareBranchOp](#type-comparebranchop)
 - [CompareBranch](#type-comparebranch)
 - [Test](#type-test)
@@ -270,6 +274,7 @@ pub const Instruction = union(enum(u8)) {
     tfor_prep: GenericFor,
     tfor_call: GenericFor,
     tfor_loop: GenericFor,
+    concat_range: ConcatRange,
 };
 ```
 
@@ -445,6 +450,22 @@ pub const Binary = struct {
     dest: Register,
     left: Register,
     right: Register,
+};
+```
+
+<a id="type-concatrange"></a>
+
+## ConcatRange
+
+Concatenates `count` (at least 2) consecutive registers starting at
+`first` right to left, like PUC OP_CONCAT, and stores the result in
+`dest`. Operand registers are scratch space for partial results.
+
+```zig
+pub const ConcatRange = struct {
+    dest: Register,
+    first: Register,
+    count: u16,
 };
 ```
 

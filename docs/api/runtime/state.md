@@ -21,12 +21,10 @@
 - [compile.resolver](../compile/resolver.md)
 - [compile.bytecode](../compile/bytecode.md)
 - [compile.proto](../compile/proto.md)
-- [compile.compiler](../compile/compiler.md)
-- [compile.disasm](../compile/disasm.md)
-- [api](../api.md)
+- [runtime.types](../runtime/types.md)
 - [runtime](../runtime.md)
 - [runtime.chunk](../runtime/chunk.md)
-- [runtime.types](../runtime/types.md)
+- [reflection](../reflection.md)
 - [runtime.value](../runtime/value.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
@@ -37,6 +35,7 @@
 - [runtime.debug](../runtime/debug.md)
 - [runtime.gc](../runtime/gc.md)
 - [runtime.host](../runtime/host.md)
+- [runtime.timezone](../runtime/timezone.md)
 - [stdlib](../stdlib.md)
 - [stdlib.base](../stdlib/base.md)
 - [stdlib.table](../stdlib/table.md)
@@ -45,9 +44,9 @@
 - [stdlib.utf8](../stdlib/utf8.md)
 - [stdlib.coroutine](../stdlib/coroutine.md)
 - [stdlib.debug](../stdlib/debug.md)
-- [stdlib.package](../stdlib/package.md)
 - [stdlib.io](../stdlib/io.md)
 - [stdlib.os](../stdlib/os.md)
+- [stdlib.package](../stdlib/package.md)
 - [stdlib.json](../stdlib/json.md)
 - [stdlib.zerde_lua](../stdlib/zerde_lua.md)
 - [stdlib.toml](../stdlib/toml.md)
@@ -58,6 +57,10 @@
 - [runtime.vm](../runtime/vm.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
+- [compile.compiler](../compile/compiler.md)
+- [compile.fold](../compile/fold.md)
+- [compile.disasm](../compile/disasm.md)
+- [api](../api.md)
 - [runtime.snapshot](../runtime/snapshot.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
@@ -396,6 +399,8 @@ pub const StateOptions = struct {
     clock: ClockCapability = .system,
     process: ProcessCapability = .disabled,
     stdin: []const u8 = "",
+    /// Largest file `io`, `loadfile`, `dofile`, `require`, and `fs` read at once.
+    max_file_bytes: usize = host.default_max_file_bytes,
     /// Memory budget retained for embedding API allocator setup and snapshots.
     /// Direct runtime users must enforce this budget through their allocator.
     max_memory: ?usize = null,
@@ -447,6 +452,12 @@ pub const State = struct {
     stderr: std.ArrayList(u8) = .empty,
     options: StateOptions,
     stdin_pos: usize = 0,
+    /// Set by `os.exit` while the state unwinds with `error.LuaExit`.
+    exit_request: ?host.ExitRequest = null,
+    /// Local time zone loaded on first use by the system clock.
+    local_zone: ?*timezone.Zone = null,
+    /// Advanced by filesystem mutations so buffered file handles reload contents.
+    file_generation: u64 = 0,
     last_error: ?RuntimeErrorPayload = null,
     last_error_in_close: bool = false,
     traceback_error_in_close: bool = false,
@@ -508,7 +519,7 @@ pub const State = struct {
 | [fileMetatable](#fn-state-filemetatable) | `state: *State` | `!*Table` |  |
 | [discard](#fn-state-discard) | `self: *State` | `void` |  |
 | [deinit](#fn-state-deinit) | `self: *State` | `void` |  |
-| [execute](#fn-state-execute) | `self: *State, proto: *const proto_mod.Proto` | `!void` |  |
+| [execute](#fn-state-execute) | `self: *State, proto: *proto_mod.Proto` | `!void` |  |
 | [callLoadedClosure](#fn-state-callloadedclosure) | `self: *State, closure: *Closure, args: []const Value` | `![]Value` |  |
 | [protectedCallLoadedClosure](#fn-state-protectedcallloadedclosure) | `self: *State, closure: *Closure, args: []const Value` | `!ProtectedCallResult` |  |
 | [callFunction](#fn-state-callfunction) | `self: *State, function: Value, args: []const Value` | `![]Value` |  |
@@ -541,7 +552,9 @@ pub const State = struct {
 | [activeRootCount](#fn-state-activerootcount) | `self: State` | `usize` |  |
 | [setApiCallbackDispatch](#fn-state-setapicallbackdispatch) | `self: *State, dispatch: ApiCallbackDispatchFn, user_data: *anyopaque` | `void` |  |
 | [callApiCallbackDispatch](#fn-state-callapicallbackdispatch) | `self: *State, thread: *Thread, op: bytecode.Call, callback_id: usize` | `!void` |  |
-| [readFileAlloc](#fn-state-readfilealloc) | `self: *State, path: []const u8` | `![]const u8` |  |
+| [readFileAlloc](#fn-state-readfilealloc) | `self: *State, path: []const u8` | `![]const u8` | Reads a whole file through the filesystem capability, limited by &#96;max_file_bytes&#96;. Failures raise PUC &#96;loadfile&#96;-style messages such as "cannot open name.lua: No such file or directory". |
+| [readFileRaw](#fn-state-readfileraw) | `self: *State, path: []const u8` | `anyerror![]const u8` | Reads a whole file through the filesystem capability, limited by &#96;max_file_bytes&#96;, returning filesystem errors unchanged. |
+| [failFileOperation](#fn-state-failfileoperation) | `self: *State, path: []const u8, err: anyerror` | `anyerror` | Raises "<path>: <strerror message>" for a failed file operation. |
 | [writeStdout](#fn-state-writestdout) | `self: *State, bytes: []const u8` | `!void` |  |
 | [writeStderr](#fn-state-writestderr) | `self: *State, bytes: []const u8` | `!void` |  |
 | [flushStdout](#fn-state-flushstdout) | `self: *State` | `!void` |  |
@@ -549,7 +562,7 @@ pub const State = struct {
 | [writeFile](#fn-state-writefile) | `self: *State, path: []const u8, data: []const u8` | `!void` |  |
 | [removeFile](#fn-state-removefile) | `self: *State, path: []const u8` | `!void` |  |
 | [renameFile](#fn-state-renamefile) | `self: *State, old_path: []const u8, new_path: []const u8` | `!void` |  |
-| [fsReadFileAlloc](#fn-state-fsreadfilealloc) | `self: *State, path: []const u8, max_bytes: usize` | `anyerror![]const u8` |  |
+| [fsReadFileAlloc](#fn-state-fsreadfilealloc) | `self: *State, path: []const u8, requested_max_bytes: usize` | `anyerror![]const u8` | Reads at most &#96;max_bytes&#96;, further capped by the state's &#96;max_file_bytes&#96;. |
 | [fsWriteFile](#fn-state-fswritefile) | `self: *State, path: []const u8, data: []const u8` | `anyerror!void` |  |
 | [fsStat](#fn-state-fsstat) | `self: *State, path: []const u8, follow_symlinks: bool` | `anyerror!host.FileStat` |  |
 | [fsReadDirAlloc](#fn-state-fsreaddiralloc) | `self: *State, path: []const u8` | `anyerror![]host.DirectoryEntry` |  |
@@ -559,7 +572,12 @@ pub const State = struct {
 | [fsCopyFile](#fn-state-fscopyfile) | `self: *State, source: []const u8, destination: []const u8, overwrite: bool` | `anyerror!void` |  |
 | [getenv](#fn-state-getenv) | `self: *State, name: []const u8` | `?[]const u8` |  |
 | [currentTime](#fn-state-currenttime) | `self: *State` | `!i64` |  |
+| [cpuTime](#fn-state-cputime) | `self: *State` | `!f64` | Processor time for &#96;os.clock&#96;, in seconds. A disabled or fixed clock reports 0. |
+| [localOffset](#fn-state-localoffset) | `self: *State, timestamp: i64` | `!timezone.LocalOffset` | Local-time offset at a Unix timestamp. Clocks without a time zone use UTC. |
+| [localToUtc](#fn-state-localtoutc) | `self: *State, local: i64, is_dst: ?bool` | `!i64` | Converts local wall-clock seconds to a Unix timestamp, like &#96;mktime&#96;. |
 | [executeProcess](#fn-state-executeprocess) | `self: *State, command: []const u8` | `!ProcessResult` |  |
+| [popenProcess](#fn-state-popenprocess) | `self: *State, command: []const u8, input: ?[]const u8` | `!host.PopenResult` | Runs a command for &#96;io.popen&#96;. Read mode (&#96;input == null&#96;) returns the command's stdout; write mode feeds &#96;input&#96; to its stdin. Other streams are inherited from the host process, like C &#96;popen&#96;. |
+| [requestExit](#fn-state-requestexit) | `self: *State, code: i32, close: bool` | `!void` | Records an &#96;os.exit&#96; request. The caller unwinds with &#96;error.LuaExit&#96;. |
 | [requireIo](#fn-state-requireio) | `self: *State, unavailable_message: []const u8` | `RuntimeError!std.Io` |  |
 | [processEnabled](#fn-state-processenabled) | `self: *State` | `bool` |  |
 | [readStdin](#fn-state-readstdin) | `self: *State, spec: []const u8` | `!Value` |  |
@@ -581,6 +599,7 @@ pub const State = struct {
 | [setTableValue](#fn-state-settablevalue) | `self: *State, table_value: Value, key_value: Value, value: Value` | `!void` |  |
 | [setTableFromThread](#fn-state-settablefromthread) | `self: *State, thread: *Thread, table_value: Value, key_value: Value, value: Value` | `!void` |  |
 | [lengthOf](#fn-state-lengthof) | `self: *State, thread: *Thread, value: Value` | `!Value` |  |
+| [finishConcatRange](#fn-state-finishconcatrange) | `self: *State, thread: *Thread, dest: usize, first: usize, count_in: usize` | `!void` | Joins stack slots &#96;first..first+count&#96; right to left like PUC &#96;luaV_concat&#96;: each run of trailing strings and numbers becomes one string, and otherwise the last two operands go to &#96;__concat&#96;. Partial results stay in the operand slots so a yielding metamethod can resume. |
 | [invokeValue](#fn-state-invokevalue) | `self: *State, thread: *Thread, resolved: bytecode.Call, depth: usize` | `anyerror!void` |  |
 | [callOneResult](#fn-state-calloneresult) | `self: *State, thread: *Thread, callable: Value, args: []const Value` | `anyerror!Value` |  |
 | [callOneResultWithContinuation](#fn-state-calloneresultwithcontinuation) | `self: *State, thread: *Thread, callable: Value, args: []const Value, result: CallOneContinuationResult` | `anyerror!Value` |  |
@@ -604,8 +623,10 @@ pub const State = struct {
 | [returnProtectedContinuationSuccess](#fn-state-returnprotectedcontinuationsuccess) | `self: *State, thread: *Thread, continuation: ProtectedContinuation, values: []Value` | `!void` |  |
 | [returnProtectedContinuationFailure](#fn-state-returnprotectedcontinuationfailure) | `self: *State, thread: *Thread, continuation: ProtectedContinuation, failure: Value` | `!void` |  |
 | [valueToString](#fn-state-valuetostring) | `self: *State, thread: *Thread, value: Value` | `anyerror![]const u8` |  |
+| [rawMetatableValue](#fn-state-rawmetatablevalue) | `self: *State, value: Value` | `Value` | Returns a value's metatable without honoring &#96;__metatable&#96;, as &#96;debug.getmetatable&#96; does. |
 | [setDebugMetatableValue](#fn-state-setdebugmetatablevalue) | `self: *State, value: Value, metatable_value: Value` | `!void` |  |
 | [getMetamethod](#fn-state-getmetamethod) | `self: *State, value: Value, name: []const u8` | `!?Value` |  |
+| [getMetaEvent](#fn-state-getmetaevent) | `self: *State, value: Value, event: types.MetaEvent` | `!?Value` | &#96;getMetamethod&#96; for a known event; metatables cache absent events. |
 | [setTableMetatableRaw](#fn-state-settablemetatableraw) | `self: *State, table: *Table, metatable: ?*Table` | `void` |  |
 | [noteTableMetatableChanged](#fn-state-notetablemetatablechanged) | `self: *State, table: *Table, old_has_metatable: bool` | `void` |  |
 | [unlinkTableMetatable](#fn-state-unlinktablemetatable) | `self: *State, table: *Table` | `void` |  |
@@ -824,7 +845,7 @@ References: [`State`](#type-state)
 ### State.execute
 
 ```zig
-pub fn execute(self: *State, proto: *const proto_mod.Proto) !void
+pub fn execute(self: *State, proto: *proto_mod.Proto) !void
 ```
 
 References: [`State`](#type-state)
@@ -1153,8 +1174,37 @@ References: [`State`](#type-state), [`Thread`](#alias-thread)
 
 ### State.readFileAlloc
 
+Reads a whole file through the filesystem capability, limited by
+`max_file_bytes`. Failures raise PUC `loadfile`-style messages such as
+"cannot open name.lua: No such file or directory".
+
 ```zig
 pub fn readFileAlloc(self: *State, path: []const u8) ![]const u8
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-readfileraw"></a>
+
+### State.readFileRaw
+
+Reads a whole file through the filesystem capability, limited by
+`max_file_bytes`, returning filesystem errors unchanged.
+
+```zig
+pub fn readFileRaw(self: *State, path: []const u8) anyerror![]const u8
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-failfileoperation"></a>
+
+### State.failFileOperation
+
+Raises "<path>: <strerror message>" for a failed file operation.
+
+```zig
+pub fn failFileOperation(self: *State, path: []const u8, err: anyerror) anyerror
 ```
 
 References: [`State`](#type-state)
@@ -1233,8 +1283,10 @@ References: [`State`](#type-state)
 
 ### State.fsReadFileAlloc
 
+Reads at most `max_bytes`, further capped by the state's `max_file_bytes`.
+
 ```zig
-pub fn fsReadFileAlloc(self: *State, path: []const u8, max_bytes: usize) anyerror![]const u8
+pub fn fsReadFileAlloc(self: *State, path: []const u8, requested_max_bytes: usize) anyerror![]const u8
 ```
 
 References: [`State`](#type-state)
@@ -1329,6 +1381,42 @@ pub fn currentTime(self: *State) !i64
 
 References: [`State`](#type-state)
 
+<a id="fn-state-cputime"></a>
+
+### State.cpuTime
+
+Processor time for `os.clock`, in seconds. A disabled or fixed clock reports 0.
+
+```zig
+pub fn cpuTime(self: *State) !f64
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-localoffset"></a>
+
+### State.localOffset
+
+Local-time offset at a Unix timestamp. Clocks without a time zone use UTC.
+
+```zig
+pub fn localOffset(self: *State, timestamp: i64) !timezone.LocalOffset
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-localtoutc"></a>
+
+### State.localToUtc
+
+Converts local wall-clock seconds to a Unix timestamp, like `mktime`.
+
+```zig
+pub fn localToUtc(self: *State, local: i64, is_dst: ?bool) !i64
+```
+
+References: [`State`](#type-state)
+
 <a id="fn-state-executeprocess"></a>
 
 ### State.executeProcess
@@ -1338,6 +1426,32 @@ pub fn executeProcess(self: *State, command: []const u8) !ProcessResult
 ```
 
 References: [`State`](#type-state), [`ProcessResult`](#alias-processresult)
+
+<a id="fn-state-popenprocess"></a>
+
+### State.popenProcess
+
+Runs a command for `io.popen`. Read mode (`input == null`) returns the
+command's stdout; write mode feeds `input` to its stdin. Other streams
+are inherited from the host process, like C `popen`.
+
+```zig
+pub fn popenProcess(self: *State, command: []const u8, input: ?[]const u8) !host.PopenResult
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-requestexit"></a>
+
+### State.requestExit
+
+Records an `os.exit` request. The caller unwinds with `error.LuaExit`.
+
+```zig
+pub fn requestExit(self: *State, code: i32, close: bool) !void
+```
+
+References: [`State`](#type-state)
 
 <a id="fn-state-requireio"></a>
 
@@ -1548,6 +1662,21 @@ pub fn lengthOf(self: *State, thread: *Thread, value: Value) !Value
 ```
 
 References: [`State`](#type-state), [`Thread`](#alias-thread), [`Value`](#alias-value)
+
+<a id="fn-state-finishconcatrange"></a>
+
+### State.finishConcatRange
+
+Joins stack slots `first..first+count` right to left like PUC
+`luaV_concat`: each run of trailing strings and numbers becomes one
+string, and otherwise the last two operands go to `__concat`. Partial
+results stay in the operand slots so a yielding metamethod can resume.
+
+```zig
+pub fn finishConcatRange(self: *State, thread: *Thread, dest: usize, first: usize, count_in: usize) !void
+```
+
+References: [`State`](#type-state), [`Thread`](#alias-thread)
 
 <a id="fn-state-invokevalue"></a>
 
@@ -1782,6 +1911,18 @@ pub fn valueToString(self: *State, thread: *Thread, value: Value) anyerror![]con
 
 References: [`State`](#type-state), [`Thread`](#alias-thread), [`Value`](#alias-value)
 
+<a id="fn-state-rawmetatablevalue"></a>
+
+### State.rawMetatableValue
+
+Returns a value's metatable without honoring `__metatable`, as `debug.getmetatable` does.
+
+```zig
+pub fn rawMetatableValue(self: *State, value: Value) Value
+```
+
+References: [`State`](#type-state), [`Value`](#alias-value)
+
 <a id="fn-state-setdebugmetatablevalue"></a>
 
 ### State.setDebugMetatableValue
@@ -1798,6 +1939,18 @@ References: [`State`](#type-state), [`Value`](#alias-value)
 
 ```zig
 pub fn getMetamethod(self: *State, value: Value, name: []const u8) !?Value
+```
+
+References: [`State`](#type-state), [`Value`](#alias-value)
+
+<a id="fn-state-getmetaevent"></a>
+
+### State.getMetaEvent
+
+`getMetamethod` for a known event; metatables cache absent events.
+
+```zig
+pub fn getMetaEvent(self: *State, value: Value, event: types.MetaEvent) !?Value
 ```
 
 References: [`State`](#type-state), [`Value`](#alias-value)

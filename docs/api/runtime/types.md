@@ -21,12 +21,10 @@
 - [compile.resolver](../compile/resolver.md)
 - [compile.bytecode](../compile/bytecode.md)
 - [compile.proto](../compile/proto.md)
-- [compile.compiler](../compile/compiler.md)
-- [compile.disasm](../compile/disasm.md)
-- [api](../api.md)
+- [runtime.types](../runtime/types.md)
 - [runtime](../runtime.md)
 - [runtime.chunk](../runtime/chunk.md)
-- [runtime.types](../runtime/types.md)
+- [reflection](../reflection.md)
 - [runtime.value](../runtime/value.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
@@ -37,6 +35,7 @@
 - [runtime.debug](../runtime/debug.md)
 - [runtime.gc](../runtime/gc.md)
 - [runtime.host](../runtime/host.md)
+- [runtime.timezone](../runtime/timezone.md)
 - [stdlib](../stdlib.md)
 - [stdlib.base](../stdlib/base.md)
 - [stdlib.table](../stdlib/table.md)
@@ -45,9 +44,9 @@
 - [stdlib.utf8](../stdlib/utf8.md)
 - [stdlib.coroutine](../stdlib/coroutine.md)
 - [stdlib.debug](../stdlib/debug.md)
-- [stdlib.package](../stdlib/package.md)
 - [stdlib.io](../stdlib/io.md)
 - [stdlib.os](../stdlib/os.md)
+- [stdlib.package](../stdlib/package.md)
 - [stdlib.json](../stdlib/json.md)
 - [stdlib.zerde_lua](../stdlib/zerde_lua.md)
 - [stdlib.toml](../stdlib/toml.md)
@@ -58,6 +57,10 @@
 - [runtime.vm](../runtime/vm.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
+- [compile.compiler](../compile/compiler.md)
+- [compile.fold](../compile/fold.md)
+- [compile.disasm](../compile/disasm.md)
+- [api](../api.md)
 - [runtime.snapshot](../runtime/snapshot.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
@@ -103,11 +106,13 @@
 - [BranchContinuation](#type-branchcontinuation)
 - [TailCallContinuation](#type-tailcallcontinuation)
 - [CallOneContinuationResult](#type-callonecontinuationresult)
+- [ConcatContinuation](#type-concatcontinuation)
 - [CallOneContinuation](#type-callonecontinuation)
 - [CoroutineResumeResult](#type-coroutineresumeresult)
 - [Closure](#type-closure)
 - [Upvalue](#type-upvalue)
 - [TableEntry](#type-tableentry)
+- [MetaEvent](#type-metaevent)
 - [Table](#type-table)
 - [UserdataScope](#type-userdatascope)
 - [Userdata](#type-userdata)
@@ -273,6 +278,7 @@ pub const NativeFn = enum {
     package_searchpath,
     package_searcher_preload,
     package_searcher_lua,
+    package_loadlib,
     io_read,
     io_write,
     io_open,
@@ -283,6 +289,7 @@ pub const NativeFn = enum {
     io_lines,
     io_tmpfile,
     io_type,
+    io_popen,
     io_file_read,
     io_file_write,
     io_file_close,
@@ -290,6 +297,7 @@ pub const NativeFn = enum {
     io_file_flush,
     io_file_lines,
     io_file_setvbuf,
+    io_file_tostring,
     io_lines_iter,
     os_time,
     os_clock,
@@ -301,6 +309,7 @@ pub const NativeFn = enum {
     os_rename,
     os_tmpname,
     os_difftime,
+    os_exit,
     debug_getinfo,
     debug_getupvalue,
     debug_setupvalue,
@@ -314,6 +323,8 @@ pub const NativeFn = enum {
     debug_setmetatable,
     debug_setuservalue,
     debug_getuservalue,
+    debug_getmetatable,
+    debug_debug,
     json_read,
     json_write,
     toml_read,
@@ -850,7 +861,24 @@ pub const CallOneContinuationResult = union(enum) {
     inverted_truthy: usize,
     branch_truthy: BranchContinuation,
     branch_inverted_truthy: BranchContinuation,
+    concat: ConcatContinuation,
     discard,
+};
+```
+
+<a id="type-concatcontinuation"></a>
+
+## ConcatContinuation
+
+A `concat_range` suspended in a `__concat` metamethod. Slots are
+absolute stack indices; the metamethod result becomes the last of the
+`count` operands still to be joined starting at `first`.
+
+```zig
+pub const ConcatContinuation = struct {
+    dest: usize,
+    first: usize,
+    count: usize,
 };
 ```
 
@@ -930,6 +958,60 @@ pub const TableEntryIndex = std.HashMap(Value, usize, ValueHashContext, std.hash
 
 References: [`Value`](#type-value)
 
+<a id="type-metaevent"></a>
+
+## MetaEvent
+
+Metamethod events whose absence a metatable caches in
+`Table.metamethod_absent`. [Tag](../frontend/token.md#type-tag) names are the event keys.
+
+```zig
+pub const MetaEvent = enum(u5) {
+    __index,
+    __newindex,
+    __len,
+    __eq,
+    __call,
+    __add,
+    __sub,
+    __mul,
+    __div,
+    __mod,
+    __pow,
+    __unm,
+    __idiv,
+    __band,
+    __bor,
+    __bxor,
+    __shl,
+    __shr,
+    __bnot,
+    __lt,
+    __le,
+    __concat,
+    __close,
+    __tostring,
+    __name,
+    __pairs,
+};
+```
+
+### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [fromName](#fn-metaevent-fromname) | `name: []const u8` | `?MetaEvent` |  |
+
+<a id="fn-metaevent-fromname"></a>
+
+### MetaEvent.fromName
+
+```zig
+pub fn fromName(name: []const u8) ?MetaEvent
+```
+
+References: [`MetaEvent`](#type-metaevent)
+
 <a id="type-table"></a>
 
 ## Table
@@ -949,6 +1031,11 @@ pub const Table = struct {
     finalizer_next: ?*Table = null,
     finalizer_prev: ?*Table = null,
     finalizer_order: u64 = 0,
+    /// Bit `e` set: this table, used as a metatable, has a nil raw value for
+    /// `MetaEvent` `e`. Only absence is cached. Every hash-part write that can
+    /// turn a nil value non-nil clears the whole set, so a set bit is never
+    /// stale. Array writes cannot affect string keys.
+    metamethod_absent: u32 = 0,
 };
 ```
 
@@ -959,6 +1046,9 @@ pub const Table = struct {
 | [init](#fn-table-init) | `allocator: std.mem.Allocator, array_hint: u32, hash_hint: u32` | `!Table` |  |
 | [deinit](#fn-table-deinit) | `self: *Table, allocator: std.mem.Allocator` | `void` |  |
 | [get](#fn-table-get) | `self: *const Table, key: Value` | `Value` |  |
+| [metaEventAbsent](#fn-table-metaeventabsent) | `self: *const Table, event: MetaEvent` | `bool` |  |
+| [metaEvent](#fn-table-metaevent) | `self: *Table, event: MetaEvent` | `Value` | Raw lookup of a metamethod in this metatable, caching absence. |
+| [invalidateMetaEvents](#fn-table-invalidatemetaevents) | `self: *Table` | `void` | Call before writing a hash slot that may currently hold nil. |
 | [findEntry](#fn-table-findentry) | `self: *const Table, key: Value` | `?usize` |  |
 | [rebuildEntryIndex](#fn-table-rebuildentryindex) | `self: *Table` | `!void` |  |
 | [insertHashEntryNoAlloc](#fn-table-inserthashentrynoalloc) | `self: *Table, key: Value, value: Value` | `bool` | Insert an absent hash key using reserved storage. The caller must check that the key is absent; false means growth or snapshot detachment is needed. |
@@ -998,6 +1088,40 @@ pub fn get(self: *const Table, key: Value) Value
 ```
 
 References: [`Table`](#type-table), [`Value`](#type-value)
+
+<a id="fn-table-metaeventabsent"></a>
+
+### Table.metaEventAbsent
+
+```zig
+pub inline fn metaEventAbsent(self: *const Table, event: MetaEvent) bool
+```
+
+References: [`Table`](#type-table), [`MetaEvent`](#type-metaevent)
+
+<a id="fn-table-metaevent"></a>
+
+### Table.metaEvent
+
+Raw lookup of a metamethod in this metatable, caching absence.
+
+```zig
+pub fn metaEvent(self: *Table, event: MetaEvent) Value
+```
+
+References: [`Table`](#type-table), [`MetaEvent`](#type-metaevent), [`Value`](#type-value)
+
+<a id="fn-table-invalidatemetaevents"></a>
+
+### Table.invalidateMetaEvents
+
+[Call](../compile/bytecode.md#type-call) before writing a hash slot that may currently hold nil.
+
+```zig
+pub inline fn invalidateMetaEvents(self: *Table) void
+```
+
+References: [`Table`](#type-table)
 
 <a id="fn-table-findentry"></a>
 

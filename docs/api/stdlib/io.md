@@ -21,12 +21,10 @@
 - [compile.resolver](../compile/resolver.md)
 - [compile.bytecode](../compile/bytecode.md)
 - [compile.proto](../compile/proto.md)
-- [compile.compiler](../compile/compiler.md)
-- [compile.disasm](../compile/disasm.md)
-- [api](../api.md)
+- [runtime.types](../runtime/types.md)
 - [runtime](../runtime.md)
 - [runtime.chunk](../runtime/chunk.md)
-- [runtime.types](../runtime/types.md)
+- [reflection](../reflection.md)
 - [runtime.value](../runtime/value.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
@@ -37,6 +35,7 @@
 - [runtime.debug](../runtime/debug.md)
 - [runtime.gc](../runtime/gc.md)
 - [runtime.host](../runtime/host.md)
+- [runtime.timezone](../runtime/timezone.md)
 - [stdlib](../stdlib.md)
 - [stdlib.base](../stdlib/base.md)
 - [stdlib.table](../stdlib/table.md)
@@ -45,9 +44,9 @@
 - [stdlib.utf8](../stdlib/utf8.md)
 - [stdlib.coroutine](../stdlib/coroutine.md)
 - [stdlib.debug](../stdlib/debug.md)
-- [stdlib.package](../stdlib/package.md)
 - [stdlib.io](../stdlib/io.md)
 - [stdlib.os](../stdlib/os.md)
+- [stdlib.package](../stdlib/package.md)
 - [stdlib.json](../stdlib/json.md)
 - [stdlib.zerde_lua](../stdlib/zerde_lua.md)
 - [stdlib.toml](../stdlib/toml.md)
@@ -58,6 +57,10 @@
 - [runtime.vm](../runtime/vm.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
+- [compile.compiler](../compile/compiler.md)
+- [compile.fold](../compile/fold.md)
+- [compile.disasm](../compile/disasm.md)
+- [api](../api.md)
 - [runtime.snapshot](../runtime/snapshot.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
@@ -89,6 +92,8 @@
 - [read](#fn-read)
 - [write](#fn-write)
 - [open](#fn-open)
+- [popen](#fn-popen)
+- [fileTostring](#fn-filetostring)
 - [input](#fn-input)
 - [output](#fn-output)
 - [close](#fn-close)
@@ -105,6 +110,9 @@
 - [fileSetvbuf](#fn-filesetvbuf)
 - [linesIter](#fn-linesiter)
 - [linesNext](#fn-linesnext)
+- [readAllStdin](#fn-readallstdin)
+- [readStdinLine](#fn-readstdinline)
+- [refreshReadable](#fn-refreshreadable)
 - [newFile](#fn-newfile)
 - [parseMode](#fn-parsemode)
 
@@ -134,6 +142,22 @@ pub fn write(state: *State, thread: *Thread, op: bytecode.Call) !void
 
 ```zig
 pub fn open(state: *State, thread: *Thread, op: bytecode.Call) !void
+```
+
+<a id="fn-popen"></a>
+
+## popen
+
+```zig
+pub fn popen(state: *State, thread: *Thread, op: bytecode.Call) !void
+```
+
+<a id="fn-filetostring"></a>
+
+## fileTostring
+
+```zig
+pub fn fileTostring(state: *State, thread: *Thread, op: bytecode.Call) !void
 ```
 
 <a id="fn-input"></a>
@@ -264,6 +288,40 @@ pub fn linesIter(state: *State, thread: *Thread, op: bytecode.Call) !void
 pub fn linesNext(state: *State, iterator: Value) ![]const Value
 ```
 
+<a id="fn-readallstdin"></a>
+
+## readAllStdin
+
+Reads the rest of standard input for `dofile()` and `loadfile()`, sharing
+the `io.stdin` position when the io library is open. The caller owns the bytes.
+
+```zig
+pub fn readAllStdin(state: *State) ![]u8
+```
+
+<a id="fn-readstdinline"></a>
+
+## readStdinLine
+
+Reads one line, including its newline, from standard input; null at end of input.
+
+```zig
+pub fn readStdinLine(state: *State) !?[]const u8
+```
+
+<a id="fn-refreshreadable"></a>
+
+## refreshReadable
+
+Reloads a readable handle's buffered contents after another handle or
+path operation changed the filesystem.
+
+```zig
+pub fn refreshReadable(state: *State, file: *runtime.Table) !void
+```
+
+References: [`runtime.Table`](../runtime.md#alias-table)
+
 <a id="fn-newfile"></a>
 
 ## newFile
@@ -283,6 +341,7 @@ pub const ParsedMode = struct {
     kind: u8,
     append: bool,
     reads_existing: bool,
+    plus: bool = false,
 };
 ```
 
