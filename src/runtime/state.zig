@@ -10,6 +10,7 @@ const errors = @import("../errors.zig");
 const frontend = @import("../frontend.zig");
 const gc_mod = @import("gc.zig");
 const host = @import("host.zig");
+const timezone = @import("timezone.zig");
 const stdlib = @import("../stdlib.zig");
 const stdlib_static_strings = @import("../stdlib/static_strings.zig");
 const types = @import("types.zig");
@@ -97,6 +98,8 @@ pub const StateOptions = struct {
     clock: ClockCapability = .system,
     process: ProcessCapability = .disabled,
     stdin: []const u8 = "",
+    /// Largest file `io`, `loadfile`, `dofile`, `require`, and `fs` read at once.
+    max_file_bytes: usize = host.default_max_file_bytes,
     /// Memory budget retained for embedding API allocator setup and snapshots.
     /// Direct runtime users must enforce this budget through their allocator.
     max_memory: ?usize = null,
@@ -142,6 +145,12 @@ pub const State = struct {
     stderr: std.ArrayList(u8) = .empty,
     options: StateOptions,
     stdin_pos: usize = 0,
+    /// Set by `os.exit` while the state unwinds with `error.LuaExit`.
+    exit_request: ?host.ExitRequest = null,
+    /// Local time zone loaded on first use by the system clock.
+    local_zone: ?*timezone.Zone = null,
+    /// Advanced by filesystem mutations so buffered file handles reload contents.
+    file_generation: u64 = 0,
     last_error: ?RuntimeErrorPayload = null,
     last_error_in_close: bool = false,
     traceback_error_in_close: bool = false,
@@ -254,11 +263,12 @@ pub const State = struct {
     pub fn fileMetatable(state: *State) !*Table {
         if (state.file_metatable) |metatable| return metatable;
 
-        const value = try state.newTableWithHints(0, 11);
+        const value = try state.newTableWithHints(0, 12);
         const metatable = value.table;
         state.file_metatable = metatable;
         errdefer state.file_metatable = null;
         try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("__name") }, .{ .string = stdlib_static_strings.get("FILE*") });
+        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("__tostring") }, .{ .native = .io_file_tostring });
         try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("__index") }, value);
         try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("__close") }, .{ .native = .io_file_close });
         try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("__gc") }, .{ .native = .io_file_close });
@@ -280,6 +290,10 @@ pub const State = struct {
     pub fn deinit(self: *State) void {
         if (self.rollback) |journal| journal.abandon(self);
         self.snapshot_busy = true;
+        if (self.local_zone) |zone| {
+            zone.deinit();
+            self.allocator.destroy(zone);
+        }
         self.stdout.deinit(self.allocator);
         self.stderr.deinit(self.allocator);
         self.strings.deinit();
@@ -381,9 +395,11 @@ pub const State = struct {
         self.current_thread = thread;
         defer self.current_thread = previous_thread;
         self.runThreadUntil(thread, 0) catch |err| {
-            if (err == error.StackOverflow and self.last_error == null) self.last_error = .{ .diagnostic = "stack overflow" };
-            if (self.options.debug_errors and isRuntimeError(err)) self.appendUnhandledErrorDebugDump(thread, err) catch {};
-            self.closeFramesTo(thread, 0, self.currentErrorValue()) catch |close_err| return close_err;
+            if (err == error.LuaExit) try self.finishExitUnwind(thread) else {
+                if (err == error.StackOverflow and self.last_error == null) self.last_error = .{ .diagnostic = "stack overflow" };
+                if (self.options.debug_errors and isRuntimeError(err)) self.appendUnhandledErrorDebugDump(thread, err) catch {};
+                self.closeFramesTo(thread, 0, self.currentErrorValue()) catch |close_err| return close_err;
+            }
             thread.status = .dead;
             return err;
         };
@@ -417,6 +433,11 @@ pub const State = struct {
                 thread.status = .dead;
                 return .{ .failure = failure };
             },
+            error.LuaExit => {
+                try self.finishExitUnwind(thread);
+                thread.status = .dead;
+                return err;
+            },
             else => return err,
         };
         thread.status = .dead;
@@ -442,6 +463,10 @@ pub const State = struct {
         self.last_error = null;
         self.last_error_in_close = false;
         return self.callCollect(thread, function, args) catch |err| {
+            if (err == error.LuaExit) {
+                try self.finishExitUnwind(thread);
+                return err;
+            }
             if (err == error.StackOverflow and self.last_error == null) self.last_error = .{ .diagnostic = "stack overflow" };
             self.closeFramesTo(thread, 0, self.currentErrorValue()) catch |close_err| return close_err;
             return err;
@@ -477,9 +502,11 @@ pub const State = struct {
         self.current_thread = thread;
         defer self.current_thread = previous_thread;
         self.runThreadUntil(thread, 0) catch |err| {
-            if (err == error.StackOverflow and self.last_error == null) self.last_error = .{ .diagnostic = "stack overflow" };
-            if (self.options.debug_errors and isRuntimeError(err)) self.appendUnhandledErrorDebugDump(thread, err) catch {};
-            self.closeFramesTo(thread, 0, self.currentErrorValue()) catch |close_err| return close_err;
+            if (err == error.LuaExit) try self.finishExitUnwind(thread) else {
+                if (err == error.StackOverflow and self.last_error == null) self.last_error = .{ .diagnostic = "stack overflow" };
+                if (self.options.debug_errors and isRuntimeError(err)) self.appendUnhandledErrorDebugDump(thread, err) catch {};
+                self.closeFramesTo(thread, 0, self.currentErrorValue()) catch |close_err| return close_err;
+            }
             thread.status = .dead;
             return err;
         };
@@ -1697,41 +1724,41 @@ pub const State = struct {
             error.HostCallbackYield => return coroutine_mod.suspendCoroutine(State, self, thread, op, context.returns.items()),
             error.RuntimeError, error.StackOverflow, error.UnsupportedOpcode => return err,
             error.LuaError => return self.failValue(context.error_value orelse .{ .string = try self.intern("host callback raised an error") }),
-            error.OutOfMemory => return err,
+            error.OutOfMemory, error.LuaExit => return err,
             else => return self.fail(@errorName(err)),
         };
 
         try self.returnValues(thread, op.base, op.return_count, context.returns.items());
     }
 
+    /// Reads a whole file through the filesystem capability, limited by
+    /// `max_file_bytes`. Failures raise PUC `loadfile`-style messages such as
+    /// "cannot open name.lua: No such file or directory".
     pub fn readFileAlloc(self: *State, path: []const u8) ![]const u8 {
-        switch (self.options.filesystem) {
-            .disabled => return self.fail("filesystem access disabled"),
-            .memory => |files| {
-                const normalized_path = host.MemoryFilesystem.normalizePathAlloc(self.allocator, path, host.MemoryFilesystem.default_max_path_len) catch return self.fail("cannot open file");
-                defer self.allocator.free(normalized_path);
-                for (files) |file| {
-                    if (std.mem.eql(u8, file.path, normalized_path)) return self.allocator.dupe(u8, file.contents);
-                }
-                return self.fail("cannot open file");
-            },
-            .memory_rw => |filesystem| return filesystem.readFileAlloc(self.allocator, path) catch return self.fail("cannot open file"),
-            .custom => |filesystem| return filesystem.read_file_alloc(filesystem.context, self.allocator, path) catch return self.fail("cannot open file"),
-            .host_cwd => if (comptime builtin.os.tag == .freestanding) {
-                return self.fail("host filesystem unavailable");
-            } else {
-                const io = try self.requireIo("filesystem I/O unavailable");
-                return Dir.cwd().readFileAlloc(io, path, self.allocator, .limited(1024 * 1024)) catch return self.fail("cannot open file");
-            },
-            .host_dir => |root| if (comptime builtin.os.tag == .freestanding) {
-                return self.fail("host filesystem unavailable");
-            } else {
-                const io = try self.requireIo("filesystem I/O unavailable");
-                const normalized = host.MemoryFilesystem.normalizePathAlloc(self.allocator, path, host.MemoryFilesystem.default_max_path_len) catch return self.fail("cannot open file");
-                defer self.allocator.free(normalized);
-                return root.dir.readFileAlloc(io, normalized, self.allocator, .limited(1024 * 1024)) catch return self.fail("cannot open file");
-            },
-        }
+        return self.readFileRaw(path) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            const info = host.fileError(err);
+            const message = if (err == error.IsDir)
+                try std.fmt.allocPrint(self.allocator, "cannot read {s}", .{path})
+            else
+                try std.fmt.allocPrint(self.allocator, "cannot {s} {s}: {s}", .{ if (info.read_phase) "read" else "open", path, info.message });
+            defer self.allocator.free(message);
+            return self.fail(try self.intern(message));
+        };
+    }
+
+    /// Reads a whole file through the filesystem capability, limited by
+    /// `max_file_bytes`, returning filesystem errors unchanged.
+    pub fn readFileRaw(self: *State, path: []const u8) anyerror![]const u8 {
+        return self.fsReadFileAlloc(path, self.options.max_file_bytes);
+    }
+
+    /// Raises "<path>: <strerror message>" for a failed file operation.
+    pub fn failFileOperation(self: *State, path: []const u8, err: anyerror) anyerror {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        const message = try std.fmt.allocPrint(self.allocator, "{s}: {s}", .{ path, host.fileError(err).message });
+        defer self.allocator.free(message);
+        return self.fail(try self.intern(message));
     }
 
     pub fn writeStdout(self: *State, bytes: []const u8) !void {
@@ -1755,86 +1782,20 @@ pub const State = struct {
     }
 
     pub fn writeFile(self: *State, path: []const u8, data: []const u8) !void {
-        switch (self.options.filesystem) {
-            .disabled, .memory => return self.fail("filesystem write access disabled"),
-            .memory_rw => |filesystem| filesystem.writeFile(path, data) catch return self.fail("cannot write file"),
-            .custom => |filesystem| {
-                const write = filesystem.write_file orelse return self.fail("filesystem write access disabled");
-                write(filesystem.context, path, data) catch return self.fail("cannot write file");
-            },
-            .host_cwd => if (comptime builtin.os.tag == .freestanding) {
-                return self.fail("host filesystem unavailable");
-            } else {
-                const io = try self.requireIo("filesystem I/O unavailable");
-                Dir.cwd().writeFile(io, .{ .sub_path = path, .data = data }) catch return self.fail("cannot write file");
-            },
-            .host_dir => |root| if (comptime builtin.os.tag == .freestanding) {
-                return self.fail("host filesystem unavailable");
-            } else {
-                if (root.read_only) return self.fail("filesystem write access disabled");
-                const io = try self.requireIo("filesystem I/O unavailable");
-                const normalized = host.MemoryFilesystem.normalizePathAlloc(self.allocator, path, host.MemoryFilesystem.default_max_path_len) catch return self.fail("cannot write file");
-                defer self.allocator.free(normalized);
-                root.dir.writeFile(io, .{ .sub_path = normalized, .data = data }) catch return self.fail("cannot write file");
-            },
-        }
+        self.fsWriteFile(path, data) catch |err| return self.failFileOperation(path, err);
     }
 
     pub fn removeFile(self: *State, path: []const u8) !void {
-        switch (self.options.filesystem) {
-            .disabled, .memory => return self.fail("filesystem write access disabled"),
-            .memory_rw => |filesystem| filesystem.removeFile(path) catch return self.fail("cannot remove file"),
-            .custom => |filesystem| {
-                const remove = filesystem.remove_file orelse return self.fail("filesystem write access disabled");
-                remove(filesystem.context, path) catch return self.fail("cannot remove file");
-            },
-            .host_cwd => if (comptime builtin.os.tag == .freestanding) {
-                return self.fail("host filesystem unavailable");
-            } else {
-                const io = try self.requireIo("filesystem I/O unavailable");
-                Dir.cwd().deleteFile(io, path) catch return self.fail("cannot remove file");
-            },
-            .host_dir => |root| if (comptime builtin.os.tag == .freestanding) {
-                return self.fail("host filesystem unavailable");
-            } else {
-                if (root.read_only) return self.fail("filesystem write access disabled");
-                const io = try self.requireIo("filesystem I/O unavailable");
-                const normalized = host.MemoryFilesystem.normalizePathAlloc(self.allocator, path, host.MemoryFilesystem.default_max_path_len) catch return self.fail("cannot remove file");
-                defer self.allocator.free(normalized);
-                root.dir.deleteFile(io, normalized) catch return self.fail("cannot remove file");
-            },
-        }
+        self.fsRemovePath(path, false) catch |err| return self.failFileOperation(path, err);
     }
 
     pub fn renameFile(self: *State, old_path: []const u8, new_path: []const u8) !void {
-        switch (self.options.filesystem) {
-            .disabled, .memory => return self.fail("filesystem write access disabled"),
-            .memory_rw => |filesystem| filesystem.renameFile(old_path, new_path) catch return self.fail("cannot rename file"),
-            .custom => |filesystem| {
-                const rename = filesystem.rename_file orelse return self.fail("filesystem write access disabled");
-                rename(filesystem.context, old_path, new_path) catch return self.fail("cannot rename file");
-            },
-            .host_cwd => if (comptime builtin.os.tag == .freestanding) {
-                return self.fail("host filesystem unavailable");
-            } else {
-                const io = try self.requireIo("filesystem I/O unavailable");
-                Dir.cwd().rename(old_path, Dir.cwd(), new_path, io) catch return self.fail("cannot rename file");
-            },
-            .host_dir => |root| if (comptime builtin.os.tag == .freestanding) {
-                return self.fail("host filesystem unavailable");
-            } else {
-                if (root.read_only) return self.fail("filesystem write access disabled");
-                const io = try self.requireIo("filesystem I/O unavailable");
-                const old_normalized = host.MemoryFilesystem.normalizePathAlloc(self.allocator, old_path, host.MemoryFilesystem.default_max_path_len) catch return self.fail("cannot rename file");
-                defer self.allocator.free(old_normalized);
-                const new_normalized = host.MemoryFilesystem.normalizePathAlloc(self.allocator, new_path, host.MemoryFilesystem.default_max_path_len) catch return self.fail("cannot rename file");
-                defer self.allocator.free(new_normalized);
-                root.dir.rename(old_normalized, root.dir, new_normalized, io) catch return self.fail("cannot rename file");
-            },
-        }
+        self.fsRenamePath(old_path, new_path) catch |err| return self.failFileOperation(old_path, err);
     }
 
-    pub fn fsReadFileAlloc(self: *State, path: []const u8, max_bytes: usize) anyerror![]const u8 {
+    /// Reads at most `max_bytes`, further capped by the state's `max_file_bytes`.
+    pub fn fsReadFileAlloc(self: *State, path: []const u8, requested_max_bytes: usize) anyerror![]const u8 {
+        const max_bytes = @min(requested_max_bytes, self.options.max_file_bytes);
         switch (self.options.filesystem) {
             .disabled => return error.FilesystemDisabled,
             .memory => |files| {
@@ -1845,6 +1806,9 @@ pub const State = struct {
                         if (file.contents.len > max_bytes) return error.StreamTooLong;
                         return self.allocator.dupe(u8, file.contents);
                     }
+                }
+                for (files) |file| {
+                    if (file.path.len > normalized.len and std.mem.startsWith(u8, file.path, normalized) and file.path[normalized.len] == '/') return error.IsDir;
                 }
                 return error.FileNotFound;
             },
@@ -1878,6 +1842,7 @@ pub const State = struct {
     }
 
     pub fn fsWriteFile(self: *State, path: []const u8, data: []const u8) anyerror!void {
+        self.file_generation +%= 1;
         switch (self.options.filesystem) {
             .disabled, .memory => return error.FilesystemReadOnly,
             .memory_rw => |filesystem| return filesystem.writeFile(path, data),
@@ -2002,6 +1967,7 @@ pub const State = struct {
     }
 
     pub fn fsRemovePath(self: *State, path: []const u8, recursive: bool) anyerror!void {
+        self.file_generation +%= 1;
         switch (self.options.filesystem) {
             .disabled, .memory => return error.FilesystemReadOnly,
             .memory_rw => |filesystem| return filesystem.removePath(path, recursive),
@@ -2032,6 +1998,7 @@ pub const State = struct {
     }
 
     pub fn fsRenamePath(self: *State, old_path: []const u8, new_path: []const u8) anyerror!void {
+        self.file_generation +%= 1;
         switch (self.options.filesystem) {
             .disabled, .memory => return error.FilesystemReadOnly,
             .memory_rw => |filesystem| return filesystem.renamePath(old_path, new_path),
@@ -2060,6 +2027,7 @@ pub const State = struct {
     }
 
     pub fn fsCopyFile(self: *State, source: []const u8, destination: []const u8, overwrite: bool) anyerror!void {
+        self.file_generation +%= 1;
         switch (self.options.filesystem) {
             .disabled, .memory => return error.FilesystemReadOnly,
             .memory_rw => |filesystem| return filesystem.copyFile(source, destination, overwrite),
@@ -2108,8 +2076,79 @@ pub const State = struct {
                 const io = try self.requireIo("clock I/O unavailable");
                 return @intCast(@divTrunc(Clock.real.now(io).nanoseconds, std.time.ns_per_s));
             },
+            .fixed_local => |clock| clock.now,
             .custom => |clock| clock.now(clock.context) catch return self.fail("clock unavailable"),
         };
+    }
+
+    /// Processor time for `os.clock`, in seconds. A disabled or fixed clock reports 0.
+    pub fn cpuTime(self: *State) !f64 {
+        return switch (self.options.clock) {
+            .disabled, .fixed => 0,
+            .fixed_local => |clock| clock.cpu_seconds,
+            .system => if (comptime builtin.os.tag == .freestanding) {
+                return self.fail("host clock unavailable");
+            } else {
+                const io = try self.requireIo("clock I/O unavailable");
+                const nanoseconds: f64 = @floatFromInt(Clock.cpu_process.now(io).nanoseconds);
+                return nanoseconds / std.time.ns_per_s;
+            },
+            .custom => |clock| if (clock.cpu) |cpu| cpu(clock.context) catch return self.fail("clock unavailable") else 0,
+        };
+    }
+
+    /// Local-time offset at a Unix timestamp. Clocks without a time zone use UTC.
+    pub fn localOffset(self: *State, timestamp: i64) !timezone.LocalOffset {
+        return switch (self.options.clock) {
+            .disabled, .fixed => .{},
+            .fixed_local => |clock| .{ .offset = clock.utc_offset, .is_dst = clock.is_dst },
+            .system => (try self.systemZone()).offsetAt(timestamp),
+            .custom => |clock| if (clock.utc_offset) |utc_offset| blk: {
+                const result = utc_offset(clock.context, timestamp) catch return self.fail("clock unavailable");
+                break :blk .{ .offset = result.offset, .is_dst = result.is_dst };
+            } else .{},
+        };
+    }
+
+    fn localOffsetCallback(self: *State, timestamp: i64) anyerror!timezone.LocalOffset {
+        return self.localOffset(timestamp);
+    }
+
+    /// Converts local wall-clock seconds to a Unix timestamp, like `mktime`.
+    pub fn localToUtc(self: *State, local: i64, is_dst: ?bool) !i64 {
+        return timezone.localToUtc(self, localOffsetCallback, local, is_dst);
+    }
+
+    /// Loads the host time zone from `TZ` (read through the environment
+    /// capability) or `/etc/localtime`, falling back to UTC.
+    fn systemZone(self: *State) !*const timezone.Zone {
+        if (self.local_zone) |zone| return zone;
+        const zone = try self.allocator.create(timezone.Zone);
+        errdefer self.allocator.destroy(zone);
+        zone.* = try self.loadSystemZone();
+        self.local_zone = zone;
+        return zone;
+    }
+
+    fn loadSystemZone(self: *State) !timezone.Zone {
+        const utc = timezone.Zone.utc(self.allocator);
+        if (comptime builtin.os.tag == .freestanding or builtin.os.tag == .windows or builtin.os.tag == .wasi) return utc;
+        const io = self.options.io orelse return utc;
+        var spec = self.getenv("TZ") orelse "/etc/localtime";
+        if (spec.len == 0) return utc;
+        if (spec[0] == ':') spec = spec[1..];
+        if (spec.len != 0 and std.mem.indexOf(u8, spec, "..") == null) {
+            const path = if (spec[0] == '/')
+                try self.allocator.dupe(u8, spec)
+            else
+                try std.fmt.allocPrint(self.allocator, "/usr/share/zoneinfo/{s}", .{spec});
+            defer self.allocator.free(path);
+            if (Dir.cwd().readFileAlloc(io, path, self.allocator, .limited(1024 * 1024))) |bytes| {
+                defer self.allocator.free(bytes);
+                if (timezone.Zone.parseTzif(self.allocator, bytes)) |zone| return zone else |err| if (err == error.OutOfMemory) return err;
+            } else |err| if (err == error.OutOfMemory) return err;
+        }
+        return timezone.Zone.fromRule(self.allocator, spec) orelse utc;
     }
 
     pub fn executeProcess(self: *State, command: []const u8) !ProcessResult {
@@ -2120,20 +2159,124 @@ pub const State = struct {
                 return self.fail("host process unavailable");
             } else {
                 const io = try self.requireIo("process I/O unavailable");
-                const argv = [_][]const u8{ "/bin/sh", "-c", command };
-                const result = std.process.run(self.allocator, io, .{
+                try self.flushOutputForChild();
+                const argv = shellArgv(command);
+                var child = std.process.spawn(io, .{
                     .argv = &argv,
                     .environ_map = self.environmentMap(),
-                    .stdout_limit = .limited(1024 * 1024),
-                    .stderr_limit = .limited(1024 * 1024),
                 }) catch return self.fail("process execution failed");
-                defer self.allocator.free(result.stdout);
-                defer self.allocator.free(result.stderr);
-                return switch (result.term) {
-                    .exited => |code| .{ .status = .exit, .code = code },
-                    else => .{ .status = .signal, .code = 0 },
+                const term = child.wait(io) catch {
+                    child.kill(io);
+                    return self.fail("process execution failed");
                 };
+                return processResult(term);
             },
+        };
+    }
+
+    /// Runs a command for `io.popen`. Read mode (`input == null`) returns the
+    /// command's stdout; write mode feeds `input` to its stdin. Other streams
+    /// are inherited from the host process, like C `popen`.
+    pub fn popenProcess(self: *State, command: []const u8, input: ?[]const u8) !host.PopenResult {
+        switch (self.options.process) {
+            .disabled => return self.fail("'popen' not supported"),
+            .custom => |process| {
+                const popen = process.popen orelse return self.fail("'popen' not supported");
+                const result = popen(process.context, self.allocator, command, input) catch |err| {
+                    if (err == error.OutOfMemory) return error.OutOfMemory;
+                    return self.fail("process execution failed");
+                };
+                if (result.output.len > self.options.max_file_bytes) {
+                    self.allocator.free(result.output);
+                    return self.fail("process output too large");
+                }
+                return result;
+            },
+            .enabled => if (comptime builtin.os.tag == .freestanding) {
+                return self.fail("'popen' not supported");
+            } else {
+                const io = try self.requireIo("process I/O unavailable");
+                try self.flushOutputForChild();
+                const argv = shellArgv(command);
+                var child = std.process.spawn(io, .{
+                    .argv = &argv,
+                    .environ_map = self.environmentMap(),
+                    .stdin = if (input == null) .inherit else .pipe,
+                    .stdout = if (input == null) .pipe else .inherit,
+                }) catch return self.fail("process execution failed");
+                var output: []const u8 = "";
+                errdefer self.allocator.free(output);
+                if (input) |bytes| {
+                    const stdin = child.stdin.?;
+                    stdin.writeStreamingAll(io, bytes) catch {};
+                    stdin.close(io);
+                    child.stdin = null;
+                } else {
+                    var buffer: [4096]u8 = undefined;
+                    var reader = child.stdout.?.readerStreaming(io, &buffer);
+                    output = reader.interface.allocRemaining(self.allocator, .limited(self.options.max_file_bytes)) catch |err| {
+                        child.kill(io);
+                        if (err == error.OutOfMemory) return error.OutOfMemory;
+                        return self.fail(if (err == error.StreamTooLong) "process output too large" else "process execution failed");
+                    };
+                }
+                const term = child.wait(io) catch {
+                    child.kill(io);
+                    return self.fail("process execution failed");
+                };
+                return .{ .output = output, .result = processResult(term) };
+            },
+        }
+    }
+
+    /// Records an `os.exit` request. The caller unwinds with `error.LuaExit`.
+    pub fn requestExit(self: *State, code: i32, close: bool) !void {
+        switch (self.options.process) {
+            .disabled => return self.fail("process access disabled"),
+            .enabled => {},
+            .custom => |process| if (process.exit) |exit| exit(process.context, code, close) catch |err| {
+                if (err == error.OutOfMemory) return error.OutOfMemory;
+                return self.fail("process exit failed");
+            },
+        }
+        self.flushStdout() catch {};
+        self.flushStderr() catch {};
+        self.exit_request = .{ .code = code, .close = close };
+    }
+
+    /// Unwinds a host thread after `os.exit`; `close` runs pending to-be-closed
+    /// variables like `lua_close`.
+    fn finishExitUnwind(self: *State, thread: *Thread) !void {
+        const request = self.exit_request orelse return;
+        if (!request.close) return;
+        self.closeFramesTo(thread, 0, null) catch |err| if (err == error.OutOfMemory) return err;
+    }
+
+    fn flushOutputForChild(self: *State) !void {
+        try self.flushStdout();
+        try self.flushStderr();
+    }
+
+    fn shellArgv(command: []const u8) [3][]const u8 {
+        return if (comptime builtin.os.tag == .windows)
+            .{ "cmd.exe", "/c", command }
+        else
+            .{ "/bin/sh", "-c", command };
+    }
+
+    fn processResult(term: std.process.Child.Term) ProcessResult {
+        return switch (term) {
+            .exited => |code| .{ .status = .exit, .code = code },
+            .signal, .stopped => |signal| .{ .status = .signal, .code = signalNumber(signal) },
+            .unknown => |code| .{ .status = .exit, .code = code },
+        };
+    }
+
+    fn signalNumber(signal: anytype) i64 {
+        return switch (@typeInfo(@TypeOf(signal))) {
+            .@"enum" => @intCast(@intFromEnum(signal)),
+            .int => @intCast(signal),
+            else => 0,
         };
     }
 
@@ -3477,6 +3620,20 @@ pub const State = struct {
         defer out.deinit(self.allocator);
         try appendValue(self.allocator, &out, value);
         return self.intern(out.items);
+    }
+
+    /// Returns a value's metatable without honoring `__metatable`, as `debug.getmetatable` does.
+    pub fn rawMetatableValue(self: *State, value: Value) Value {
+        const metatable = switch (value) {
+            .table => |table| table.metatable,
+            .userdata => |userdata| userdata.metatable,
+            .string => self.string_metatable,
+            .integer, .number => self.number_metatable,
+            .boolean => self.boolean_metatable,
+            .nil => self.nil_metatable,
+            else => null,
+        };
+        return if (metatable) |table| .{ .table = table } else .nil;
     }
 
     fn getMetatableValue(self: *State, value: Value) !Value {

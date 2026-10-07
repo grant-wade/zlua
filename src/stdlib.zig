@@ -110,7 +110,7 @@ pub fn initHintsWithStdin(selection: LibrarySelection, stdin: []const u8) InitHi
     var strings: usize = 0;
     var tables: usize = 1; // _G
 
-    if (libraries.base) globals += 22;
+    if (libraries.base) globals += 24;
     if (libraries.table) {
         globals += 1;
         tables += 1;
@@ -166,7 +166,8 @@ pub fn initHintsWithStdin(selection: LibrarySelection, stdin: []const u8) InitHi
         tables += 2;
     }
     if (libraries.package) {
-        globals += 4;
+        // package and require, plus loadfile/dofile when base did not install them.
+        globals += if (libraries.base) 2 else 4;
         tables += 4;
     }
     return .{ .globals = globals, .strings = strings, .tables = tables };
@@ -265,6 +266,8 @@ fn openBase(state: *State) !void {
         .{ .name = "type", .value = .{ .native = .type } },
         .{ .name = "tonumber", .value = .{ .native = .tonumber } },
         .{ .name = "warn", .value = .{ .native = .warn } },
+        .{ .name = "loadfile", .value = .{ .native = .loadfile } },
+        .{ .name = "dofile", .value = .{ .native = .dofile } },
         .{ .name = "_VERSION", .value = .{ .string = static_strings.get("Lua 5.5") } },
     };
     inline for (fields) |field| try putStaticGlobal(state, field.name, field.value);
@@ -389,6 +392,7 @@ fn openIo(state: *State) !void {
         .{ .name = "lines", .value = .{ .native = .io_lines } },
         .{ .name = "tmpfile", .value = .{ .native = .io_tmpfile } },
         .{ .name = "type", .value = .{ .native = .io_type } },
+        .{ .name = "popen", .value = .{ .native = .io_popen } },
     };
     const io_lib = try newStaticTable(state, &fields, 5);
     const stdin = try newStandardFile(state, static_strings.get("stdin"), static_strings.get("r"));
@@ -414,6 +418,7 @@ fn openOs(state: *State) !void {
         .{ .name = "rename", .value = .{ .native = .os_rename } },
         .{ .name = "tmpname", .value = .{ .native = .os_tmpname } },
         .{ .name = "difftime", .value = .{ .native = .os_difftime } },
+        .{ .name = "exit", .value = .{ .native = .os_exit } },
     };
     try putStaticGlobal(state, "os", try newStaticTable(state, &fields, 0));
 }
@@ -434,6 +439,8 @@ fn openDebug(state: *State) !void {
         .{ .name = "setmetatable", .value = .{ .native = .debug_setmetatable } },
         .{ .name = "setuservalue", .value = .{ .native = .debug_setuservalue } },
         .{ .name = "getuservalue", .value = .{ .native = .debug_getuservalue } },
+        .{ .name = "getmetatable", .value = .{ .native = .debug_getmetatable } },
+        .{ .name = "debug", .value = .{ .native = .debug_debug } },
     };
     try putStaticGlobal(state, "debug", try newStaticTable(state, &fields, 0));
 }
@@ -513,8 +520,10 @@ fn openFs(state: *State) !void {
 }
 
 fn openPackage(state: *State, libraries: LibrarySet) !void {
-    try putStaticGlobal(state, "loadfile", .{ .native = .loadfile });
-    try putStaticGlobal(state, "dofile", .{ .native = .dofile });
+    if (!libraries.base) {
+        try putStaticGlobal(state, "loadfile", .{ .native = .loadfile });
+        try putStaticGlobal(state, "dofile", .{ .native = .dofile });
+    }
     try putStaticGlobal(state, "require", .{ .native = .require });
 
     const loaded_count: u32 = 1 + @as(u32, @intFromBool(libraries.coroutine)) + @as(u32, @intFromBool(libraries.debug)) +
@@ -522,7 +531,7 @@ fn openPackage(state: *State, libraries: LibrarySet) !void {
         @as(u32, @intFromBool(libraries.string)) + @as(u32, @intFromBool(libraries.table)) + @as(u32, @intFromBool(libraries.utf8)) +
         @as(u32, @intFromBool(libraries.json)) + @as(u32, @intFromBool(libraries.toml)) + @as(u32, @intFromBool(libraries.msgpack)) +
         @as(u32, @intFromBool(libraries.csv)) + @as(u32, @intFromBool(libraries.fs));
-    const package_lib = try state.newTableWithHints(0, 7);
+    const package_lib = try state.newTableWithHints(0, 8);
     const loaded = try state.newTableWithHints(0, loaded_count);
     const preload = try state.newTableWithHints(0, 4);
     const searchers = try state.newTableWithHints(2, 0);
@@ -546,6 +555,7 @@ fn openPackage(state: *State, libraries: LibrarySet) !void {
     try setStaticField(state, package_lib, "preload", preload);
     try setStaticField(state, package_lib, "searchers", searchers);
     try setStaticField(state, package_lib, "searchpath", .{ .native = .package_searchpath });
+    try setStaticField(state, package_lib, "loadlib", .{ .native = .package_loadlib });
     try setStaticField(state, package_lib, "path", .{ .string = static_strings.get("./?.lua;./?/init.lua") });
     try setStaticField(state, package_lib, "cpath", .{ .string = static_strings.get("") });
     try setStaticField(state, package_lib, "config", .{ .string = static_strings.get("/\n;\n?\n!\n-\n") });
@@ -645,6 +655,7 @@ pub fn callNative(state: *State, native: NativeFn, thread: *Thread, op: bytecode
         .package_searchpath => try package.searchpath(state, thread, op),
         .package_searcher_preload => try package.searcherPreload(state, thread, op),
         .package_searcher_lua => try package.searcherLua(state, thread, op),
+        .package_loadlib => try package.loadlib(state, thread, op),
         .io_read => try io.read(state, thread, op),
         .io_write => try io.write(state, thread, op),
         .io_open => try io.open(state, thread, op),
@@ -655,6 +666,8 @@ pub fn callNative(state: *State, native: NativeFn, thread: *Thread, op: bytecode
         .io_lines => try io.lines(state, thread, op),
         .io_tmpfile => try io.tmpfile(state, thread, op),
         .io_type => try io.typeValue(state, thread, op),
+        .io_popen => try io.popen(state, thread, op),
+        .io_file_tostring => try io.fileTostring(state, thread, op),
         .io_file_read => try io.fileRead(state, thread, op),
         .io_file_write => try io.fileWrite(state, thread, op),
         .io_file_close => try io.fileClose(state, thread, op),
@@ -673,6 +686,7 @@ pub fn callNative(state: *State, native: NativeFn, thread: *Thread, op: bytecode
         .os_rename => try os.rename(state, thread, op),
         .os_tmpname => try os.tmpname(state, thread, op),
         .os_difftime => try os.difftime(state, thread, op),
+        .os_exit => try os.exit(state, thread, op),
         .debug_getinfo => try debug.getinfo(state, thread, op),
         .debug_getupvalue => try debug.getupvalue(state, thread, op),
         .debug_setupvalue => try debug.setupvalue(state, thread, op),
@@ -686,6 +700,8 @@ pub fn callNative(state: *State, native: NativeFn, thread: *Thread, op: bytecode
         .debug_setmetatable => try debug.setmetatable(state, thread, op),
         .debug_setuservalue => try debug.setuservalue(state, thread, op),
         .debug_getuservalue => try debug.getuservalue(state, thread, op),
+        .debug_getmetatable => try debug.getmetatable(state, thread, op),
+        .debug_debug => try debug.debugPrompt(state, thread, op),
         .json_read => try json.read(state, thread, op),
         .json_write => try json.write(state, thread, op),
         .toml_read => try toml.read(state, thread, op),

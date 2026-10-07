@@ -47,10 +47,15 @@ pub const EnvironmentCapability = host.EnvironmentCapability;
 pub const CustomEnvironment = host.CustomEnvironment;
 pub const ClockCapability = host.ClockCapability;
 pub const CustomClock = host.CustomClock;
+pub const FixedClock = host.FixedClock;
+pub const UtcOffset = host.UtcOffset;
 pub const ProcessCapability = host.ProcessCapability;
 pub const CustomProcess = host.CustomProcess;
 pub const ProcessResult = host.ProcessResult;
 pub const ProcessStatus = host.ProcessStatus;
+pub const PopenResult = host.PopenResult;
+pub const ExitRequest = host.ExitRequest;
+pub const default_max_file_bytes = host.default_max_file_bytes;
 
 pub const CompareOp = state_mod.CompareOp;
 pub const valuesEqual = state_mod.valuesEqual;

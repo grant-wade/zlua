@@ -70,18 +70,7 @@ fn setPos(state: *State, file: *runtime.Table, pos: usize) !void {
     try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_pos") }, .{ .integer = @intCast(pos) });
 }
 
-fn refreshReadable(state: *State, file: *runtime.Table) !void {
-    if (!fileReadable(file)) return;
-    const path = try fileString(state, file, "__zlua_file_path");
-    if (std.mem.eql(u8, path, "stdin") or std.mem.eql(u8, path, "stdout") or std.mem.eql(u8, path, "stderr") or isSpecialDevice(path)) return;
-    const contents = state.readFileAlloc(path) catch return;
-    defer state.allocator.free(contents);
-    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_content") }, .{ .string = try state.intern(contents) });
-}
-
-fn isSpecialDevice(path: []const u8) bool {
-    return std.mem.eql(u8, path, "/dev/null") or std.mem.eql(u8, path, "/dev/full");
-}
+const refreshReadable = @import("io.zig").refreshReadable;
 
 fn zerdeMetatable(state: *State, name: []const u8) !*Table {
     const value = try state.newTableWithHints(0, 2);

@@ -33,12 +33,12 @@ var lua = try zlua.State.init(allocator, .{
 The base library installs `_VERSION = "Lua 5.5"` and the usual core functions:
 
 ```text
-assert  collectgarbage  error  getmetatable  ipairs  load  next  pairs
-pcall   print           rawequal rawget       rawlen  rawset select
-setmetatable            tonumber tostring     type    warn   xpcall
+assert  collectgarbage  dofile  error  getmetatable  ipairs  load
+loadfile  next  pairs  pcall  print  rawequal  rawget  rawlen  rawset
+select  setmetatable  tonumber  tostring  type  warn  xpcall
 ```
 
-`_G` exists even when base is not open.
+`_G` exists even when base is not open. `loadfile` and `dofile` read through the filesystem capability, so in a sandboxed state they fail like a missing file (`cannot open name.lua: filesystem access disabled`). Without a file name they read the stdin capability.
 
 | Library | Members |
 | --- | --- |
@@ -47,10 +47,10 @@ setmetatable            tonumber tostring     type    warn   xpcall
 | `math` | `abs`, `acos`, `asin`, `atan`, `ceil`, `cos`, `deg`, `exp`, `floor`, `fmod`, `frexp`, `huge`, `ldexp`, `log`, `max`, `maxinteger`, `min`, `mininteger`, `modf`, `pi`, `rad`, `random`, `randomseed`, `sin`, `sqrt`, `tan`, `tointeger`, `type`, `ult` |
 | `utf8` | `char`, `charpattern`, `codepoint`, `codes`, `len`, `offset` |
 | `coroutine` | `close`, `create`, `isyieldable`, `resume`, `running`, `status`, `wrap`, `yield` |
-| `io` | `close`, `flush`, `input`, `lines`, `open`, `output`, `read`, `stderr`, `stdin`, `stdout`, `tmpfile`, `type`, `write` |
-| `os` | `clock`, `date`, `difftime`, `execute`, `getenv`, `remove`, `rename`, `setlocale`, `time`, `tmpname` |
-| `debug` | `gethook`, `getinfo`, `getlocal`, `getregistry`, `getupvalue`, `getuservalue`, `sethook`, `setlocal`, `setmetatable`, `setupvalue`, `setuservalue`, `traceback`, `upvalueid`, `upvaluejoin` |
-| `package` | `config`, `cpath`, `loaded`, `path`, `preload`, `searchers`, `searchpath`; also `dofile`, `loadfile`, and `require` globals |
+| `io` | `close`, `flush`, `input`, `lines`, `open`, `output`, `popen`, `read`, `stderr`, `stdin`, `stdout`, `tmpfile`, `type`, `write` |
+| `os` | `clock`, `date`, `difftime`, `execute`, `exit`, `getenv`, `remove`, `rename`, `setlocale`, `time`, `tmpname` |
+| `debug` | `debug`, `gethook`, `getinfo`, `getlocal`, `getmetatable`, `getregistry`, `getupvalue`, `getuservalue`, `sethook`, `setlocal`, `setmetatable`, `setupvalue`, `setuservalue`, `traceback`, `upvalueid`, `upvaluejoin` |
+| `package` | `config`, `cpath`, `loaded`, `loadlib`, `path`, `preload`, `searchers`, `searchpath`; also the `require` global |
 
 `table.create(nseq[, nrec])` is the standard Lua 5.5 constructor: it returns an empty table preallocated for `nseq` array elements and `nrec` other fields. Both sizes must be integers from 0 to 2^31-1.
 
@@ -84,17 +84,27 @@ Opening `io`, `os`, `package`, or `fs` does not grant ambient access in an embed
 | --- | --- |
 | `io.read`, `io.write`, standard streams, `print` | I/O streams. |
 | `io.open`, file methods, `loadfile`, `dofile`, filesystem `require` | Filesystem, plus `std.Io` for std-backed modes. |
-| `os.time()` and `os.date()` without an explicit time | Clock. |
+| `os.time()` and `os.date()` without an explicit time, local time, `os.clock` | Clock. |
 | `os.getenv` | Environment. |
-| `os.execute` | Process, with configured I/O/environment behavior. |
+| `os.execute`, `io.popen`, `os.exit` | Process, with configured I/O/environment behavior. |
 | `os.remove`, `os.rename` | Filesystem. |
 | `fs.*` | Filesystem; std-backed modes also need `std.Io`. |
 
-The CLI configures host capabilities; Zig embedders opt in. `os.clock` currently returns a deterministic `0`. `io.tmpfile` and `os.tmpname` create synthetic names/handles; a writable temporary handle still uses the filesystem capability when flushed or closed.
+The CLI configures host capabilities; Zig embedders opt in. `io.tmpfile` and `os.tmpname` create synthetic names/handles; a writable temporary handle still uses the filesystem capability when flushed or closed.
+
+File reads share one size limit, 256 MiB by default (`limits.max_file_bytes` in the Zig API). Failures follow C Lua: `io.open` returns `nil, "path: No such file or directory", 2`, and `io.lines`/`io.input` raise `cannot open file 'path' (No such file or directory)`. Opening a directory for reading succeeds, and reads then fail with `Is a directory`.
+
+`os.date` uses the C locale and supports the C99 conversions, including `E` and `O` modifiers. Without `!`, it and `os.time(table)` use the clock capability's local time zone. With the system clock that is `TZ` or `/etc/localtime`. A `fixed_local` clock uses its offset, and other fixed or disabled clocks use UTC. `os.date("*t")` sets `isdst`. Negative timestamps work. `os.clock` reports process CPU time with the system clock and `0` with a disabled or fixed clock.
+
+`io.popen` buffers whole commands. Read mode runs the command when the handle opens; write mode runs it with the written bytes when the handle closes. `close` returns the command status like `os.execute`. Child processes inherit the host's stdio, as C `popen` and `system` do.
+
+`os.exit` stops the state with `error.LuaExit`, which `pcall` cannot catch. The CLI exits with the requested status. `os.exit(code, true)` first runs pending to-be-closed variables. Embedders read the code with `State.exitRequest`; the host process keeps running.
+
+`package.loadlib` always returns `nil, "dynamic libraries not enabled; check your Lua installation", "absent"`.
 
 ## Package Loading
 
-When `package` is open, zlua installs `require`, `loadfile`, and `dofile`.
+When `package` is open, zlua installs `require`. It also installs `loadfile` and `dofile` when base is not open.
 
 | Field | Default |
 | --- | --- |

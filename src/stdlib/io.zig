@@ -1,6 +1,8 @@
 const std = @import("std");
 const compile = @import("../compile.zig");
 const runtime = @import("../runtime.zig");
+const host = @import("../runtime/host.zig");
+const os_lib = @import("os.zig");
 
 const bytecode = compile.bytecode;
 const State = runtime.State;
@@ -33,18 +35,87 @@ pub fn open(state: *State, thread: *Thread, op: bytecode.Call) !void {
         try state.returnValues(thread, op.base, op.return_count, &.{try newFile(state, path, mode, "", parsed)});
         return;
     }
-    if (path.len != 0 and path[0] == '/' and parsed.kind != 'r') return openFailure(state, thread, op, "cannot open file");
 
     const contents = if (parsed.reads_existing or parsed.append)
-        state.readFileAlloc(path) catch |err| switch (err) {
-            error.RuntimeError => if (parsed.kind == 'r') return openFailure(state, thread, op, "cannot open file") else try state.allocator.dupe(u8, ""),
-            else => return err,
+        state.readFileRaw(path) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            error.FileNotFound => if (parsed.kind == 'r') return os_lib.fileFailure(state, thread, op, path, err) else try state.allocator.dupe(u8, ""),
+            error.IsDir => if (parsed.kind == 'r' and !parsed.plus) {
+                // C `fopen` opens directories for reading; reads then fail.
+                const file = try newFile(state, path, mode, "", parsed);
+                try markDirectoryHandle(state, file.table);
+                try state.returnValues(thread, op.base, op.return_count, &.{file});
+                return;
+            } else return os_lib.fileFailure(state, thread, op, path, err),
+            else => return os_lib.fileFailure(state, thread, op, path, err),
         }
     else
         try state.allocator.dupe(u8, "");
     defer state.allocator.free(contents);
-    if (parsed.kind != 'r') try state.writeFile(path, contents);
+    if (parsed.kind != 'r') state.fsWriteFile(path, contents) catch |err| return os_lib.fileFailure(state, thread, op, path, err);
     try state.returnValues(thread, op.base, op.return_count, &.{try newFile(state, path, mode, contents, parsed)});
+}
+
+pub fn popen(state: *State, thread: *Thread, op: bytecode.Call) !void {
+    const command = try state.expectArgumentString(thread, op, "io.popen", 0);
+    const mode = if (op.arg_count >= 2 and runtime.argValue(state, thread, op, 1) != .nil)
+        try state.expectArgumentString(thread, op, "io.popen", 1)
+    else
+        "r";
+    if (!std.mem.eql(u8, mode, "r") and !std.mem.eql(u8, mode, "w")) return state.failArgumentMessage("io.popen", 2, "invalid mode");
+    const parsed = parseMode(mode).?;
+
+    var command_output: []const u8 = "";
+    var result: ?host.ProcessResult = null;
+    if (mode[0] == 'r') {
+        const popen_result = try state.popenProcess(command, null);
+        command_output = popen_result.output;
+        result = popen_result.result;
+    } else if (!state.processEnabled()) {
+        return state.fail("'popen' not supported");
+    } else switch (state.options.process) {
+        .custom => |process| if (process.popen == null) return state.fail("'popen' not supported"),
+        else => {},
+    }
+    defer state.allocator.free(command_output);
+
+    const value = try newFile(state, command, mode, command_output, parsed);
+    const file = value.table;
+    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_popen") }, .{ .boolean = true });
+    if (result) |status| try setPopenResult(state, file, status);
+    try state.returnValues(thread, op.base, op.return_count, &.{value});
+}
+
+fn setPopenResult(state: *State, file: *runtime.Table, result: host.ProcessResult) !void {
+    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_popen_status") }, .{ .string = try state.intern(@tagName(result.status)) });
+    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_popen_code") }, .{ .integer = result.code });
+}
+
+fn isPopenFile(file: *runtime.Table) bool {
+    return file.get(.{ .string = "__zlua_file_popen" }) == .boolean;
+}
+
+/// Finishes a popen handle: write mode runs the command with the buffered
+/// input now. Returns the command's termination status.
+fn finishPopen(state: *State, file: *runtime.Table) !host.ProcessResult {
+    if (file.get(.{ .string = "__zlua_popen_status" }) == .nil) {
+        const command = try fileString(state, file, "__zlua_file_path");
+        const pending_input = try fileString(state, file, "__zlua_file_content");
+        const popen_result = try state.popenProcess(command, pending_input);
+        state.allocator.free(popen_result.output);
+        try setPopenResult(state, file, popen_result.result);
+    }
+    const status = try fileString(state, file, "__zlua_popen_status");
+    return .{
+        .status = if (std.mem.eql(u8, status, "signal")) .signal else .exit,
+        .code = fileInteger(file, "__zlua_popen_code") orelse 0,
+    };
+}
+
+pub fn fileTostring(state: *State, thread: *Thread, op: bytecode.Call) !void {
+    const value = runtime.argValue(state, thread, op, 0);
+    _ = try expectFileArgument(state, value, "file:__tostring", 1);
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.valueToString(thread, value) }});
 }
 
 pub fn input(state: *State, thread: *Thread, op: bytecode.Call) !void {
@@ -79,10 +150,7 @@ pub fn lines(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const file_value = if (op.arg_count >= 1 and runtime.argValue(state, thread, op, 0) != .nil) blk: {
         start = 1;
         const path = try state.expectArgumentString(thread, op, "io.lines", 0);
-        const parsed = parseMode("r").?;
-        const contents = state.readFileAlloc(path) catch return state.fail("cannot open file");
-        defer state.allocator.free(contents);
-        break :blk try newFile(state, path, "r", contents, parsed);
+        break :blk try openCheckedFile(state, path, "r");
     } else blk: {
         if (op.arg_count >= 1) start = 1;
         break :blk Value{ .table = try currentFile(state, "__zlua_input") };
@@ -227,11 +295,7 @@ fn setCurrentFile(state: *State, thread: *Thread, op: bytecode.Call, key: []cons
     }
     var value = runtime.argValue(state, thread, op, 0);
     if (value == .string) {
-        const path = value.string;
-        const parsed = parseMode(mode).?;
-        const contents = if (parsed.kind == 'r') state.readFileAlloc(path) catch return state.fail("cannot open file") else try state.allocator.dupe(u8, "");
-        defer state.allocator.free(contents);
-        value = try newFile(state, path, mode, contents, parsed);
+        value = try openCheckedFile(state, value.string, mode);
     } else {
         _ = try expectFileArgument(state, value, if (std.mem.eql(u8, key, "__zlua_output")) "io.output" else "io.input", 1);
     }
@@ -246,6 +310,67 @@ fn setCurrentFile(state: *State, thread: *Thread, op: bytecode.Call, key: []cons
     try state.returnValues(thread, op.base, op.return_count, &.{value});
 }
 
+/// Opens a file for `io.lines`, `io.input`, and `io.output`, raising
+/// "cannot open file '<path>' (<message>)" like Lua's `opencheckfile`.
+fn openCheckedFile(state: *State, path: []const u8, mode: []const u8) !Value {
+    const parsed = parseMode(mode).?;
+    if (isSpecialDevice(path)) return newFile(state, path, mode, "", parsed);
+    if (parsed.kind != 'r') {
+        state.fsWriteFile(path, "") catch |err| return failOpenChecked(state, path, err);
+        return newFile(state, path, mode, "", parsed);
+    }
+    const contents = state.readFileRaw(path) catch |err| {
+        if (err != error.IsDir) return failOpenChecked(state, path, err);
+        const file = try newFile(state, path, mode, "", parsed);
+        try markDirectoryHandle(state, file.table);
+        return file;
+    };
+    defer state.allocator.free(contents);
+    return newFile(state, path, mode, contents, parsed);
+}
+
+fn failOpenChecked(state: *State, path: []const u8, err: anyerror) anyerror {
+    if (err == error.OutOfMemory) return err;
+    const message = try std.fmt.allocPrint(state.allocator, "cannot open file '{s}' ({s})", .{ path, host.fileError(err).message });
+    defer state.allocator.free(message);
+    return state.fail(try state.intern(message));
+}
+
+/// Marks a handle that opened a directory: C `fopen` succeeds, then reads fail.
+fn markDirectoryHandle(state: *State, file: *runtime.Table) !void {
+    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_read_error") }, .{ .boolean = true });
+}
+
+fn readError(file: *runtime.Table) ?host.FileError {
+    if (file.get(.{ .string = "__zlua_file_read_error" }) == .nil) return null;
+    return host.fileError(error.IsDir);
+}
+
+/// Reads the rest of standard input for `dofile()` and `loadfile()`, sharing
+/// the `io.stdin` position when the io library is open. The caller owns the bytes.
+pub fn readAllStdin(state: *State) ![]u8 {
+    const io_value = state.getGlobal("io");
+    if (io_value == .table) {
+        const stdin = io_value.table.get(.{ .string = "stdin" });
+        if (runtime.isFileValue(stdin) and !runtime.isClosedFileValue(stdin)) {
+            const value = try readOne(state, stdin.table, .{ .string = "a" });
+            return state.allocator.dupe(u8, if (value == .string) value.string else "");
+        }
+    }
+    const value = try state.readStdin("a");
+    return state.allocator.dupe(u8, if (value == .string) value.string else "");
+}
+
+/// Reads one line, including its newline, from standard input; null at end of input.
+pub fn readStdinLine(state: *State) !?[]const u8 {
+    const io_value = state.getGlobal("io");
+    const value = if (io_value == .table and runtime.isFileValue(io_value.table.get(.{ .string = "stdin" })) and !runtime.isClosedFileValue(io_value.table.get(.{ .string = "stdin" })))
+        try readOne(state, io_value.table.get(.{ .string = "stdin" }).table, .{ .string = "L" })
+    else
+        try state.readStdin("l");
+    return if (value == .string) value.string else null;
+}
+
 fn currentFile(state: *State, key: []const u8) !*runtime.Table {
     const io_table = try state.expectTable(state.getGlobal("io"));
     return expectFile(state, io_table.get(.{ .string = key }));
@@ -255,6 +380,10 @@ fn readFromFile(state: *State, thread: *Thread, op: bytecode.Call, file: *runtim
     try ensureOpen(state, file);
     if (!fileReadable(file)) {
         try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.intern("file is not readable") }, .{ .integer = 9 } });
+        return;
+    }
+    if (readError(file)) |info| {
+        try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.intern(info.message) }, .{ .integer = info.errno } });
         return;
     }
     var values = std.ArrayList(Value).empty;
@@ -275,6 +404,7 @@ fn readFromFile(state: *State, thread: *Thread, op: bytecode.Call, file: *runtim
 fn readOne(state: *State, file: *runtime.Table, spec_value: Value) !Value {
     try ensureOpen(state, file);
     try ensureReadable(state, file);
+    if (readError(file)) |info| return state.fail(info.message);
     try refreshReadable(state, file);
     const content = try fileString(state, file, "__zlua_file_content");
     var pos = fileInteger(file, "__zlua_file_pos") orelse 1;
@@ -402,15 +532,17 @@ fn writeToFile(state: *State, thread: *Thread, op: bytecode.Call, file: *runtime
 
 fn writeBytes(state: *State, file: *runtime.Table, bytes: []const u8) !void {
     const path = try fileString(state, file, "__zlua_file_path");
-    if (std.mem.eql(u8, path, "stdout")) {
-        try state.writeStdout(bytes);
-        return;
+    if (!isPopenFile(file)) {
+        if (std.mem.eql(u8, path, "stdout")) {
+            try state.writeStdout(bytes);
+            return;
+        }
+        if (std.mem.eql(u8, path, "stderr")) {
+            try state.writeStderr(bytes);
+            return;
+        }
+        if (std.mem.eql(u8, path, "/dev/null") or std.mem.eql(u8, path, "/dev/full")) return;
     }
-    if (std.mem.eql(u8, path, "stderr")) {
-        try state.writeStderr(bytes);
-        return;
-    }
-    if (std.mem.eql(u8, path, "/dev/null") or std.mem.eql(u8, path, "/dev/full")) return;
     var content = std.ArrayList(u8).empty;
     defer content.deinit(state.allocator);
     try content.appendSlice(state.allocator, try fileString(state, file, "__zlua_file_content"));
@@ -435,10 +567,16 @@ fn closeFileValue(state: *State, thread: *Thread, op: bytecode.Call, value: Valu
     const file = try expectFileArgument(state, value, function_name, 1);
     if (runtime.isClosedFileValue(value)) {
         if (from_iterator) return;
-        return state.fail("closed file");
+        return state.fail("attempt to use a closed file");
     }
     if (file.get(.{ .string = "__zlua_file_standard" }) == .boolean and file.get(.{ .string = "__zlua_file_standard" }).boolean) {
         try state.returnValues(thread, op.base, op.return_count, &.{.nil});
+        return;
+    }
+    if (isPopenFile(file)) {
+        const result = try finishPopen(state, file);
+        try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_closed") }, .{ .boolean = true });
+        if (!from_iterator) try os_lib.returnProcessResult(state, thread, op, result);
         return;
     }
     try closeFile(state, file, from_iterator);
@@ -447,30 +585,50 @@ fn closeFileValue(state: *State, thread: *Thread, op: bytecode.Call, value: Valu
 
 fn closeFile(state: *State, file: *runtime.Table, from_iterator: bool) !void {
     _ = from_iterator;
-    if (fileWritable(file)) try flushFile(state, file);
+    if (isPopenFile(file)) {
+        _ = try finishPopen(state, file);
+    } else if (fileWritable(file)) try flushFile(state, file);
     try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_closed") }, .{ .boolean = true });
 }
 
 fn flushFile(state: *State, file: *runtime.Table) !void {
+    if (isPopenFile(file)) return;
     const path = try fileString(state, file, "__zlua_file_path");
     if (std.mem.eql(u8, path, "stdout")) return state.flushStdout();
     if (std.mem.eql(u8, path, "stderr")) return state.flushStderr();
     if (std.mem.eql(u8, path, "/dev/null") or std.mem.eql(u8, path, "/dev/full")) return;
-    if (fileWritable(file)) try state.writeFile(path, try fileString(state, file, "__zlua_file_content"));
+    if (fileWritable(file)) {
+        try state.writeFile(path, try fileString(state, file, "__zlua_file_content"));
+        try setGeneration(state, file);
+    }
 }
 
-fn refreshReadable(state: *State, file: *runtime.Table) !void {
-    if (!fileReadable(file)) return;
+/// Reloads a readable handle's buffered contents after another handle or
+/// path operation changed the filesystem.
+pub fn refreshReadable(state: *State, file: *runtime.Table) !void {
+    if (!fileReadable(file) or isPopenFile(file)) return;
+    if (fileInteger(file, "__zlua_file_generation")) |generation| {
+        if (generation == @as(i64, @bitCast(state.file_generation))) return;
+    }
     const path = try fileString(state, file, "__zlua_file_path");
     if (std.mem.eql(u8, path, "stdin") or std.mem.eql(u8, path, "stdout") or std.mem.eql(u8, path, "stderr") or isSpecialDevice(path)) return;
-    const contents = state.readFileAlloc(path) catch return;
+    try setGeneration(state, file);
+    const contents = state.readFileRaw(path) catch |err| {
+        if (err == error.OutOfMemory) return err;
+        return;
+    };
     defer state.allocator.free(contents);
     try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_content") }, .{ .string = try state.intern(contents) });
 }
 
+fn setGeneration(state: *State, file: *runtime.Table) !void {
+    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_generation") }, .{ .integer = @bitCast(state.file_generation) });
+}
+
 pub fn newFile(state: *State, path: []const u8, mode: []const u8, contents: []const u8, parsed: ParsedMode) !Value {
-    const value = try state.newTableWithHints(0, 7);
+    const value = try state.newTableWithHints(0, 8);
     const file = value.table;
+    try setGeneration(state, file);
     try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file") }, .{ .boolean = true });
     try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_path") }, .{ .string = try state.intern(path) });
     try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_mode") }, .{ .string = try state.intern(mode) });
@@ -497,10 +655,6 @@ fn newLinesIterator(state: *State, thread: *Thread, file_value: Value, op: bytec
     return .{ .gmatch_iterator = table };
 }
 
-fn openFailure(state: *State, thread: *Thread, op: bytecode.Call, message: []const u8) !void {
-    try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.intern(message) }, .{ .integer = 2 } });
-}
-
 fn expectFile(state: *State, value: Value) !*runtime.Table {
     if (!runtime.isFileValue(value)) return state.fail("file expected");
     return value.table;
@@ -513,7 +667,7 @@ fn expectFileArgument(state: *State, value: Value, function_name: []const u8, in
 
 fn ensureOpen(state: *State, file: *runtime.Table) !void {
     const closed = file.get(.{ .string = "__zlua_file_closed" });
-    if (closed == .boolean and closed.boolean) return state.fail("closed file");
+    if (closed == .boolean and closed.boolean) return state.fail("attempt to use a closed file");
 }
 
 fn ensureReadable(state: *State, file: *runtime.Table) !void {
@@ -548,6 +702,7 @@ pub const ParsedMode = struct {
     kind: u8,
     append: bool,
     reads_existing: bool,
+    plus: bool = false,
 };
 
 pub fn parseMode(mode: []const u8) ?ParsedMode {
@@ -555,10 +710,11 @@ pub fn parseMode(mode: []const u8) ?ParsedMode {
     const kind = mode[0];
     if (kind != 'r' and kind != 'w' and kind != 'a') return null;
     var index: usize = 1;
-    if (index < mode.len and mode[index] == '+') index += 1;
+    const plus = index < mode.len and mode[index] == '+';
+    if (plus) index += 1;
     if (index < mode.len and mode[index] == 'b') index += 1;
     if (index != mode.len) return null;
-    return .{ .kind = kind, .append = kind == 'a', .reads_existing = kind == 'r' };
+    return .{ .kind = kind, .append = kind == 'a', .reads_existing = kind == 'r', .plus = plus };
 }
 
 fn isSpecialDevice(path: []const u8) bool {

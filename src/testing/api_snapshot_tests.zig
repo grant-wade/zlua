@@ -658,7 +658,7 @@ test "snapshot retains native diagnostic strings in suspended live locals" {
     var snapshot = try lua.snapshot(a);
     defer snapshot.deinit();
     try lua.reset();
-    try lua.doString("local ok, msg = coroutine.resume(co); assert(ok and msg == 'filesystem access disabled')", .{});
+    try lua.doString("local ok, msg = coroutine.resume(co); assert(ok and msg == 'cannot open disabled: filesystem access disabled')", .{});
 }
 
 test "snapshot workers share immutable bytecode but keep closures and caches private" {

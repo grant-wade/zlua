@@ -1,6 +1,7 @@
 const std = @import("std");
 const compile = @import("../compile.zig");
 const runtime = @import("../runtime.zig");
+const io_lib = @import("io.zig");
 
 const bytecode = compile.bytecode;
 const State = runtime.State;
@@ -362,6 +363,43 @@ pub fn setmetatable(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const value = runtime.argValue(state, thread, op, 0);
     try state.setDebugMetatableValue(value, runtime.argValue(state, thread, op, 1));
     try state.returnValues(thread, op.base, op.return_count, &.{value});
+}
+
+pub fn getmetatable(state: *State, thread: *Thread, op: bytecode.Call) !void {
+    if (op.arg_count == 0) return state.failArgumentMessage("debug.getmetatable", 1, "value expected");
+    try state.returnValues(thread, op.base, op.return_count, &.{state.rawMetatableValue(runtime.argValue(state, thread, op, 0))});
+}
+
+/// Runs commands read from the stdin capability until "cont" or end of input,
+/// like Lua's `debug.debug`.
+pub fn debugPrompt(state: *State, thread: *Thread, op: bytecode.Call) !void {
+    while (true) {
+        try state.writeStderr("lua_debug> ");
+        const line = try io_lib.readStdinLine(state) orelse break;
+        if (std.mem.eql(u8, line, "cont\n") or std.mem.eql(u8, line, "cont")) break;
+        const source = try state.allocator.dupe(u8, line);
+        const closure = state.loadSourceAsClosureNamed(source, "=(debug command)") catch |err| {
+            state.allocator.free(source);
+            if (err == error.OutOfMemory) return err;
+            try writeDebugError(state, thread, state.currentErrorValue());
+            continue;
+        };
+        try state.registerAllocation("source_allocations", source);
+        switch (try state.runProtectedCall(thread, state.protectedCallContextWithErrors(thread), closure, &.{})) {
+            .success => |values| state.allocator.free(values),
+            .failure => |failure| try writeDebugError(state, thread, failure),
+        }
+    }
+    try state.returnValues(thread, op.base, op.return_count, &.{});
+}
+
+fn writeDebugError(state: *State, thread: *Thread, value: Value) !void {
+    const message = state.valueToString(thread, value) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => "(error object is not a string)",
+    };
+    try state.writeStderr(message);
+    try state.writeStderr("\n");
 }
 
 pub fn setuservalue(state: *State, thread: *Thread, op: bytecode.Call) !void {

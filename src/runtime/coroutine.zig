@@ -231,7 +231,9 @@ pub fn closeCoroutine(comptime State: type, self: *State, target: *Thread, error
     const previous_thread = self.current_thread;
     const previous_parent = target.resume_parent;
     self.current_thread = target;
-    target.resume_parent = previous_thread;
+    // A coroutine closing itself keeps its resumer, which the collector must
+    // still reach; linking the thread to itself would drop it.
+    if (previous_thread != target) target.resume_parent = previous_thread;
     target.status = .running;
     target.closing = true;
     defer {

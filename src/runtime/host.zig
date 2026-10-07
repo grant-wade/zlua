@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub const MemoryFile = struct {
     path: []const u8,
@@ -107,7 +108,10 @@ pub const MemoryFilesystem = struct {
     pub fn readFileAlloc(self: *const MemoryFilesystem, allocator: std.mem.Allocator, path: []const u8) ![]const u8 {
         const normalized = try normalizePathAlloc(self.allocator, path, self.options.max_path_len);
         defer self.allocator.free(normalized);
-        const index = self.findNormalized(normalized) orelse return error.FileNotFound;
+        const index = self.findNormalized(normalized) orelse {
+            if (self.findDirNormalized(normalized) != null) return error.IsDir;
+            return error.FileNotFound;
+        };
         return allocator.dupe(u8, self.files.items[index].contents);
     }
 
@@ -438,14 +442,37 @@ pub const CustomEnvironment = struct {
 
 pub const ClockCapability = union(enum) {
     disabled,
+    /// Fixed Unix timestamp. Local time is UTC and `os.clock` returns 0.
     fixed: i64,
+    /// Fixed Unix timestamp with an explicit local-time offset and CPU time.
+    fixed_local: FixedClock,
+    /// Host wall clock, process CPU time, and local time zone.
     system,
     custom: CustomClock,
+};
+
+pub const FixedClock = struct {
+    now: i64,
+    /// Local-time offset in seconds east of UTC.
+    utc_offset: i32 = 0,
+    is_dst: bool = false,
+    /// Value returned by `os.clock`.
+    cpu_seconds: f64 = 0,
+};
+
+/// Local-time offset for one instant, in seconds east of UTC.
+pub const UtcOffset = struct {
+    offset: i32 = 0,
+    is_dst: bool = false,
 };
 
 pub const CustomClock = struct {
     context: ?*anyopaque = null,
     now: *const fn (context: ?*anyopaque) anyerror!i64,
+    /// Processor time in seconds for `os.clock`; null returns 0.
+    cpu: ?*const fn (context: ?*anyopaque) anyerror!f64 = null,
+    /// Local-time offset for a Unix timestamp; null treats local time as UTC.
+    utc_offset: ?*const fn (context: ?*anyopaque, timestamp: i64) anyerror!UtcOffset = null,
 };
 
 pub const ProcessCapability = union(enum) {
@@ -457,6 +484,13 @@ pub const ProcessCapability = union(enum) {
 pub const CustomProcess = struct {
     context: ?*anyopaque = null,
     execute: *const fn (context: ?*anyopaque, command: []const u8) anyerror!ProcessResult,
+    /// Runs a command for `io.popen`. Read mode passes null input and returns
+    /// the command's stdout allocated with `allocator`; write mode passes the
+    /// bytes written to the handle when it closes. Null makes `io.popen` unsupported.
+    popen: ?*const fn (context: ?*anyopaque, allocator: std.mem.Allocator, command: []const u8, input: ?[]const u8) anyerror!PopenResult = null,
+    /// Observes `os.exit` before the state unwinds with `error.LuaExit`.
+    /// Returning an error raises a Lua error instead of exiting.
+    exit: ?*const fn (context: ?*anyopaque, code: i32, close: bool) anyerror!void = null,
 };
 
 pub const ProcessResult = struct {
@@ -468,6 +502,64 @@ pub const ProcessStatus = enum {
     exit,
     signal,
 };
+
+pub const PopenResult = struct {
+    /// Command stdout in read mode, owned by the allocator passed to the callback.
+    output: []const u8 = "",
+    result: ProcessResult,
+};
+
+/// Exit requested by `os.exit`; the state unwinds with `error.LuaExit`.
+pub const ExitRequest = struct {
+    code: i32,
+    /// Lua asked for the state to be closed before the process exits.
+    close: bool,
+};
+
+/// Default per-file read limit shared by `io`, `loadfile`, `dofile`, `require`, and `fs`.
+pub const default_max_file_bytes: usize = 256 * 1024 * 1024;
+
+/// A strerror-style message and errno value for a failed host file operation.
+pub const FileError = struct {
+    message: []const u8,
+    errno: i64,
+    /// The file could be opened but not read, such as a directory or an oversized file.
+    read_phase: bool = false,
+};
+
+const errno_values = struct {
+    const bsd_like = builtin.os.tag.isDarwin() or builtin.os.tag.isBSD();
+    const name_too_long: i64 = if (builtin.os.tag == .windows) 38 else if (bsd_like) 63 else 36;
+    const not_empty: i64 = if (builtin.os.tag == .windows) 41 else if (bsd_like) 66 else 39;
+    const loop: i64 = if (builtin.os.tag == .windows) 114 else if (bsd_like) 62 else 40;
+};
+
+/// Maps filesystem errors from std, memory filesystems, and custom callbacks
+/// to C-library messages and POSIX errno values.
+pub fn fileError(err: anyerror) FileError {
+    return switch (err) {
+        error.FileNotFound, error.NoDevice => .{ .message = "No such file or directory", .errno = 2 },
+        error.AccessDenied, error.PermissionDenied, error.InvalidPath => .{ .message = "Permission denied", .errno = 13 },
+        error.FilesystemDisabled => .{ .message = "filesystem access disabled", .errno = 13 },
+        error.FilesystemReadOnly => .{ .message = "filesystem write access disabled", .errno = 30 },
+        error.ReadOnlyFileSystem => .{ .message = "Read-only file system", .errno = 30 },
+        error.IsDir => .{ .message = "Is a directory", .errno = 21, .read_phase = true },
+        error.NotDir => .{ .message = "Not a directory", .errno = 20 },
+        error.StreamTooLong, error.FileTooBig => .{ .message = "File too large", .errno = 27, .read_phase = true },
+        error.PathAlreadyExists => .{ .message = "File exists", .errno = 17 },
+        error.DirNotEmpty => .{ .message = "Directory not empty", .errno = errno_values.not_empty },
+        error.NameTooLong, error.PathTooLong => .{ .message = "File name too long", .errno = errno_values.name_too_long },
+        error.SymLinkLoop => .{ .message = "Too many levels of symbolic links", .errno = errno_values.loop },
+        error.NoSpaceLeft, error.QuotaExceeded => .{ .message = "No space left on device", .errno = 28 },
+        error.BadPathName, error.InvalidUtf8, error.InvalidWtf8 => .{ .message = "Invalid argument", .errno = 22 },
+        error.ProcessFdQuotaExceeded, error.SystemFdQuotaExceeded => .{ .message = "Too many open files", .errno = 24 },
+        error.FileBusy, error.DeviceBusy => .{ .message = "Device or resource busy", .errno = 16 },
+        error.CrossDeviceLink, error.RenameAcrossMountPoints => .{ .message = "Cross-device link", .errno = 18 },
+        error.IoUnavailable => .{ .message = "filesystem I/O unavailable", .errno = 5 },
+        error.OperationUnsupported => .{ .message = "host filesystem unavailable", .errno = 5 },
+        else => .{ .message = "Input/output error", .errno = 5 },
+    };
+}
 
 test "memory filesystem normalizes relative paths" {
     var filesystem = MemoryFilesystem.init(std.testing.allocator);

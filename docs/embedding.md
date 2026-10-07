@@ -50,8 +50,8 @@ Library selection controls which Lua functions exist. Capabilities control wheth
 | `io` | Optional `std.Io`, stdin bytes, and stdout/stderr writers. |
 | `filesystem` | Disabled, read-only memory files, writable memory filesystem, host cwd, rooted host directory, or callbacks. |
 | `environment` | Disabled, a host map, or callbacks. |
-| `clock` | Disabled, fixed timestamp, system clock, or callbacks. |
-| `process` | Disabled, std-backed execution, or callbacks. |
+| `clock` | Disabled, fixed timestamp, fixed timestamp with a local offset, system clock, or callbacks. |
+| `process` | Disabled, std-backed execution, or callbacks. Covers `os.execute`, `io.popen`, and `os.exit`. |
 
 The CLI intentionally uses full libraries and host-oriented capabilities. Embedded states start sandboxed.
 
@@ -81,6 +81,32 @@ defer lua.deinit();
 ```
 
 The directory handle is borrowed and must outlive the state. Rooted directories reject absolute paths and `..` traversal.
+
+File reads by `io`, `loadfile`, `dofile`, `require`, `fs`, and `State.loadFile` share `limits.max_file_bytes` (256 MiB by default). `fs.read`'s `max_bytes` option can only lower it. Failed opens return C-style results such as `nil, "data.txt: No such file or directory", 2`. A disabled filesystem reports `filesystem access disabled` (errno 13), and a read-only one reports `filesystem write access disabled` (errno 30).
+
+### Clock and Process
+
+| Mode | `os.time`/`os.date` | Local time | `os.clock` |
+| --- | --- | --- | --- |
+| `.disabled` | Error without an explicit time. | UTC | `0` |
+| `.{ .fixed = t }` | `t` | UTC | `0` |
+| `.{ .fixed_local = .{ .now = t, .utc_offset = s, .is_dst = b, .cpu_seconds = c } }` | `t` | `s` seconds east of UTC | `c` |
+| `.system` | Host wall clock | `TZ`, then `/etc/localtime` | Process CPU time |
+| `.custom` | `now` | `utc_offset` callback, or UTC | `cpu` callback, or `0` |
+
+The system clock reads `TZ` through the environment capability. It accepts a zone name under `/usr/share/zoneinfo`, an absolute TZif path, or a POSIX rule such as `EST5EDT,M3.2.0,M11.1.0`. Without `TZ`, it reads `/etc/localtime`. It loads the zone once per state. It falls back to UTC on Windows, on freestanding targets, and when the zone cannot be read. `os.date` formats use the C locale. `!` formats are always UTC.
+
+Process modes:
+
+| Mode | `os.execute` | `io.popen` | `os.exit` |
+| --- | --- | --- | --- |
+| `.disabled` | Raises `process access disabled`; `os.execute()` returns false. | Raises `'popen' not supported`. | Raises `process access disabled`. |
+| `.enabled` | Runs `/bin/sh -c` (`cmd.exe /c` on Windows) with inherited stdio. | Same shell. | Unwinds with `error.LuaExit`. |
+| `.custom` | `execute` callback. | Optional `popen` callback. | Optional `exit` callback, then `error.LuaExit`. |
+
+`io.popen` handles are buffered. Read mode runs the command to completion when it opens and buffers its stdout, up to `max_file_bytes`. Write mode buffers writes, then runs the command with them as stdin when the handle closes. Closing returns `true|nil, "exit"|"signal", code`, like `os.execute`.
+
+`os.exit` never terminates the host process from an embedded state. It flushes the configured writers, records the exit, and unwinds every Lua frame with `error.LuaExit`. `pcall`, `xpcall`, and coroutines cannot catch it. `State.exitRequest()` returns the code and the `close` flag. With `close = true`, pending to-be-closed variables of the calling host thread have already run. Call `State.clearExitRequest()` to keep using the state. The CLI turns the request into its process exit status. A custom `exit` callback sees the request first; returning an error raises `process exit failed` in Lua instead.
 
 ### Memory Files
 
@@ -138,8 +164,8 @@ Freestanding and non-std hosts can provide callback-backed services:
 | --- | --- | --- |
 | `CustomFilesystem` | `read_file_alloc` | Write, remove, rename, stat, directory listing, mkdir, recursive remove, and copy. |
 | `CustomEnvironment` | `get` | Environment lookup. |
-| `CustomClock` | `now` | Current Unix timestamp. |
-| `CustomProcess` | `execute` | Returns an exit/signal status and code. |
+| `CustomClock` | `now` | `cpu` for `os.clock`; `utc_offset(timestamp)` for local time. |
+| `CustomProcess` | `execute` | `popen` for `io.popen`; `exit` to observe or refuse `os.exit`. |
 
 Callbacks receive the host's opaque context. Allocating filesystem callbacks must use the allocator supplied by zlua. Missing optional operations return an unsupported error; they never fall back to ambient host access.
 
@@ -152,6 +178,7 @@ var lua = try zlua.State.init(allocator, .{
         .max_stack_values = 4096,
         .max_call_frames = 128,
         .max_instructions = 1_000_000,
+        .max_file_bytes = 4 * 1024 * 1024,
     },
 });
 ```

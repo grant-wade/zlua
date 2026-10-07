@@ -49,8 +49,10 @@ const snapshot_runtime = @import("runtime/snapshot.zig");
 const coroutine_runtime = @import("runtime/coroutine.zig");
 const runtime_types = @import("runtime/types.zig");
 
-/// Error set used when an API operation failed because Lua raised a syntax or runtime error.
-pub const Error = error{LuaError};
+/// `LuaError`: Lua raised a syntax or runtime error.
+/// `LuaExit`: Lua called `os.exit` with process access; read `State.exitRequest`.
+/// Lua cannot catch an exit with `pcall`.
+pub const Error = error{ LuaError, LuaExit };
 /// Error set used when an option combination is not supported by the high-level API.
 pub const UnsupportedOption = error{UnsupportedOption};
 /// Errors produced while converting values between Zig and Lua representations.
@@ -157,17 +159,25 @@ pub const EnvironmentCapability = runtime.EnvironmentCapability;
 /// Callback-backed environment access for embedders with non-std host services.
 pub const CustomEnvironment = runtime.CustomEnvironment;
 
-/// Clock access granted to Lua time/date APIs.
+/// Clock access granted to `os.time`, `os.date`, and `os.clock`.
 pub const ClockCapability = runtime.ClockCapability;
 /// Callback-backed clock access for embedders with non-std host services.
 pub const CustomClock = runtime.CustomClock;
-/// Process-spawning access granted to `os.execute`.
+/// Fixed timestamp with an explicit local-time offset and `os.clock` value.
+pub const FixedClock = runtime.FixedClock;
+/// Local-time offset returned by `CustomClock.utc_offset`.
+pub const UtcOffset = runtime.UtcOffset;
+/// Process access granted to `os.execute`, `io.popen`, and `os.exit`.
 pub const ProcessCapability = runtime.ProcessCapability;
 /// Callback-backed process execution for embedders with non-std host services.
 pub const CustomProcess = runtime.CustomProcess;
 /// Result returned by callback-backed process execution.
 pub const ProcessResult = runtime.ProcessResult;
 pub const ProcessStatus = runtime.ProcessStatus;
+/// Result returned by `CustomProcess.popen`.
+pub const PopenResult = runtime.PopenResult;
+/// Exit code and close flag recorded by `os.exit`; see `State.exitRequest`.
+pub const ExitRequest = runtime.ExitRequest;
 
 /// Host services Lua code may use when matching standard-library functions are open.
 pub const Capabilities = struct {
@@ -196,6 +206,9 @@ pub const Limits = struct {
     max_call_frames: ?usize = null,
     /// Maximum VM instructions executed since the last budget reset, or unlimited when null.
     max_instructions: ?u64 = null,
+    /// Largest file read at once by `io`, `loadfile`, `dofile`, `require`, `fs`, and `loadFile`.
+    /// `fs.read` options can only lower it. Reads also count against `max_memory`.
+    max_file_bytes: usize = runtime.default_max_file_bytes,
 };
 
 /// Snapshot of the state's cumulative instruction budget.
@@ -929,6 +942,7 @@ pub const State = struct {
     /// filesystems receive a write. Host and custom filesystem states return
     /// `error.UnsupportedOption`.
     pub fn addMemoryFile(self: *State, path: []const u8, contents: []const u8) !void {
+        self.raw_state.file_generation +%= 1;
         switch (self.raw_state.options.filesystem) {
             .disabled, .memory => {},
             .memory_rw => |filesystem| {
@@ -987,6 +1001,18 @@ pub const State = struct {
         var function = try self.loadFile(path, options);
         defer function.deinit();
         try function.call(.{}, void);
+    }
+
+    /// Returns the exit recorded by Lua's `os.exit` after an API call returned
+    /// `error.LuaExit`, or null. When `close` is true, Lua asked for the state to
+    /// be closed; its pending to-be-closed variables have already run.
+    pub fn exitRequest(self: *const State) ?ExitRequest {
+        return self.raw_state.exit_request;
+    }
+
+    /// Clears a recorded `os.exit` request so the state can keep running Lua.
+    pub fn clearExitRequest(self: *State) void {
+        self.raw_state.exit_request = null;
     }
 
     /// Formats the last Lua error value as an allocated message.
@@ -2390,6 +2416,7 @@ fn runtimeOptions(options: Options) runtime.StateOptions {
         .clock = options.capabilities.clock,
         .process = options.capabilities.process,
         .stdin = options.capabilities.io.stdin,
+        .max_file_bytes = options.limits.max_file_bytes,
         .max_memory = options.limits.max_memory,
         .max_stack_values = options.limits.max_stack_values,
         .max_call_frames = options.limits.max_call_frames,
@@ -4196,17 +4223,17 @@ test "api full stdlib still denies ambient host access by default" {
         \\assert(ok_date == false and tostring(date_err):find('clock access disabled'))
         \\local file = io.open('missing.lua', 'r')
         \\assert(file == nil)
-        \\local ok_write, write_err = pcall(io.open, 'blocked.lua', 'w')
-        \\assert(ok_write == false and tostring(write_err):find('filesystem write access disabled'))
-        \\local ok_append, append_err = pcall(io.open, 'blocked.lua', 'a')
-        \\assert(ok_append == false and tostring(append_err):find('filesystem write access disabled'))
+        \\local blocked, write_err, write_code = io.open('blocked.lua', 'w')
+        \\assert(blocked == nil and write_err == 'blocked.lua: filesystem write access disabled' and write_code == 30)
+        \\local appended, append_err = io.open('blocked.lua', 'a')
+        \\assert(appended == nil and append_err == 'blocked.lua: filesystem access disabled')
         \\local ok_input, input_err = pcall(io.input, 'missing.lua')
         \\assert(ok_input == false and tostring(input_err):find('cannot open file'))
         \\local tmp = assert(io.tmpfile())
         \\local ok_tmp_close, tmp_close_err = pcall(function() return tmp:close() end)
         \\assert(ok_tmp_close == false and tostring(tmp_close_err):find('filesystem write access disabled'))
         \\local loaded, load_err = loadfile('missing.lua')
-        \\assert(loaded == nil and load_err == 'cannot open file')
+        \\assert(loaded == nil and load_err == 'cannot open missing.lua: filesystem access disabled')
         \\local ok_file, file_err = pcall(dofile, 'missing.lua')
         \\assert(ok_file == false and tostring(file_err):find('filesystem access disabled'))
         \\local ok_require, require_err = pcall(require, 'missing')
@@ -4291,10 +4318,10 @@ test "api read-only memory filesystem denies stdlib writes" {
         \\local read = assert(io.open('seed.txt', 'r'))
         \\assert(read:read('*a') == 'seed')
         \\assert(read:close())
-        \\local ok_write, write_err = pcall(io.open, 'new.txt', 'w')
-        \\assert(ok_write == false and tostring(write_err):find('filesystem write access disabled'))
-        \\local ok_append, append_err = pcall(io.open, 'seed.txt', 'a')
-        \\assert(ok_append == false and tostring(append_err):find('filesystem write access disabled'))
+        \\local written, write_err = io.open('new.txt', 'w')
+        \\assert(written == nil and tostring(write_err):find('filesystem write access disabled'))
+        \\local appended, append_err = io.open('seed.txt', 'a')
+        \\assert(appended == nil and tostring(append_err):find('filesystem write access disabled'))
         \\local tmp = assert(io.tmpfile())
         \\assert(tmp:write('temporary'))
         \\local ok_tmp, tmp_err = pcall(function() return tmp:close() end)
@@ -4417,9 +4444,9 @@ test "api writable memory filesystem rejects sandbox escape writes" {
 
     try lua.doString(
         \\local absolute, absolute_err = io.open('/tmp/escape.txt', 'w')
-        \\assert(absolute == nil and tostring(absolute_err):find('cannot open file'))
-        \\local ok_write, write_err = pcall(io.open, '../escape.txt', 'w')
-        \\assert(ok_write == false and tostring(write_err):find('cannot write file'))
+        \\assert(absolute == nil and absolute_err == '/tmp/escape.txt: Permission denied')
+        \\local relative, write_err, write_code = io.open('../escape.txt', 'w')
+        \\assert(relative == nil and write_err == '../escape.txt: Permission denied' and write_code == 13)
         \\local ok_output, output_err = pcall(function()
         \\  local file = assert(io.open('generated.txt', 'w'))
         \\  assert(file:write('generated'))
@@ -4427,19 +4454,205 @@ test "api writable memory filesystem rejects sandbox escape writes" {
         \\end)
         \\assert(ok_output == true)
         \\local removed, remove_err = os.remove('../escape.txt')
-        \\assert(removed == nil and tostring(remove_err):find('cannot remove file'))
+        \\assert(removed == nil and remove_err == '../escape.txt: Permission denied')
         \\local renamed, rename_err = os.rename('seed.txt', '../escape.txt')
-        \\assert(renamed == nil and tostring(rename_err):find('cannot rename file'))
+        \\assert(renamed == nil and rename_err == 'Permission denied')
         \\local loaded, load_err = loadfile('../escape.lua')
-        \\assert(loaded == nil and tostring(load_err):find('cannot open file'))
+        \\assert(loaded == nil and load_err == 'cannot open ../escape.lua: Permission denied')
         \\local ok_do, do_err = pcall(dofile, '../escape.lua')
-        \\assert(ok_do == false and tostring(do_err):find('cannot open file'))
+        \\assert(ok_do == false and do_err == 'cannot open ../escape.lua: Permission denied')
     , .{ .name = "=api-memory-rw-escape-negative" });
 
     const seed = try filesystem.readFileAlloc(std.testing.allocator, "seed.txt");
     defer std.testing.allocator.free(seed);
     try std.testing.expectEqualStrings("seed", seed);
     try std.testing.expectError(error.FileNotFound, filesystem.readFileAlloc(std.testing.allocator, "escape.txt"));
+}
+
+test "api file reads share the max_file_bytes limit" {
+    const files = [_]MemoryFile{
+        .{ .path = "small.txt", .contents = "1234" },
+        .{ .path = "big.lua", .contents = "return 123456789" },
+        .{ .path = "dir/inner.txt", .contents = "x" },
+    };
+    var lua = try State.init(std.testing.allocator, .{
+        .stdlib = .full,
+        .capabilities = .{ .filesystem = .{ .memory = &files } },
+        .limits = .{ .max_file_bytes = 8 },
+    });
+    defer lua.deinit();
+
+    try lua.doString(
+        \\assert(io.open('small.txt'):read('a') == '1234')
+        \\local file, err, code = io.open('big.lua')
+        \\assert(file == nil and err == 'big.lua: File too large' and code == 27)
+        \\local missing, missing_err, missing_code = io.open('missing.txt')
+        \\assert(missing == nil and missing_err == 'missing.txt: No such file or directory' and missing_code == 2)
+        \\local loaded, load_err = loadfile('big.lua')
+        \\assert(loaded == nil and load_err == 'cannot read big.lua: File too large')
+        \\local ok, lines_err = pcall(io.lines, 'big.lua')
+        \\assert(not ok and lines_err == "cannot open file 'big.lua' (File too large)")
+        \\local value, fs_err = fs.read('big.lua', { max_bytes = 1024 })
+        \\assert(value == nil and fs_err.code == 'io')
+        \\assert(fs.read('small.txt', { max_bytes = 1024 }) == '1234')
+        \\local dir = assert(io.open('dir'))
+        \\local data, dir_err, dir_code = dir:read('a')
+        \\assert(data == nil and dir_err == 'Is a directory' and dir_code == 21)
+        \\assert(select(2, loadfile('dir')) == 'cannot read dir')
+    , .{ .name = "=api-max-file-bytes" });
+    try std.testing.expectError(error.LuaError, lua.loadFile("big.lua", .{}));
+}
+
+test "api base loadfile and dofile fail cleanly without filesystem access" {
+    var lua = try State.init(std.testing.allocator, .{ .capabilities = .{ .io = .{ .stdin = "return 40 + 2" } } });
+    defer lua.deinit();
+    try lua.doString(
+        \\assert(package == nil and type(loadfile) == 'function' and type(dofile) == 'function')
+        \\local loaded, err = loadfile('plugin.lua')
+        \\assert(loaded == nil and err == 'cannot open plugin.lua: filesystem access disabled')
+        \\local ok, do_err = pcall(dofile, 'plugin.lua')
+        \\assert(not ok and do_err == 'cannot open plugin.lua: filesystem access disabled')
+        \\assert(dofile() == 42)
+    , .{ .name = "=api-base-loadfile" });
+}
+
+test "api os.exit unwinds past pcall as error.LuaExit" {
+    var lua = try State.init(std.testing.allocator, .{
+        .stdlib = .full,
+        .capabilities = .{ .process = .enabled },
+    });
+    defer lua.deinit();
+
+    try std.testing.expectError(error.LuaExit, lua.doString(
+        \\closed = false
+        \\local guard <close> = setmetatable({}, { __close = function() closed = true end })
+        \\pcall(os.exit, 3, true)
+        \\error('unreachable')
+    , .{}));
+    try std.testing.expectEqual(ExitRequest{ .code = 3, .close = true }, lua.exitRequest().?);
+    try std.testing.expect(try lua.getGlobal("closed", bool));
+
+    lua.clearExitRequest();
+    try std.testing.expectError(error.LuaExit, lua.doString(
+        \\local co = coroutine.wrap(function() os.exit(false) end)
+        \\co()
+    , .{}));
+    try std.testing.expectEqual(ExitRequest{ .code = 1, .close = false }, lua.exitRequest().?);
+    try lua.doString("assert(true)", .{});
+
+    var sandboxed = try State.init(std.testing.allocator, .{ .stdlib = .full });
+    defer sandboxed.deinit();
+    try sandboxed.doString(
+        \\local ok, err = pcall(os.exit, 0)
+        \\assert(not ok and err == 'process access disabled')
+        \\ok, err = pcall(io.popen, 'true')
+        \\assert(not ok and err == "'popen' not supported")
+        \\assert(os.execute() == false)
+    , .{});
+    try std.testing.expect(sandboxed.exitRequest() == null);
+}
+
+test "api custom process callbacks back io.popen and os.exit" {
+    const Host = struct {
+        input: std.ArrayList(u8) = .empty,
+        exit_code: ?i32 = null,
+
+        fn execute(_: ?*anyopaque, command: []const u8) anyerror!ProcessResult {
+            return .{ .status = .exit, .code = @intCast(command.len) };
+        }
+
+        fn popen(context: ?*anyopaque, allocator: std.mem.Allocator, command: []const u8, input: ?[]const u8) anyerror!PopenResult {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            if (input) |bytes| {
+                try self.input.appendSlice(std.testing.allocator, bytes);
+                return .{ .result = .{ .status = .exit, .code = 4 } };
+            }
+            return .{ .output = try std.fmt.allocPrint(allocator, "ran {s}\nnext\n", .{command}), .result = .{ .status = .exit, .code = 0 } };
+        }
+
+        fn exit(context: ?*anyopaque, code: i32, close: bool) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            if (close) return error.ExitRefused;
+            self.exit_code = code;
+        }
+    };
+    var host: Host = .{};
+    defer host.input.deinit(std.testing.allocator);
+
+    var lua = try State.init(std.testing.allocator, .{
+        .stdlib = .full,
+        .capabilities = .{ .process = .{ .custom = .{
+            .context = &host,
+            .execute = Host.execute,
+            .popen = Host.popen,
+            .exit = Host.exit,
+        } } },
+    });
+    defer lua.deinit();
+
+    try std.testing.expectError(error.LuaExit, lua.doString(
+        \\local reader = assert(io.popen('job'))
+        \\assert(reader:read('l') == 'ran job' and reader:read('a') == 'next\n')
+        \\local ok, status, code = reader:close()
+        \\assert(ok == true and status == 'exit' and code == 0)
+        \\local writer = assert(io.popen('sink', 'w'))
+        \\writer:write('a', 1, '\n')
+        \\ok, status, code = writer:close()
+        \\assert(ok == nil and status == 'exit' and code == 4)
+        \\assert(select('#', os.execute('abc')) == 3 and select(3, os.execute('abc')) == 3)
+        \\local refused, err = pcall(os.exit, 9, true)
+        \\assert(not refused and err == 'process exit failed')
+        \\os.exit(9)
+    , .{}));
+    try std.testing.expectEqualStrings("a1\n", host.input.items);
+    try std.testing.expectEqual(@as(?i32, 9), host.exit_code);
+}
+
+test "api clock callbacks provide cpu time and local offsets" {
+    const Host = struct {
+        fn now(_: ?*anyopaque) anyerror!i64 {
+            return 86400;
+        }
+        fn cpu(_: ?*anyopaque) anyerror!f64 {
+            return 0.25;
+        }
+        fn offset(_: ?*anyopaque, timestamp: i64) anyerror!UtcOffset {
+            return if (timestamp >= 86400) .{ .offset = 3600, .is_dst = true } else .{ .offset = 0 };
+        }
+    };
+    var lua = try State.init(std.testing.allocator, .{
+        .stdlib = .full,
+        .capabilities = .{ .clock = .{ .custom = .{ .now = Host.now, .cpu = Host.cpu, .utc_offset = Host.offset } } },
+    });
+    defer lua.deinit();
+    try lua.doString(
+        \\assert(os.clock() == 0.25)
+        \\assert(os.date('%H:%M %z') == '01:00 +0100')
+        \\assert(os.date('!%H:%M') == '00:00')
+        \\assert(os.date('*t').isdst == true and os.date('*t', 0).isdst == false)
+        \\assert(os.time({ year = 1970, month = 1, day = 2, hour = 1 }) == 86400)
+    , .{});
+}
+
+test "api debug.getmetatable bypasses __metatable" {
+    var lua = try State.init(std.testing.allocator, .{
+        .stdlib = .full,
+        .capabilities = .{ .io = .{ .stdin = "debugged = 1\nerror('oops')\ncont\nafter = true\n" } },
+    });
+    defer lua.deinit();
+    try lua.doString(
+        \\debug.debug()
+        \\assert(debugged == 1 and after == nil)
+        \\assert(io.read('l') == 'after = true')
+    , .{});
+    try lua.doString(
+        \\local mt = { __metatable = 'locked' }
+        \\local t = setmetatable({}, mt)
+        \\assert(getmetatable(t) == 'locked' and debug.getmetatable(t) == mt)
+        \\assert(debug.getmetatable(1) == nil and debug.getmetatable('') == getmetatable(''))
+        \\assert(debug.setmetatable(t, nil) == t and debug.getmetatable(t) == nil)
+        \\assert(select(3, package.loadlib('lib.so', 'luaopen_x')) == 'absent')
+    , .{});
 }
 
 test "api custom stdout captures print and io writes" {
@@ -5361,7 +5574,7 @@ comptime {
         .copied = "raw_state memory_files memory_file_owned_contents callbacks",
     });
     snapshot_runtime.review(runtime.StateOptions, .{
-        .copied = "stdlib stdin max_memory max_stack_values max_call_frames max_instructions debug_errors trace_vm",
+        .copied = "stdlib stdin max_file_bytes max_memory max_stack_values max_call_frames max_instructions debug_errors trace_vm",
         .external = "io stdout stderr filesystem environment clock process",
     });
 }

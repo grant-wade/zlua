@@ -41,6 +41,16 @@ pub fn executeSourceWithOptions(allocator: std.mem.Allocator, source: []const u8
         state.gc_params.stepmul = 100;
     }
     state.execute(&proto) catch |err| {
+        if (err == error.LuaExit) {
+            const code: i32 = if (state.exit_request) |request| request.code else 0;
+            return .{
+                .stdout = try allocator.dupe(u8, state.stdout.items),
+                .stderr = try allocator.dupe(u8, state.stderr.items),
+                .exit_code = @truncate(@as(u32, @bitCast(code))),
+                .signal = null,
+                .timed_out = false,
+            };
+        }
         const detail = try state.errorDetailAlloc(allocator, err);
         defer allocator.free(detail);
         const message = try std.fmt.allocPrint(allocator, "{s}\n", .{detail});

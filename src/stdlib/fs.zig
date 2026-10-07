@@ -10,12 +10,10 @@ const Thread = runtime.Thread;
 const Value = runtime.Value;
 const Table = runtime.Table;
 
-const default_max_read_bytes: usize = 256 * 1024 * 1024;
-
 pub fn read(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const path = try state.expectArgumentString(thread, op, "fs.read", 0);
     const options = optionTable(state, thread, op, "fs.read", 1) catch |err| return err;
-    const max_bytes = if (options) |table| try integerOption(state, table, "fs.read", "max_bytes", default_max_read_bytes) else default_max_read_bytes;
+    const max_bytes = if (options) |table| try integerOption(state, table, "fs.read", "max_bytes", state.options.max_file_bytes) else state.options.max_file_bytes;
     const bytes = state.fsReadFileAlloc(path, max_bytes) catch |err| return returnFailure(state, thread, op, "read", path, null, err);
     defer state.allocator.free(bytes);
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(bytes) }});
@@ -43,7 +41,7 @@ pub fn write(state: *State, thread: *Thread, op: bytecode.Call) !void {
         if (already_exists) return returnFailure(state, thread, op, "write", path, null, error.PathAlreadyExists);
     }
     if (append) {
-        const existing = state.fsReadFileAlloc(path, default_max_read_bytes) catch |err| switch (err) {
+        const existing = state.fsReadFileAlloc(path, state.options.max_file_bytes) catch |err| switch (err) {
             error.FileNotFound => try state.allocator.dupe(u8, ""),
             else => return returnFailure(state, thread, op, "read", path, null, err),
         };
@@ -65,7 +63,7 @@ pub fn open(state: *State, thread: *Thread, op: bytecode.Call) !void {
         "r";
     const parsed = io_lib.parseMode(mode) orelse return state.failArgumentMessage("fs.open", 2, "invalid mode");
     const contents = if (parsed.reads_existing or parsed.append)
-        state.fsReadFileAlloc(path, default_max_read_bytes) catch |err| switch (err) {
+        state.fsReadFileAlloc(path, state.options.max_file_bytes) catch |err| switch (err) {
             error.FileNotFound => if (parsed.kind == 'r') return returnFailure(state, thread, op, "open", path, null, err) else try state.allocator.dupe(u8, ""),
             else => return returnFailure(state, thread, op, "open", path, null, err),
         }
@@ -227,7 +225,7 @@ pub fn move(state: *State, thread: *Thread, op: bytecode.Call) !void {
 
 pub fn touch(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const path = try state.expectArgumentString(thread, op, "fs.touch", 0);
-    const existing = state.fsReadFileAlloc(path, default_max_read_bytes) catch |err| switch (err) {
+    const existing = state.fsReadFileAlloc(path, state.options.max_file_bytes) catch |err| switch (err) {
         error.FileNotFound => try state.allocator.dupe(u8, ""),
         else => return returnFailure(state, thread, op, "touch", path, null, err),
     };
@@ -390,7 +388,7 @@ pub fn dirOpen(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const mode = if (op.arg_count >= 3 and runtime.argValue(state, thread, op, 2) != .nil) try state.expectArgumentString(thread, op, "fs directory:open", 2) else "r";
     const parsed = io_lib.parseMode(mode) orelse return state.failArgumentMessage("fs directory:open", 3, "invalid mode");
     const contents = if (parsed.reads_existing or parsed.append)
-        state.fsReadFileAlloc(path, default_max_read_bytes) catch |err| switch (err) {
+        state.fsReadFileAlloc(path, state.options.max_file_bytes) catch |err| switch (err) {
             error.FileNotFound => if (parsed.kind == 'r') return returnFailure(state, thread, op, "open", path, null, err) else try state.allocator.dupe(u8, ""),
             else => return returnFailure(state, thread, op, "open", path, null, err),
         }

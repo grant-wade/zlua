@@ -867,7 +867,13 @@ pub fn markThread(comptime State: type, self: *State, thread: *Thread) void {
 fn traceThread(comptime State: type, self: *State, thread: *Thread) void {
     syncThreadStorage(State, self, thread);
     markValue(State, self, thread.entry);
-    if (thread.resume_parent) |parent| markThread(State, self, parent);
+    if (thread.resume_parent) |parent| {
+        // A resumer is suspended mid-call, so its stack and open upvalues still
+        // change. Trace it even when old: minor cycles skip old threads that
+        // are neither current nor remembered.
+        if (isTrackedThread(State, self, parent) and !isOld(State, self, parent)) self.gc_found_young = true;
+        forceEnqueue(State, self, .{ .thread = parent });
+    }
     markThreadStack(State, self, thread);
     markValue(State, self, thread.hook);
     markValue(State, self, thread.hook_level2_func);
@@ -1387,7 +1393,7 @@ pub fn findStringAllocation(comptime State: type, self: *State, bytes: []const u
 }
 
 pub fn isTrackedThread(comptime State: type, self: *State, thread: *Thread) bool {
-    return self.object_allocation_index.contains(@intFromPtr(thread));
+    return trackedIn(State, self, "thread_allocations", thread);
 }
 
 pub fn isTrackedTable(comptime State: type, self: *State, table: *Table) bool {
@@ -1395,15 +1401,24 @@ pub fn isTrackedTable(comptime State: type, self: *State, table: *Table) bool {
 }
 
 pub fn isTrackedUserdata(comptime State: type, self: *State, userdata: *Userdata) bool {
-    return self.object_allocation_index.contains(@intFromPtr(userdata));
+    return trackedIn(State, self, "userdata_allocations", userdata);
 }
 
 pub fn isTrackedClosure(comptime State: type, self: *State, closure: *Closure) bool {
-    return self.object_allocation_index.contains(@intFromPtr(closure));
+    return trackedIn(State, self, "closure_allocations", closure);
 }
 
 pub fn isTrackedUpvalue(comptime State: type, self: *State, upvalue: *Upvalue) bool {
-    return self.object_allocation_index.contains(@intFromPtr(upvalue));
+    return trackedIn(State, self, "upvalue_allocations", upvalue);
+}
+
+/// Closures, upvalues, threads, and userdata share one address index. Check the
+/// owning registry too: conservative stack scans can see a stale pointer whose
+/// address now belongs to an object of another kind.
+fn trackedIn(comptime State: type, self: *State, comptime field: []const u8, pointer: anytype) bool {
+    const index = self.object_allocation_index.get(@intFromPtr(pointer)) orelse return false;
+    const items = @field(self, field).items;
+    return index < items.len and items[index] == pointer;
 }
 
 pub fn destroyTable(comptime State: type, self: *State, table: *Table) void {

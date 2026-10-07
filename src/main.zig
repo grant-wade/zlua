@@ -97,7 +97,7 @@ fn runCliProgram(
             defer state_allocator.free(source);
             if (try executeChunkNamed(state_allocator, io, &state, stripInitialShebang(source), "@stdin")) |exit_code| return exit_code;
         } else {
-            const source = Dir.cwd().readFileAlloc(io, path, state_allocator, .limited(1024 * 1024)) catch |err| {
+            const source = Dir.cwd().readFileAlloc(io, path, state_allocator, .limited(zlua.runtime.default_max_file_bytes)) catch |err| {
                 try stderrPrint(io, "cannot read script {s}: {s}\n", .{ path, @errorName(err) });
                 return 1;
             };
@@ -115,7 +115,7 @@ fn runCliProgram(
         if (try executeChunkNamed(state_allocator, io, &state, stripInitialShebang(source), "@stdin")) |exit_code| return exit_code;
     }
 
-    if (options.interactive) try runRepl(state_allocator, io, &state);
+    if (options.interactive) if (try runRepl(state_allocator, io, &state)) |exit_code| return exit_code;
 
     try flushStateOutput(io, &state);
     return 0;
@@ -274,7 +274,7 @@ fn readDumpInput(allocator: std.mem.Allocator, io: std.Io, options: *const CliOp
             return .{ .source = try readStdinAlloc(allocator, io), .name = try allocator.dupe(u8, "@stdin") };
         }
         return .{
-            .source = try Dir.cwd().readFileAlloc(io, path, allocator, .limited(1024 * 1024)),
+            .source = try Dir.cwd().readFileAlloc(io, path, allocator, .limited(zlua.runtime.default_max_file_bytes)),
             .name = try std.fmt.allocPrint(allocator, "@{s}", .{path}),
         };
     }
@@ -427,7 +427,7 @@ fn indent(out: anytype, depth: usize) !void {
     for (0..depth) |_| try out.writeAll("  ");
 }
 
-fn runRepl(allocator: std.mem.Allocator, io: std.Io, state: *zlua.runtime.State) !void {
+fn runRepl(allocator: std.mem.Allocator, io: std.Io, state: *zlua.runtime.State) !?u8 {
     const tty = try stdinIsTty(io);
     var read_buffer: [4096]u8 = undefined;
     var reader = File.stdin().readerStreaming(io, &read_buffer);
@@ -456,15 +456,16 @@ fn runRepl(allocator: std.mem.Allocator, io: std.Io, state: *zlua.runtime.State)
 
         const repl_source = try replSourceAlloc(allocator, source.items);
         defer allocator.free(repl_source);
-        try executeReplChunk(allocator, io, state, repl_source);
+        if (try executeReplChunk(allocator, io, state, repl_source)) |exit_code| return exit_code;
         source.items.len = 0;
     }
 
     if (source.items.len != 0) {
         const repl_source = try replSourceAlloc(allocator, source.items);
         defer allocator.free(repl_source);
-        try executeReplChunk(allocator, io, state, repl_source);
+        if (try executeReplChunk(allocator, io, state, repl_source)) |exit_code| return exit_code;
     }
+    return null;
 }
 
 fn replSourceAlloc(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
@@ -507,6 +508,7 @@ fn diagnosticNearEof(diagnostic: ?zlua.errors.Diagnostic) bool {
 
 fn executeChunkNamed(allocator: std.mem.Allocator, io: std.Io, state: *zlua.runtime.State, source: []const u8, source_name: []const u8) !?u8 {
     state.executeSourceChunkNamed(source, source_name) catch |err| {
+        if (err == error.LuaExit) return try exitCode(io, state);
         const detail = try state.errorDetailAlloc(allocator, err);
         defer allocator.free(detail);
         const message = try std.fmt.allocPrint(allocator, "{s}\n", .{detail});
@@ -518,8 +520,9 @@ fn executeChunkNamed(allocator: std.mem.Allocator, io: std.Io, state: *zlua.runt
     return null;
 }
 
-fn executeReplChunk(allocator: std.mem.Allocator, io: std.Io, state: *zlua.runtime.State, source: []const u8) !void {
+fn executeReplChunk(allocator: std.mem.Allocator, io: std.Io, state: *zlua.runtime.State, source: []const u8) !?u8 {
     state.executeSourceChunkNamed(source, "=stdin") catch |err| {
+        if (err == error.LuaExit) return try exitCode(io, state);
         const detail = try state.errorDetailAlloc(allocator, err);
         defer allocator.free(detail);
         const message = try std.fmt.allocPrint(allocator, "{s}\n", .{detail});
@@ -528,9 +531,18 @@ fn executeReplChunk(allocator: std.mem.Allocator, io: std.Io, state: *zlua.runti
         try stderrWrite(io, message);
         state.stdout.items.len = 0;
         state.stderr.items.len = 0;
-        return;
+        return null;
     };
     try flushStateOutput(io, state);
+    return null;
+}
+
+/// `os.exit` unwound the state: flush Lua output and exit with the low byte of
+/// the requested code, as C `exit` does. The state is closed on the way out.
+fn exitCode(io: std.Io, state: *zlua.runtime.State) !u8 {
+    try flushStateOutput(io, state);
+    const request = state.exit_request orelse return 0;
+    return @truncate(@as(u32, @bitCast(request.code)));
 }
 
 fn flushStateOutput(io: std.Io, state: *zlua.runtime.State) !void {
@@ -559,7 +571,7 @@ fn installArgTable(
 fn readStdinAlloc(allocator: std.mem.Allocator, io: std.Io) ![]u8 {
     var buffer: [8192]u8 = undefined;
     var reader = File.stdin().readerStreaming(io, &buffer);
-    return reader.interface.allocRemaining(allocator, .limited(1024 * 1024));
+    return reader.interface.allocRemaining(allocator, .limited(zlua.runtime.default_max_file_bytes));
 }
 
 fn stdinIsTty(io: std.Io) !bool {
@@ -596,28 +608,28 @@ fn printUsage(io: std.Io) !void {
 
 fn stdoutPrint(io: std.Io, comptime fmt: []const u8, args: anytype) !void {
     var buffer: [4096]u8 = undefined;
-    var writer = File.stdout().writer(io, &buffer);
+    var writer = File.stdout().writerStreaming(io, &buffer);
     try writer.interface.print(fmt, args);
     try writer.interface.flush();
 }
 
 fn stdoutWrite(io: std.Io, bytes: []const u8) !void {
     var buffer: [4096]u8 = undefined;
-    var writer = File.stdout().writer(io, &buffer);
+    var writer = File.stdout().writerStreaming(io, &buffer);
     try writer.interface.writeAll(bytes);
     try writer.interface.flush();
 }
 
 fn stderrPrint(io: std.Io, comptime fmt: []const u8, args: anytype) !void {
     var buffer: [4096]u8 = undefined;
-    var writer = File.stderr().writer(io, &buffer);
+    var writer = File.stderr().writerStreaming(io, &buffer);
     try writer.interface.print(fmt, args);
     try writer.interface.flush();
 }
 
 fn stderrWrite(io: std.Io, bytes: []const u8) !void {
     var buffer: [4096]u8 = undefined;
-    var writer = File.stderr().writer(io, &buffer);
+    var writer = File.stderr().writerStreaming(io, &buffer);
     try writer.interface.writeAll(bytes);
     try writer.interface.flush();
 }

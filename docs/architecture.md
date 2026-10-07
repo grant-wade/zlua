@@ -159,7 +159,7 @@ Opening a library and granting host access are separate decisions:
 | I/O | Optional Zig `std.Io`, stdin bytes, and output writers. |
 | Filesystem | Disabled, read-only memory files, mutable memory filesystem, host cwd, rooted host directory, or callbacks. |
 | Environment | Disabled, host-provided map, or callbacks. |
-| Clock | Disabled, fixed, system, or callbacks. |
+| Clock | Disabled, fixed (optionally with a local offset), system, or callbacks. |
 | Process | Disabled, std-backed, or callbacks. |
 
 The memory filesystem normalizes sandbox-relative paths and rejects absolute paths and parent traversal. `io`, `os`, `package`, and `fs` all consume the same capability layer, so opening one of those libraries does not grant ambient access by itself.
