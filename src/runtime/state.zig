@@ -888,6 +888,8 @@ pub const State = struct {
                         if (upvalue.owner.rollback) |record| if (!record.header.detached) break :fast_loop;
                         rollback_mod.touch(upvalue);
                         upvalue.owner.stack.items[upvalue.stack_index] = stack[op.register];
+                        // Another thread's registers are not revisited unless remembered.
+                        if (upvalue.owner != thread) gc_mod.rememberObject(State, self, .{ .thread = upvalue.owner });
                     } else {
                         rollback_mod.touch(upvalue);
                         upvalue.closed = stack[op.register];

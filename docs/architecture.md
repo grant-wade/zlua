@@ -140,7 +140,7 @@ The instruction dispatcher lives in `runtime/state.zig`; `runtime/vm.zig` perfor
 
 The collector keeps object addresses stable and supports two modes. Generational mode, the default, focuses on recently allocated objects. Incremental mode spreads a full collection across VM safepoints and calls to `State.stepGc`.
 
-Collection follows references from globals, embedding handles, active calls, and suspended coroutines. Write barriers keep those references valid when Lua or host code changes an object between steps. Weak tables and finalizers receive special handling so unreachable objects can be cleared or finalized without losing objects that become reachable again.
+Collection follows references from globals, embedding handles, active calls, and suspended coroutines. Write barriers keep those references valid when Lua or host code changes an object between steps. Thread stacks have no per-register barrier: running threads are revisited at each atomic step, and an old thread is remembered for minor collections when it runs, suspends, or has a register written from another thread. An explicit `collectgarbage()` marks each frame's registers up to its pending call, like Lua's stack top, and clears dead registers above it. Weak tables and finalizers receive special handling so unreachable objects can be cleared or finalized without losing objects that become reachable again.
 
 Snapshots save the heap and GC settings without running collection. Reset restores the saved objects without repeating a full-heap scan; generational collections then focus on new allocations. Storage kept for reset still counts toward the state's memory limit, even when it is no longer part of the live Lua heap.
 

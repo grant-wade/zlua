@@ -132,6 +132,9 @@ pub fn suspendCoroutine(comptime State: type, self: *State, thread: *Thread, op:
     thread.yield_values.clearRetainingCapacity();
     thread.yield_values.appendSliceAssumeCapacity(values);
     for (values) |value| self.threadBarrier(thread, value);
+    // Registers written while the thread ran had no barrier, and a minor
+    // cycle during the run may have dropped it from the remembered set.
+    @import("gc.zig").rememberObject(State, self, .{ .thread = thread });
     const frame = thread.frames.items[thread.frames.items.len - 1];
     thread.yield_result_base = frame.base + op.base;
     thread.yield_result_count = op.return_count;

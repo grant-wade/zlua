@@ -905,15 +905,36 @@ pub fn markThreadStack(comptime State: type, self: *State, thread: *Thread) void
         markStackRange(State, self, thread, 0, thread.stack.items.len);
         return;
     }
-    for (thread.frames.items) |frame| {
+    const frames = thread.frames.items;
+    for (frames, 0..) |frame, index| {
+        // Registers are allocated as a stack, so every register below a
+        // pending call is an active local or an operand still in use.
+        const live_end = if (index + 1 < frames.len) frames[index + 1].base else innermostLiveEnd(frame);
+        if (live_end > frame.base) markStackRange(State, self, thread, frame.base, live_end - frame.base);
         for (frame.proto.locals.items) |local| {
-            if (!localActiveAt(local, frame.pc)) continue;
+            if (frame.base + local.register < live_end or !localActiveAt(local, frame.pc)) continue;
             markStackRange(State, self, thread, frame.base + local.register, 1);
         }
     }
     markStackRange(State, self, thread, thread.last_result_base, thread.last_result_count);
     markStackRange(State, self, thread, thread.last_transfer_base, thread.last_transfer_count);
     markStackRange(State, self, thread, thread.yield_result_base, thread.yield_result_count);
+}
+
+/// End of the live registers in a thread's newest frame. A call (such as
+/// `collectgarbage()`) keeps its callee and arguments; other instructions can
+/// only reach a precise collection through a native metamethod, so keep the
+/// whole frame. Registers above the end are dead, as above Lua's stack top.
+fn innermostLiveEnd(frame: types.CallFrame) usize {
+    const whole = frame.base + frame.proto.max_registers;
+    if (frame.pc == 0 or frame.pc > frame.proto.instructions.items.len) return whole;
+    const op = switch (frame.proto.instructions.items[frame.pc - 1]) {
+        .call, .tail_call => |op| op,
+        else => return whole,
+    };
+    // Variable argument lists end at the last results, which are marked separately.
+    const args: usize = if (op.arg_count == bytecode.multret_count) 0 else op.arg_count;
+    return frame.base + op.base + 1 + args;
 }
 
 pub fn markStackRange(comptime State: type, self: *State, thread: *Thread, base: usize, count: usize) void {

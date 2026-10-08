@@ -1329,6 +1329,41 @@ test "remembered old threads retain young diagnostic strings through promotion" 
     try std.testing.expectEqualStrings("young traceback belonging to a suspended old thread", thread.error_traceback.?);
 }
 
+test "minor cycles trace old suspended threads changed without barriers" {
+    var state = try State.init(std.testing.allocator);
+    defer state.deinit();
+    try state.executeSourceChunk(
+        \\collectgarbage('generational')
+        \\co = coroutine.create(function()
+        \\  local held = 'old'
+        \\  set = function(v) held = v end
+        \\  coroutine.yield()
+        \\  return held
+        \\end)
+        \\coroutine.resume(co)
+    );
+    try state.collectGarbage();
+    const thread = state.getGlobal("co").thread;
+    const isOld = struct {
+        fn check(st: *State, object: anytype) bool {
+            return object.gc.generation != st.gc_generation or object.gc.age == .old;
+        }
+    }.check;
+    try std.testing.expect(isOld(&state, thread));
+    // The setter stores straight into the old thread's stack slot.
+    try state.executeSourceChunk("set({ 'young' })");
+    const slot = thread.open_upvalues.?.stack_index;
+    const young = thread.stack.items[slot];
+    try std.testing.expect(young == .table and !isOld(&state, young.table));
+    for (0..3) |_| {
+        _ = try state.stepGc(1);
+        try std.testing.expectEqual(.minor, state.gc_cycle);
+        try std.testing.expect(state.isTrackedTable(young.table));
+        try std.testing.expectEqual(young, thread.stack.items[slot]);
+    }
+    try std.testing.expectEqual(.old, young.table.gc.age);
+}
+
 test "changing weak modes after propagation retraces newly strong edges" {
     var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .none });
     defer state.deinit();
