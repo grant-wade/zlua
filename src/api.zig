@@ -51,8 +51,9 @@ const runtime_types = @import("runtime/types.zig");
 
 /// `LuaError`: Lua raised a syntax or runtime error.
 /// `LuaExit`: Lua called `os.exit` with process access; read `State.exitRequest`.
-/// Lua cannot catch an exit with `pcall`.
-pub const Error = error{ LuaError, LuaExit };
+/// `Interrupted`: the host interrupted execution through an `InterruptHandle`.
+/// Lua cannot catch an exit or an interrupt with `pcall`, `xpcall`, or coroutines.
+pub const Error = error{ LuaError, LuaExit, Interrupted };
 /// Error set used when an option combination is not supported by the high-level API.
 pub const UnsupportedOption = error{UnsupportedOption};
 /// Errors produced while converting values between Zig and Lua representations.
@@ -209,6 +210,48 @@ pub const Limits = struct {
     /// Largest file read at once by `io`, `loadfile`, `dofile`, `require`, `fs`, and `loadFile`.
     /// `fs.read` options can only lower it. Reads also count against `max_memory`.
     max_file_bytes: usize = runtime.default_max_file_bytes,
+};
+
+/// Options for `Function.callWith` and `Function.protectedCallWith`.
+pub const CallOptions = struct {
+    /// Maximum VM instructions for this call, including nested Lua calls,
+    /// callbacks that call back into Lua, and coroutines resumed inside it.
+    /// Nested budgeted calls keep the tighter of the two budgets. Exhaustion
+    /// raises the same "instruction limit exceeded" error as `Limits.max_instructions`,
+    /// which still applies. Null adds no per-call budget.
+    max_instructions: ?u64 = null,
+    /// Capture a traceback at the error point, before the failing frames unwind.
+    /// Read it with `ErrorRef.traceback`; after `callWith`, take it with `State.takeErrorValue`.
+    traceback: bool = false,
+    /// Message handler with `xpcall` semantics. It runs on top of the failing
+    /// frames and its first result becomes the error value; an error inside it
+    /// is handled again, up to a fixed depth. Must belong to the called state.
+    message_handler: ?Function = null,
+};
+
+/// Copyable, thread-safe handle that asks a `State` to stop running Lua.
+///
+/// `interrupt` may be called from any thread while the State is alive; join
+/// threads that use the handle before `State.deinit`. Execution stops at the
+/// next safepoint: loop back edges, calls, every few hundred instructions,
+/// and inside long-running library functions. The interrupted host call
+/// returns `error.Interrupted`. Lua `pcall`, `xpcall`, and coroutines cannot
+/// catch it, and pending `__close` handlers of the interrupted frames do not
+/// run. The request is consumed when the error reaches the host; a request
+/// made while no Lua is running applies to the next execution that reaches a
+/// safepoint, unless `State.clearInterrupt` drops it first.
+pub const InterruptHandle = struct {
+    control: *runtime.InterruptControl,
+
+    /// Requests that the State stop at its next safepoint.
+    pub fn interrupt(self: InterruptHandle) void {
+        self.control.request();
+    }
+
+    /// Reports whether an interrupt is pending.
+    pub fn isPending(self: InterruptHandle) bool {
+        return self.control.isRequested();
+    }
 };
 
 /// Snapshot of the state's cumulative instruction budget.
@@ -423,6 +466,8 @@ pub const State = struct {
     raw_state: runtime.State,
     /// Registry root for the last captured Lua error value.
     last_error_root: ?usize = null,
+    /// Traceback captured with the last error value by `Function.callWith`.
+    last_error_traceback: ?[]u8 = null,
     /// Owned memory-file entries visible to the configured memory filesystem.
     memory_files: std.ArrayList(MemoryFile) = .empty,
     /// Tracks whether each memory-file entry owns its contents slice.
@@ -471,6 +516,7 @@ pub const State = struct {
     /// Releases all resources owned by the state and invalidates outstanding API handles.
     pub fn deinit(self: *State) void {
         const state_allocator = self.allocator();
+        if (self.last_error_traceback) |text| state_allocator.free(text);
         self.abandonRollbackMetadata();
         self.raw_state.deinit();
         self.deinitOwnedMemoryFiles(state_allocator);
@@ -535,6 +581,7 @@ pub const State = struct {
         defer self.allocator().free(prepared);
         metadata.restore(self);
         journal.reset(&self.raw_state, prepared);
+        self.clearLastErrorTraceback();
         self.last_error_root = null;
         if (metadata.error_value) |value| {
             self.raw_state.api_roots.appendAssumeCapacity(value);
@@ -637,7 +684,7 @@ pub const State = struct {
 
     /// Returns the cumulative instruction budget usage for this state.
     pub fn instructionBudget(self: *const State) InstructionBudget {
-        const used = self.raw_state.instruction_count;
+        const used = self.raw_state.instructionBudgetUsed();
         const remaining = if (self.raw_state.options.max_instructions) |limit|
             if (used >= limit) 0 else limit - used
         else
@@ -651,7 +698,27 @@ pub const State = struct {
 
     /// Resets the cumulative instruction counter to zero.
     pub fn resetInstructionBudget(self: *State) void {
-        self.raw_state.instruction_count = 0;
+        self.raw_state.resetInstructionBudget();
+    }
+
+    /// Returns a thread-safe handle that interrupts this State. See `InterruptHandle`.
+    ///
+    /// The first call allocates the shared interrupt flag; later calls return
+    /// handles to the same flag, which stays valid across `reset` until `deinit`.
+    /// While a handle exists, the dispatch loop polls the flag periodically.
+    pub fn interruptHandle(self: *State) !InterruptHandle {
+        return .{ .control = try self.raw_state.interruptControl() };
+    }
+
+    /// Drops a pending interrupt request, for example one that arrived after
+    /// the script it targeted had already finished.
+    pub fn clearInterrupt(self: *State) void {
+        self.raw_state.clearInterrupt();
+    }
+
+    /// Reports whether an interrupt request is pending.
+    pub fn isInterruptPending(self: *const State) bool {
+        return self.raw_state.interruptRequested();
     }
 
     /// Opens additional standard libraries after state creation.
@@ -1032,10 +1099,18 @@ pub const State = struct {
     pub fn takeErrorValue(self: *State) ?ErrorRef {
         const index = self.last_error_root orelse return null;
         self.last_error_root = null;
-        return .{ .ref = .{ .state = self, .generation = self.generation, .index = index } };
+        const traceback_text = self.last_error_traceback;
+        self.last_error_traceback = null;
+        return .{ .ref = .{ .state = self, .generation = self.generation, .index = index }, .traceback_text = traceback_text };
+    }
+
+    fn clearLastErrorTraceback(self: *State) void {
+        if (self.last_error_traceback) |text| self.allocator().free(text);
+        self.last_error_traceback = null;
     }
 
     fn setLastErrorValue(self: *State, value: runtime.Value) !void {
+        self.clearLastErrorTraceback();
         if (self.last_error_root) |index| self.raw_state.unrootValue(index);
         self.last_error_root = null;
         self.last_error_root = try self.raw_state.rootValue(value);
@@ -1762,38 +1837,75 @@ pub const Function = struct {
     ///
     /// Lua failures are returned as `error.LuaError` and captured on the state.
     pub fn call(self: Function, args: anytype, comptime R: type) !R {
-        try self.ref.validate(self.ref.state);
-        self.ref.state.bindDispatch();
-        const raw_args = try convertArgs(self.ref.state, args);
-        defer self.ref.state.allocator().free(raw_args);
+        return self.callWith(args, R, .{});
+    }
 
-        const results = self.ref.state.raw_state.callFunction(try self.ref.rawValue(), raw_args) catch |err| return self.ref.state.captureLuaError(err);
-        defer self.ref.state.allocator().free(results);
-        return fromRuntimeResults(self.ref.state, results, R);
+    /// Like `call`, with a per-call instruction budget, traceback capture, or
+    /// message handler; see `CallOptions`. On `error.LuaError`, the handled
+    /// error value and any traceback are captured on the state for `errorMessage`
+    /// and `takeErrorValue`.
+    pub fn callWith(self: Function, args: anytype, comptime R: type, options: CallOptions) !R {
+        const state = self.ref.state;
+        try self.ref.validate(state);
+        state.bindDispatch();
+        const raw_args = try convertArgs(state, args);
+        defer state.allocator().free(raw_args);
+
+        var traceback: ?[]u8 = null;
+        defer if (traceback) |text| state.allocator().free(text);
+        const handler = try hostErrorHandler(state, options, &traceback);
+        const budget = CallBudget.begin(state, options);
+        defer budget.end(state);
+        const results = state.raw_state.callFunctionHandled(try self.ref.rawValue(), raw_args, handler) catch |err| {
+            const captured = state.captureLuaError(err);
+            if (captured == error.LuaError) {
+                state.last_error_traceback = traceback;
+                traceback = null;
+            }
+            return captured;
+        };
+        defer state.allocator().free(results);
+        return fromRuntimeResults(state, results, R);
     }
 
     /// Calls the function and returns Lua failures as an `ErrorRef` instead of `error.LuaError`.
     /// Successful results convert and borrow strings as in `call`.
     pub fn protectedCall(self: Function, args: anytype, comptime R: type) !CallResult(R) {
-        try self.ref.validate(self.ref.state);
-        self.ref.state.bindDispatch();
-        const raw_args = try convertArgs(self.ref.state, args);
-        defer self.ref.state.allocator().free(raw_args);
+        return self.protectedCallWith(args, R, .{});
+    }
 
-        const result = self.ref.state.raw_state.protectedCallFunction(try self.ref.rawValue(), raw_args) catch |err| {
-            if (err == error.OutOfMemory and self.ref.state.takeMemoryLimitExceeded()) {
-                return .{ .lua_error = try self.ref.state.memoryLimitErrorRef() };
+    /// Like `protectedCall`, with a per-call instruction budget, traceback
+    /// capture, or message handler; see `CallOptions`. A captured traceback is
+    /// owned by the returned `ErrorRef`.
+    pub fn protectedCallWith(self: Function, args: anytype, comptime R: type, options: CallOptions) !CallResult(R) {
+        const state = self.ref.state;
+        try self.ref.validate(state);
+        state.bindDispatch();
+        const raw_args = try convertArgs(state, args);
+        defer state.allocator().free(raw_args);
+
+        var traceback: ?[]u8 = null;
+        defer if (traceback) |text| state.allocator().free(text);
+        const handler = try hostErrorHandler(state, options, &traceback);
+        const budget = CallBudget.begin(state, options);
+        defer budget.end(state);
+        const result = state.raw_state.protectedCallFunctionHandled(try self.ref.rawValue(), raw_args, handler) catch |err| {
+            if (err == error.OutOfMemory and state.takeMemoryLimitExceeded()) {
+                return .{ .lua_error = try state.memoryLimitErrorRef() };
             }
             return err;
         };
         switch (result) {
             .success => |values| {
-                defer self.ref.state.allocator().free(values);
-                return .{ .ok = try fromRuntimeResults(self.ref.state, values, R) };
+                defer state.allocator().free(values);
+                return .{ .ok = try fromRuntimeResults(state, values, R) };
             },
             .failure => |value| {
-                try self.ref.state.setLastErrorValue(value);
-                return .{ .lua_error = try ErrorRef.fromRuntime(self.ref.state, value) };
+                try state.setLastErrorValue(value);
+                var error_ref = try ErrorRef.fromRuntime(state, value);
+                error_ref.traceback_text = traceback;
+                traceback = null;
+                return .{ .lua_error = error_ref };
             },
         }
     }
@@ -2015,15 +2127,27 @@ pub fn CallResult(comptime R: type) type {
 /// Rooted handle to a Lua error value.
 pub const ErrorRef = struct {
     ref: Ref,
+    /// Traceback owned by this handle; read it with `traceback`.
+    traceback_text: ?[]const u8 = null,
 
     fn fromRuntime(state: *State, raw: runtime.Value) !ErrorRef {
         return .{ .ref = try Ref.fromRuntime(state, raw) };
     }
 
-    /// Releases this error handle's root.
+    /// Releases this error handle's root and traceback.
     pub fn deinit(self: *ErrorRef) void {
+        if (self.traceback_text) |text| self.ref.state.allocator().free(text);
         self.ref.deinit();
         self.* = undefined;
+    }
+
+    /// Returns the traceback captured at the error point when the call
+    /// requested `CallOptions.traceback`, or null. The text has the form of
+    /// Lua's `debug.traceback` without a message: `stack traceback:` followed
+    /// by one tab-indented line per level, innermost first. It is valid until
+    /// `deinit`.
+    pub fn traceback(self: ErrorRef) ?[]const u8 {
+        return self.traceback_text;
     }
 
     /// Returns the raw Lua error value as a high-level `Value`.
@@ -2400,6 +2524,31 @@ pub const Coroutine = struct {
         };
     }
 };
+
+/// Narrows the state's per-call instruction deadline for one host call.
+const CallBudget = struct {
+    active: bool,
+    previous: ?u64,
+
+    fn begin(state: *State, options: CallOptions) CallBudget {
+        const max = options.max_instructions orelse return .{ .active = false, .previous = null };
+        return .{ .active = true, .previous = state.raw_state.beginCallInstructionBudget(max) };
+    }
+
+    fn end(self: CallBudget, state: *State) void {
+        if (self.active) state.raw_state.endCallInstructionBudget(self.previous);
+    }
+};
+
+fn hostErrorHandler(state: *State, options: CallOptions, traceback: *?[]u8) !runtime.HostErrorHandler {
+    return .{
+        .traceback = if (options.traceback) traceback else null,
+        .message_handler = if (options.message_handler) |handler| blk: {
+            try handler.ref.validate(state);
+            break :blk state.raw_state.rootedValue(handler.ref.index);
+        } else .nil,
+    };
+}
 
 fn validateGcParam(value: i64) !void {
     if (value < 0 or value > std.math.maxInt(i32)) return error.InvalidGcParam;
@@ -5570,7 +5719,7 @@ comptime {
     @setEvalBranchQuota(1000000);
     snapshot_runtime.review(State, .{
         .external = "base_allocator memory_limit_allocator baseline immutable_owner rollback_metadata",
-        .rebuilt = "generation last_error_root",
+        .rebuilt = "generation last_error_root last_error_traceback",
         .copied = "raw_state memory_files memory_file_owned_contents callbacks",
     });
     snapshot_runtime.review(runtime.StateOptions, .{
@@ -5756,5 +5905,6 @@ test "api userdata table index and Lua iteration metamethods" {
 test {
     _ = @import("testing/api_host_tests.zig");
     _ = @import("testing/api_coroutine_tests.zig");
+    _ = @import("testing/api_limit_tests.zig");
     _ = @import("testing/api_table_tests.zig");
 }

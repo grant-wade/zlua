@@ -133,7 +133,10 @@ Yielding is continuation-based. Threads retain continuation records for protecte
 
 The instruction dispatcher lives in `runtime/state.zig`; `runtime/vm.zig` performs cross-cutting limit checks. The VM handles Lua-specific result adjustment, varargs, tail calls, metamethods, to-be-closed unwinding, primitive metatables, debug hooks, and stack overflow guards.
 
-- `max_instructions` is a cumulative state budget that can be queried and reset through the Zig API.
+- `max_instructions` is a cumulative state budget that can be queried and reset through the Zig API. Host calls can narrow it with per-call deadlines.
+- The dispatch loop compares the instruction count with one checkpoint. Budgets and interrupt polls share the slow path, which leaves the checkpoint in place after a failure so Lua cannot catch and continue. The uncounted fast loop runs only without budgets and polls the interrupt flag at back edges, calls, and returns.
+- Host interrupts use a heap-allocated atomic flag so handles survive state moves and reset. `error.Interrupted` bypasses `pcall`, `xpcall`, coroutines, and callback dispatch, runs no `__close` handlers, and clears the flag when it leaves the outermost interpreter loop.
+- Host entry points can run a message handler or capture a traceback at the error point, before failing frames unwind.
 - `max_memory` is enforced by the embedding API's bounded allocator. Low-level runtime users must supply their own bounded allocator.
 
 ### Garbage Collection

@@ -18,6 +18,7 @@ pub fn concat(state: *State, thread: *Thread, op: bytecode.Call) !void {
     defer out.deinit(state.allocator);
     var index = start;
     while (index <= stop) : (index += 1) {
+        if ((index -% start) & 0xfff == 0) try state.checkInterrupt();
         if (index != start) try out.appendSlice(state.allocator, sep);
         const value = try state.getTableFromThread(thread, table_value, .{ .integer = index });
         switch (value) {
@@ -177,6 +178,7 @@ pub fn sort(state: *State, thread: *Thread, op: bytecode.Call) !void {
 
 fn sortValues(state: *State, thread: *Thread, comparator: Value, values: []Value) !void {
     if (values.len < 2) return;
+    try state.checkInterrupt();
     var left: usize = 0;
     var right: usize = values.len - 1;
     const pivot = values[values.len / 2];

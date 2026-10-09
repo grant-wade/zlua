@@ -185,9 +185,34 @@ var lua = try zlua.State.init(allocator, .{
 
 `max_instructions` is cumulative across calls and coroutine resumes. Query it with `instructionBudget` and reset it with `resetInstructionBudget`.
 
+`Function.callWith` and `Function.protectedCallWith` take `CallOptions`. Its `max_instructions` budget covers one call, including nested Lua calls, callbacks that call back into Lua, and coroutines resumed inside it. A budgeted call inside another keeps the tighter budget. Exhaustion raises the same `instruction limit exceeded` error as the state budget, which still counts every instruction:
+
+```zig
+const result = try handler.protectedCallWith(.{event}, void, .{ .max_instructions = 100_000 });
+```
+
 `max_memory` bounds allocations made through the state, including parsing, compilation, runtime objects, API conversion, memory-file copies, and captured output. Initialization may return `error.OutOfMemory` if the limit cannot hold the requested libraries.
 
-Limit failures become Lua errors during execution.
+Limit failures become Lua errors during execution. Once a budget is exhausted, every later instruction in its scope fails again, so `pcall` cannot keep the script running.
+
+### Interrupts
+
+`interruptHandle` returns a small, copyable `InterruptHandle`. Another thread can call `interrupt()` to stop the running script:
+
+```zig
+const handle = try lua.interruptHandle();
+// On a watchdog thread, after a deadline:
+handle.interrupt();
+// On the Lua thread:
+lua.doString(source, .{}) catch |err| switch (err) {
+    error.Interrupted => {}, // the state is still usable
+    else => return err,
+};
+```
+
+Lua stops at its next safepoint: a loop back edge, a call, a periodic check in the dispatch loop, or a check inside long-running library functions such as `string.rep`, `string.gsub`, pattern matching, `table.concat`, and `table.sort`. The host call returns `error.Interrupted`; `protectedCall` returns it as a Zig error, not as `lua_error`. Lua code cannot catch an interrupt with `pcall`, `xpcall`, or a coroutine, and pending `__close` handlers of the interrupted frames do not run. A host callback that catches `error.Interrupted` from a nested call cannot resume the script either: the interrupt stays pending until it leaves the outermost call.
+
+The request is consumed when `error.Interrupted` reaches the host. A request made while no Lua is running applies to the next execution that reaches a safepoint; call `clearInterrupt` to drop it, and `isInterruptPending` to check. The handle stays valid across `reset` until `deinit`; join threads that use it first. Interrupts need no threads, so freestanding hosts can call `interrupt()` from a callback or signal context. [`watchdog.zig`](../examples/watchdog.zig) runs a watchdog thread.
 
 ## Garbage Collection
 
@@ -437,6 +462,28 @@ switch (result) {
     },
 }
 ```
+
+`CallOptions.traceback` captures a traceback at the error point, before the failing frames unwind. It follows `debug.traceback` without the message, naming each frame from its call site:
+
+```zig
+const result = try run.protectedCallWith(.{}, void, .{ .traceback = true });
+switch (result) {
+    .ok => {},
+    .lua_error => |error_ref| {
+        var err = error_ref;
+        defer err.deinit(); // also frees the traceback
+        std.debug.print("{s}\n", .{err.traceback().?});
+        // stack traceback:
+        //     [C]: in global 'error'
+        //     app.lua:2: in upvalue 'check'
+        //     app.lua:6: in function <app.lua:5>
+    },
+}
+```
+
+`CallOptions.message_handler` takes a Lua `Function` with `xpcall` semantics: it runs on top of the failing frames, so `debug.traceback` and `debug.getinfo` see them, and its first result becomes the error value. With `callWith`, the handled value and traceback stay on the state; `takeErrorValue` transfers both to the returned `ErrorRef`.
+
+The standalone `zlua` interpreter reports uncaught runtime errors like `lua`: `zlua: message`, then the traceback.
 
 ## Coroutines
 
@@ -693,7 +740,7 @@ First writes, allocation-registry detachment, private-allocation cleanup, and ea
 - Broad Lua-table-to-Zig-struct decoding is not implemented.
 - There are no `callGlobal` convenience methods; fetch a `Function` and call it.
 
-Embedding examples under `examples/` cover scripts, library selection, callbacks, sandboxing, bytecode, memory files, userdata, modules, and coroutines:
+Embedding examples under `examples/` cover scripts, library selection, callbacks, sandboxing, interrupts, bytecode, memory files, userdata, modules, and coroutines:
 
 ```sh
 zig build examples

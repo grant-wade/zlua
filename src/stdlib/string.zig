@@ -441,6 +441,7 @@ pub fn gsub(state: *State, thread: *Thread, op: bytecode.Call) !void {
     var changed = false;
     var previous_match_end: ?usize = null;
     while (pos <= source.len and count < max_count) {
+        try state.checkInterrupt();
         const found = (try simplePatternFind(state, source, pattern, pos)) orelse break;
         try out.appendSlice(state.allocator, source[pos..found.range.start]);
         if (found.range.start == found.range.end and previous_match_end != null and previous_match_end.? == found.range.start) {
@@ -763,6 +764,7 @@ pub fn rep(state: *State, thread: *Thread, op: bytecode.Call) !void {
     if (count > 0) {
         var index: i64 = 0;
         while (index < count) : (index += 1) {
+            if (index & 0xfff == 0) try state.checkInterrupt();
             if (index != 0) try out.appendSlice(state.allocator, sep);
             try out.appendSlice(state.allocator, source);
         }
@@ -1136,6 +1138,7 @@ fn simplePatternFind(state: *State, source: []const u8, pattern: []const u8, sta
     }
     var candidate = start;
     while (candidate <= source.len) : (candidate += 1) {
+        try state.checkInterrupt();
         if (try matchSimplePatternAt(state, source, pattern, candidate)) |matched| return .{ .range = .{ .start = candidate, .end = matched.end }, .captures = matched.captures };
     }
     return null;
@@ -1369,6 +1372,7 @@ fn matchPatternFrom(state: *State, source: []const u8, pattern: []const u8, sour
             var index = ends.items.len;
             while (index > 0) {
                 index -= 1;
+                try state.checkInterrupt();
                 if (try matchPatternFrom(state, source, pattern, ends.items[index], next_index, depth + 1, captures)) |matched_end| return matched_end;
             }
             if (quantifier == '*') return matchPatternFrom(state, source, pattern, source_index, next_index, depth + 1, captures);
@@ -1377,6 +1381,7 @@ fn matchPatternFrom(state: *State, source: []const u8, pattern: []const u8, sour
         '-' => {
             var candidate = source_index;
             while (true) {
+                try state.checkInterrupt();
                 if (try matchPatternFrom(state, source, pattern, candidate, next_index, depth + 1, captures)) |matched_end| return matched_end;
                 const item_end = (try matchPatternItem(state, source, atom, candidate, captures)) orelse return null;
                 if (item_end == candidate) return null;

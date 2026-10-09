@@ -305,6 +305,12 @@ pub fn resumeCoroutine(comptime State: type, self: *State, target: *Thread, args
                 target.status = .dead;
                 return .{ .failure = error_value };
             },
+            error.Interrupted => {
+                // An interrupt kills the coroutine without running more Lua;
+                // closures keep the values of its captured locals.
+                self.closeUpvalues(target, 0);
+                return err;
+            },
             else => return err,
         };
         break;

@@ -110,6 +110,18 @@ pub const StateOptions = struct {
     trace_vm: bool = false,
 };
 
+/// Host handling for a runtime error escaping a host entry point. It runs
+/// at the error point, before the failing frames unwind or `__close` runs.
+pub const HostErrorHandler = struct {
+    /// Lua message handler with `xpcall` semantics; its first result replaces the error value.
+    message_handler: Value = .nil,
+    /// Receives a traceback allocated with the state allocator. The caller
+    /// initializes it to null and frees any traceback stored there.
+    traceback: ?*?[]u8 = null,
+    /// End the traceback with `[C]: in ?` for the host entry, as `lua.c` does.
+    host_frame: bool = false,
+};
+
 pub const State = struct {
     rollback: ?*rollback_mod.Journal = null,
     userdata_scope: ?*types.UserdataScope = null,
@@ -196,7 +208,19 @@ pub const State = struct {
     mark_all_stack_registers: bool = false,
     conservative_gc_depth: usize = 0,
     random_state: [4]u64 = .{ 0x123456789abcdef0, 0xff, 0xfedcba9876543210, 0 },
+    /// Monotonic count of executed VM instructions.
     instruction_count: u64 = 0,
+    /// `instruction_count` at the last budget reset; `max_instructions` covers
+    /// the instructions executed since then.
+    instruction_budget_base: u64 = 0,
+    /// Absolute `instruction_count` deadline of the innermost budgeted host
+    /// call, already narrowed by enclosing budgeted calls.
+    call_instruction_deadline: ?u64 = null,
+    /// The dispatch loop enters `vm.executionCheckpoint` once
+    /// `instruction_count` reaches this value. Zero forces a recompute.
+    instruction_checkpoint: u64 = 0,
+    /// Interrupt request shared with host threads; allocated on first use.
+    interrupt: ?*vm_mod.InterruptControl = null,
 
     pub fn registerAllocation(self: *State, comptime field: []const u8, item: anytype) !void {
         if (self.rollback) |journal| try journal.prepareAllocation(self);
@@ -294,6 +318,7 @@ pub const State = struct {
             zone.deinit();
             self.allocator.destroy(zone);
         }
+        if (self.interrupt) |control| self.allocator.destroy(control);
         self.stdout.deinit(self.allocator);
         self.stderr.deinit(self.allocator);
         self.strings.deinit();
@@ -335,7 +360,7 @@ pub const State = struct {
 
     pub fn execute(self: *State, proto: *proto_mod.Proto) !void {
         try value_mod.prepareProtoTree(proto);
-        try self.executeClosure(try self.newRootClosure(proto));
+        try self.executeClosure(try self.newRootClosure(proto), .{});
     }
 
     // Host frames must have stable identities when coroutine.running() exposes
@@ -384,6 +409,11 @@ pub const State = struct {
     }
 
     pub fn callLoadedClosure(self: *State, closure: *Closure, args: []const Value) ![]Value {
+        return self.callLoadedClosureHandled(closure, args, .{});
+    }
+
+    /// Like `callLoadedClosure`; `handler` runs at the error point before frames unwind.
+    pub fn callLoadedClosureHandled(self: *State, closure: *Closure, args: []const Value, handler: HostErrorHandler) ![]Value {
         const thread = self.newHostThread(closure) catch |err| switch (err) {
             error.StackOverflow => return self.fail("stack overflow"),
             else => return err,
@@ -395,12 +425,7 @@ pub const State = struct {
         self.current_thread = thread;
         defer self.current_thread = previous_thread;
         self.runThreadUntil(thread, 0) catch |err| {
-            if (err == error.LuaExit) try self.finishExitUnwind(thread) else {
-                if (err == error.StackOverflow and self.last_error == null) self.last_error = .{ .diagnostic = "stack overflow" };
-                if (self.options.debug_errors and isRuntimeError(err)) self.appendUnhandledErrorDebugDump(thread, err) catch {};
-                self.closeFramesTo(thread, 0, self.currentErrorValue()) catch |close_err| return close_err;
-            }
-            thread.status = .dead;
+            try self.unwindHostThread(thread, err, handler);
             return err;
         };
         thread.status = .dead;
@@ -408,6 +433,11 @@ pub const State = struct {
     }
 
     pub fn protectedCallLoadedClosure(self: *State, closure: *Closure, args: []const Value) !ProtectedCallResult {
+        return self.protectedCallLoadedClosureHandled(closure, args, .{});
+    }
+
+    /// Like `protectedCallLoadedClosure`; `handler` runs at the error point before frames unwind.
+    pub fn protectedCallLoadedClosureHandled(self: *State, closure: *Closure, args: []const Value, handler: HostErrorHandler) !ProtectedCallResult {
         const thread = self.newHostThread(closure) catch |err| switch (err) {
             error.StackOverflow => return .{ .failure = .{ .string = try self.intern("stack overflow") } },
             else => return err,
@@ -425,6 +455,10 @@ pub const State = struct {
             error.RuntimeError, error.StackOverflow, error.UnsupportedOpcode => {
                 if (err == error.StackOverflow and self.last_error == null) self.last_error = .{ .diagnostic = "stack overflow" };
                 if (self.options.debug_errors) self.appendUnhandledErrorDebugDump(thread, err) catch {};
+                self.applyHostErrorHandler(thread, handler) catch |handler_err| {
+                    thread.status = .dead;
+                    return handler_err;
+                };
                 var failure = self.currentErrorValue();
                 self.closeFramesTo(thread, 0, failure) catch |close_err| switch (close_err) {
                     error.RuntimeError, error.StackOverflow, error.UnsupportedOpcode => failure = self.currentErrorValue(),
@@ -438,14 +472,22 @@ pub const State = struct {
                 thread.status = .dead;
                 return err;
             },
-            else => return err,
+            else => {
+                thread.status = .dead;
+                return err;
+            },
         };
         thread.status = .dead;
         return .{ .success = try self.copyStackSlice(thread, thread.last_result_base, thread.last_result_count) };
     }
 
     pub fn callFunction(self: *State, function: Value, args: []const Value) ![]Value {
-        if (function == .closure) return self.callLoadedClosure(function.closure, args);
+        return self.callFunctionHandled(function, args, .{});
+    }
+
+    /// Like `callFunction`; `handler` runs at the error point before frames unwind.
+    pub fn callFunctionHandled(self: *State, function: Value, args: []const Value, handler: HostErrorHandler) ![]Value {
+        if (function == .closure) return self.callLoadedClosureHandled(function.closure, args, handler);
         // Native calls still need a stack frame for arguments, errors, and
         // reentrant Lua calls, but no compiled wrapper or state-owned proto.
         var proto = proto_mod.Proto.init(self.allocator);
@@ -463,19 +505,22 @@ pub const State = struct {
         self.last_error = null;
         self.last_error_in_close = false;
         return self.callCollect(thread, function, args) catch |err| {
-            if (err == error.LuaExit) {
-                try self.finishExitUnwind(thread);
-                return err;
-            }
-            if (err == error.StackOverflow and self.last_error == null) self.last_error = .{ .diagnostic = "stack overflow" };
-            self.closeFramesTo(thread, 0, self.currentErrorValue()) catch |close_err| return close_err;
+            // A native entry runs no interpreter loop of its own, so deliver
+            // an interrupt it raised here.
+            if (err == error.Interrupted and self.execution_depth == 0) self.consumeInterrupt();
+            try self.unwindHostThread(thread, err, handler);
             return err;
         };
     }
 
     pub fn protectedCallFunction(self: *State, function: Value, args: []const Value) !ProtectedCallResult {
-        if (function == .closure) return self.protectedCallLoadedClosure(function.closure, args);
-        const values = self.callFunction(function, args) catch |err| switch (err) {
+        return self.protectedCallFunctionHandled(function, args, .{});
+    }
+
+    /// Like `protectedCallFunction`; `handler` runs at the error point before frames unwind.
+    pub fn protectedCallFunctionHandled(self: *State, function: Value, args: []const Value, handler: HostErrorHandler) !ProtectedCallResult {
+        if (function == .closure) return self.protectedCallLoadedClosureHandled(function.closure, args, handler);
+        const values = self.callFunctionHandled(function, args, handler) catch |err| switch (err) {
             error.RuntimeError, error.StackOverflow, error.UnsupportedOpcode => return .{ .failure = self.currentErrorValue() },
             else => return err,
         };
@@ -484,15 +529,20 @@ pub const State = struct {
 
     pub fn executeSourceChunk(self: *State, source: []const u8) !void {
         const loaded = try self.loadSourceAsClosure(source);
-        try self.executeClosure(loaded.closure);
+        try self.executeClosure(loaded.closure, .{});
     }
 
     pub fn executeSourceChunkNamed(self: *State, source: []const u8, source_name: []const u8) !void {
-        const loaded = try self.loadSourceAsClosureNamed(source, source_name);
-        try self.executeClosure(loaded.closure);
+        return self.executeSourceChunkNamedHandled(source, source_name, .{});
     }
 
-    fn executeClosure(self: *State, closure: *Closure) !void {
+    /// Like `executeSourceChunkNamed`; `handler` runs at a runtime error point before frames unwind.
+    pub fn executeSourceChunkNamedHandled(self: *State, source: []const u8, source_name: []const u8, handler: HostErrorHandler) !void {
+        const loaded = try self.loadSourceAsClosureNamed(source, source_name);
+        try self.executeClosure(loaded.closure, handler);
+    }
+
+    fn executeClosure(self: *State, closure: *Closure, handler: HostErrorHandler) !void {
         const thread = self.newHostThread(closure) catch |err| switch (err) {
             error.StackOverflow => return self.fail("stack overflow"),
             else => return err,
@@ -502,18 +552,68 @@ pub const State = struct {
         self.current_thread = thread;
         defer self.current_thread = previous_thread;
         self.runThreadUntil(thread, 0) catch |err| {
-            if (err == error.LuaExit) try self.finishExitUnwind(thread) else {
-                if (err == error.StackOverflow and self.last_error == null) self.last_error = .{ .diagnostic = "stack overflow" };
-                if (self.options.debug_errors and isRuntimeError(err)) self.appendUnhandledErrorDebugDump(thread, err) catch {};
-                self.closeFramesTo(thread, 0, self.currentErrorValue()) catch |close_err| return close_err;
-            }
-            thread.status = .dead;
+            try self.unwindHostThread(thread, err, handler);
             return err;
         };
         thread.status = .dead;
     }
 
+    /// Unwinds a host thread after `err` escaped its interpreter loop. Runtime
+    /// errors run `handler` while the failing frames are live, then close them
+    /// with `__close`. `os.exit` closes only when asked. An interrupt runs no
+    /// more Lua: its frames are dropped and the retiring thread closes upvalues.
+    fn unwindHostThread(self: *State, thread: *Thread, err: anyerror, handler: HostErrorHandler) !void {
+        defer thread.status = .dead;
+        if (err == error.LuaExit) return self.finishExitUnwind(thread);
+        if (err == error.Interrupted) return;
+        if (err == error.StackOverflow and self.last_error == null) self.last_error = .{ .diagnostic = "stack overflow" };
+        if (self.options.debug_errors and isRuntimeError(err)) self.appendUnhandledErrorDebugDump(thread, err) catch {};
+        if (isRuntimeError(err)) try self.applyHostErrorHandler(thread, handler);
+        try self.closeFramesTo(thread, 0, self.currentErrorValue());
+    }
+
+    /// Runs `handler` for the current error while the failing frames are
+    /// still on `thread`, like a Lua message handler.
+    fn applyHostErrorHandler(self: *State, thread: *Thread, handler: HostErrorHandler) !void {
+        if (handler.traceback) |out| {
+            if (out.*) |previous| self.allocator.free(previous);
+            out.* = null;
+            out.* = try debug_mod.formatTraceback(State, self, thread, handler.host_frame);
+        }
+        if (handler.message_handler != .nil and thread.frames.items.len != 0) {
+            const handled = try self.runHostMessageHandler(thread, handler.message_handler, self.currentErrorValue());
+            self.last_error = .{ .lua_value = handled };
+        }
+    }
+
+    /// Calls a host message handler on top of the failing frames. An error in
+    /// the handler is handled again, as `xpcall` does, up to a fixed depth.
+    fn runHostMessageHandler(self: *State, thread: *Thread, handler: Value, error_value: Value) !Value {
+        var current = error_value;
+        var depth: usize = 0;
+        while (depth < max_error_handler_depth) : (depth += 1) {
+            const context = self.protectedCallContextWithErrors(thread);
+            const result = try self.runProtectedCall(thread, context, handler, &.{current});
+            switch (result) {
+                .success => |values| {
+                    defer self.allocator.free(values);
+                    return if (values.len == 0) .nil else values[0];
+                },
+                .failure => |failure| current = failure,
+            }
+        }
+        return .{ .string = try self.intern("error in error handling") };
+    }
+
     pub fn runThreadUntil(self: *State, thread: *Thread, target_frame_count: usize) anyerror!void {
+        self.runThreadLoop(thread, target_frame_count) catch |err| {
+            // The outermost interpreter loop delivers an interrupt to the host.
+            if (err == error.Interrupted and self.execution_depth == 0) self.consumeInterrupt();
+            return err;
+        };
+    }
+
+    fn runThreadLoop(self: *State, thread: *Thread, target_frame_count: usize) anyerror!void {
         defer gc_mod.syncThreadStorage(State, self, thread);
         gc_mod.rememberObject(State, self, .{ .thread = thread });
         self.execution_depth += 1;
@@ -806,7 +906,8 @@ pub const State = struct {
 
     fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bool {
         if (thread.frames.items.len <= target_frame_count) return false;
-        if (self.options.max_instructions != null or self.options.trace_vm) return false;
+        if (self.instructionBudgetActive() or self.options.trace_vm) return false;
+        if (self.fastLoopInterrupted()) return false;
         if (self.collect_after_instruction or self.step_after_instruction) return false;
         if (thread.hook != .nil and (thread.hook_line or thread.hook_count != 0 or thread.hook_running)) return false;
         if (self.gc_running and self.shouldRunAutoGc()) return false;
@@ -1094,7 +1195,14 @@ pub const State = struct {
                     if (result == op.jump_if_truthy) {
                         const source_pc = pc;
                         pc = jumpTarget(source_pc, op.offset);
-                        if (pc < source_pc) frame.last_hook_line = null;
+                        if (pc < source_pc) {
+                            frame.last_hook_line = null;
+                            // Backward jumps are safepoints for host interrupts.
+                            if (self.fastLoopInterrupted()) {
+                                block_start = pc;
+                                break :fast_loop;
+                            }
+                        }
                     }
                     block_start = pc;
                     if (pc >= instructions.len) break :fast_loop;
@@ -1106,7 +1214,14 @@ pub const State = struct {
                     executed_count = executed_count +| (pc - block_start);
                     const source_pc = pc;
                     pc = jumpTarget(source_pc, offset);
-                    if (pc < source_pc) frame.last_hook_line = null;
+                    if (pc < source_pc) {
+                        frame.last_hook_line = null;
+                        // Backward jumps are safepoints for host interrupts.
+                        if (self.fastLoopInterrupted()) {
+                            block_start = pc;
+                            break :fast_loop;
+                        }
+                    }
                     block_start = pc;
                     if (pc >= instructions.len) break :fast_loop;
                     continue :fast_loop std.meta.activeTag(instructions[pc]);
@@ -1118,7 +1233,14 @@ pub const State = struct {
                     if (truthy(stack[op.register]) == op.jump_if_truthy) {
                         const source_pc = pc;
                         pc = jumpTarget(source_pc, op.offset);
-                        if (pc < source_pc) frame.last_hook_line = null;
+                        if (pc < source_pc) {
+                            frame.last_hook_line = null;
+                            // Backward jumps are safepoints for host interrupts.
+                            if (self.fastLoopInterrupted()) {
+                                block_start = pc;
+                                break :fast_loop;
+                            }
+                        }
                     }
                     block_start = pc;
                     if (pc >= instructions.len) break :fast_loop;
@@ -1133,7 +1255,14 @@ pub const State = struct {
                     if (truthy(value) == op.jump_if_truthy) {
                         const source_pc = pc;
                         pc = jumpTarget(source_pc, op.offset);
-                        if (pc < source_pc) frame.last_hook_line = null;
+                        if (pc < source_pc) {
+                            frame.last_hook_line = null;
+                            // Backward jumps are safepoints for host interrupts.
+                            if (self.fastLoopInterrupted()) {
+                                block_start = pc;
+                                break :fast_loop;
+                            }
+                        }
                     }
                     block_start = pc;
                     if (pc >= instructions.len) break :fast_loop;
@@ -1160,7 +1289,14 @@ pub const State = struct {
                     if (continues) {
                         const source_pc = pc;
                         pc = jumpTarget(source_pc, op.offset);
-                        if (pc < source_pc) frame.last_hook_line = null;
+                        if (pc < source_pc) {
+                            frame.last_hook_line = null;
+                            // Backward jumps are safepoints for host interrupts.
+                            if (self.fastLoopInterrupted()) {
+                                block_start = pc;
+                                break :fast_loop;
+                            }
+                        }
                     }
                     block_start = pc;
                     if (pc >= instructions.len) break :fast_loop;
@@ -1238,6 +1374,8 @@ pub const State = struct {
                     }
                     self.instruction_count = self.instruction_count +| (executed_count +| 1);
                     did_work = true;
+                    // Lua calls and returns are safepoints for host interrupts.
+                    if (self.fastLoopInterrupted()) return true;
                     continue :frames;
                 },
                 .ret => {
@@ -1266,6 +1404,8 @@ pub const State = struct {
                     if (executed_count != 0) thread.last_transfer_count = 0;
                     self.instruction_count = self.instruction_count +| (executed_count +| 1);
                     did_work = true;
+                    // Lua calls and returns are safepoints for host interrupts.
+                    if (self.fastLoopInterrupted()) return true;
                     continue :frames;
                 },
                 .close => {
@@ -1291,8 +1431,85 @@ pub const State = struct {
         }
     }
 
-    pub fn checkExecutionLimits(self: *State, thread: *Thread) !void {
+    pub inline fn checkExecutionLimits(self: *State, thread: *Thread) !void {
         return vm_mod.checkExecutionLimits(State, self, thread);
+    }
+
+    /// Returns the interrupt control shared with host threads, allocating it
+    /// on first use. Polling starts at the next safepoint.
+    pub fn interruptControl(self: *State) !*vm_mod.InterruptControl {
+        if (self.interrupt) |control| return control;
+        const control = try self.allocator.create(vm_mod.InterruptControl);
+        control.* = .{};
+        self.interrupt = control;
+        self.instruction_checkpoint = 0;
+        return control;
+    }
+
+    /// Reports a pending host interrupt. Safe to call on the owning thread at any time.
+    pub inline fn interruptRequested(self: *const State) bool {
+        const control = self.interrupt orelse return false;
+        return control.requested.load(.monotonic);
+    }
+
+    /// Clears a pending interrupt request.
+    pub fn clearInterrupt(self: *State) void {
+        if (self.interrupt) |control| control.clear();
+        self.instruction_checkpoint = 0;
+    }
+
+    /// Raises `error.Interrupted` when a host interrupt is pending. Native
+    /// functions with long internal loops call this periodically.
+    pub fn checkInterrupt(self: *State) !void {
+        return vm_mod.checkInterrupt(State, self);
+    }
+
+    /// Fast-loop poll: true when an interrupt is pending. Forces the general
+    /// loop to take its checkpoint at the next instruction.
+    inline fn fastLoopInterrupted(self: *State) bool {
+        if (!self.interruptRequested()) return false;
+        self.instruction_checkpoint = 0;
+        return true;
+    }
+
+    /// True while any instruction budget applies; the uncounted fast loop is then disabled.
+    pub inline fn instructionBudgetActive(self: *const State) bool {
+        return self.options.max_instructions != null or self.call_instruction_deadline != null;
+    }
+
+    /// Instructions counted against `max_instructions` since the last budget reset.
+    pub fn instructionBudgetUsed(self: *const State) u64 {
+        return self.instruction_count -| self.instruction_budget_base;
+    }
+
+    /// Restarts the cumulative `max_instructions` budget.
+    pub fn resetInstructionBudget(self: *State) void {
+        self.instruction_budget_base = self.instruction_count;
+        self.instruction_checkpoint = 0;
+    }
+
+    /// Narrows the instruction budget for a host call to at most `max`
+    /// further instructions, including nested calls and coroutines. Returns
+    /// the enclosing deadline for `endCallInstructionBudget`.
+    pub fn beginCallInstructionBudget(self: *State, max: u64) ?u64 {
+        const previous = self.call_instruction_deadline;
+        const deadline = self.instruction_count +| max;
+        self.call_instruction_deadline = if (previous) |outer| @min(outer, deadline) else deadline;
+        self.instruction_checkpoint = 0;
+        return previous;
+    }
+
+    /// Restores the deadline returned by `beginCallInstructionBudget`.
+    pub fn endCallInstructionBudget(self: *State, previous: ?u64) void {
+        self.call_instruction_deadline = previous;
+        self.instruction_checkpoint = 0;
+    }
+
+    /// Clears a delivered interrupt once `error.Interrupted` leaves the
+    /// outermost interpreter entry, so the next host call starts fresh.
+    fn consumeInterrupt(self: *State) void {
+        if (self.interrupt) |control| control.clear();
+        self.instruction_checkpoint = 0;
     }
 
     pub fn noteAllocation(self: *State, bytes: usize) void {
@@ -1726,7 +1943,7 @@ pub const State = struct {
             error.HostCallbackYield => return coroutine_mod.suspendCoroutine(State, self, thread, op, context.returns.items()),
             error.RuntimeError, error.StackOverflow, error.UnsupportedOpcode => return err,
             error.LuaError => return self.failValue(context.error_value orelse .{ .string = try self.intern("host callback raised an error") }),
-            error.OutOfMemory, error.LuaExit => return err,
+            error.OutOfMemory, error.LuaExit, error.Interrupted => return err,
             else => return self.fail(@errorName(err)),
         };
 

@@ -507,11 +507,11 @@ fn diagnosticNearEof(diagnostic: ?zlua.errors.Diagnostic) bool {
 }
 
 fn executeChunkNamed(allocator: std.mem.Allocator, io: std.Io, state: *zlua.runtime.State, source: []const u8, source_name: []const u8) !?u8 {
-    state.executeSourceChunkNamed(source, source_name) catch |err| {
+    var traceback: ?[]u8 = null;
+    defer if (traceback) |text| state.allocator.free(text);
+    state.executeSourceChunkNamedHandled(source, source_name, .{ .traceback = &traceback, .host_frame = true }) catch |err| {
         if (err == error.LuaExit) return try exitCode(io, state);
-        const detail = try state.errorDetailAlloc(allocator, err);
-        defer allocator.free(detail);
-        const message = try std.fmt.allocPrint(allocator, "{s}\n", .{detail});
+        const message = try errorReportAlloc(allocator, state, err, traceback);
         defer allocator.free(message);
         try flushStateOutput(io, state);
         try stderrWrite(io, message);
@@ -521,11 +521,11 @@ fn executeChunkNamed(allocator: std.mem.Allocator, io: std.Io, state: *zlua.runt
 }
 
 fn executeReplChunk(allocator: std.mem.Allocator, io: std.Io, state: *zlua.runtime.State, source: []const u8) !?u8 {
-    state.executeSourceChunkNamed(source, "=stdin") catch |err| {
+    var traceback: ?[]u8 = null;
+    defer if (traceback) |text| state.allocator.free(text);
+    state.executeSourceChunkNamedHandled(source, "=stdin", .{ .traceback = &traceback, .host_frame = true }) catch |err| {
         if (err == error.LuaExit) return try exitCode(io, state);
-        const detail = try state.errorDetailAlloc(allocator, err);
-        defer allocator.free(detail);
-        const message = try std.fmt.allocPrint(allocator, "{s}\n", .{detail});
+        const message = try errorReportAlloc(allocator, state, err, traceback);
         defer allocator.free(message);
         try flushStateOutput(io, state);
         try stderrWrite(io, message);
@@ -535,6 +535,15 @@ fn executeReplChunk(allocator: std.mem.Allocator, io: std.Io, state: *zlua.runti
     };
     try flushStateOutput(io, state);
     return null;
+}
+
+/// Formats an error like `lua.c`: `zlua: message`, followed by the traceback
+/// captured at the error point for runtime errors.
+fn errorReportAlloc(allocator: std.mem.Allocator, state: *zlua.runtime.State, err: anyerror, traceback: ?[]const u8) ![]u8 {
+    const detail = try state.errorDetailAlloc(allocator, err);
+    defer allocator.free(detail);
+    if (traceback) |text| return std.fmt.allocPrint(allocator, "zlua: {s}\n{s}\n", .{ detail, text });
+    return std.fmt.allocPrint(allocator, "zlua: {s}\n", .{detail});
 }
 
 /// `os.exit` unwound the state: flush Lua output and exit with the low byte of
