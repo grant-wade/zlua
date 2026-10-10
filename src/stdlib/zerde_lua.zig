@@ -37,14 +37,7 @@ pub fn inputBytes(state: *State, value: Value, function_name: []const u8) ![]con
 fn remainingFileBytes(state: *State, file: *runtime.Table, function_name: []const u8) ![]const u8 {
     try ensureOpen(state, file, function_name);
     if (!fileReadable(file)) return state.failArgumentMessage(function_name, 1, "file is not readable");
-    try refreshReadable(state, file);
-
-    const content = try fileString(state, file, "__zlua_file_content");
-    var pos = fileInteger(file, "__zlua_file_pos") orelse 1;
-    if (pos < 1) pos = 1;
-    const start: usize = @intCast(@min(@as(i64, @intCast(content.len)), pos - 1));
-    try setPos(state, file, content.len + 1);
-    return content[start..];
+    return @import("io.zig").readRemaining(state, file);
 }
 
 fn ensureOpen(state: *State, file: *runtime.Table, function_name: []const u8) !void {
@@ -57,20 +50,6 @@ fn fileReadable(file: *runtime.Table) bool {
     if (mode != .string or mode.string.len == 0) return false;
     return mode.string[0] == 'r' or std.mem.indexOfScalar(u8, mode.string, '+') != null;
 }
-
-fn fileString(state: *State, file: *runtime.Table, name: []const u8) ![]const u8 {
-    return state.expectString(file.get(.{ .string = name }));
-}
-
-fn fileInteger(file: *runtime.Table, comptime name: []const u8) ?i64 {
-    return runtime.toInteger(file.get(.{ .string = name }));
-}
-
-fn setPos(state: *State, file: *runtime.Table, pos: usize) !void {
-    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_pos") }, .{ .integer = @intCast(pos) });
-}
-
-const refreshReadable = @import("io.zig").refreshReadable;
 
 fn zerdeMetatable(state: *State, name: []const u8) !*Table {
     const value = try state.newTableWithHints(0, 2);

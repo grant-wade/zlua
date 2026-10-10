@@ -1707,3 +1707,41 @@ test "owned userdata storage is charged to managed memory across snapshot reset"
         try std.testing.expectEqual(lua.raw_state.allocationStats().total(), lua.raw_state.gc_known_total);
     }
 }
+
+test "snapshot restores io default files, write runs, and stdin position" {
+    var filesystem = api.MemoryFilesystem.init(a);
+    defer filesystem.deinit();
+    var lua = try api.State.init(a, .{
+        .stdlib = .full,
+        .capabilities = .{ .io = .{ .stdin = "one\ntwo\n" }, .filesystem = .{ .memory_rw = &filesystem } },
+    });
+    defer lua.deinit();
+    try lua.doString(
+        \\assert(io.read() == 'one')
+        \\log = assert(io.open('log.txt', 'w+'))
+        \\for i = 1, 5000 do log:write('x') end
+        \\io.output(log)
+        \\for k in pairs(io) do assert(not tostring(k):find('zlua')) end
+    , .{});
+    var snapshot = try lua.snapshot(a);
+    defer snapshot.deinit();
+    for (0..3) |_| {
+        try lua.doString(
+            \\assert(io.output() == log and io.input() == io.stdin)
+            \\assert(log:seek('cur') == 5000 and io.read() == 'two' and io.read() == nil)
+            \\for i = 1, 5000 do io.write('y') end
+            \\io.input(log); io.output(io.stdout)
+            \\log:seek('set', 4998)
+            \\assert(io.read(4) == 'xxyy' and log:seek('end') == 10000)
+            \\collectgarbage()
+        , .{});
+        try lua.reset();
+    }
+    try lua.doString(
+        \\assert(io.output() == log and log:seek('set') == 0 and #log:read('a') == 5000)
+        \\log:close()
+    , .{});
+    const bytes = try filesystem.readFileAlloc(a, "log.txt");
+    defer a.free(bytes);
+    try std.testing.expectEqual(@as(usize, 5000), bytes.len);
+}

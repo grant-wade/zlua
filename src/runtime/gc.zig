@@ -705,6 +705,8 @@ pub fn markRoots(comptime State: type, self: *State) void {
     markRuntimeErrorPayload(State, self, self.last_error);
     if (self.current_thread) |thread| forceEnqueue(State, self, .{ .thread = thread });
     if (self.file_metatable) |metatable| if (isTrackedTable(State, self, metatable)) markTable(State, self, metatable);
+    if (self.io_input) |file| if (isTrackedTable(State, self, file)) markTable(State, self, file);
+    if (self.io_output) |file| if (isTrackedTable(State, self, file)) markTable(State, self, file);
     if (self.string_metatable) |metatable| if (isTrackedTable(State, self, metatable)) markTable(State, self, metatable);
     if (self.number_metatable) |metatable| if (isTrackedTable(State, self, metatable)) markTable(State, self, metatable);
     if (self.boolean_metatable) |metatable| if (isTrackedTable(State, self, metatable)) markTable(State, self, metatable);

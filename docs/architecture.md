@@ -84,7 +84,7 @@ Objects allocated by a state are tracked in state-owned lists. `State.deinit` wa
 
 State initialization is planned around the chosen standard libraries:
 
-1. `stdlib.initHintsWithStdin` predicts global entries, dynamic strings, and tables.
+1. `stdlib.initHints` predicts global entries, dynamic strings, and tables. Stdin bytes stay with the I/O capability and are not interned.
 2. The state reserves its string and table tracking capacity.
 3. The global table is created with the expected hash capacity and installs `_G`.
 4. Selected libraries: 
@@ -95,7 +95,7 @@ State initialization is planned around the chosen standard libraries:
 
 Common library names and fixed values live in `src/stdlib/static_strings.zig`. They are process-lifetime strings stored in the executable, so each state can reuse them without allocating or GC-tracking copies. `State.intern` returns the canonical static slice when one exists and uses the per-state interning table for all other strings.
 
-Library setup also avoids repeated object layouts. Standard file handles share one lazily created method metatable instead of copying methods into every file table.
+Library setup also avoids repeated object layouts. All file handles share one lazily created metatable with the Lua layout (`__name`, `__gc`, `__close`, `__tostring`, and `__index` pointing to one method table) instead of copying methods into every file table. The default input and output files are `State.io_input` and `State.io_output`: GC roots and snapshot-remapped fields, like PUC's registry entries, rather than hidden `io` fields.
 
 `State.initWithOptionsObserved` exposes the startup phases—state containers, globals, libraries, and GC baseline—to the in-process startup benchmark. High-level callers use `zlua.State.init`; internal runtime callers use `initWithOptions`.
 
@@ -159,7 +159,7 @@ Opening a library and granting host access are separate decisions:
 
 | Capability | Available modes |
 | --- | --- |
-| I/O | Optional Zig `std.Io`, stdin bytes, and output writers. |
+| I/O | Optional Zig `std.Io`, stdin bytes (or a runtime-level stdin reader, used by the CLI), and output writers with flush policies. |
 | Filesystem | Disabled, read-only memory files, mutable memory filesystem, host cwd, rooted host directory, or callbacks. |
 | Environment | Disabled, host-provided map, or callbacks. |
 | Clock | Disabled, fixed (optionally with a local offset), system, or callbacks. |
@@ -195,7 +195,7 @@ The test harnesses are Zig build artifacts under `src/testing/`:
 | Official suite | Upstream Lua 5.5 tests under both runtimes. |
 | Benchmarks | Process-level and in-process startup measurements. |
 
-Staged differential tests can compare frontend, resolver, and compiler acceptance without depending on VM execution. Startup tests separately check allocation hints, static strings, global-table identity, and shared file metatables.
+Staged differential tests can compare frontend, resolver, and compiler acceptance without depending on VM execution. Startup tests separately check allocation hints, static strings, global-table identity, and the shared file metatable and method table.
 
 ## Invariants
 

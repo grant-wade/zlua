@@ -125,6 +125,9 @@ pub const MemoryFile = runtime.MemoryFile;
 /// Writable in-memory filesystem implementation for sandboxed file access.
 pub const MemoryFilesystem = runtime.MemoryFilesystem;
 
+/// When Lua output writers are flushed beyond explicit flush points.
+pub const OutputFlush = runtime.OutputFlush;
+
 /// Host I/O access granted to Lua standard-library operations.
 pub const IoCapability = struct {
     /// Optional Zig I/O runtime required by host-backed filesystem, clock, and process operations.
@@ -135,6 +138,11 @@ pub const IoCapability = struct {
     stdout: ?*std.Io.Writer = null,
     /// Optional writer used for Lua stderr.
     stderr: ?*std.Io.Writer = null,
+    /// When the runtime flushes `stdout` besides `io.flush`, `os.exit`, and
+    /// child process starts. `.line` behaves like a line-buffered C stream.
+    stdout_flush: OutputFlush = .explicit,
+    /// When the runtime flushes `stderr`; `.always` behaves like unbuffered C stderr.
+    stderr_flush: OutputFlush = .explicit,
 
     /// I/O capability with no host I/O handles or captured streams.
     pub const disabled: IoCapability = .{};
@@ -2560,6 +2568,8 @@ fn runtimeOptions(options: Options) runtime.StateOptions {
         .io = options.capabilities.io.runtime,
         .stdout = options.capabilities.io.stdout,
         .stderr = options.capabilities.io.stderr,
+        .stdout_flush = options.capabilities.io.stdout_flush,
+        .stderr_flush = options.capabilities.io.stderr_flush,
         .filesystem = options.capabilities.filesystem,
         .environment = options.capabilities.environment,
         .clock = options.capabilities.clock,
@@ -5723,8 +5733,8 @@ comptime {
         .copied = "raw_state memory_files memory_file_owned_contents callbacks",
     });
     snapshot_runtime.review(runtime.StateOptions, .{
-        .copied = "stdlib stdin max_file_bytes max_memory max_stack_values max_call_frames max_instructions debug_errors trace_vm",
-        .external = "io stdout stderr filesystem environment clock process",
+        .copied = "stdlib stdin stdout_flush stderr_flush capture_output max_file_bytes max_memory max_stack_values max_call_frames max_instructions debug_errors trace_vm",
+        .external = "io stdout stderr stdin_reader filesystem environment clock process",
     });
 }
 

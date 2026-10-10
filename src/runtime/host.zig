@@ -140,6 +140,22 @@ pub const MemoryFilesystem = struct {
         self.bytes_used += contents_copy.len;
     }
 
+    /// Overwrites or extends an existing file at `offset` without truncating it.
+    pub fn writeAt(self: *MemoryFilesystem, path: []const u8, offset: usize, contents: []const u8) !void {
+        const normalized = try normalizePathAlloc(self.allocator, path, self.options.max_path_len);
+        defer self.allocator.free(normalized);
+        const index = self.findNormalized(normalized) orelse return error.FileNotFound;
+        const file = &self.files.items[index];
+        const old_len = file.contents.len;
+        if (offset > old_len) return error.OperationUnsupported;
+        const new_len = @max(old_len, offset + contents.len);
+        try self.ensureQuota(old_len, new_len);
+        const grown = try self.allocator.realloc(@constCast(file.contents), new_len);
+        @memcpy(grown[offset..][0..contents.len], contents);
+        file.contents = grown;
+        self.bytes_used = self.bytes_used - old_len + new_len;
+    }
+
     pub fn makeDir(self: *MemoryFilesystem, path: []const u8, parents: bool) !void {
         const normalized = try normalizePathAlloc(self.allocator, path, self.options.max_path_len);
         defer self.allocator.free(normalized);

@@ -101,13 +101,11 @@ pub const InitHints = struct {
 };
 
 pub fn initHints(selection: LibrarySelection) InitHints {
-    return initHintsWithStdin(selection, "");
-}
-
-pub fn initHintsWithStdin(selection: LibrarySelection, stdin: []const u8) InitHints {
     const libraries = selection.toSet();
     var globals: u32 = 1; // _G
-    var strings: usize = 0;
+    // Library setup uses only static strings; stdin bytes stay with the
+    // capability instead of being interned into `io.stdin`.
+    const strings: usize = 0;
     var tables: usize = 1; // _G
 
     if (libraries.base) globals += 24;
@@ -132,9 +130,9 @@ pub fn initHintsWithStdin(selection: LibrarySelection, stdin: []const u8) InitHi
         tables += 1;
     }
     if (libraries.io) {
+        // io, stdin, stdout, stderr, and the shared file metatable and method table.
         globals += 1;
-        strings += @intFromBool(stdin.len != 0 and static_strings.canonical(stdin) == null);
-        tables += 5;
+        tables += 6;
     }
     if (libraries.os) {
         globals += 1;
@@ -394,16 +392,17 @@ fn openIo(state: *State) !void {
         .{ .name = "type", .value = .{ .native = .io_type } },
         .{ .name = "popen", .value = .{ .native = .io_popen } },
     };
-    const io_lib = try newStaticTable(state, &fields, 5);
-    const stdin = try newStandardFile(state, static_strings.get("stdin"), static_strings.get("r"));
-    const stdout = try newStandardFile(state, static_strings.get("stdout"), static_strings.get("w"));
-    const stderr = try newStandardFile(state, static_strings.get("stderr"), static_strings.get("w"));
-    try setStaticField(state, io_lib, "stdin", stdin);
-    try setStaticField(state, io_lib, "stdout", stdout);
-    try setStaticField(state, io_lib, "stderr", stderr);
-    try setStaticField(state, io_lib, "__zlua_input", stdin);
-    try setStaticField(state, io_lib, "__zlua_output", stdout);
+    const io_lib = try newStaticTable(state, &fields, 3);
     try putStaticGlobal(state, "io", io_lib);
+    const stdin = try newStandardFile(state, static_strings.get("stdin"), static_strings.get("r"));
+    try setStaticField(state, io_lib, "stdin", stdin);
+    const stdout = try newStandardFile(state, static_strings.get("stdout"), static_strings.get("w"));
+    try setStaticField(state, io_lib, "stdout", stdout);
+    const stderr = try newStandardFile(state, static_strings.get("stderr"), static_strings.get("w"));
+    try setStaticField(state, io_lib, "stderr", stderr);
+    // Default files live in State roots, like PUC's registry IO_INPUT/IO_OUTPUT.
+    state.io_input = stdin.table;
+    state.io_output = stdout.table;
 }
 
 fn openOs(state: *State) !void {
@@ -568,11 +567,9 @@ fn newStandardFile(state: *State, path: []const u8, mode: []const u8) !Value {
     try setStaticField(state, value, "__zlua_file", .{ .boolean = true });
     try setStaticField(state, value, "__zlua_file_path", .{ .string = path });
     try setStaticField(state, value, "__zlua_file_mode", .{ .string = mode });
-    const contents = if (!std.mem.eql(u8, path, "stdin") or state.options.stdin.len == 0)
-        static_strings.get("")
-    else
-        try state.intern(state.options.stdin);
-    try setStaticField(state, value, "__zlua_file_content", .{ .string = contents });
+    // Standard streams read and write through the state's stdin source and
+    // output writers, never through buffered file contents.
+    try setStaticField(state, value, "__zlua_file_content", .{ .string = static_strings.get("") });
     try setStaticField(state, value, "__zlua_file_pos", .{ .integer = 1 });
     try setStaticField(state, value, "__zlua_file_closed", .{ .boolean = false });
     try setStaticField(state, value, "__zlua_file_standard", .{ .boolean = true });
@@ -762,19 +759,22 @@ test "startup uses canonical globals, static strings, and exact table hints" {
     }
 }
 
-test "startup plans the non-static stdin string" {
+test "startup keeps stdin bytes out of the string table" {
     const selection: LibrarySelection = .{ .libraries = .{ .io = true } };
     const stdin = "dynamic stdin contents";
     var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = selection, .stdin = stdin });
     defer state.deinit();
 
-    const hints = initHintsWithStdin(selection, stdin);
-    try std.testing.expectEqual(@as(usize, 1), hints.strings);
+    const hints = initHints(selection);
+    try std.testing.expectEqual(@as(usize, 0), hints.strings);
     try std.testing.expectEqual(hints.strings, state.string_allocations.items.len);
     try std.testing.expectEqual(hints.tables, state.table_allocations.items.len);
+    try state.executeSourceChunk("first, second = io.read('a'), io.read('a')");
+    try std.testing.expectEqualStrings(stdin, state.getGlobal("first").string);
+    try std.testing.expectEqualStrings("", state.getGlobal("second").string);
 }
 
-test "IO files share one method metatable" {
+test "IO files share one PUC-layout metatable and method table" {
     var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .{ .libraries = .{ .io = true } } });
     defer state.deinit();
 
@@ -785,7 +785,21 @@ test "IO files share one method metatable" {
     try std.testing.expect(stdin.metatable == stdout.metatable);
     try std.testing.expect(stdin.metatable == stderr.metatable);
     try std.testing.expect(stdin.get(.{ .string = static_strings.get("read") }) == .nil);
-    try std.testing.expect(stdin.metatable.?.get(.{ .string = static_strings.get("read") }) == .native);
+    const metatable = stdin.metatable.?;
+    try std.testing.expectEqual(@as(usize, 5), metatable.entries.items.len);
+    try std.testing.expect(metatable.get(.{ .string = static_strings.get("read") }) == .nil);
+    try std.testing.expect(metatable.get(.{ .string = static_strings.get("__gc") }) == .native);
+    try std.testing.expect(metatable.get(.{ .string = static_strings.get("__close") }) == .native);
+    try std.testing.expect(metatable.get(.{ .string = static_strings.get("__tostring") }) == .native);
+    try std.testing.expectEqualStrings("FILE*", metatable.get(.{ .string = static_strings.get("__name") }).string);
+    const methods = metatable.get(.{ .string = static_strings.get("__index") }).table;
+    try std.testing.expectEqual(@as(usize, 7), methods.entries.items.len);
+    try std.testing.expect(methods.get(.{ .string = static_strings.get("read") }) == .native);
+    try std.testing.expect(methods.get(.{ .string = static_strings.get("setvbuf") }) == .native);
+    // Default input/output files are State roots, not io table fields.
+    try std.testing.expectEqual(@as(usize, 14), io_table.entries.items.len);
+    try std.testing.expect(state.io_input.? == stdin);
+    try std.testing.expect(state.io_output.? == stdout);
 }
 
 test {

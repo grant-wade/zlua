@@ -337,7 +337,7 @@ pub fn fileTruncate(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const size_i = try state.argumentInteger(thread, op, "fs file:truncate", 1);
     if (size_i < 0) return state.failArgumentMessage("fs file:truncate", 2, "non-negative size expected");
     const size: usize = @intCast(size_i);
-    const old = try state.expectString(file.get(.{ .string = "__zlua_file_content" }));
+    const old = try io_lib.fileContent(state, file);
     const bytes = try state.allocator.alloc(u8, size);
     defer state.allocator.free(bytes);
     const copied = @min(size, old.len);
@@ -346,6 +346,8 @@ pub fn fileTruncate(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const path = try state.expectString(file.get(.{ .string = "__zlua_file_path" }));
     state.fsWriteFile(path, bytes) catch |err| return returnFailure(state, thread, op, "truncate", path, null, err);
     try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_content") }, .{ .string = try state.intern(bytes) });
+    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_synced") }, .{ .integer = @intCast(size) });
+    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_generation") }, .{ .integer = @bitCast(state.file_generation) });
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = true }});
 }
 

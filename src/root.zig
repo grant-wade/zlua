@@ -57,6 +57,7 @@ pub const ProcessCapability = api.ProcessCapability;
 pub const CustomProcess = api.CustomProcess;
 pub const ProcessResult = api.ProcessResult;
 pub const ProcessStatus = api.ProcessStatus;
+pub const OutputFlush = api.OutputFlush;
 
 test {
     _ = frontend;

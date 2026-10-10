@@ -47,7 +47,7 @@ Library selection controls which Lua functions exist. Capabilities control wheth
 
 | Capability | Modes |
 | --- | --- |
-| `io` | Optional `std.Io`, stdin bytes, and stdout/stderr writers. |
+| `io` | Optional `std.Io`, stdin bytes, and stdout/stderr writers with flush policies. |
 | `filesystem` | Disabled, read-only memory files, writable memory filesystem, host cwd, rooted host directory, or callbacks. |
 | `environment` | Disabled, a host map, or callbacks. |
 | `clock` | Disabled, fixed timestamp, fixed timestamp with a local offset, system clock, or callbacks. |
@@ -81,6 +81,8 @@ defer lua.deinit();
 ```
 
 The directory handle is borrowed and must outlive the state. Rooted directories reject absolute paths and `..` traversal.
+
+Lua output goes to the configured writers as it is produced. By default (`stdout_flush`/`stderr_flush = .explicit`) the runtime flushes them only for `io.flush`/`file:flush`, `os.exit`, and before `os.execute` or `io.popen` start a child; the writer's own buffer decides the rest. To mimic C stdio over a buffered host stream, choose `.print` (flush after each `print`, like C Lua), `.line` (flush after any write containing a newline), or `.always` (unbuffered). The CLI uses `.line` for a terminal stdout, `.print` otherwise, and `.always` for stderr. Lua stdin reads the `stdin` bytes; snapshots restore the read position.
 
 File reads by `io`, `loadfile`, `dofile`, `require`, `fs`, and `State.loadFile` share `limits.max_file_bytes` (256 MiB by default). `fs.read`'s `max_bytes` option can only lower it. Failed opens return C-style results such as `nil, "data.txt: No such file or directory", 2`. A disabled filesystem reports `filesystem access disabled` (errno 13), and a read-only one reports `filesystem write access disabled` (errno 30).
 

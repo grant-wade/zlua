@@ -99,6 +99,15 @@ Explicit library names are `base`, `table`, `string`, `math`, `utf8`, `coroutine
 
 With no input, zlua starts a REPL on a TTY or executes piped stdin. Script and stdin reads are capped at 1 MiB, and an initial shebang is stripped. The REPL supports multiline input and `=expr` shorthand.
 
+Lua output streams as it is produced, buffered like C `lua`:
+
+- stdout is line buffered on a terminal. Otherwise it is block buffered, and `print` flushes it like `lua_writeline`.
+- stderr is unbuffered.
+- stdout is flushed by `io.flush`/`file:flush`, before `os.execute` and `io.popen` start a child, and when the process exits, including through `os.exit` and after an error message.
+- Open file handles that were never closed are flushed at exit, as C `exit` flushes every stream.
+
+`io.read`, `io.lines`, and `loadfile()` read the process stdin incrementally, so scripts can prompt and read one line at a time. They share stdin with the REPL. A line-buffered stdout is flushed before stdin blocks. Seeking stdin returns `nil, "Illegal seek", 29`.
+
 ## Harnesses
 
 ### Differential

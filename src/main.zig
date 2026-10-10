@@ -70,10 +70,28 @@ fn runCliProgram(
         options.interactive = true;
     }
 
+    // Lua output streams like C stdio: stdout is line buffered on a terminal
+    // and block buffered otherwise, stderr is unbuffered, and stdin is read
+    // only as far as each request needs. The REPL shares the same stdin.
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_writer = File.stdout().writerStreaming(io, &stdout_buffer);
+    var stderr_buffer: [0]u8 = undefined;
+    var stderr_writer = File.stderr().writerStreaming(io, &stderr_buffer);
+    var stdin_buffer: [64 * 1024]u8 = undefined;
+    var stdin_reader = File.stdin().readerStreaming(io, &stdin_buffer);
+    const stdout_tty = File.stdout().isTty(io) catch false;
+    var cli: Cli = .{ .io = io, .stdout = &stdout_writer.interface, .stdin = &stdin_reader.interface };
+
     const state_allocator = std.heap.smp_allocator;
     var state = try zlua.runtime.State.initWithOptions(state_allocator, .{
         .stdlib = options.stdlib,
         .io = io,
+        .stdout = cli.stdout,
+        .stderr = &stderr_writer.interface,
+        .stdout_flush = if (stdout_tty) .line else .print,
+        .stderr_flush = .always,
+        .capture_output = false,
+        .stdin_reader = cli.stdin,
         .filesystem = .host_cwd,
         .environment = .{ .map = environ_map },
         .process = .enabled,
@@ -81,6 +99,9 @@ fn runCliProgram(
         .trace_vm = options.trace_vm,
     });
     defer state.deinit();
+    // Runs before `state.deinit` on every exit path, like C `exit` flushing
+    // all open streams after the error message (if any) was written.
+    defer cli.finish(&state);
 
     try installArgTable(state_allocator, &state, args, options.script_index);
 
@@ -90,7 +111,7 @@ fn runCliProgram(
 
     if (options.script_path) |path| {
         if (std.mem.eql(u8, path, "-")) {
-            const source = readStdinAlloc(state_allocator, io) catch |err| {
+            const source = cli.readStdinAlloc(state_allocator) catch |err| {
                 try stderrPrint(io, "cannot read stdin: {s}\n", .{@errorName(err)});
                 return 1;
             };
@@ -107,7 +128,7 @@ fn runCliProgram(
             if (try executeChunkNamed(state_allocator, io, &state, stripInitialShebang(source), source_name)) |exit_code| return exit_code;
         }
     } else if (no_input and !options.interactive) {
-        const source = readStdinAlloc(state_allocator, io) catch |err| {
+        const source = cli.readStdinAlloc(state_allocator) catch |err| {
             try stderrPrint(io, "cannot read stdin: {s}\n", .{@errorName(err)});
             return 1;
         };
@@ -115,11 +136,30 @@ fn runCliProgram(
         if (try executeChunkNamed(state_allocator, io, &state, stripInitialShebang(source), "@stdin")) |exit_code| return exit_code;
     }
 
-    if (options.interactive) if (try runRepl(state_allocator, io, &state)) |exit_code| return exit_code;
+    if (options.interactive) if (try runRepl(state_allocator, &cli, &state)) |exit_code| return exit_code;
 
-    try flushStateOutput(io, &state);
     return 0;
 }
+
+/// Process streams shared by Lua and the CLI.
+const Cli = struct {
+    io: std.Io,
+    stdout: *std.Io.Writer,
+    stdin: *std.Io.Reader,
+
+    fn flushStdout(self: *Cli) void {
+        self.stdout.flush() catch {};
+    }
+
+    fn finish(self: *Cli, state: *zlua.runtime.State) void {
+        zlua.stdlib.io.flushOpenFiles(state);
+        self.flushStdout();
+    }
+
+    fn readStdinAlloc(self: *Cli, allocator: std.mem.Allocator) ![]u8 {
+        return self.stdin.allocRemaining(allocator, .limited(zlua.runtime.default_max_file_bytes));
+    }
+};
 
 fn parseCliOptions(allocator: std.mem.Allocator, args: []const []const u8) !CliOptions {
     var options: CliOptions = .{};
@@ -427,18 +467,19 @@ fn indent(out: anytype, depth: usize) !void {
     for (0..depth) |_| try out.writeAll("  ");
 }
 
-fn runRepl(allocator: std.mem.Allocator, io: std.Io, state: *zlua.runtime.State) !?u8 {
+fn runRepl(allocator: std.mem.Allocator, cli: *Cli, state: *zlua.runtime.State) !?u8 {
+    const io = cli.io;
     const tty = try stdinIsTty(io);
-    var read_buffer: [4096]u8 = undefined;
-    var reader = File.stdin().readerStreaming(io, &read_buffer);
     var source = std.ArrayList(u8).empty;
     defer source.deinit(allocator);
 
     while (true) {
-        if (tty) try stdoutPrint(io, "{s}", .{if (source.items.len == 0) "> " else ">> "});
-        const maybe_line = reader.interface.takeDelimiter('\n') catch |err| switch (err) {
+        if (tty) cli.stdout.writeAll(if (source.items.len == 0) "> " else ">> ") catch {};
+        cli.flushStdout();
+        const maybe_line = cli.stdin.takeDelimiter('\n') catch |err| switch (err) {
             error.StreamTooLong => {
                 try stderrPrint(io, "input line too long\n", .{});
+                cli.stdin.tossBuffered();
                 source.items.len = 0;
                 continue;
             },
@@ -456,14 +497,14 @@ fn runRepl(allocator: std.mem.Allocator, io: std.Io, state: *zlua.runtime.State)
 
         const repl_source = try replSourceAlloc(allocator, source.items);
         defer allocator.free(repl_source);
-        if (try executeReplChunk(allocator, io, state, repl_source)) |exit_code| return exit_code;
+        if (try executeReplChunk(allocator, cli, state, repl_source)) |exit_code| return exit_code;
         source.items.len = 0;
     }
 
     if (source.items.len != 0) {
         const repl_source = try replSourceAlloc(allocator, source.items);
         defer allocator.free(repl_source);
-        if (try executeReplChunk(allocator, io, state, repl_source)) |exit_code| return exit_code;
+        if (try executeReplChunk(allocator, cli, state, repl_source)) |exit_code| return exit_code;
     }
     return null;
 }
@@ -506,34 +547,33 @@ fn diagnosticNearEof(diagnostic: ?zlua.errors.Diagnostic) bool {
     };
 }
 
+/// Lua output is already streaming; the error goes straight to stderr and any
+/// buffered stdout follows when the CLI exits, as with C `lua`.
 fn executeChunkNamed(allocator: std.mem.Allocator, io: std.Io, state: *zlua.runtime.State, source: []const u8, source_name: []const u8) !?u8 {
     var traceback: ?[]u8 = null;
     defer if (traceback) |text| state.allocator.free(text);
     state.executeSourceChunkNamedHandled(source, source_name, .{ .traceback = &traceback, .host_frame = true }) catch |err| {
-        if (err == error.LuaExit) return try exitCode(io, state);
+        if (err == error.LuaExit) return exitCode(state);
         const message = try errorReportAlloc(allocator, state, err, traceback);
         defer allocator.free(message);
-        try flushStateOutput(io, state);
         try stderrWrite(io, message);
         return 1;
     };
     return null;
 }
 
-fn executeReplChunk(allocator: std.mem.Allocator, io: std.Io, state: *zlua.runtime.State, source: []const u8) !?u8 {
+fn executeReplChunk(allocator: std.mem.Allocator, cli: *Cli, state: *zlua.runtime.State, source: []const u8) !?u8 {
+    defer cli.flushStdout();
     var traceback: ?[]u8 = null;
     defer if (traceback) |text| state.allocator.free(text);
     state.executeSourceChunkNamedHandled(source, "=stdin", .{ .traceback = &traceback, .host_frame = true }) catch |err| {
-        if (err == error.LuaExit) return try exitCode(io, state);
+        if (err == error.LuaExit) return exitCode(state);
         const message = try errorReportAlloc(allocator, state, err, traceback);
         defer allocator.free(message);
-        try flushStateOutput(io, state);
-        try stderrWrite(io, message);
-        state.stdout.items.len = 0;
-        state.stderr.items.len = 0;
+        cli.flushStdout();
+        try stderrWrite(cli.io, message);
         return null;
     };
-    try flushStateOutput(io, state);
     return null;
 }
 
@@ -546,19 +586,11 @@ fn errorReportAlloc(allocator: std.mem.Allocator, state: *zlua.runtime.State, er
     return std.fmt.allocPrint(allocator, "zlua: {s}\n", .{detail});
 }
 
-/// `os.exit` unwound the state: flush Lua output and exit with the low byte of
-/// the requested code, as C `exit` does. The state is closed on the way out.
-fn exitCode(io: std.Io, state: *zlua.runtime.State) !u8 {
-    try flushStateOutput(io, state);
+/// `os.exit` unwound the state after flushing Lua output: exit with the low
+/// byte of the requested code, as C `exit` does. The state is closed on the way out.
+fn exitCode(state: *zlua.runtime.State) u8 {
     const request = state.exit_request orelse return 0;
     return @truncate(@as(u32, @bitCast(request.code)));
-}
-
-fn flushStateOutput(io: std.Io, state: *zlua.runtime.State) !void {
-    try stdoutWrite(io, state.stdout.items);
-    try stderrWrite(io, state.stderr.items);
-    state.stdout.items.len = 0;
-    state.stderr.items.len = 0;
 }
 
 fn installArgTable(
@@ -619,13 +651,6 @@ fn stdoutPrint(io: std.Io, comptime fmt: []const u8, args: anytype) !void {
     var buffer: [4096]u8 = undefined;
     var writer = File.stdout().writerStreaming(io, &buffer);
     try writer.interface.print(fmt, args);
-    try writer.interface.flush();
-}
-
-fn stdoutWrite(io: std.Io, bytes: []const u8) !void {
-    var buffer: [4096]u8 = undefined;
-    var writer = File.stdout().writerStreaming(io, &buffer);
-    try writer.interface.writeAll(bytes);
     try writer.interface.flush();
 }
 

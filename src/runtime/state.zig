@@ -88,16 +88,41 @@ pub const StartupPhase = enum {
     gc_baseline,
 };
 
+/// When the runtime flushes a configured stdout or stderr writer. Writers are
+/// always flushed by `io.flush`/`file:flush`, `os.exit`, and before
+/// `os.execute`/`io.popen` start a child process.
+pub const OutputFlush = enum {
+    /// Only at the points above; the writer's own buffer decides the rest.
+    explicit,
+    /// Also after each `print`, like C Lua's `lua_writeline`; other writes
+    /// stay buffered like a fully buffered C stream.
+    print,
+    /// Also after each write containing a newline, like a line-buffered C
+    /// stream. This includes every `print`.
+    line,
+    /// After every write, like an unbuffered C stream.
+    always,
+};
+
 pub const StateOptions = struct {
     stdlib: StdlibMode = .full,
     io: ?std.Io = null,
     stdout: ?*std.Io.Writer = null,
     stderr: ?*std.Io.Writer = null,
+    stdout_flush: OutputFlush = .explicit,
+    stderr_flush: OutputFlush = .explicit,
+    /// Also keep Lua stdout/stderr bytes in `State.stdout`/`State.stderr`.
+    /// Streaming hosts with writers can disable this to bound memory.
+    capture_output: bool = true,
     filesystem: FilesystemCapability = .disabled,
     environment: EnvironmentCapability = .disabled,
     clock: ClockCapability = .system,
     process: ProcessCapability = .disabled,
     stdin: []const u8 = "",
+    /// Host stdin stream read incrementally by `io.read`, `io.lines`, and
+    /// `loadfile()`. Takes precedence over `stdin` bytes. Borrowed; reads
+    /// cannot be undone by snapshot reset.
+    stdin_reader: ?*std.Io.Reader = null,
     /// Largest file `io`, `loadfile`, `dofile`, `require`, and `fs` read at once.
     max_file_bytes: usize = host.default_max_file_bytes,
     /// Memory budget retained for embedding API allocator setup and snapshots.
@@ -176,6 +201,9 @@ pub const State = struct {
     boolean_metatable: ?*Table = null,
     nil_metatable: ?*Table = null,
     file_metatable: ?*Table = null,
+    /// Default files of `io.read`/`io.write`, rooted outside Lua-visible tables.
+    io_input: ?*Table = null,
+    io_output: ?*Table = null,
     zerde_null: ?*Table = null,
     zerde_array_metatable: ?*Table = null,
     zerde_object_metatable: ?*Table = null,
@@ -256,7 +284,7 @@ pub const State = struct {
         };
         errdefer state.deinit();
 
-        const hints = stdlib.initHintsWithStdin(options.stdlib, options.stdin);
+        const hints = stdlib.initHints(options.stdlib);
         try state.strings.ensureTotalCapacity(@intCast(hints.strings));
         try state.string_allocations.ensureTotalCapacity(allocator, hints.strings);
         try state.string_allocation_index.ensureTotalCapacity(@intCast(hints.strings));
@@ -287,22 +315,24 @@ pub const State = struct {
     pub fn fileMetatable(state: *State) !*Table {
         if (state.file_metatable) |metatable| return metatable;
 
-        const value = try state.newTableWithHints(0, 12);
-        const metatable = value.table;
+        // PUC layout: metamethods in the metatable, methods in a separate
+        // table reached through `__index`.
+        const metatable = (try state.newTableWithHints(0, 5)).table;
         state.file_metatable = metatable;
         errdefer state.file_metatable = null;
+        const methods = try state.newTableWithHints(0, 7);
+        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("__index") }, methods);
         try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("__name") }, .{ .string = stdlib_static_strings.get("FILE*") });
         try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("__tostring") }, .{ .native = .io_file_tostring });
-        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("__index") }, value);
         try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("__close") }, .{ .native = .io_file_close });
         try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("__gc") }, .{ .native = .io_file_close });
-        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("read") }, .{ .native = .io_file_read });
-        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("write") }, .{ .native = .io_file_write });
-        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("close") }, .{ .native = .io_file_close });
-        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("seek") }, .{ .native = .io_file_seek });
-        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("flush") }, .{ .native = .io_file_flush });
-        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("lines") }, .{ .native = .io_file_lines });
-        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("setvbuf") }, .{ .native = .io_file_setvbuf });
+        try state.setTableRaw(methods.table, .{ .string = stdlib_static_strings.get("read") }, .{ .native = .io_file_read });
+        try state.setTableRaw(methods.table, .{ .string = stdlib_static_strings.get("write") }, .{ .native = .io_file_write });
+        try state.setTableRaw(methods.table, .{ .string = stdlib_static_strings.get("close") }, .{ .native = .io_file_close });
+        try state.setTableRaw(methods.table, .{ .string = stdlib_static_strings.get("seek") }, .{ .native = .io_file_seek });
+        try state.setTableRaw(methods.table, .{ .string = stdlib_static_strings.get("flush") }, .{ .native = .io_file_flush });
+        try state.setTableRaw(methods.table, .{ .string = stdlib_static_strings.get("lines") }, .{ .native = .io_file_lines });
+        try state.setTableRaw(methods.table, .{ .string = stdlib_static_strings.get("setvbuf") }, .{ .native = .io_file_setvbuf });
         return metatable;
     }
 
@@ -1981,15 +2011,42 @@ pub const State = struct {
     }
 
     pub fn writeStdout(self: *State, bytes: []const u8) !void {
-        if (self.rollback) |journal| try journal.outputWritable(self);
-        try self.stdout.appendSlice(self.allocator, bytes);
-        if (self.options.stdout) |writer| try writer.writeAll(bytes);
+        if (self.options.capture_output) {
+            if (self.rollback) |journal| try journal.outputWritable(self);
+            try self.stdout.appendSlice(self.allocator, bytes);
+        }
+        if (self.options.stdout) |writer| try writeOutput(writer, self.options.stdout_flush, bytes);
     }
 
     pub fn writeStderr(self: *State, bytes: []const u8) !void {
-        if (self.rollback) |journal| try journal.outputWritable(self);
-        try self.stderr.appendSlice(self.allocator, bytes);
-        if (self.options.stderr) |writer| try writer.writeAll(bytes);
+        if (self.options.capture_output) {
+            if (self.rollback) |journal| try journal.outputWritable(self);
+            try self.stderr.appendSlice(self.allocator, bytes);
+        }
+        if (self.options.stderr) |writer| try writeOutput(writer, self.options.stderr_flush, bytes);
+    }
+
+    fn writeOutput(writer: *std.Io.Writer, policy: OutputFlush, bytes: []const u8) !void {
+        try writer.writeAll(bytes);
+        switch (policy) {
+            .explicit, .print => {},
+            .line => if (std.mem.indexOfScalar(u8, bytes, '\n') != null) try writer.flush(),
+            .always => try writer.flush(),
+        }
+    }
+
+    /// `print` ends like `lua_writeline`, which flushes C stdout.
+    fn flushStdoutAfterPrint(self: *State) !void {
+        if (self.options.stdout_flush == .print) try self.flushStdout();
+    }
+
+    /// Before blocking on host stdin, flushes a line-buffered or unbuffered
+    /// stdout writer, so interactive prompts appear as they do with C stdio.
+    pub fn flushStdoutForInput(self: *State) void {
+        switch (self.options.stdout_flush) {
+            .explicit, .print => {},
+            .line, .always => self.flushStdout() catch {},
+        }
     }
 
     pub fn flushStdout(self: *State) !void {
@@ -2079,6 +2136,39 @@ pub const State = struct {
                 const normalized = try host.MemoryFilesystem.normalizePathAlloc(self.allocator, path, host.MemoryFilesystem.default_max_path_len);
                 defer self.allocator.free(normalized);
                 return root.dir.writeFile(io, .{ .sub_path = normalized, .data = data });
+            },
+        }
+    }
+
+    /// Writes `data` at `offset` of an existing file without truncating it, so
+    /// buffered handles can flush only their unsynced suffix. Returns
+    /// `error.OperationUnsupported` when the capability has no positional
+    /// write; callers then rewrite the whole file with `fsWriteFile`.
+    pub fn fsWriteFileAt(self: *State, path: []const u8, offset: usize, data: []const u8) anyerror!void {
+        switch (self.options.filesystem) {
+            .disabled, .memory => return error.FilesystemReadOnly,
+            .memory_rw => |filesystem| {
+                try filesystem.writeAt(path, offset, data);
+                self.file_generation +%= 1;
+            },
+            .custom => return error.OperationUnsupported,
+            .host_cwd, .host_dir => {
+                if (comptime builtin.os.tag == .freestanding) return error.OperationUnsupported;
+                const io = self.options.io orelse return error.IoUnavailable;
+                const root: Dir = switch (self.options.filesystem) {
+                    .host_cwd => Dir.cwd(),
+                    .host_dir => |value| blk: {
+                        if (value.read_only) return error.FilesystemReadOnly;
+                        break :blk value.dir;
+                    },
+                    else => unreachable,
+                };
+                const owned = if (self.options.filesystem == .host_dir) try host.MemoryFilesystem.normalizePathAlloc(self.allocator, path, host.MemoryFilesystem.default_max_path_len) else null;
+                defer if (owned) |normalized| self.allocator.free(normalized);
+                var file = try root.openFile(io, owned orelse path, .{ .mode = .write_only, .allow_directory = false });
+                defer file.close(io);
+                self.file_generation +%= 1;
+                try file.writePositionalAll(io, data, offset);
             },
         }
     }
@@ -2517,22 +2607,35 @@ pub const State = struct {
         };
     }
 
-    pub fn readStdin(self: *State, spec: []const u8) !Value {
+    /// Standard input shared by `io.stdin`, `loadfile()`, and `debug.debug`:
+    /// the host `stdin_reader`, or the memory `stdin` bytes from `stdin_pos`.
+    pub const StdinSource = struct {
+        state: *State,
+        fixed: std.Io.Reader,
+        host: ?*std.Io.Reader,
+
+        pub fn reader(self: *StdinSource) *std.Io.Reader {
+            return self.host orelse &self.fixed;
+        }
+
+        /// Records the memory bytes consumed through `reader`.
+        pub fn finish(self: *StdinSource) void {
+            if (self.host == null) self.state.stdin_pos += self.fixed.seek;
+        }
+    };
+
+    /// Callers read through `reader()` and then call `finish()`.
+    pub fn stdinSource(self: *State) StdinSource {
+        if (self.options.stdin_reader) |reader| {
+            self.flushStdoutForInput();
+            return .{ .state = self, .fixed = .fixed(""), .host = reader };
+        }
         const input = self.options.stdin;
-        if (std.mem.eql(u8, spec, "*a") or std.mem.eql(u8, spec, "a")) {
-            const remaining = input[self.stdin_pos..];
-            self.stdin_pos = input.len;
-            return .{ .string = try self.intern(remaining) };
-        }
-        if (std.mem.eql(u8, spec, "*l") or std.mem.eql(u8, spec, "l")) {
-            if (self.stdin_pos >= input.len) return .nil;
-            const start = self.stdin_pos;
-            while (self.stdin_pos < input.len and input[self.stdin_pos] != '\n') self.stdin_pos += 1;
-            const line = input[start..self.stdin_pos];
-            if (self.stdin_pos < input.len and input[self.stdin_pos] == '\n') self.stdin_pos += 1;
-            return .{ .string = try self.intern(line) };
-        }
-        return self.fail("unsupported read option");
+        return .{ .state = self, .fixed = .fixed(input[@min(self.stdin_pos, input.len)..]), .host = null };
+    }
+
+    pub fn stdinIsStream(self: *const State) bool {
+        return self.options.stdin_reader != null;
     }
 
     pub fn loadSourceAsClosure(self: *State, source: []const u8) !Value {
@@ -3584,6 +3687,7 @@ pub const State = struct {
                     try self.writeStdout(text);
                 }
                 try self.writeStdout("\n");
+                try self.flushStdoutAfterPrint();
                 try self.returnValues(thread, resolved.base, resolved.return_count, &.{});
             },
             .native_tostring => {
@@ -3657,6 +3761,7 @@ pub const State = struct {
             .gmatch_iterator => |state_table| {
                 if (state_table.get(.{ .string = "__zlua_lines_iterator" }) != .nil) {
                     const values = try stdlib.io.linesNext(self, .{ .table = state_table });
+                    defer if (values.len != 0) self.allocator.free(values);
                     try self.returnValues(thread, resolved.base, resolved.return_count, values);
                 } else if (state_table.get(.{ .string = "__zlua_fs_iterator" }) != .nil) {
                     const values = try stdlib.fs.iteratorNext(self, .{ .table = state_table });
