@@ -67,6 +67,7 @@ print(({ 10, 20, 30 })[2])
 | `stage` | `lex`, `parse`, `resolve`, `compile`, `runtime`, `stdlib`, `official` | `runtime` |
 | `feature` | Free-form tag | `uncategorized` |
 | `normalize` | `none`, `paths` | `none` |
+| `gc-stress` | `run`, `skip` | `run` |
 | `reason`, `issue` | Free-form text | empty |
 
 The first four stages compare load-time acceptance while stopping zlua at the named compiler stage. Runtime-style stages also compare stdout and stderr. Normalization is opt-in and should only remove unstable paths, never semantic differences.
@@ -82,7 +83,7 @@ just diff --gc-step-stress
 just diff --show-clua --show-zlua tests/diff/runtime/errors.lua
 ```
 
-Use `--gc-stress` to look for values that are collected too early, or `--gc-step-stress` to test changes made between collection steps. Add `--feature=gc` to run just the GC fixtures. Both modes respect Lua's stop/restart controls.
+Fixtures that drive collections themselves can set `gc-stress: skip` (with a `reason`) to sit out both stress modes. Use `--gc-stress` to look for values that are collected too early, or `--gc-step-stress` to test changes made between collection steps. Add `--feature=gc` to run just the GC fixtures. Both modes respect Lua's stop/restart controls.
 
 ### Expected Failures
 

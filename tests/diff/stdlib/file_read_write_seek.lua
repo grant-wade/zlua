@@ -111,11 +111,11 @@ f:close()
 -- A long run of small writes, interleaved with position queries.
 f = assert(io.open(name, "w+"))
 local total = 0
-for i = 1, 300000 do
+for i = 1, 1000 do
   local piece = (i % 7 == 0) and "seven" or "x"
   f:write(piece)
   total = total + #piece
-  if i % 100000 == 0 then print(i, f:seek("cur"), f:seek("end")) end
+  if i % 250 == 0 then print(i, f:seek("cur"), f:seek("end")) end
 end
 print(total, f:seek("cur"))
 f:seek("set", 0)

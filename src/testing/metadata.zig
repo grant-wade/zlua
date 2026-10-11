@@ -3,12 +3,14 @@ const std = @import("std");
 pub const Expect = enum { pass, fail, skip };
 pub const Stage = enum { lex, parse, resolve, compile, runtime, stdlib, official };
 pub const Normalize = enum { none, paths };
+pub const GcStress = enum { run, skip };
 
 pub const Metadata = struct {
     expect: Expect = .pass,
     stage: Stage = .runtime,
     feature: []const u8 = "uncategorized",
     normalize: Normalize = .none,
+    gc_stress: GcStress = .run,
     reason: []const u8 = "",
     issue: []const u8 = "",
 };
@@ -34,6 +36,8 @@ pub fn parse(source: []const u8) !Metadata {
             result.feature = value;
         } else if (std.mem.eql(u8, key, "normalize")) {
             result.normalize = try parseEnum(Normalize, value);
+        } else if (std.mem.eql(u8, key, "gc-stress")) {
+            result.gc_stress = try parseEnum(GcStress, value);
         } else if (std.mem.eql(u8, key, "reason")) {
             result.reason = value;
         } else if (std.mem.eql(u8, key, "issue")) {

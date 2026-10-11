@@ -2,6 +2,8 @@
 -- stage: runtime
 -- feature: gc
 -- normalize: none
+-- gc-stress: skip
+-- reason: drives generational cycles itself; forced collections make it run for minutes
 
 -- Old suspended threads are mutated without per-store barriers: open
 -- upvalues written from another thread, resume values, and the coroutine's

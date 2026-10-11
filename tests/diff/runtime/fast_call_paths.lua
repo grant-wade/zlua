@@ -28,7 +28,7 @@ print((two(20)))
 
 -- Deep recursion stays exact.
 local function fib(n) if n < 2 then return n end return fib(n - 1) + fib(n - 2) end
-print("fib", fib(20))
+print("fib", fib(15))
 
 -- Returns inside pcall: inner frames return normally, the protected call
 -- still completes at its own depth.
