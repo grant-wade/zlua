@@ -143,7 +143,7 @@ pub fn rad(state: *State, thread: *Thread, op: bytecode.Call) !void {
 }
 
 pub fn random(state: *State, thread: *Thread, op: bytecode.Call) !void {
-    if (op.arg_count > 2) return state.failArgumentMessage("math.random", 3, "wrong number of arguments");
+    if (op.arg_count > 2) return state.failLibrary("wrong number of arguments");
     const bits = nextRandom(state);
     if (op.arg_count == 0) {
         const value = @as(f64, @floatFromInt(bits >> 11)) / @as(f64, @floatFromInt(@as(u64, 1) << 53));
@@ -156,16 +156,15 @@ pub fn random(state: *State, thread: *Thread, op: bytecode.Call) !void {
         try state.returnValues(thread, op.base, op.return_count, &.{.{ .integer = @bitCast(bits) }});
         return;
     }
-    if (low > high) return state.failArgumentMessage("math.random", if (op.arg_count == 1) 1 else 2, "interval is empty");
+    if (low > high) return state.failArgumentMessage("math.random", 1, "interval is empty");
     const span = @as(u64, @bitCast(high -% low)) +% 1;
     const offset = projectRandom(state, bits, span -% 1);
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .integer = low +% @as(i64, @bitCast(offset)) }});
 }
 
 pub fn randomseed(state: *State, thread: *Thread, op: bytecode.Call) !void {
-    if (op.arg_count > 2) return state.failArgumentMessage("math.randomseed", 3, "wrong number of arguments");
     const seed1 = if (op.arg_count >= 1) try integerArgument(state, thread, op, "math.randomseed", 0) else @as(i64, @bitCast(nextRandom(state)));
-    const seed2 = if (op.arg_count >= 2) try integerArgument(state, thread, op, "math.randomseed", 1) else if (op.arg_count == 0) @as(i64, @bitCast(nextRandom(state))) else 0;
+    const seed2 = if (op.arg_count >= 2) try state.optionalArgumentInteger(thread, op, "math.randomseed", 1, 0) else if (op.arg_count == 0) @as(i64, @bitCast(nextRandom(state))) else 0;
     seedRandom(state, @bitCast(seed1), @bitCast(seed2));
     try state.returnValues(thread, op.base, op.return_count, &.{ .{ .integer = seed1 }, .{ .integer = seed2 } });
 }
@@ -183,6 +182,7 @@ pub fn tan(state: *State, thread: *Thread, op: bytecode.Call) !void {
 }
 
 pub fn tointeger(state: *State, thread: *Thread, op: bytecode.Call) !void {
+    if (op.arg_count == 0) return state.failArgumentMessage("math.tointeger", 1, "value expected");
     const value = runtime.argValue(state, thread, op, 0);
     const result: Value = switch (value) {
         .integer => |integer| .{ .integer = integer },
@@ -282,8 +282,7 @@ fn numberArgument(state: *State, thread: *Thread, op: bytecode.Call, function_na
 }
 
 fn integerArgument(state: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16) !i64 {
-    const value = runtime.argValue(state, thread, op, index);
-    return runtime.toInteger(value) orelse state.failArgumentType(function_name, index + 1, "number", value);
+    return state.argumentInteger(thread, op, function_name, index);
 }
 
 fn nextRandom(state: *State) u64 {

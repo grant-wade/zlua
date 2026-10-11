@@ -10,7 +10,7 @@ end
 
 local function show_error(label, fn, ...)
   local ok, err = pcall(fn, ...)
-  print(label, ok, err)
+  print(label, ok, (tostring(err):gsub("^.*split_edges%.lua:", "split_edges.lua:")))
 end
 
 -- maxsplit: 0 means no split, negative means unlimited, larger than the
@@ -92,10 +92,10 @@ show("rmethod", ("x-y-z"):rsplit("-", 1))
 show_error("empty separator", string.split, "abc", "")
 show_error("rsplit empty separator", string.rsplit, "abc", "")
 show_error("method empty separator", function() return ("abc"):split("") end)
-show_error("number source", string.split, 123, "2")
+show("number source", string.split(123, "2"))
 show_error("nil source", string.split)
 show_error("table source", string.rsplit, {}, ",")
-show_error("number separator", string.split, "a1b", 1)
+show("number separator", string.split("a1b", 1))
 show_error("boolean separator", string.split, "a b", false)
 show_error("string maxsplit", string.split, "a,b", ",", "x")
 show_error("float maxsplit", string.split, "a,b", ",", 1.5)

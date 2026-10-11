@@ -1014,6 +1014,7 @@ pub const Thread = struct {
     yield_result_base: usize = 0,
     yield_result_count: u16 = 0,
     native_call_depth: usize = 0,
+    native_call: ?NativeCall = null,
     traceback_native_name: ?[]const u8 = null,
     protected_close_depth: usize = 0,
     close_error_value: ?Value = null,
@@ -1074,6 +1075,25 @@ pub const ThreadStatus = enum {
     running,
     normal,
     dead,
+};
+
+/// The innermost non-Lua function running on a thread. Library errors use it
+/// the way `luaL_argerror` and `luaL_where` use the C call stack: to find the
+/// calling Lua function, the call-site name, and the argument count.
+pub const NativeCall = struct {
+    /// Callee register, relative to the frame on top when it was called.
+    base: bytecode.Register,
+    arg_count: u16,
+    frame_count: usize,
+    /// True when another native function made the call (like `pcall(f)`),
+    /// so no Lua code is the immediate caller.
+    from_native: bool,
+    /// Frame count of the enclosing native call, if any.
+    outer_frame_count: ?usize = null,
+    /// Name supplied by the runtime for calls that are not CALL instructions:
+    /// metamethods, generic-for iterators, and `__close`. Always static.
+    name: ?[]const u8 = null,
+    namewhat: ?[]const u8 = null,
 };
 
 pub const CallFrame = struct {

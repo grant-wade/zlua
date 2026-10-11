@@ -10,10 +10,10 @@ const Value = runtime.Value;
 pub fn concat(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const table_value = runtime.argValue(state, thread, op, 0);
     _ = try state.expectArgumentTable(thread, op, "table.concat", 0);
-    const sep = if (op.arg_count >= 2 and runtime.argValue(state, thread, op, 1) != .nil) try state.expectArgumentString(thread, op, "table.concat", 1) else "";
-    const start = if (op.arg_count >= 3) runtime.toInteger(runtime.argValue(state, thread, op, 2)) orelse 1 else 1;
     const len = try lengthInteger(state, thread, table_value);
-    const stop = if (op.arg_count >= 4) runtime.toInteger(runtime.argValue(state, thread, op, 3)) orelse len else len;
+    const sep = try state.optionalArgumentString(thread, op, "table.concat", 1) orelse "";
+    const start = try state.optionalArgumentInteger(thread, op, "table.concat", 2, 1);
+    const stop = try state.optionalArgumentInteger(thread, op, "table.concat", 3, len);
     var out = std.ArrayList(u8).empty;
     defer out.deinit(state.allocator);
     var index = start;
@@ -23,7 +23,7 @@ pub fn concat(state: *State, thread: *Thread, op: bytecode.Call) !void {
         const value = try state.getTableFromThread(thread, table_value, .{ .integer = index });
         switch (value) {
             .integer, .number, .string => try runtime.appendLuaString(state.allocator, &out, value),
-            else => return state.fail(try concatIndexError(state, index)),
+            else => return state.failLibraryFmt("invalid value ({s}) at index {d} in table for 'concat'", .{ runtime.typeName(value), index }),
         }
         if (index == std.math.maxInt(i64)) break;
     }
@@ -39,14 +39,7 @@ fn lengthInteger(state: *State, thread: *Thread, table_value: Value) !i64 {
         .string => runtime.toInteger(length) orelse if (runtime.toNumber(length)) |number| runtime.floatToInteger(number) else |_| null,
         else => runtime.toInteger(length),
     };
-    return integer orelse state.fail("object length is not an integer");
-}
-
-fn concatIndexError(state: *State, index: i64) ![]const u8 {
-    var out = std.ArrayList(u8).empty;
-    defer out.deinit(state.allocator);
-    try runtime.appendFmt(state.allocator, &out, "invalid value at index {d}", .{index});
-    return state.intern(out.items);
+    return integer orelse state.failLibrary("object length is not an integer");
 }
 
 /// Returns the unique elements from the input sequence in first-occurrence order.
@@ -82,11 +75,11 @@ pub fn dedup(state: *State, thread: *Thread, op: bytecode.Call) !void {
 }
 
 pub fn insert(state: *State, thread: *Thread, op: bytecode.Call) !void {
-    if (op.arg_count < 2 or op.arg_count > 3) return state.failArgumentMessage("table.insert", 1, "wrong number of arguments");
     const table_value = runtime.argValue(state, thread, op, 0);
     _ = try state.expectArgumentTable(thread, op, "table.insert", 0);
     const len = try lengthInteger(state, thread, table_value);
-    const pos = if (op.arg_count == 2) len +% 1 else runtime.toInteger(runtime.argValue(state, thread, op, 1)) orelse return state.failArgumentMessage("table.insert", 2, "position out of bounds");
+    if (op.arg_count < 2 or op.arg_count > 3) return state.failLibrary("wrong number of arguments to 'insert'");
+    const pos = if (op.arg_count == 2) len +% 1 else try state.argumentInteger(thread, op, "table.insert", 1);
     const value = if (op.arg_count == 2) runtime.argValue(state, thread, op, 1) else runtime.argValue(state, thread, op, 2);
     if (op.arg_count == 3 and (pos < 1 or pos > len + 1)) return state.failArgumentMessage("table.insert", 2, "position out of bounds");
     var index = len +% 1;
@@ -108,9 +101,9 @@ pub fn move(state: *State, thread: *Thread, op: bytecode.Call) !void {
     if (dest_value != .table) return state.failArgumentType("table.move", 5, "table", dest_value);
     if (last >= first) {
         const count_i = @as(i128, last) - @as(i128, first) + 1;
-        if (count_i > std.math.maxInt(i64)) return state.fail("too many elements to move");
+        if (count_i > std.math.maxInt(i64)) return state.failArgumentMessage("table.move", 3, "too many elements to move");
         const dest_end = @as(i128, dest_start) + count_i - 1;
-        if (dest_end < std.math.minInt(i64) or dest_end > std.math.maxInt(i64)) return state.fail("destination wrap around");
+        if (dest_end < std.math.minInt(i64) or dest_end > std.math.maxInt(i64)) return state.failArgumentMessage("table.move", 4, "destination wrap around");
         const count: i64 = @intCast(count_i);
         if (runtime.valuesEqual(src_value, dest_value) and dest_start > first and dest_start <= last) {
             var offset = count - 1;
@@ -143,7 +136,7 @@ pub fn remove(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const table_value = runtime.argValue(state, thread, op, 0);
     _ = try state.expectArgumentTable(thread, op, "table.remove", 0);
     const len = try lengthInteger(state, thread, table_value);
-    const pos = if (op.arg_count >= 2) runtime.toInteger(runtime.argValue(state, thread, op, 1)) orelse return state.failArgumentMessage("table.remove", 2, "position out of bounds") else len;
+    const pos = try state.optionalArgumentInteger(thread, op, "table.remove", 1, len);
     if (op.arg_count >= 2 and (pos < 0 or (pos == 0 and len != 0) or (pos > len and (len == std.math.maxInt(i64) or pos != len + 1)))) return state.failArgumentMessage("table.remove", 2, "position out of bounds");
     if (pos > len) {
         try state.returnValues(thread, op.base, op.return_count, &.{.nil});
@@ -164,7 +157,10 @@ pub fn sort(state: *State, thread: *Thread, op: bytecode.Call) !void {
     _ = try state.expectArgumentTable(thread, op, "table.sort", 0);
     const comparator = if (op.arg_count >= 2) runtime.argValue(state, thread, op, 1) else Value.nil;
     const len = try lengthInteger(state, thread, table_value);
-    if (len > 1_000_000) return state.fail("array too big");
+    if (len > 1_000_000) return state.failArgumentMessage("table.sort", 1, "array too big");
+    if (len > 1 and comparator != .nil and !std.mem.eql(u8, runtime.typeName(comparator), "function")) {
+        return state.failArgumentType("table.sort", 2, "function", comparator);
+    }
     if (len > 1) {
         const count: usize = @intCast(len);
         const values = try state.allocator.alloc(Value, count);
@@ -201,7 +197,7 @@ fn sortValues(state: *State, thread: *Thread, comparator: Value, values: []Value
 fn sortLess(state: *State, thread: *Thread, comparator: Value, lhs: Value, rhs: Value) !bool {
     if (comparator != .nil) {
         const result = runtime.truthy(try state.callOneResult(thread, comparator, &.{ lhs, rhs }));
-        if (result and runtime.truthy(try state.callOneResult(thread, comparator, &.{ rhs, lhs }))) return state.fail("invalid order function for sorting");
+        if (result and runtime.truthy(try state.callOneResult(thread, comparator, &.{ rhs, lhs }))) return state.failLibrary("invalid order function for sorting");
         return result;
     }
     return state.compareValues(thread, lhs, rhs, .lt);
@@ -210,10 +206,9 @@ fn sortLess(state: *State, thread: *Thread, comparator: Value, lhs: Value, rhs: 
 pub fn unpack(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const table_value = runtime.argValue(state, thread, op, 0);
     _ = try state.expectArgumentTable(thread, op, "table.unpack", 0);
-    const start = if (op.arg_count >= 2) runtime.toInteger(runtime.argValue(state, thread, op, 1)) orelse 1 else 1;
-    const len = try lengthInteger(state, thread, table_value);
-    const stop = if (op.arg_count >= 3) runtime.toInteger(runtime.argValue(state, thread, op, 2)) orelse len else len;
-    if (@as(i128, stop) - @as(i128, start) + 1 > 1_000_000) return state.fail("too many results to unpack");
+    const start = try state.optionalArgumentInteger(thread, op, "table.unpack", 1, 1);
+    const stop = if (runtime.argValue(state, thread, op, 2) == .nil) try lengthInteger(state, thread, table_value) else try state.argumentInteger(thread, op, "table.unpack", 2);
+    if (@as(i128, stop) - @as(i128, start) + 1 > 1_000_000) return state.failLibrary("too many results to unpack");
     var values = std.ArrayList(Value).empty;
     defer values.deinit(state.allocator);
     var index = start;

@@ -1,6 +1,7 @@
 const std = @import("std");
 const compile = @import("../compile.zig");
 const types = @import("types.zig");
+const number_format = @import("number_format.zig");
 
 const bytecode = compile.bytecode;
 const proto_mod = compile.proto;
@@ -558,12 +559,7 @@ pub const max_number_text_len = 400;
 pub fn formatNumber(buffer: *[max_number_text_len]u8, value: Value) []const u8 {
     switch (value) {
         .integer => |integer| return std.fmt.bufPrint(buffer, "{d}", .{integer}) catch unreachable,
-        .number => |number| {
-            const text = std.fmt.bufPrint(buffer, "{d}", .{number}) catch unreachable;
-            if (@floor(number) != number or !std.math.isFinite(number)) return text;
-            buffer[text.len..][0..2].* = ".0".*;
-            return buffer[0 .. text.len + 2];
-        },
+        .number => |number| return number_format.formatLuaFloat(buffer[0..number_format.max_lua_float_len], number),
         else => unreachable,
     }
 }

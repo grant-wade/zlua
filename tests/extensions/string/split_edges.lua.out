@@ -55,11 +55,11 @@ method	3	"x" "y" "z"
 rmethod	2	"x-y" "z"
 empty separator	false	bad argument #2 to 'string.split' (empty separator)
 rsplit empty separator	false	bad argument #2 to 'string.rsplit' (empty separator)
-method empty separator	false	bad argument #1 to 'string.split' (empty separator)
-number source	false	bad argument #1 to 'string.split' (string expected, got number)
-nil source	false	bad argument #1 to 'string.split' (string expected, got nil)
+method empty separator	false	split_edges.lua:94: bad argument #1 to 'split' (empty separator)
+number source	2	"1" "3"
+nil source	false	bad argument #1 to 'string.split' (string expected, got no value)
 table source	false	bad argument #1 to 'string.rsplit' (string expected, got table)
-number separator	false	bad argument #2 to 'string.split' (string expected, got number)
+number separator	2	"a" "b"
 boolean separator	false	bad argument #2 to 'string.split' (string expected, got boolean)
 string maxsplit	false	bad argument #3 to 'string.split' (number expected, got string)
 float maxsplit	false	bad argument #3 to 'string.split' (number has no integer representation)

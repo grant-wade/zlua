@@ -78,6 +78,8 @@ pub const isFileValue = state_mod.isFileValue;
 pub const isClosedFileValue = state_mod.isClosedFileValue;
 pub const appendNumber = state_mod.appendNumber;
 pub const appendFmt = state_mod.appendFmt;
+pub const typeName = state_mod.luaTypeName;
+pub const number_format = @import("runtime/number_format.zig");
 
 pub const ExecuteOptions = execute_mod.ExecuteOptions;
 pub const executeSource = execute_mod.executeSource;
@@ -85,4 +87,5 @@ pub const executeSourceWithOptions = execute_mod.executeSourceWithOptions;
 
 test {
     _ = tests;
+    _ = @import("runtime/number_format.zig");
 }

@@ -739,7 +739,7 @@ fn writeToFile(state: *State, thread: *Thread, op: bytecode.Call, file: *Table, 
                 try runtime.appendLuaString(state.allocator, &formatted, value);
                 break :blk formatted.items;
             },
-            else => return state.failArgumentType(function_name, index + 1 - first_arg, "string", value),
+            else => return state.failArgumentType(function_name, index + 1, "string", value),
         };
         if (line_buffered and !wrote_newline and std.mem.indexOfScalar(u8, bytes, '\n') != null) wrote_newline = true;
         switch (target) {

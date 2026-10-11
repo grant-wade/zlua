@@ -6,7 +6,7 @@ end
 
 local function show_error(label, fn, ...)
   local ok, err = pcall(fn, ...)
-  print(label, ok, err)
+  print(label, ok, (tostring(err):gsub("^.*strip_edges%.lua:", "strip_edges.lua:")))
 end
 
 -- Default set: ASCII space, \t, \n, \r, \v, and \f.
@@ -45,8 +45,8 @@ print("result count", select("#", string.strip("  x  ")))
 
 -- Argument errors.
 show_error("nil source", string.strip)
-show_error("number source", string.strip, 12)
+show("number source", string.strip(12))
 show_error("table source", string.strip, {})
-show_error("number chars", string.strip, "x", 1)
+show("number chars", string.strip("1x1", 1))
 show_error("boolean chars", string.strip, "x", true)
 show_error("method bad chars", function() return ("x"):strip({}) end)

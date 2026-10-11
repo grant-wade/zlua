@@ -388,7 +388,7 @@ comptime {
     review(types.Thread, .{
         .copied = "exposed stack frames yield_values protected_continuations generic_for_continuations pairs_continuations tail_call_continuations call_one_continuations hook_call hook_line hook_return hook_count hook_count_remaining pending_yield_hook_return continuation_order last_result_base last_result_count last_transfer_base last_transfer_count yield_result_base yield_result_count pending_unwind_resume_frame_count pending_unwind_target_frame_count started is_main closing status",
         .remapped = "open_upvalues hook close_error_value error_traceback pending_unwind_error entry",
-        .transient = "rollback marked gc hook_running hook_return_name hook_level2_func hook_transfer_index_base hook_transfer_stack_base hook_transfer_count hook_transfer_values next_call_name next_call_namewhat native_call_depth traceback_native_name protected_close_depth resume_parent",
+        .transient = "rollback marked gc hook_running hook_return_name hook_level2_func hook_transfer_index_base hook_transfer_stack_base hook_transfer_count hook_transfer_values next_call_name next_call_namewhat native_call_depth native_call traceback_native_name protected_close_depth resume_parent",
     });
     review(types.CallFrame, .{
         .copied = "base pc return_start return_count varargs named_vararg_readonly last_hook_line debug_name_override debug_namewhat_override is_tail_call pending_returns",

@@ -92,7 +92,7 @@ pub fn coroutineCreate(comptime State: type, self: *State, thread: *Thread, op: 
 }
 
 pub fn coroutineResume(comptime State: type, self: *State, thread: *Thread, op: bytecode.Call) !void {
-    const target = try self.expectThread(argValue(self, thread, op, 0));
+    const target = try self.expectArgumentThread(thread, op, "coroutine.resume", 0);
     const args = try self.collectArgs(thread, op, 1);
     defer self.allocator.free(args);
 
@@ -149,7 +149,7 @@ pub fn coroutineYield(comptime State: type, self: *State, thread: *Thread, op: b
 }
 
 pub fn coroutineStatus(comptime State: type, self: *State, thread: *Thread, op: bytecode.Call) !void {
-    const target = try self.expectThread(argValue(self, thread, op, 0));
+    const target = try self.expectArgumentThread(thread, op, "coroutine.status", 0);
     try self.returnValues(thread, op.base, op.return_count, &.{.{ .string = try self.intern(threadStatusName(target.status)) }});
 }
 
@@ -159,7 +159,7 @@ pub fn coroutineRunning(comptime State: type, self: *State, thread: *Thread, op:
 }
 
 pub fn coroutineIsYieldable(comptime State: type, self: *State, thread: *Thread, op: bytecode.Call) !void {
-    const target = if (op.arg_count == 0) thread else try self.expectThread(argValue(self, thread, op, 0));
+    const target = if (op.arg_count == 0) thread else try self.expectArgumentThread(thread, op, "coroutine.isyieldable", 0);
     const yieldable = if (target == thread)
         isYieldable(thread)
     else
@@ -168,7 +168,7 @@ pub fn coroutineIsYieldable(comptime State: type, self: *State, thread: *Thread,
 }
 
 pub fn coroutineClose(comptime State: type, self: *State, thread: *Thread, op: bytecode.Call) !void {
-    const target = if (op.arg_count == 0) thread else try self.expectThread(argValue(self, thread, op, 0));
+    const target = if (op.arg_count == 0) thread else try self.expectArgumentThread(thread, op, "coroutine.close", 0);
     if (target.closing) return self.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = true }});
     const closes_self = target == thread and target.status == .running;
     if (try closeCoroutine(State, self, target, null)) |error_value| {
@@ -206,7 +206,7 @@ pub fn callCoroutineWrapperWithArgs(comptime State: type, self: *State, thread: 
                 (try closeCoroutine(State, self, target, null)) orelse error_value
             else
                 error_value;
-            return self.throwValue(failure);
+            return self.throwValue(try self.withLibraryWhere(failure));
         },
     }
 }

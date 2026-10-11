@@ -34,7 +34,7 @@ pub fn date(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const utc = format.len != 0 and format[0] == '!';
     if (utc) format = format[1..];
     const offset: timezone.LocalOffset = if (utc) .{ .name = "UTC" } else try state.localOffset(when);
-    const parts = brokenDownTime(when, offset) orelse return state.fail("date result cannot be represented in this installation");
+    const parts = brokenDownTime(when, offset) orelse return state.failLibrary("date result cannot be represented in this installation");
     if (std.mem.eql(u8, format, "*t")) {
         const value = try state.newTableWithHints(0, 9);
         try setDateFields(state, value.table, parts);
@@ -207,9 +207,9 @@ fn tableToTime(state: *State, value: Value) !i64 {
     const local = days * timezone.seconds_per_day + hour * 3600 + min * 60 + sec;
     const timestamp = try state.localToUtc(local, is_dst);
     const parts = brokenDownTime(timestamp, try state.localOffset(timestamp)) orelse
-        return state.fail("time result cannot be represented in this installation");
+        return state.failLibrary("time result cannot be represented in this installation");
     try setDateFields(state, table, parts);
-    if (timestamp == -1) return state.fail("time result cannot be represented in this installation");
+    if (timestamp == -1) return state.failLibrary("time result cannot be represented in this installation");
     return timestamp;
 }
 
@@ -218,14 +218,14 @@ fn tableToTime(state: *State, value: Value) !i64 {
 fn dateField(state: *State, table: *runtime.Table, comptime name: []const u8, default: ?i64, comptime delta: i64) !i64 {
     const value = table.get(.{ .string = name });
     const integer = luaInteger(value) orelse {
-        if (value != .nil) return state.fail("field '" ++ name ++ "' is not an integer");
-        return default orelse state.fail("field '" ++ name ++ "' missing in date table");
+        if (value != .nil) return state.failLibrary("field '" ++ name ++ "' is not an integer");
+        return default orelse state.failLibrary("field '" ++ name ++ "' missing in date table");
     };
     const in_bounds = if (integer >= 0)
         integer - delta <= std.math.maxInt(i32)
     else
         @as(i64, std.math.minInt(i32)) + delta <= integer;
-    if (!in_bounds) return state.fail("field '" ++ name ++ "' is out-of-bound");
+    if (!in_bounds) return state.failLibrary("field '" ++ name ++ "' is out-of-bound");
     return integer;
 }
 

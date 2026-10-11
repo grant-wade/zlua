@@ -55,7 +55,7 @@ print("list sorted nil", #assert(fs.list(root .. "/dir", nil)))
 
 -- Argument errors raise instead of returning nil, err.
 show_error("stat no args", fs.stat)
-show_error("stat number", fs.stat, 42)
+show_error("stat boolean", fs.stat, true)
 show_error("stat bad options", fs.stat, root, "yes")
 show_error("stat bad follow", fs.stat, root, { follow_symlinks = "yes" })
 show_error("list no args", fs.list)

@@ -22,7 +22,7 @@ negative len	0
 float len	2	"a" "b"
 eq ignored	2
 metatable	nil
-no args	false	bad argument #1 to 'table.dedup' (table expected, got nil)
+no args	false	bad argument #1 to 'table.dedup' (table expected, got no value)
 string	false	bad argument #1 to 'table.dedup' (table expected, got string)
 number	false	bad argument #1 to 'table.dedup' (table expected, got number)
 nil	false	bad argument #1 to 'table.dedup' (table expected, got nil)

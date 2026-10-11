@@ -3639,10 +3639,26 @@ pub const State = struct {
         try self.invokeValue(thread, resolved, 0);
     }
 
+    fn nativeCallInfo(thread: *Thread, resolved: bytecode.Call, outer: ?types.NativeCall, name: ?[]const u8, namewhat: ?[]const u8) types.NativeCall {
+        const frame_count = thread.frames.items.len;
+        return .{
+            .base = resolved.base,
+            .arg_count = resolved.arg_count,
+            .frame_count = frame_count,
+            .from_native = if (outer) |active| active.frame_count == frame_count else false,
+            .outer_frame_count = if (outer) |active| active.frame_count else null,
+            .name = name,
+            .namewhat = namewhat,
+        };
+    }
+
     pub fn invokeValue(self: *State, thread: *Thread, resolved: bytecode.Call, depth: usize) anyerror!void {
         if (depth > max_metamethod_depth) return self.fail("'__call' chain too long");
         const callee = self.get(thread, resolved.base);
         if (callee == .coroutine_wrapper) {
+            const previous_native_call = thread.native_call;
+            defer thread.native_call = previous_native_call;
+            thread.native_call = nativeCallInfo(thread, resolved, previous_native_call, null, null);
             try self.callCoroutineWrapper(thread, resolved, callee.coroutine_wrapper);
             return;
         }
@@ -3656,6 +3672,11 @@ pub const State = struct {
         const call_namewhat = thread.next_call_namewhat;
         thread.next_call_name = null;
         thread.next_call_namewhat = null;
+        const previous_native_call = thread.native_call;
+        defer thread.native_call = previous_native_call;
+        if (isNativeCallable(callee) or callee == .gmatch_iterator) {
+            thread.native_call = nativeCallInfo(thread, resolved, previous_native_call, call_name, call_namewhat);
+        }
         const hook_native = isNativeCallable(callee) and !thread.hook_running;
         if (hook_native and thread.hook_call) {
             const previous_hook_func = thread.hook_level2_func;
@@ -3695,22 +3716,41 @@ pub const State = struct {
                 const value = self.get(thread, resolved.base + 1);
                 try self.returnValues(thread, resolved.base, resolved.return_count, &.{.{ .string = try self.valueToString(thread, value) }});
             },
-            .native_getmetatable => try self.returnValues(thread, resolved.base, resolved.return_count, &.{try self.getMetatableValue(argValue(self, thread, resolved, 0))}),
+            .native_getmetatable => {
+                if (resolved.arg_count == 0) return self.failArgumentMessage("getmetatable", 1, "value expected");
+                try self.returnValues(thread, resolved.base, resolved.return_count, &.{try self.getMetatableValue(argValue(self, thread, resolved, 0))});
+            },
             .native_setmetatable => {
                 const table_value = argValue(self, thread, resolved, 0);
                 if (table_value != .table) return self.failArgumentType("setmetatable", 1, "table", table_value);
+                const metatable_value = argValue(self, thread, resolved, 1);
+                if (metatable_value != .nil and metatable_value != .table) return self.failArgumentType("setmetatable", 2, "nil or table", metatable_value);
                 try self.setMetatableValue(table_value, argValue(self, thread, resolved, 1));
                 try self.returnValues(thread, resolved.base, resolved.return_count, &.{table_value});
             },
-            .native_rawequal => try self.returnValues(thread, resolved.base, resolved.return_count, &.{.{ .boolean = valuesEqual(argValue(self, thread, resolved, 0), argValue(self, thread, resolved, 1)) }}),
-            .native_rawget => try self.returnValues(thread, resolved.base, resolved.return_count, &.{try self.rawGet(argValue(self, thread, resolved, 0), argValue(self, thread, resolved, 1))}),
+            .native_rawequal => {
+                if (resolved.arg_count < 2) return self.failArgumentMessage("rawequal", resolved.arg_count + 1, "value expected");
+                try self.returnValues(thread, resolved.base, resolved.return_count, &.{.{ .boolean = valuesEqual(argValue(self, thread, resolved, 0), argValue(self, thread, resolved, 1)) }});
+            },
+            .native_rawget => {
+                _ = try self.expectArgumentTable(thread, resolved, "rawget", 0);
+                if (resolved.arg_count < 2) return self.failArgumentMessage("rawget", 2, "value expected");
+                try self.returnValues(thread, resolved.base, resolved.return_count, &.{try self.rawGet(argValue(self, thread, resolved, 0), argValue(self, thread, resolved, 1))});
+            },
             .native_rawset => {
                 const table = argValue(self, thread, resolved, 0);
+                _ = try self.expectArgumentTable(thread, resolved, "rawset", 0);
+                if (resolved.arg_count < 3) return self.failArgumentMessage("rawset", @max(resolved.arg_count + 1, 2), "value expected");
                 try self.rawSet(table, argValue(self, thread, resolved, 1), argValue(self, thread, resolved, 2));
                 try self.returnValues(thread, resolved.base, resolved.return_count, &.{table});
             },
-            .native_rawlen => try self.returnValues(thread, resolved.base, resolved.return_count, &.{try self.rawLen(argValue(self, thread, resolved, 0))}),
+            .native_rawlen => {
+                const value = argValue(self, thread, resolved, 0);
+                if (value != .string and (value != .table or isFileValue(value))) return self.failArgumentType("rawlen", 1, "table or string", value);
+                try self.returnValues(thread, resolved.base, resolved.return_count, &.{try self.rawLen(value)});
+            },
             .native_next => {
+                _ = try self.expectArgumentTable(thread, resolved, "next", 0);
                 const values = try self.nextValues(argValue(self, thread, resolved, 0), argValue(self, thread, resolved, 1));
                 // Like Lua's `next`, an exhausted traversal returns a single nil.
                 const count: usize = if (values[0] == .nil) 1 else 2;
@@ -3927,7 +3967,12 @@ pub const State = struct {
             const result = try self.callOneResult(thread, metamethod, &.{value});
             return switch (result) {
                 .string => |string| string,
-                else => self.fail("'__tostring' must return a string"),
+                // `luaL_tolstring` accepts anything `lua_isstring` accepts.
+                .integer, .number => {
+                    var buffer: [value_mod.max_number_text_len]u8 = undefined;
+                    return self.intern(value_mod.formatNumber(&buffer, result));
+                },
+                else => self.failLibrary("'__tostring' must return a string"),
             };
         }
 
@@ -3978,7 +4023,7 @@ pub const State = struct {
     fn setMetatableValue(self: *State, table_value: Value, metatable_value: Value) !void {
         const table = try self.expectTable(table_value);
         if (table.metatable) |metatable| {
-            if (metatable.get(.{ .string = "__metatable" }) != .nil) return self.fail("cannot change a protected metatable");
+            if (metatable.get(.{ .string = "__metatable" }) != .nil) return self.failLibrary("cannot change a protected metatable");
         }
         const metatable = switch (metatable_value) {
             .nil => null,
@@ -4085,7 +4130,7 @@ pub const State = struct {
             return;
         }
         const raw = rawBinaryOp(lhs, rhs, kind) catch |err| switch (err) {
-            error.RuntimeError => if ((kind == .idiv or kind == .mod) and (toInteger(rhs) orelse 1) == 0) return self.failRuntimeDetail(thread, if (kind == .mod) "attempt to perform 'n%0'" else "attempt to divide by zero") else return err,
+            error.RuntimeError => if ((kind == .idiv or kind == .mod) and (toInteger(rhs) orelse 1) == 0) return self.failDivisionByZero(thread, lhs, rhs, kind) else return err,
         };
         if (raw) |value| {
             self.set(thread, op.dest, value);
@@ -4094,7 +4139,6 @@ pub const State = struct {
 
         const metamethod_name = binaryMetamethod(kind);
         const metamethod = (try self.getEitherMetamethod(lhs, rhs, metamethod_name)) orelse {
-            if (bitwiseIntegerError(lhs, rhs, kind)) |message| return self.failRuntimeDetail(thread, message);
             return self.failBinaryTypeError(thread, lhs, rhs, kind);
         };
         const result = try self.callOneMetamethodWithContinuation(thread, metamethod_name, metamethod, &.{ lhs, rhs }, .{ .value = self.absoluteRegister(thread, op.dest) });
@@ -4106,9 +4150,6 @@ pub const State = struct {
         if (rawUnaryOp(value, kind)) |result| {
             self.set(thread, op.dest, result);
             return;
-        }
-        if (kind == .bnot) {
-            if (bitwiseValueError(value)) |message| return self.failRuntimeDetail(thread, message);
         }
         const metamethod = (try self.getMetamethod(value, unaryMetamethod(kind))) orelse return self.failUnaryTypeError(thread, value, kind);
         const result = try self.callOneMetamethodWithContinuation(thread, unaryMetamethod(kind), metamethod, &.{ value, value }, .{ .value = self.absoluteRegister(thread, op.dest) });
@@ -4230,12 +4271,11 @@ pub const State = struct {
     fn binaryOp(self: *State, thread: *Thread, lhs: Value, rhs: Value, op: BinaryOp) !Value {
         if (op == .concat and luaStringLike(lhs) and luaStringLike(rhs)) return self.concatValues(lhs, rhs);
         const raw = rawBinaryOp(lhs, rhs, op) catch |err| switch (err) {
-            error.RuntimeError => if ((op == .idiv or op == .mod) and (toInteger(rhs) orelse 1) == 0) return self.failRuntimeDetail(thread, if (op == .mod) "attempt to perform 'n%0'" else "attempt to divide by zero") else return err,
+            error.RuntimeError => if ((op == .idiv or op == .mod) and (toInteger(rhs) orelse 1) == 0) return self.failDivisionByZero(thread, lhs, rhs, op) else return err,
         };
         if (raw) |value| return value;
         const metamethod_name = binaryMetamethod(op);
         const metamethod = (try self.getEitherMetamethod(lhs, rhs, metamethod_name)) orelse {
-            if (bitwiseIntegerError(lhs, rhs, op)) |message| return self.failRuntimeDetail(thread, message);
             return self.failBinaryTypeError(thread, lhs, rhs, op);
         };
         return self.callOneMetamethod(thread, metamethod_name, metamethod, &.{ lhs, rhs });
@@ -4243,9 +4283,6 @@ pub const State = struct {
 
     fn unaryOp(self: *State, thread: *Thread, value: Value, op: UnaryMetamethodOp) !Value {
         if (rawUnaryOp(value, op)) |result| return result;
-        if (op == .bnot) {
-            if (bitwiseValueError(value)) |message| return self.failRuntimeDetail(thread, message);
-        }
         const metamethod_name = unaryMetamethod(op);
         const metamethod = (try self.getMetamethod(value, metamethod_name)) orelse return self.failUnaryTypeError(thread, value, op);
         return self.callOneMetamethod(thread, metamethod_name, metamethod, &.{ value, value });
@@ -4587,14 +4624,13 @@ pub const State = struct {
     }
 
     fn selectValues(self: *State, thread: *Thread, op: bytecode.Call) !void {
-        if (op.arg_count == 0) return self.failArgumentMessage("select", 1, "value expected");
         const first = argValue(self, thread, op, 0);
         if (first == .string and std.mem.eql(u8, first.string, "#")) {
             try self.returnValues(thread, op.base, op.return_count, &.{.{ .integer = @intCast(op.arg_count - 1) }});
             return;
         }
 
-        var index = toInteger(first) orelse return self.failArgumentType("select", 1, "number", first);
+        var index = try self.argumentInteger(thread, op, "select", 0);
         const count: i64 = @intCast(op.arg_count - 1);
         if (index < 0) index = count + index + 1;
         if (index < 1 or index > count + 1) return self.failArgumentMessage("select", 1, "index out of range");
@@ -4614,8 +4650,11 @@ pub const State = struct {
 
         const condition = argValue(self, thread, op, 0);
         if (!truthy(condition)) {
-            if (op.arg_count >= 2) return self.throwValue(try self.errorObjectValue(argValue(self, thread, op, 1)));
-            return self.throwStringWithLocation(thread, "assertion failed!", 1);
+            // `assert` calls `error` with level 1, so string messages get
+            // the caller's position.
+            const message = if (op.arg_count >= 2) argValue(self, thread, op, 1) else Value{ .string = "assertion failed!" };
+            if (message == .string) return self.throwStringWithLocation(thread, message.string, 1);
+            return self.throwValue(try self.errorObjectValue(message));
         }
 
         const values = try self.allocator.alloc(Value, op.arg_count);
@@ -4634,7 +4673,21 @@ pub const State = struct {
         return self.throwStringWithLocation(thread, value.string, level_index);
     }
 
-    fn throwStringWithLocation(self: *State, thread: *Thread, message_text: []const u8, level: usize) !void {
+    fn throwStringWithLocation(self: *State, thread: *Thread, message_text: []const u8, requested_level: usize) !void {
+        // Level 1 is the caller of `error`; when that is a library function
+        // such as `pcall`, it has no position, and higher levels skip it.
+        var level = requested_level;
+        if (activeNativeCall(thread)) |call| {
+            if (call.from_native) {
+                if (level == 1) return self.throwValue(.{ .string = try self.intern(message_text) });
+                level -= 1;
+            } else if (level >= 2 and call.outer_frame_count != null and call.outer_frame_count.? + 1 == call.frame_count) {
+                // The Lua function at level 1 was called by a library
+                // function (such as `pcall`), which is level 2.
+                if (level == 2) return self.throwValue(.{ .string = try self.intern(message_text) });
+                level -= 1;
+            }
+        }
         const line = self.lineForErrorLevel(thread, level) orelse return self.throwValue(.{ .string = try self.intern(message_text) });
         const source = self.sourceForErrorLevel(thread, level) orelse "zlua";
         const message = try std.fmt.allocPrint(self.allocator, "{s}:{d}: {s}", .{ source, line, message_text });
@@ -4668,8 +4721,8 @@ pub const State = struct {
     }
 
     fn xpcallValues(self: *State, thread: *Thread, op: bytecode.Call) !void {
-        if (op.arg_count < 2) return self.failArgumentMessage("xpcall", 2, "value expected");
         const handler = argValue(self, thread, op, 1);
+        if (!functionLike(handler)) return self.failArgumentType("xpcall", 2, "function", handler);
         const args = try self.collectArgs(thread, op, 2);
         defer self.allocator.free(args);
 
@@ -5022,6 +5075,13 @@ pub const State = struct {
         defer if (owned_values) |values| self.allocator.free(values);
         const values: []const Value = switch (iterator) {
             .native_next => blk: {
+                if (state != .table) {
+                    // Report it as Lua does for the iterator call.
+                    const previous_native_call = thread.native_call;
+                    defer thread.native_call = previous_native_call;
+                    thread.native_call = nativeCallInfo(thread, .{ .base = op.base, .arg_count = 2, .return_count = 0 }, null, "for iterator", "for iterator");
+                    return self.failArgumentType("next", 1, "table", state);
+                }
                 fixed = try self.nextValues(state, control);
                 break :blk fixed[0..2];
             },
@@ -5147,6 +5207,15 @@ pub const State = struct {
         return switch (value) {
             .string => |string| string,
             else => self.fail("string expected"),
+        };
+    }
+
+    /// `getco` in lcorolib: the coroutine argument of a `coroutine` function.
+    pub fn expectArgumentThread(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16) !*Thread {
+        const value = argValue(self, thread, op, index);
+        return switch (value) {
+            .thread => |target| target,
+            else => self.failArgumentType(function_name, index + 1, "thread", value),
         };
     }
 
@@ -5504,6 +5573,26 @@ pub const State = struct {
         return self.fail(self.intern(out.items) catch return self.fail(detail));
     }
 
+    fn failDivisionByZero(self: *State, thread: *Thread, lhs: Value, rhs: Value, op: BinaryOp) RuntimeError {
+        const message = if (op == .mod) "attempt to perform 'n%0'" else "attempt to divide by zero";
+        // String operands go through the string library's arithmetic
+        // metamethods, which raise this from C without a position.
+        if (lhs == .string or rhs == .string) return self.fail(message);
+        return self.failRuntimeDetail(thread, message);
+    }
+
+    /// `luaG_tointerror`: both operands are numbers, at least one without
+    /// an integer value.
+    fn failNoIntegerRepresentation(self: *State, thread: *Thread, lhs: Value) RuntimeError {
+        var detail = std.ArrayList(u8).empty;
+        defer detail.deinit(self.allocator);
+        const operand_index: usize = if (toBitwiseInteger(lhs) == null) 0 else 1;
+        detail.appendSlice(self.allocator, "number") catch return self.fail("number has no integer representation");
+        self.appendSiteOrigin(&detail, self.currentErrorSite(thread), operand_index, false) catch return self.fail("number has no integer representation");
+        detail.appendSlice(self.allocator, " has no integer representation") catch return self.fail("number has no integer representation");
+        return self.failRuntimeDetail(thread, detail.items);
+    }
+
     fn failBinaryTypeError(self: *State, thread: *Thread, lhs: Value, rhs: Value, op: BinaryOp) RuntimeError {
         var detail = std.ArrayList(u8).empty;
         defer detail.deinit(self.allocator);
@@ -5511,7 +5600,8 @@ pub const State = struct {
         switch (op) {
             .add, .sub, .mul, .div, .idiv, .mod, .pow => {
                 if (lhs == .string or rhs == .string) {
-                    appendFmt(self.allocator, &detail, "attempt to {s} a '{s}' with a '{s}'", .{ arithmeticVerb(op), self.luaTypeNameForError(lhs), self.luaTypeNameForError(rhs) }) catch return self.fail("attempt to perform operation on unsupported values");
+                    // lstrlib's `trymt` names raw types, ignoring `__name`.
+                    appendFmt(self.allocator, &detail, "attempt to {s} a '{s}' with a '{s}'", .{ arithmeticVerb(op), luaTypeName(lhs), luaTypeName(rhs) }) catch return self.fail("attempt to perform operation on unsupported values");
                     return self.failRuntimeDetail(thread, detail.items);
                 }
                 const operand_index: usize = if (toNumberMaybe(lhs) == null) 0 else 1;
@@ -5520,7 +5610,8 @@ pub const State = struct {
                 self.appendSiteOrigin(&detail, site, operand_index, false) catch return self.fail("attempt to perform operation on unsupported values");
             },
             .band, .bor, .bxor, .shl, .shr => {
-                const operand_index: usize = if (toBitwiseInteger(lhs) == null) 0 else 1;
+                if (isNumber(lhs) and isNumber(rhs)) return self.failNoIntegerRepresentation(thread, lhs);
+                const operand_index: usize = if (!isNumber(lhs)) 0 else 1;
                 const bad_value = if (operand_index == 0) lhs else rhs;
                 appendFmt(self.allocator, &detail, "attempt to perform bitwise operation on a {s} value", .{self.luaTypeNameForError(bad_value)}) catch return self.fail("attempt to perform operation on unsupported values");
                 self.appendSiteOrigin(&detail, site, operand_index, true) catch return self.fail("attempt to perform operation on unsupported values");
@@ -5549,6 +5640,8 @@ pub const State = struct {
     }
 
     fn failUnaryTypeError(self: *State, thread: *Thread, value: Value, op: UnaryMetamethodOp) RuntimeError {
+        if (op == .bnot and isNumber(value)) return self.failNoIntegerRepresentation(thread, value);
+        if (op == .unm and value == .string) return self.failRuntimeDetail(thread, "attempt to unm a 'string' with a 'string'");
         var detail = std.ArrayList(u8).empty;
         defer detail.deinit(self.allocator);
         const operation = switch (op) {
@@ -5620,6 +5713,9 @@ pub const State = struct {
     fn appendRuntimeErrorPrefix(self: *State, out: *std.ArrayList(u8), thread: ?*Thread) !void {
         const active = thread orelse return;
         if (active.frames.items.len == 0) return;
+        // Errors raised while a library function runs come from C in Lua,
+        // and `luaG_runerror` adds no position for C functions.
+        if (activeNativeCall(active) != null) return;
         if (active.frames.items[active.frames.items.len - 1].closure.stripped_debug) {
             try out.appendSlice(self.allocator, "?:?: ");
             return;
@@ -5629,7 +5725,17 @@ pub const State = struct {
         try appendFmt(self.allocator, out, "{s}:{d}: ", .{ runtimeSourceName(frame.proto.source_name), site.line });
     }
 
+    /// Where the running Lua code is, for naming operands in VM errors.
+    /// While a library function runs the error comes from "C", so there is
+    /// no Lua site.
     fn currentErrorSite(self: *State, thread: *Thread) ?proto_mod.ErrorSite {
+        if (activeNativeCall(thread) != null) return null;
+        return self.instructionErrorSite(thread);
+    }
+
+    /// The site of the instruction the top frame is executing, which is the
+    /// calling instruction while a library function runs.
+    fn instructionErrorSite(self: *State, thread: *Thread) ?proto_mod.ErrorSite {
         _ = self;
         if (thread.frames.items.len == 0) return null;
         const frame = thread.frames.items[thread.frames.items.len - 1];
@@ -5680,12 +5786,17 @@ pub const State = struct {
         return error.RuntimeError;
     }
 
+    /// Raises `bad argument #index to 'name' (detail)` like `luaL_argerror`.
+    /// `index` is the 1-based position among the native call's arguments;
+    /// method calls renumber it and report a bad `self` as Lua does. The
+    /// function is named from the calling instruction when Lua code made the
+    /// call, else by a search of the loaded libraries, else `function_name`.
     pub fn failArgument(self: *State, function_name: []const u8, index: u16, detail: errors.ArgumentErrorDetail) RuntimeError {
-        self.last_error = .{ .argument = .{
-            .function_name = function_name,
-            .index = index,
-            .detail = detail,
-        } };
+        const rendered = self.renderArgumentError(function_name, index, detail) catch {
+            self.last_error = .{ .argument = .{ .function_name = function_name, .index = index, .detail = detail } };
+            return error.RuntimeError;
+        };
+        self.last_error = .{ .diagnostic = rendered };
         return error.RuntimeError;
     }
 
@@ -5700,31 +5811,197 @@ pub const State = struct {
         } });
     }
 
+    /// Raises `message` like `luaL_error`: prefixed with the position of
+    /// the Lua code that called the running library function, if any.
+    pub fn failLibrary(self: *State, message: []const u8) RuntimeError {
+        var out = std.ArrayList(u8).empty;
+        defer out.deinit(self.allocator);
+        self.appendLibraryWhere(&out) catch return self.fail(message);
+        if (out.items.len == 0) return self.fail(message);
+        out.appendSlice(self.allocator, message) catch return self.fail(message);
+        return self.fail(self.intern(out.items) catch return self.fail(message));
+    }
+
+    /// Prefixes a string error with `luaL_where(L, 1)`, as `coroutine.wrap`
+    /// does for errors raised inside the coroutine.
+    pub fn withLibraryWhere(self: *State, value: Value) !Value {
+        if (value != .string) return value;
+        var out = std.ArrayList(u8).empty;
+        defer out.deinit(self.allocator);
+        try self.appendLibraryWhere(&out);
+        if (out.items.len == 0) return value;
+        try out.appendSlice(self.allocator, value.string);
+        return .{ .string = try self.intern(out.items) };
+    }
+
+    /// `failLibrary` with a formatted message.
+    pub fn failLibraryFmt(self: *State, comptime fmt: []const u8, args: anytype) RuntimeError {
+        var out = std.ArrayList(u8).empty;
+        defer out.deinit(self.allocator);
+        appendFmt(self.allocator, &out, fmt, args) catch return self.fail(fmt);
+        const message = self.intern(out.items) catch return self.fail(fmt);
+        return self.failLibrary(message);
+    }
+
+    /// The running native call, when its frame is still on top.
+    fn activeNativeCall(thread: *Thread) ?types.NativeCall {
+        const call = thread.native_call orelse return null;
+        if (call.frame_count == 0 or thread.frames.items.len != call.frame_count) return null;
+        return call;
+    }
+
+    /// `luaL_where(L, 1)`: the position of the Lua code that called the
+    /// running library function, or nothing when native code called it.
+    fn appendLibraryWhere(self: *State, out: *std.ArrayList(u8)) !void {
+        const thread = self.current_thread orelse return;
+        const call = activeNativeCall(thread) orelse return;
+        if (call.from_native) return;
+        const frame = thread.frames.items[thread.frames.items.len - 1];
+        if (frame.closure.stripped_debug) return;
+        const site = self.instructionErrorSite(thread) orelse return;
+        try appendFmt(self.allocator, out, "{s}:{d}: ", .{ runtimeSourceName(frame.proto.source_name), site.line });
+    }
+
+    const CallName = struct { name: []const u8, namewhat: []const u8 };
+
+    /// Mirrors `getinfo(L, "n")` for the running native function.
+    fn nativeCallName(self: *State, thread: *Thread, call: types.NativeCall) ?CallName {
+        if (call.from_native) return null;
+        if (call.name) |name| {
+            if (call.namewhat) |namewhat| return .{ .name = name, .namewhat = namewhat };
+            if (std.mem.eql(u8, name, "for iterator")) return .{ .name = name, .namewhat = name };
+            return .{ .name = name, .namewhat = "metamethod" };
+        }
+        const frame = thread.frames.items[thread.frames.items.len - 1];
+        // Calls made through `callCollect` and friends sit above the frame's
+        // registers; only CALL instructions name their callee.
+        if (call.base >= frame.proto.max_registers) return null;
+        const site = self.instructionErrorSite(thread) orelse return null;
+        const origin = site.call_name orelse return null;
+        return switch (origin) {
+            .temporary => null,
+            .local => |name| .{ .name = name, .namewhat = "local" },
+            .upvalue => |name| .{ .name = name, .namewhat = "upvalue" },
+            .global => |name| .{ .name = name, .namewhat = "global" },
+            .field => |name| .{ .name = name, .namewhat = "field" },
+            .method => |name| .{ .name = name, .namewhat = "method" },
+            .metamethod => |name| .{ .name = name, .namewhat = "metamethod" },
+            .constant => |name| .{ .name = name, .namewhat = "constant" },
+        };
+    }
+
+    /// Mirrors `pushglobalfuncname`: finds `callee` as a global or as a
+    /// field of a loaded module.
+    fn appendGlobalFunctionName(self: *State, out: *std.ArrayList(u8), callee: Value) !bool {
+        const globals = self.global_table orelse return false;
+        if (findFunctionField(globals, callee)) |key| {
+            try out.appendSlice(self.allocator, key);
+            return true;
+        }
+        // Lua keeps the loaded-module table in the registry. zlua reaches it
+        // through `package`; sandboxes without `package` fall back to the
+        // global library tables.
+        const package = globals.get(.{ .string = "package" });
+        const loaded = if (package == .table) package.table.get(.{ .string = "loaded" }) else Value.nil;
+        const modules = if (loaded == .table) loaded.table else globals;
+        for (modules.entries.items) |entry| {
+            if (entry.key != .string or entry.value != .table or entry.value.table == globals) continue;
+            if (findFunctionField(entry.value.table, callee)) |key| {
+                try appendFmt(self.allocator, out, "{s}.{s}", .{ entry.key.string, key });
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn findFunctionField(table: *Table, callee: Value) ?[]const u8 {
+        for (table.entries.items) |entry| {
+            if (entry.key == .string and valuesEqual(entry.value, callee)) return entry.key.string;
+        }
+        return null;
+    }
+
+    fn renderArgumentError(self: *State, function_name: []const u8, raw_index: u16, detail: errors.ArgumentErrorDetail) ![]const u8 {
+        var out = std.ArrayList(u8).empty;
+        defer out.deinit(self.allocator);
+        const thread = self.current_thread;
+        const call: ?types.NativeCall = if (thread) |active| activeNativeCall(active) else null;
+
+        var actual_detail = detail;
+        if (call) |native| switch (actual_detail) {
+            // `luaL_typeerror` reports a missing argument as "no value".
+            .expected => |*expected| if (raw_index > native.arg_count and std.mem.eql(u8, expected.actual, "nil")) {
+                expected.actual = "no value";
+            },
+            .message => {},
+        };
+
+        try self.appendLibraryWhere(&out);
+        var index = raw_index;
+        const name: ?CallName = if (call) |native| self.nativeCallName(thread.?, native) else null;
+        if (name) |known| if (std.mem.eql(u8, known.namewhat, "method")) {
+            index -|= 1;
+            if (index == 0) {
+                try appendFmt(self.allocator, &out, "calling '{s}' on bad self (", .{known.name});
+                try appendArgumentDetail(self.allocator, &out, actual_detail);
+                try out.append(self.allocator, ')');
+                return self.intern(out.items);
+            }
+        };
+        try appendFmt(self.allocator, &out, "bad argument #{d} to '", .{index});
+        if (name) |known| {
+            try out.appendSlice(self.allocator, known.name);
+        } else {
+            // Host callbacks keep their registered names; library functions
+            // that Lua cannot name are "?", as in `luaL_argerror`.
+            var fallback = function_name;
+            if (call) |native| {
+                const active = thread.?;
+                const frame = active.frames.items[native.frame_count - 1];
+                const callee = active.stack.items[frame.base + native.base];
+                if (try self.appendGlobalFunctionName(&out, callee)) {
+                    fallback = "";
+                } else if (callee != .api_callback) {
+                    fallback = "?";
+                }
+            }
+            try out.appendSlice(self.allocator, fallback);
+        }
+        try out.appendSlice(self.allocator, "' (");
+        try appendArgumentDetail(self.allocator, &out, actual_detail);
+        try out.append(self.allocator, ')');
+        return self.intern(out.items);
+    }
+
+    fn appendArgumentDetail(allocator: std.mem.Allocator, out: *std.ArrayList(u8), detail: errors.ArgumentErrorDetail) !void {
+        switch (detail) {
+            .message => |message| try out.appendSlice(allocator, message),
+            .expected => |expected| try appendFmt(allocator, out, "{s} expected, got {s}", .{ expected.expected, expected.actual }),
+        }
+    }
+
+    /// `luaL_checklstring`: accepts strings and numbers. A number argument is
+    /// converted in place, as Lua does, which also keeps the new string
+    /// reachable for the rest of the call.
     pub fn expectArgumentString(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16) ![]const u8 {
         const value = argValue(self, thread, op, index);
         return switch (value) {
             .string => |string| string,
-            else => if (index == 0 and self.isMethodSelfArgument(thread, function_name))
-                self.failArgumentMessage(function_name, 1, "bad self")
-            else
-                self.failArgumentType(function_name, index + 1, "string", value),
+            .integer, .number => {
+                var buffer: [value_mod.max_number_text_len]u8 = undefined;
+                const string = try self.intern(value_mod.formatNumber(&buffer, value));
+                const frame = thread.frames.items[thread.frames.items.len - 1];
+                thread.stack.items[frame.base + op.base + 1 + index] = .{ .string = string };
+                return string;
+            },
+            else => self.failArgumentType(function_name, index + 1, "string", value),
         };
     }
 
-    fn isMethodSelfArgument(self: *State, thread: *Thread, function_name: []const u8) bool {
-        const site = self.currentErrorSite(thread) orelse return false;
-        const origin = site.call_name orelse return false;
-        const method = switch (origin) {
-            .method => |name| name,
-            else => return false,
-        };
-        const dot = std.mem.lastIndexOfScalar(u8, function_name, '.') orelse return false;
-        return std.mem.eql(u8, function_name[dot + 1 ..], method);
-    }
-
-    pub fn argumentDisplayIndex(self: *State, thread: *Thread, function_name: []const u8, index: u16) u16 {
-        if (index > 0 and self.isMethodSelfArgument(thread, function_name)) return index;
-        return index + 1;
+    /// `luaL_optlstring`: nil or an absent argument gives `null`.
+    pub fn optionalArgumentString(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16) !?[]const u8 {
+        if (argValue(self, thread, op, index) == .nil) return null;
+        return try self.expectArgumentString(thread, op, function_name, index);
     }
 
     pub fn expectArgumentTable(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16) !*Table {
@@ -5735,9 +6012,24 @@ pub const State = struct {
         };
     }
 
+    /// `luaL_checknumber`.
+    pub fn argumentNumber(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16) !f64 {
+        const value = argValue(self, thread, op, index);
+        return toNumberMaybe(value) orelse self.failArgumentType(function_name, index + 1, "number", value);
+    }
+
+    /// `luaL_optinteger`: nil or an absent argument gives `default`.
+    pub fn optionalArgumentInteger(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16, default: i64) !i64 {
+        if (argValue(self, thread, op, index) == .nil) return default;
+        return self.argumentInteger(thread, op, function_name, index);
+    }
+
+    /// `luaL_checkinteger`.
     pub fn argumentInteger(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16) !i64 {
         const value = argValue(self, thread, op, index);
-        return toInteger(value) orelse self.failArgumentType(function_name, index + 1, "number", value);
+        if (toInteger(value)) |integer| return integer;
+        const number = toNumberMaybe(value) orelse return self.failArgumentType(function_name, index + 1, "number", value);
+        return floatToInteger(number) orelse self.failArgumentMessage(function_name, index + 1, "number has no integer representation");
     }
 
     fn failLoadDiagnostic(self: *State, source_name: ?[]const u8, source_text: []const u8, diagnostic: ?errors.Diagnostic, fallback: []const u8) RuntimeError {
@@ -5790,7 +6082,7 @@ fn forValueName(kind: ForValueKind) []const u8 {
     };
 }
 
-fn luaTypeName(value: Value) []const u8 {
+pub fn luaTypeName(value: Value) []const u8 {
     return switch (value) {
         .nil => "nil",
         .boolean => "boolean",
@@ -5973,19 +6265,26 @@ fn rawUnaryOp(value: Value, op: UnaryMetamethodOp) ?Value {
         .unm => switch (value) {
             .integer => |integer| .{ .integer = -%integer },
             .number => |number| .{ .number = -number },
-            else => if (toNumberMaybe(value)) |number| .{ .number = -number } else null,
+            // Numeric strings convert as `tonumber` would, keeping integers.
+            .string => if (toInteger(value)) |integer| .{ .integer = -%integer } else if (toNumberMaybe(value)) |number| .{ .number = -number } else null,
+            else => null,
         },
         .bnot => if (toBitwiseInteger(value)) |integer| .{ .integer = ~integer } else null,
     };
 }
 
+/// Lua 5.5 bitwise operands: integers and floats with an exact integer
+/// value. Strings have no bitwise metamethods, so they are not converted.
 fn toBitwiseInteger(value: Value) ?i64 {
     return switch (value) {
         .integer => |integer| integer,
         .number => |number| floatToInteger(number),
-        .string => |string| parseIntegerStrict(string) orelse if (parseLuaNumber(string)) |number| floatToInteger(number) else |_| null,
         else => null,
     };
+}
+
+fn isNumber(value: Value) bool {
+    return value == .integer or value == .number;
 }
 
 fn rawBitwise(left: i64, right: i64, op: BinaryOp) i64 {
@@ -5997,34 +6296,6 @@ fn rawBitwise(left: i64, right: i64, op: BinaryOp) i64 {
         .shr => if (right == std.math.minInt(i64)) 0 else shiftInteger(left, -right),
         else => unreachable,
     };
-}
-
-fn bitwiseIntegerError(lhs: Value, rhs: Value, op: BinaryOp) ?[]const u8 {
-    switch (op) {
-        .band, .bor, .bxor, .shl, .shr => {},
-        else => return null,
-    }
-    if (bitwiseValueError(lhs)) |message| return message;
-    return bitwiseValueError(rhs);
-}
-
-fn bitwiseValueError(value: Value) ?[]const u8 {
-    switch (value) {
-        .integer => return null,
-        .number => |number| {
-            if (floatToInteger(number) != null) return null;
-            if (std.math.isPositiveInf(number)) return "number (field 'huge') has no integer representation";
-            return "number has no integer representation";
-        },
-        .string => |string| {
-            if (toBitwiseInteger(.{ .string = string }) != null) return null;
-            if (parseLuaNumber(string)) |number| {
-                if (floatToInteger(number) == null) return "number has no integer representation";
-            } else |_| {}
-            return null;
-        },
-        else => return null,
-    }
 }
 
 fn shiftInteger(value: i64, amount: i64) i64 {

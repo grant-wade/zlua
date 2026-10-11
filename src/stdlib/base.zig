@@ -16,8 +16,8 @@ pub fn load(state: *State, thread: *Thread, op: bytecode.Call) !void {
 
     const source = loaded_source.source;
     if (invalidLoadMode(state, thread, op)) return state.failArgumentMessage("load", 3, "invalid mode");
-    if (loadModeError(state, thread, op, source)) |message| {
-        try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.intern(message) } });
+    if (try loadModeError(state, thread, op, source)) |message| {
+        try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = message } });
         return;
     }
 
@@ -89,19 +89,23 @@ fn loadSource(state: *State, thread: *Thread, op: bytecode.Call) !LoadSource {
     }
 }
 
-fn loadModeError(state: *State, thread: *Thread, op: bytecode.Call, source: []const u8) ?[]const u8 {
+/// Mirrors `checkmode` in ldo.c: a chunk kind missing from `mode` fails
+/// the load with a message instead of raising an error.
+fn loadModeError(state: *State, thread: *Thread, op: bytecode.Call, source: []const u8) !?[]const u8 {
     const mode = if (op.arg_count >= 3 and runtime.argValue(state, thread, op, 2) == .string) runtime.argValue(state, thread, op, 2).string else "bt";
     const binary = looksLikeBinaryChunk(source);
-    if (binary and std.mem.indexOfScalar(u8, mode, 'b') == null) return "attempt to load a binary chunk";
-    if (!binary and std.mem.indexOfScalar(u8, mode, 't') == null) return "attempt to load a text chunk";
-    return null;
+    const kind = if (binary) "binary" else "text";
+    if (std.mem.indexOfScalar(u8, mode, kind[0]) != null) return null;
+    var message = std.ArrayList(u8).empty;
+    defer message.deinit(state.allocator);
+    try runtime.appendFmt(state.allocator, &message, "attempt to load a {s} chunk (mode is '{s}')", .{ kind, mode });
+    return try state.intern(message.items);
 }
 
+/// `getMode` in lbaselib rejects only 'B' (fixed buffers).
 fn invalidLoadMode(state: *State, thread: *Thread, op: bytecode.Call) bool {
     const mode = if (op.arg_count >= 3 and runtime.argValue(state, thread, op, 2) == .string) runtime.argValue(state, thread, op, 2).string else "bt";
-    if (mode.len == 0) return true;
-    for (mode) |byte| if (byte != 'b' and byte != 't') return true;
-    return false;
+    return std.mem.indexOfScalar(u8, mode, 'B') != null;
 }
 
 fn looksLikeBinaryChunk(source: []const u8) bool {

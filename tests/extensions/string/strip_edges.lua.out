@@ -24,9 +24,9 @@ single space	""
 method	"m"
 method set	"m"
 result count	1
-nil source	false	bad argument #1 to 'string.strip' (string expected, got nil)
-number source	false	bad argument #1 to 'string.strip' (string expected, got number)
+nil source	false	bad argument #1 to 'string.strip' (string expected, got no value)
+number source	"12"
 table source	false	bad argument #1 to 'string.strip' (string expected, got table)
-number chars	false	bad argument #2 to 'string.strip' (string expected, got number)
+number chars	"x"
 boolean chars	false	bad argument #2 to 'string.strip' (string expected, got boolean)
-method bad chars	false	bad argument #2 to 'string.strip' (string expected, got table)
+method bad chars	false	strip_edges.lua:52: bad argument #1 to 'strip' (string expected, got table)
