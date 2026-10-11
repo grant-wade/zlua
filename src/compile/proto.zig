@@ -80,6 +80,12 @@ pub const Proto = struct {
     /// defaults select the general VM paths for unprepared prototypes.
     runtime_prepared: bool = false,
     named_vararg_readonly: bool = false,
+    /// The plain fast loop may run this prototype: it has no to-be-closed
+    /// locals and its last opcode stops sequential dispatch.
+    fast_loop_entry: bool = false,
+    /// `fast_loop_entry` with a fixed parameter list, so the fast loop's
+    /// call path can push a frame for it without capturing varargs.
+    fast_loop_call: bool = false,
     /// Decoded non-string constants, indexed like `constants`. A `.string`
     /// slot means the value is per-State (interned) and uses the closure cache.
     constant_values: []const RuntimeValue = &.{},

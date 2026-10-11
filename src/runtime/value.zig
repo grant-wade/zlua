@@ -318,6 +318,15 @@ pub fn prepareProtoTree(proto: *proto_mod.Proto) !void {
     }
     proto.constant_values = values;
     proto.named_vararg_readonly = proto.hasReadOnlyNamedVararg();
+    const instructions = proto.instructions.items;
+    // The fast loop checks the instruction bound only at branches, so the
+    // final opcode must leave sequential dispatch (CLOSE checks it itself).
+    const last_stops = instructions.len != 0 and switch (instructions[instructions.len - 1]) {
+        .ret, .tail_call, .close => true,
+        else => false,
+    };
+    proto.fast_loop_entry = last_stops and !proto.has_to_close_locals;
+    proto.fast_loop_call = proto.fast_loop_entry and !proto.is_vararg and !proto.named_vararg;
     proto.runtime_prepared = true;
 }
 

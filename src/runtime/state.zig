@@ -679,7 +679,7 @@ pub const State = struct {
             }
             const pc = frame.pc;
             const instruction = proto.instructions.items[pc];
-            if (plainFastLoopCanStart(instruction) and self.runPlainFastLoop(thread, target_frame_count)) continue;
+            if (proto.fast_loop_entry and plainFastLoopCanStart(instruction) and self.runPlainFastLoop(thread, target_frame_count)) continue;
             frame.pc += 1;
             try self.checkExecutionLimits(thread);
             if (self.options.trace_vm) try self.traceInstruction(frame.*, pc, instruction);
@@ -942,27 +942,51 @@ pub const State = struct {
         if (thread.hook != .nil and (thread.hook_line or thread.hook_count != 0 or thread.hook_running)) return false;
         if (self.gc_running and self.shouldRunAutoGc()) return false;
 
-        var did_work = false;
+        // Nothing below grows the stack or frame list, installs hooks, or
+        // queues continuations, so these bounds hold for the whole loop.
+        const stack_limit = @min(thread.stack.items.len, self.stackValueLimit());
+        const frame_limit = @min(thread.frames.capacity, self.callFrameLimit());
+        // The outer interpreter completes continuations and stops at host
+        // call boundaries before executing a caller. Every pending item
+        // becomes ready when the frame count drops to its own count, so
+        // returns from frames above all of them cannot make one ready.
+        const return_floor: usize = if (thread.pending_unwind_error != null or thread.pending_yield_hook_return or thread.hook_return)
+            std.math.maxInt(usize)
+        else if (hasPendingContinuations(thread))
+            @max(target_frame_count, maxPendingContinuationFrameCount(thread))
+        else
+            target_frame_count;
+
+        // The frame list does not grow here, so its storage stays put and
+        // neighbouring frames are adjacent. Calls and returns carry the next
+        // frame's state in locals instead of reloading the frame they just
+        // stored, which would put a store-to-load round trip on every
+        // transition's critical path. `thread.frames.items.len` is always
+        // `frame_index + 1`.
+        var frame_index = thread.frames.items.len - 1;
+        var frame = &thread.frames.items[frame_index];
+        var proto = frame.proto;
+        var pc = frame.pc;
+        var base = frame.base;
+        // Opcodes executed by this call are `pc +% count_bias`: straight-line
+        // opcodes advance PC alone, a taken branch subtracts its displacement,
+        // and a frame switch rebases the bias on the new PC. One register
+        // replaces per-block counters that the hot loops had to spill.
+        var count_bias: u64 = 0 -% pc;
+        defer self.instruction_count = self.instruction_count +| (pc +% count_bias);
+        // The count when the current frame segment began. Every completed
+        // segment retires its CALL or RET, so a nonzero count at a segment
+        // start also means the loop did work.
+        var segment_start: u64 = 0;
         frames: while (true) {
-            const frame_index = thread.frames.items.len - 1;
-            const frame = &thread.frames.items[frame_index];
-            if (frame.proto.has_to_close_locals) return did_work;
-            const proto = frame.proto;
+            // Prepared prototypes record whether their last opcode stops
+            // sequential dispatch (or checks the bound itself, as CLOSE
+            // does). Branches still check their targets. `frame.pc` is
+            // current in memory whenever a segment starts.
+            if (!proto.fast_loop_entry) return segment_start != 0;
             const instructions = proto.instructions.items;
-            var pc = frame.pc;
-            if (pc >= instructions.len) return did_work;
-            // Check the end once for sequential dispatch. The last opcode
-            // must stop dispatch or check the bound itself, as CLOSE does.
-            // Branches still check their targets; other prototypes fall back.
-            switch (instructions[instructions.len - 1]) {
-                .ret, .tail_call, .close => {},
-                else => return did_work,
-            }
-            const stack = thread.stack.items[frame.base..];
-            var executed_count: u64 = 0;
-            // Straight-line instructions advance PC. Count their span at a
-            // branch or exit instead of saturating a counter at every opcode.
-            var block_start = pc;
+            if (pc >= instructions.len) return segment_start != 0;
+            const stack = thread.stack.items[base..];
 
             // Dispatch at each opcode keeps the next branch specific to its
             // predecessor instead of routing every instruction through one loop.
@@ -985,9 +1009,10 @@ pub const State = struct {
                     const op = instructions[pc].load_const;
                     // Executed prototypes with constants are prepared, so the
                     // index is in bounds (safety-checked in debug builds). Read
-                    // through `frame` and pointers: keeping `proto` live or
-                    // copying the union to a local spills the dispatch state.
-                    const decoded = &frame.proto.constant_values[op.constant];
+                    // through pointers: copying the union to a local spills
+                    // the dispatch state. `proto` is live already, and right
+                    // after a call `frame.proto` would be a just-stored load.
+                    const decoded = &proto.constant_values[op.constant];
                     if (decoded.* != .string) {
                         stack[op.dest] = decoded.*;
                     } else {
@@ -1221,58 +1246,46 @@ pub const State = struct {
                     const op = instructions[pc].compare_branch;
                     const result = rawCompareBranchResult(stack[op.left], stack[op.right], op.op) orelse break :fast_loop;
                     pc += 1;
-                    executed_count = executed_count +| (pc - block_start);
                     if (result == op.jump_if_truthy) {
                         const source_pc = pc;
                         pc = jumpTarget(source_pc, op.offset);
+                        count_bias +%= source_pc -% pc;
                         if (pc < source_pc) {
                             frame.last_hook_line = null;
                             // Backward jumps are safepoints for host interrupts.
-                            if (self.fastLoopInterrupted()) {
-                                block_start = pc;
-                                break :fast_loop;
-                            }
+                            if (self.fastLoopInterrupted()) break :fast_loop;
                         }
                     }
-                    block_start = pc;
                     if (pc >= instructions.len) break :fast_loop;
                     continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
                 .jmp => {
                     const offset = instructions[pc].jmp;
                     pc += 1;
-                    executed_count = executed_count +| (pc - block_start);
                     const source_pc = pc;
                     pc = jumpTarget(source_pc, offset);
+                    count_bias +%= source_pc -% pc;
                     if (pc < source_pc) {
                         frame.last_hook_line = null;
                         // Backward jumps are safepoints for host interrupts.
-                        if (self.fastLoopInterrupted()) {
-                            block_start = pc;
-                            break :fast_loop;
-                        }
+                        if (self.fastLoopInterrupted()) break :fast_loop;
                     }
-                    block_start = pc;
                     if (pc >= instructions.len) break :fast_loop;
                     continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
                 .test_op => {
                     const op = instructions[pc].test_op;
                     pc += 1;
-                    executed_count = executed_count +| (pc - block_start);
                     if (truthy(stack[op.register]) == op.jump_if_truthy) {
                         const source_pc = pc;
                         pc = jumpTarget(source_pc, op.offset);
+                        count_bias +%= source_pc -% pc;
                         if (pc < source_pc) {
                             frame.last_hook_line = null;
                             // Backward jumps are safepoints for host interrupts.
-                            if (self.fastLoopInterrupted()) {
-                                block_start = pc;
-                                break :fast_loop;
-                            }
+                            if (self.fastLoopInterrupted()) break :fast_loop;
                         }
                     }
-                    block_start = pc;
                     if (pc >= instructions.len) break :fast_loop;
                     continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
@@ -1281,20 +1294,16 @@ pub const State = struct {
                     const value = stack[op.source];
                     stack[op.dest] = value;
                     pc += 1;
-                    executed_count = executed_count +| (pc - block_start);
                     if (truthy(value) == op.jump_if_truthy) {
                         const source_pc = pc;
                         pc = jumpTarget(source_pc, op.offset);
+                        count_bias +%= source_pc -% pc;
                         if (pc < source_pc) {
                             frame.last_hook_line = null;
                             // Backward jumps are safepoints for host interrupts.
-                            if (self.fastLoopInterrupted()) {
-                                block_start = pc;
-                                break :fast_loop;
-                            }
+                            if (self.fastLoopInterrupted()) break :fast_loop;
                         }
                     }
-                    block_start = pc;
                     if (pc >= instructions.len) break :fast_loop;
                     continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
@@ -1315,20 +1324,16 @@ pub const State = struct {
                         break :blk forLoopContinuesNumber(next, limit.number, step.number);
                     } else break :fast_loop;
                     pc += 1;
-                    executed_count = executed_count +| (pc - block_start);
                     if (continues) {
                         const source_pc = pc;
                         pc = jumpTarget(source_pc, op.offset);
+                        count_bias +%= source_pc -% pc;
                         if (pc < source_pc) {
                             frame.last_hook_line = null;
                             // Backward jumps are safepoints for host interrupts.
-                            if (self.fastLoopInterrupted()) {
-                                block_start = pc;
-                                break :fast_loop;
-                            }
+                            if (self.fastLoopInterrupted()) break :fast_loop;
                         }
                     }
-                    block_start = pc;
                     if (pc >= instructions.len) break :fast_loop;
                     continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
@@ -1338,8 +1343,8 @@ pub const State = struct {
                     if (op.arg_count == bytecode.multret_count) {
                         // A preceding call/vararg must still own the last-result
                         // state. Otherwise the general path clears and resolves it.
-                        if (executed_count != 0 or pc != block_start) break :fast_loop;
-                        const expected_base = frame.base + op.base + 1;
+                        if (pc +% count_bias != segment_start) break :fast_loop;
+                        const expected_base = base + op.base + 1;
                         if (thread.last_result_base < expected_base) break :fast_loop;
                         const result_end = thread.last_result_base + thread.last_result_count;
                         const count = result_end -| expected_base;
@@ -1351,9 +1356,9 @@ pub const State = struct {
                         if (op.arg_count == 0 or @as(usize, op.base) + 1 >= stack.len) break :fast_loop;
                         const result = stdlib.math.fastUnaryResult(callee.native, stack[op.base + 1]) orelse break :fast_loop;
                         const return_count: usize = if (op.return_count == bytecode.multret_count) 1 else op.return_count;
-                        const absolute_base = frame.base + op.base;
+                        const absolute_base = base + op.base;
                         const stored_end = absolute_base + @max(return_count, 1);
-                        if (stored_end > thread.stack.items.len or stored_end > self.stackValueLimit()) break :fast_loop;
+                        if (stored_end > stack_limit) break :fast_loop;
                         stack[op.base] = result;
                         if (return_count > 1) @memset(thread.stack.items[absolute_base + 1 .. stored_end], .nil);
                         thread.last_result_base = absolute_base;
@@ -1362,9 +1367,9 @@ pub const State = struct {
                         thread.last_transfer_count = 1;
                         thread.next_call_name = null;
                         thread.next_call_namewhat = null;
-                        frame.pc = pc + 1;
-                        self.instruction_count = self.instruction_count +| (executed_count +| (pc - block_start) +| 1);
-                        did_work = true;
+                        pc += 1;
+                        frame.pc = pc;
+                        segment_start = pc +% count_bias;
                         continue :frames;
                     }
                     if (callee != .closure) break :fast_loop;
@@ -1372,68 +1377,75 @@ pub const State = struct {
                     const callee_proto = closure.proto;
                     // Reuse existing storage; growth, varargs and hooks use
                     // the general call path, which can allocate or reenter Lua.
-                    if (callee_proto.is_vararg or callee_proto.named_vararg or callee_proto.has_to_close_locals) break :fast_loop;
-                    if (thread.frames.items.len >= thread.frames.capacity or
-                        thread.frames.items.len >= self.callFrameLimit()) break :fast_loop;
-                    const callee_base = frame.base + op.base;
+                    if (!callee_proto.fast_loop_call) break :fast_loop;
+                    const callee_index = frame_index + 1;
+                    if (callee_index >= frame_limit) break :fast_loop;
+                    // Registers start just above the function slot, where
+                    // the arguments already are; results go to the slot.
+                    const function_slot = base + op.base;
+                    const callee_base = function_slot + 1;
                     const register_count = @max(callee_proto.max_registers, 1);
                     const stack_end = callee_base + register_count;
-                    if (stack_end > thread.stack.items.len or stack_end > self.stackValueLimit()) break :fast_loop;
+                    if (stack_end > stack_limit) break :fast_loop;
 
-                    executed_count = executed_count +| (pc - block_start);
+                    const executed_count = pc +% count_bias -% segment_start;
                     const copied = @min(op.arg_count, callee_proto.param_count);
-                    for (0..copied) |index| stack[op.base + index] = stack[op.base + 1 + index];
                     @memset(thread.stack.items[callee_base + copied .. stack_end], .nil);
                     frame.pc = pc + 1;
-                    thread.frames.appendAssumeCapacity(.{
+                    frame = &@as([*]CallFrame, @ptrCast(frame))[1];
+                    frame.* = .{
                         .closure = closure,
                         .proto = callee_proto,
                         .base = callee_base,
                         .pc = 0,
-                        .return_start = callee_base,
+                        .return_start = function_slot,
                         .return_count = op.return_count,
                         .varargs = &.{},
                         .debug_name_override = thread.next_call_name,
                         .debug_namewhat_override = thread.next_call_namewhat,
-                    });
+                    };
+                    thread.frames.items.len = callee_index + 1;
                     thread.next_call_name = null;
                     thread.next_call_namewhat = null;
                     if (executed_count != 0) {
                         thread.last_result_count = 0;
                         thread.last_transfer_count = 0;
                     }
-                    self.instruction_count = self.instruction_count +| (executed_count +| 1);
-                    did_work = true;
+                    frame_index = callee_index;
+                    proto = callee_proto;
+                    segment_start = pc +% count_bias +% 1;
+                    count_bias = segment_start;
+                    pc = 0;
+                    base = callee_base;
                     // Lua calls and returns are safepoints for host interrupts.
                     if (self.fastLoopInterrupted()) return true;
                     continue :frames;
                 },
                 .ret => {
                     const op = instructions[pc].ret;
-                    // The outer interpreter completes continuations and
-                    // stops at host call boundaries before executing a caller.
-                    const can_return = thread.pending_unwind_error == null and
-                        !thread.pending_yield_hook_return and
-                        !hasPendingContinuations(thread);
-                    if (!can_return or thread.hook_return or frame_index <= target_frame_count) break :fast_loop;
+                    if (frame_index <= return_floor) break :fast_loop;
                     if (op.count == bytecode.multret_count or frame.return_count == bytecode.multret_count or
                         frame.owns_varargs or frame.pending_returns != null) break :fast_loop;
                     // Open upvalues are sorted by descending stack index.
-                    if (thread.open_upvalues) |upvalue| if (upvalue.stack_index >= frame.base) break :fast_loop;
+                    if (thread.open_upvalues) |upvalue| if (upvalue.stack_index >= base) break :fast_loop;
                     const return_start = frame.return_start;
                     const return_count = frame.return_count;
-                    if (return_start + return_count > thread.stack.items.len or
-                        return_start + return_count > self.stackValueLimit()) break :fast_loop;
-                    executed_count = executed_count +| (pc - block_start);
+                    if (return_start + return_count > stack_limit) break :fast_loop;
+                    const executed_count = pc +% count_bias -% segment_start;
                     const copied = @min(return_count, op.count);
                     for (0..copied) |index| thread.stack.items[return_start + index] = stack[op.first + index];
                     @memset(thread.stack.items[return_start + copied .. return_start + return_count], .nil);
-                    thread.frames.items.len -= 1;
+                    thread.frames.items.len = frame_index;
                     thread.last_result_base = return_start;
                     thread.last_result_count = return_count;
                     if (executed_count != 0) thread.last_transfer_count = 0;
-                    self.instruction_count = self.instruction_count +| (executed_count +| 1);
-                    did_work = true;
+                    segment_start = pc +% count_bias +% 1;
+                    frame_index -= 1;
+                    frame = &(@as([*]CallFrame, @ptrCast(frame)) - 1)[0];
+                    proto = frame.proto;
+                    pc = frame.pc;
+                    count_bias = segment_start -% pc;
+                    base = frame.base;
                     // Lua calls and returns are safepoints for host interrupts.
                     if (self.fastLoopInterrupted()) return true;
                     continue :frames;
@@ -1442,7 +1454,7 @@ pub const State = struct {
                     const register = instructions[pc].close;
                     // An open upvalue in an outer scope does not require work at
                     // this boundary. Only leave the loop when something closes.
-                    const first = frame.base + register;
+                    const first = base + register;
                     if (thread.open_upvalues) |upvalue| if (upvalue.stack_index >= first) break :fast_loop;
                     pc += 1;
                     if (pc >= instructions.len) break :fast_loop;
@@ -1451,10 +1463,8 @@ pub const State = struct {
                 else => break :fast_loop,
             }
 
-            executed_count = executed_count +| (pc - block_start);
-            if (executed_count == 0) return did_work;
+            if (pc +% count_bias == segment_start) return segment_start != 0;
             frame.pc = pc;
-            self.instruction_count = self.instruction_count +| executed_count;
             thread.last_result_count = 0;
             thread.last_transfer_count = 0;
             return true;
@@ -4317,7 +4327,8 @@ pub const State = struct {
 
         const caller = thread.frames.items[thread.frames.items.len - 1];
         const base = caller.base + op.base;
-        var frame = try self.prepareClosureFrame(thread, closure, base, base, @intCast(op.arg_count), base, op.return_count);
+        // Registers start above the function slot, where the arguments are.
+        var frame = try self.prepareClosureFrame(thread, closure, base, base + 1, @intCast(op.arg_count), base, op.return_count);
         frame.debug_name_override = debug_name_override;
         frame.debug_namewhat_override = debug_namewhat_override;
         errdefer frame.deinit(self.allocator);
@@ -6847,6 +6858,17 @@ inline fn hasPendingContinuations(thread: *const Thread) bool {
         thread.protected_continuations.items.len |
         thread.tail_call_continuations.items.len |
         thread.generic_for_continuations.items.len) != 0;
+}
+
+/// The deepest frame count at which a pending continuation becomes ready.
+fn maxPendingContinuationFrameCount(thread: *const Thread) usize {
+    var result: usize = 0;
+    for (thread.pairs_continuations.items) |continuation| result = @max(result, continuation.frame_count);
+    for (thread.call_one_continuations.items) |continuation| result = @max(result, continuation.frame_count);
+    for (thread.protected_continuations.items) |continuation| result = @max(result, continuation.context.frame_count);
+    for (thread.tail_call_continuations.items) |continuation| result = @max(result, continuation.frame_count);
+    for (thread.generic_for_continuations.items) |continuation| result = @max(result, continuation.frame_count);
+    return result;
 }
 
 fn fastTableRawGet(table_value: Value, key_value: Value) ?Value {

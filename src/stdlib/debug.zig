@@ -524,8 +524,9 @@ fn localOrTemporaryAtIndex(thread: *Thread, frame_index: usize, index: i64, incl
 
     if (!include_temporaries) return null;
 
+    // Temporaries end at the callee's function slot, just below its registers.
     const register_limit = if (frame_index + 1 < thread.frames.items.len)
-        @min(frame.proto.max_registers, thread.frames.items[frame_index + 1].base - frame.base)
+        @min(frame.proto.max_registers, thread.frames.items[frame_index + 1].base - 1 - frame.base)
     else
         frame.proto.max_registers;
     for (0..register_limit) |register_usize| {

@@ -268,7 +268,8 @@ fn isDirectCallee(frames: []const CallFrame, index: usize) bool {
     const caller = frames[index - 1];
     const callee = frames[index];
     return switch (currentInstruction(caller) orelse return false) {
-        .call => |op| callee.base == caller.base + op.base,
+        // Callee registers start just above the function slot.
+        .call => |op| callee.base == caller.base + op.base + 1,
         .tfor_call => |op| callee.base > caller.base + op.base and callee.base <= caller.base + caller.proto.max_registers,
         else => false,
     };

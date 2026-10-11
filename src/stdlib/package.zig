@@ -129,6 +129,10 @@ pub fn require(state: *State, thread: *Thread, op: bytecode.Call) !void {
         loader_data = .{ .string = try state.intern(found) };
     }
 
+    // The loader receives `loader_data` only as an argument and may
+    // overwrite that register, so keep it alive until `require` returns it.
+    const loader_data_root = try state.rootValue(loader_data);
+    defer state.unrootValue(loader_data_root);
     const values = try state.callCollect(thread, loader, &.{ name_key, loader_data });
     defer state.allocator.free(values);
     const module_value = if (values.len == 0 or values[0] == .nil) Value{ .boolean = true } else values[0];

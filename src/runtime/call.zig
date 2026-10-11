@@ -301,7 +301,11 @@ pub fn prepareClosureFrame(comptime State: type, self: *State, thread: *Thread, 
     errdefer if (varargs.len != 0) self.allocator.free(varargs);
     try thread.ensureStack(self.allocator, frame_base + register_count, self.stackValueLimit());
 
-    for (0..copied) |index| thread.stack.items[frame_base + index] = thread.stack.items[source_base + 1 + index];
+    // Ordinary calls place registers over the arguments; tail calls and
+    // coroutine entry move them down to the reused base.
+    if (frame_base != source_base + 1) {
+        for (0..copied) |index| thread.stack.items[frame_base + index] = thread.stack.items[source_base + 1 + index];
+    }
     for (copied..register_count) |index| thread.stack.items[frame_base + index] = .nil;
 
     const readonly_vararg = closure.proto.named_vararg_readonly;
