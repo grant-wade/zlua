@@ -3,7 +3,7 @@
 ## Navigation
 
 - [API Index](README.md)
-- Submodules: [runtime.types](runtime/types.md), [runtime.chunk](runtime/chunk.md), [runtime.value](runtime/value.md), [runtime.execute](runtime/execute.md), [runtime.state](runtime/state.md), [runtime.rollback](runtime/rollback.md), [runtime.call](runtime/call.md), [runtime.coroutine](runtime/coroutine.md), [runtime.debug](runtime/debug.md), [runtime.gc](runtime/gc.md), [runtime.host](runtime/host.md), [runtime.timezone](runtime/timezone.md), [runtime.vm](runtime/vm.md), [runtime.tests](runtime/tests.md), [runtime.internal](runtime/internal.md), [runtime.snapshot](runtime/snapshot.md)
+- Submodules: [runtime.types](runtime/types.md), [runtime.chunk](runtime/chunk.md), [runtime.value](runtime/value.md), [runtime.number_format](runtime/number_format.md), [runtime.execute](runtime/execute.md), [runtime.state](runtime/state.md), [runtime.rollback](runtime/rollback.md), [runtime.call](runtime/call.md), [runtime.coroutine](runtime/coroutine.md), [runtime.debug](runtime/debug.md), [runtime.gc](runtime/gc.md), [runtime.host](runtime/host.md), [runtime.timezone](runtime/timezone.md), [runtime.vm](runtime/vm.md), [runtime.tests](runtime/tests.md), [runtime.internal](runtime/internal.md), [runtime.snapshot](runtime/snapshot.md)
 
 <details>
 <summary>All documents</summary>
@@ -26,6 +26,7 @@
 - [runtime.chunk](runtime/chunk.md)
 - [reflection](reflection.md)
 - [runtime.value](runtime/value.md)
+- [runtime.number_format](runtime/number_format.md)
 - [runtime.execute](runtime/execute.md)
 - [testing.process](testing/process.md)
 - [runtime.state](runtime/state.md)
@@ -45,6 +46,7 @@
 - [stdlib.coroutine](stdlib/coroutine.md)
 - [stdlib.debug](stdlib/debug.md)
 - [stdlib.io](stdlib/io.md)
+- [stdlib.static_strings](stdlib/static_strings.md)
 - [stdlib.os](stdlib/os.md)
 - [stdlib.package](stdlib/package.md)
 - [stdlib.json](stdlib/json.md)
@@ -53,7 +55,6 @@
 - [stdlib.msgpack](stdlib/msgpack.md)
 - [stdlib.csv](stdlib/csv.md)
 - [stdlib.fs](stdlib/fs.md)
-- [stdlib.static_strings](stdlib/static_strings.md)
 - [runtime.vm](runtime/vm.md)
 - [runtime.tests](runtime/tests.md)
 - [runtime.internal](runtime/internal.md)
@@ -94,7 +95,9 @@
 - [binary_chunk_payload_magic](#alias-binary_chunk_payload_magic)
 - [State](#alias-state)
 - [StateOptions](#alias-stateoptions)
+- [OutputFlush](#alias-outputflush)
 - [StartupPhase](#alias-startupphase)
+- [HostErrorHandler](#alias-hosterrorhandler)
 - [Value](#alias-value)
 - [NativeFn](#alias-nativefn)
 - [UserdataFinalizer](#alias-userdatafinalizer)
@@ -134,6 +137,7 @@
 - [ProcessStatus](#alias-processstatus)
 - [PopenResult](#alias-popenresult)
 - [ExitRequest](#alias-exitrequest)
+- [WarningHandler](#alias-warninghandler)
 - [default_max_file_bytes](#alias-default_max_file_bytes)
 - [CompareOp](#alias-compareop)
 - [valuesEqual](#alias-valuesequal)
@@ -149,13 +153,20 @@
 - [runtimeArgValue](#alias-runtimeargvalue)
 - [argValue](#alias-argvalue)
 - [appendValue](#alias-appendvalue)
+- [appendErrorValue](#alias-appenderrorvalue)
 - [isFileValue](#alias-isfilevalue)
 - [isClosedFileValue](#alias-isclosedfilevalue)
 - [appendNumber](#alias-appendnumber)
 - [appendFmt](#alias-appendfmt)
+- [typeName](#alias-typename)
 - [ExecuteOptions](#alias-executeoptions)
 - [executeSource](#alias-executesource)
 - [executeSourceWithOptions](#alias-executesourcewithoptions)
+
+## Imports
+
+- [InterruptControl](#import-interruptcontrol) `@import("runtime/vm.zig")`
+- [number_format](#import-number_format) `@import("runtime/number_format.zig")`
 
 <a id="alias-runtimeerror"></a>
 
@@ -199,12 +210,36 @@ pub const State = state_mod.State;
 pub const StateOptions = state_mod.StateOptions;
 ```
 
+<a id="alias-outputflush"></a>
+
+## OutputFlush
+
+```zig
+pub const OutputFlush = state_mod.OutputFlush;
+```
+
 <a id="alias-startupphase"></a>
 
 ## StartupPhase
 
 ```zig
 pub const StartupPhase = state_mod.StartupPhase;
+```
+
+<a id="alias-hosterrorhandler"></a>
+
+## HostErrorHandler
+
+```zig
+pub const HostErrorHandler = state_mod.HostErrorHandler;
+```
+
+<a id="import-interruptcontrol"></a>
+
+## InterruptControl
+
+```zig
+pub const InterruptControl = @import("runtime/vm.zig").InterruptControl;
 ```
 
 <a id="alias-value"></a>
@@ -591,6 +626,16 @@ pub const ExitRequest = host.ExitRequest;
 
 References: [`host.ExitRequest`](runtime/host.md#type-exitrequest)
 
+<a id="alias-warninghandler"></a>
+
+## WarningHandler
+
+```zig
+pub const WarningHandler = host.WarningHandler;
+```
+
+References: [`host.WarningHandler`](runtime/host.md#type-warninghandler)
+
 <a id="alias-default_max_file_bytes"></a>
 
 ## default_max_file_bytes
@@ -713,6 +758,14 @@ pub const argValue = state_mod.argValue;
 pub const appendValue = state_mod.appendValue;
 ```
 
+<a id="alias-appenderrorvalue"></a>
+
+## appendErrorValue
+
+```zig
+pub const appendErrorValue = state_mod.appendErrorValue;
+```
+
 <a id="alias-isfilevalue"></a>
 
 ## isFileValue
@@ -743,6 +796,22 @@ pub const appendNumber = state_mod.appendNumber;
 
 ```zig
 pub const appendFmt = state_mod.appendFmt;
+```
+
+<a id="alias-typename"></a>
+
+## typeName
+
+```zig
+pub const typeName = state_mod.luaTypeName;
+```
+
+<a id="import-number_format"></a>
+
+## number_format
+
+```zig
+pub const number_format = @import("runtime/number_format.zig");
 ```
 
 <a id="alias-executeoptions"></a>

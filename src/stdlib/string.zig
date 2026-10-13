@@ -71,8 +71,6 @@ pub fn format(state: *State, thread: *Thread, op: bytecode.Call) !void {
         arg += 1;
         if (arg >= op.arg_count) return state.failArgumentMessage(function_name, arg + 1, "no value");
 
-        // Like lstrlib's getformat: span flags, width, and precision, then
-        // take the conversion character.
         var span: usize = 0;
         while (index + span < fmt.len and std.mem.indexOfScalar(u8, "-+#0 123456789.", fmt[index + span]) != null) span += 1;
         if (span + 1 >= max_format - 10) return state.failLibrary("invalid format (too long)");
@@ -86,7 +84,6 @@ pub fn format(state: *State, thread: *Thread, op: bytecode.Call) !void {
             'c' => {
                 try checkFormat(state, form, "-", false);
                 const integer = try state.argumentInteger(thread, op, function_name, arg);
-                // C converts the int argument of %c to unsigned char.
                 const byte_value: [1]u8 = .{@truncate(@as(u64, @bitCast(integer)))};
                 try appendPadded(state.allocator, &out, &byte_value, parseFormatSpec(form), ' ');
             },
@@ -140,12 +137,8 @@ pub fn format(state: *State, thread: *Thread, op: bytecode.Call) !void {
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(out.items) }});
 }
 
-/// lstrlib's MAX_FORMAT: the longest conversion specification, plus room.
 const max_format = 32;
 
-/// Mirrors lstrlib's checkformat: only `flags`, a width of at most two
-/// digits (not starting with '0'), and, when allowed, a precision of at most
-/// two digits may precede the conversion.
 fn checkFormat(state: *State, form: []const u8, flags: []const u8, allow_precision: bool) !void {
     var index: usize = 1;
     while (index < form.len and std.mem.indexOfScalar(u8, flags, form[index]) != null) index += 1;
@@ -169,7 +162,6 @@ fn skipTwoDigits(form: []const u8, start: usize) usize {
 
 const FormatSpec = runtime.number_format.Spec;
 
-/// Reads the flags, width, and precision of a validated specification.
 fn parseFormatSpec(form: []const u8) FormatSpec {
     var spec: FormatSpec = .{ .conversion = form[form.len - 1] };
     var index: usize = 1;
@@ -227,7 +219,6 @@ fn appendIntegerFormat(state: *State, out: *std.ArrayList(u8), integer: i64, spe
     if (spec.alternate) switch (spec.conversion) {
         'x' => if (unsigned != 0) try prefix.appendSlice(state.allocator, "0x"),
         'X' => if (unsigned != 0) try prefix.appendSlice(state.allocator, "0X"),
-        // '#' makes octal start with a zero, even for a zero value.
         'o' => if (digits.items.len == 0 or digits.items[0] != '0') {
             if (spec.precision == null or spec.precision.? <= digits.items.len) try prefix.append(state.allocator, '0');
         },
@@ -321,7 +312,6 @@ fn positionAndWholeCapturePattern(pattern: []const u8) ?[]const u8 {
 pub fn gsub(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const source = try state.expectArgumentString(thread, op, "string.gsub", 0);
     const pattern = try state.expectArgumentString(thread, op, "string.gsub", 1);
-    // lstrlib checks the replacement before matching; numbers act as strings.
     const raw_replacement = runtime.argValue(state, thread, op, 2);
     const replacement: Value = switch (raw_replacement) {
         .integer, .number => .{ .string = try state.expectArgumentString(thread, op, "string.gsub", 2) },
@@ -393,7 +383,6 @@ fn gsubReplacement(state: *State, thread: *Thread, replacement: Value, source: [
         .string => |bytes| .{ .text = try gsubStringReplacement(state, bytes, source, matched), .changed = true },
         .table => |table| switch (try state.getTableFromThread(thread, .{ .table = table }, try firstMatchValue(state, source, matched))) {
             .nil => .{ .text = matched_text, .changed = false },
-            // Only false keeps the match; true is not a string.
             .boolean => |value| if (value) {
                 _ = try invalidReplacementValue(state, .{ .boolean = true });
                 unreachable;
@@ -938,9 +927,6 @@ fn findImpl(state: *State, thread: *Thread, op: bytecode.Call, positions: bool) 
     const source = try state.expectArgumentString(thread, op, function_name, 0);
     const pattern = try state.expectArgumentString(thread, op, function_name, 1);
     const initial = normalizeIndex(try state.optionalArgumentInteger(thread, op, function_name, 2, 1), source.len);
-    // Only `find` has a plain mode, used when asked or when the pattern has
-    // none of lstrlib's SPECIALS. `match` always runs the matcher, which
-    // also validates captures, so it keeps the wider check.
     const plain = if (positions)
         runtime.truthy(runtime.argValue(state, thread, op, 3)) or !patternHasSpecials(pattern)
     else
@@ -1517,7 +1503,6 @@ fn appendLiteral(state: *State, out: *std.ArrayList(u8), value: Value, arg: u16)
             } else if (number == -std.math.inf(f64)) {
                 try out.appendSlice(state.allocator, "-1e9999");
             } else {
-                // Hexadecimal keeps every bit, as lstrlib's quotefloat does.
                 try appendFloatFormat(state, out, number, .{ .conversion = 'a' });
             }
         },
@@ -1561,6 +1546,7 @@ fn pointerAddress(value: Value) ?usize {
     return switch (value) {
         .string => |string| @intFromPtr(string.ptr),
         .table => |table| @intFromPtr(table),
+        .userdata => |userdata| @intFromPtr(userdata),
         .closure => |closure| @intFromPtr(closure),
         .thread => |thread| @intFromPtr(thread),
         .coroutine_wrapper => |thread| @intFromPtr(thread),

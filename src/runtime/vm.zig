@@ -42,7 +42,11 @@ pub inline fn checkExecutionLimits(comptime State: type, self: *State, thread: *
 /// and keep running.
 pub noinline fn executionCheckpoint(comptime State: type, self: *State, thread: *Thread) !void {
     if (self.interruptRequested()) return error.Interrupted;
-    if (instructionBudgetExhausted(State, self)) return self.failRuntimeDetail(thread, "instruction limit exceeded");
+    if (instructionBudgetExhausted(State, self)) {
+        const err = self.failRuntimeDetail(thread, "instruction limit exceeded");
+        self.error_handled = true;
+        return err;
+    }
     self.instruction_checkpoint = nextCheckpoint(State, self);
 }
 
@@ -50,7 +54,6 @@ pub noinline fn executionCheckpoint(comptime State: type, self: *State, thread: 
 /// Long-running native functions call this periodically.
 pub fn checkInterrupt(comptime State: type, self: *State) !void {
     if (self.interruptRequested()) {
-        // Make the next VM safepoint take the slow path as well.
         self.instruction_checkpoint = 0;
         return error.Interrupted;
     }

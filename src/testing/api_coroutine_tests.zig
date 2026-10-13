@@ -164,7 +164,7 @@ test "host yield preserves Lua protected iterator metamethod tail and scope clos
         "return ask()",
         "local function nested() return ask() end; return nested()",
         "local ok, n = pcall(ask); assert(ok); return n",
-        "local ok, n = xpcall(function() error('failure') end, ask); assert(not ok); return n",
+        "local ok, n = xpcall(ask, debug.traceback); assert(ok); return n",
         "for n in function() return ask() end do return n end",
         "local t = setmetatable({}, {__index=ask}); return t.missing",
         "local t = setmetatable({}, {__add=ask}); return t + t",

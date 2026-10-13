@@ -10,7 +10,6 @@ const RuntimeErrorPayload = types.RuntimeErrorPayload;
 const Value = types.Value;
 const ProtectedCallResult = types.ProtectedCallResult;
 const ProtectedCallContext = types.ProtectedCallContext;
-const ProtectedContinuationKind = types.ProtectedContinuationKind;
 const ProtectedContinuation = types.ProtectedContinuation;
 const CallOneContinuationResult = types.CallOneContinuationResult;
 const CallOneContinuation = types.CallOneContinuation;
@@ -43,10 +42,15 @@ pub fn callOneMetamethodWithContinuation(comptime State: type, self: *State, thr
 }
 
 pub fn callOneMetamethod(comptime State: type, self: *State, thread: *Thread, name: []const u8, callable: Value, args: []const Value) anyerror!Value {
+    return callOneNamed(State, self, thread, metamethodDebugName(name), "metamethod", callable, args);
+}
+
+/// Calls `callable` for one result; a Lua callee reports `namewhat 'name'`.
+pub fn callOneNamed(comptime State: type, self: *State, thread: *Thread, name: []const u8, namewhat: []const u8, callable: Value, args: []const Value) anyerror!Value {
     const previous_name = thread.next_call_name;
     const previous_namewhat = thread.next_call_namewhat;
-    thread.next_call_name = metamethodDebugName(name);
-    thread.next_call_namewhat = "metamethod";
+    thread.next_call_name = name;
+    thread.next_call_namewhat = namewhat;
     defer {
         thread.next_call_name = previous_name;
         thread.next_call_namewhat = previous_namewhat;
@@ -139,6 +143,7 @@ pub fn protectedCallContext(comptime State: type, _: *State, thread: *Thread) Pr
         .last_result_base = thread.last_result_base,
         .last_result_count = thread.last_result_count,
         .last_error = undefined,
+        .previous_error_handler = thread.error_handler,
     };
 }
 
@@ -153,49 +158,55 @@ pub fn runProtectedCall(comptime State: type, self: *State, thread: *Thread, con
     thread.stack.items[context.absolute_base] = callable;
     for (args, 0..) |arg, index| thread.stack.items[context.absolute_base + 1 + index] = arg;
 
+    thread.error_handler = context.error_handler;
     self.last_error = null;
-    self.last_error_in_close = false;
-    self.invokeValue(thread, .{ .base = context.relative_base, .arg_count = @intCast(args.len), .return_count = bytecode.multret_count }, 0) catch |err| switch (err) {
-        error.RuntimeError, error.StackOverflow, error.UnsupportedOpcode, error.OutOfMemory => {
-            if (thread.frames.items.len < context.frame_count) return err;
-            if (err == error.OutOfMemory) {
-                if (self.last_error == null) self.last_error = .{ .diagnostic = "not enough memory" };
-            }
-            const error_value = self.currentErrorValue();
-            const failure = try self.restoreProtectedCall(thread, context, error_value);
-            return .{ .failure = failure };
-        },
-        else => return err,
+    return runProtectedBody(State, self, thread, context, args.len) catch |err| {
+        if (err != error.CoroutineYield) thread.error_handler = context.previous_error_handler;
+        return err;
     };
-    self.runThreadUntil(thread, context.frame_count) catch |err| switch (err) {
-        error.RuntimeError, error.StackOverflow, error.UnsupportedOpcode, error.OutOfMemory => {
-            if (thread.frames.items.len < context.frame_count) return err;
-            if (err == error.OutOfMemory) {
-                if (self.last_error == null) self.last_error = .{ .diagnostic = "not enough memory" };
-            }
-            const error_value = self.currentErrorValue();
-            const failure = try self.restoreProtectedCall(thread, context, error_value);
-            return .{ .failure = failure };
-        },
-        else => return err,
+}
+
+fn runProtectedBody(comptime State: type, self: *State, thread: *Thread, context: ProtectedCallContext, arg_count: usize) anyerror!ProtectedCallResult {
+    const callee = thread.stack.items[context.absolute_base];
+    self.invokeValue(thread, .{ .base = context.relative_base, .arg_count = @intCast(arg_count), .return_count = bytecode.multret_count }, 0) catch |err| {
+        return protectedCallFailure(State, self, thread, context, callee, err);
+    };
+    self.runThreadUntil(thread, context.frame_count) catch |err| {
+        return protectedCallFailure(State, self, thread, context, callee, err);
     };
 
     const values = try self.allocator.alloc(Value, thread.last_result_count);
+    errdefer self.allocator.free(values);
     for (values, 0..) |*value, index| value.* = thread.stack.items[thread.last_result_base + index];
     _ = try self.restoreProtectedCall(thread, context, .nil);
     return .{ .success = values };
 }
 
-pub fn pushProtectedContinuation(comptime State: type, self: *State, thread: *Thread, context: ProtectedCallContext, base: bytecode.Register, return_count: u16, kind: ProtectedContinuationKind, handler: Value, handler_depth: usize) !void {
+fn protectedCallFailure(comptime State: type, self: *State, thread: *Thread, context: ProtectedCallContext, callee: Value, err: anyerror) anyerror!ProtectedCallResult {
+    switch (err) {
+        error.RuntimeError, error.StackOverflow, error.UnsupportedOpcode, error.OutOfMemory => {
+            if (thread.frames.items.len < context.frame_count) return err;
+            self.noteCaughtError(err);
+            if (!self.error_handled and thread.error_handler != .nil) {
+                const mark_count = thread.native_mark_count;
+                defer thread.native_mark_count = mark_count;
+                if (callee != .closure) State.pushNativeMark(thread, context.frame_count, callee);
+                try self.applyMessageHandler(thread);
+            }
+            const failure = try self.restoreProtectedCall(thread, context, self.currentErrorValue());
+            return .{ .failure = failure };
+        },
+        else => return err,
+    }
+}
+
+pub fn pushProtectedContinuation(comptime State: type, self: *State, thread: *Thread, context: ProtectedCallContext, base: bytecode.Register, return_count: u16) !void {
     thread.continuation_order += 1;
     try thread.protected_continuations.append(self.allocator, .{
         .order = thread.continuation_order,
         .context = context,
         .base = base,
         .return_count = return_count,
-        .kind = kind,
-        .handler = handler,
-        .handler_depth = handler_depth,
     });
 }
 
@@ -231,7 +242,7 @@ pub fn completeReadyProtectedContinuation(comptime State: type, self: *State, th
     return true;
 }
 
-pub fn completeProtectedContinuationError(comptime State: type, self: *State, thread: *Thread, error_value: Value) !bool {
+pub fn completeProtectedContinuationError(comptime State: type, self: *State, thread: *Thread) !bool {
     const index = errorProtectedContinuationIndex(thread) orelse return false;
     const continuation = thread.protected_continuations.items[index];
     // Drop pairs calls abandoned by this handler. A native protected __pairs
@@ -244,28 +255,15 @@ pub fn completeProtectedContinuationError(comptime State: type, self: *State, th
             _ = thread.pairs_continuations.orderedRemove(pairs_index);
         }
     }
-    const failure = try self.restoreProtectedCall(thread, continuation.context, error_value);
+    try self.applyMessageHandler(thread);
+    const failure = try self.restoreProtectedCall(thread, continuation.context, self.currentErrorValue());
     _ = thread.protected_continuations.orderedRemove(index);
-    try returnProtectedContinuationFailure(State, self, thread, continuation, failure);
+    try returnProtectedResult(State, self, thread, continuation.base, continuation.return_count, .{ .failure = failure });
     return true;
 }
 
 pub fn returnProtectedContinuationSuccess(comptime State: type, self: *State, thread: *Thread, continuation: ProtectedContinuation, values: []Value) !void {
-    switch (continuation.kind) {
-        .pcall, .xpcall => try returnProtectedResult(State, self, thread, continuation.base, continuation.return_count, .{ .success = values }),
-        .xpcall_handler => {
-            const handled = if (values.len == 0) Value.nil else values[0];
-            try self.returnValues(thread, continuation.base, continuation.return_count, &.{ .{ .boolean = false }, handled });
-        },
-    }
-}
-
-pub fn returnProtectedContinuationFailure(comptime State: type, self: *State, thread: *Thread, continuation: ProtectedContinuation, failure: Value) !void {
-    switch (continuation.kind) {
-        .pcall => try returnProtectedResult(State, self, thread, continuation.base, continuation.return_count, .{ .failure = failure }),
-        .xpcall => try self.returnXpcallFailure(thread, continuation.base, continuation.return_count, continuation.handler, failure),
-        .xpcall_handler => try self.returnXpcallFailureFromDepth(thread, continuation.base, continuation.return_count, continuation.handler, failure, continuation.handler_depth + 1),
-    }
+    try returnProtectedResult(State, self, thread, continuation.base, continuation.return_count, .{ .success = values });
 }
 
 pub fn returnProtectedResult(comptime State: type, self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, result: ProtectedCallResult) !void {
@@ -277,7 +275,7 @@ pub fn returnProtectedResult(comptime State: type, self: *State, thread: *Thread
             try returns.appendSlice(self.allocator, values);
             try self.returnValues(thread, base, return_count, returns.items);
         },
-        .failure => |error_value| try self.returnValues(thread, base, return_count, &.{ .{ .boolean = false }, error_value }),
+        .failure => |error_value| try self.returnValues(thread, base, return_count, &.{ .{ .boolean = false }, try self.caughtErrorValue(error_value) }),
     }
 }
 
@@ -301,8 +299,6 @@ pub fn prepareClosureFrame(comptime State: type, self: *State, thread: *Thread, 
     errdefer if (varargs.len != 0) self.allocator.free(varargs);
     try thread.ensureStack(self.allocator, frame_base + register_count, self.stackValueLimit());
 
-    // Ordinary calls place registers over the arguments; tail calls and
-    // coroutine entry move them down to the reused base.
     if (frame_base != source_base + 1) {
         for (0..copied) |index| thread.stack.items[frame_base + index] = thread.stack.items[source_base + 1 + index];
     }

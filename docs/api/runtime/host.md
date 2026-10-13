@@ -26,6 +26,7 @@
 - [runtime.chunk](../runtime/chunk.md)
 - [reflection](../reflection.md)
 - [runtime.value](../runtime/value.md)
+- [runtime.number_format](../runtime/number_format.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
 - [runtime.state](../runtime/state.md)
@@ -45,6 +46,7 @@
 - [stdlib.coroutine](../stdlib/coroutine.md)
 - [stdlib.debug](../stdlib/debug.md)
 - [stdlib.io](../stdlib/io.md)
+- [stdlib.static_strings](../stdlib/static_strings.md)
 - [stdlib.os](../stdlib/os.md)
 - [stdlib.package](../stdlib/package.md)
 - [stdlib.json](../stdlib/json.md)
@@ -53,7 +55,6 @@
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
-- [stdlib.static_strings](../stdlib/static_strings.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
@@ -113,6 +114,7 @@
 - [ProcessResult](#type-processresult)
 - [ProcessStatus](#type-processstatus)
 - [PopenResult](#type-popenresult)
+- [WarningHandler](#type-warninghandler)
 - [ExitRequest](#type-exitrequest)
 - [FileError](#type-fileerror)
 
@@ -250,6 +252,7 @@ pub const MemoryFilesystem = struct {
 | [deinit](#fn-memoryfilesystem-deinit) | `self: *MemoryFilesystem` | `void` |  |
 | [readFileAlloc](#fn-memoryfilesystem-readfilealloc) | `self: *const MemoryFilesystem, allocator: std.mem.Allocator, path: []const u8` | `![]const u8` |  |
 | [writeFile](#fn-memoryfilesystem-writefile) | `self: *MemoryFilesystem, path: []const u8, contents: []const u8` | `!void` |  |
+| [writeAt](#fn-memoryfilesystem-writeat) | `self: *MemoryFilesystem, path: []const u8, offset: usize, contents: []const u8` | `!void` | Overwrites or extends an existing file at &#96;offset&#96; without truncating it. |
 | [makeDir](#fn-memoryfilesystem-makedir) | `self: *MemoryFilesystem, path: []const u8, parents: bool` | `!void` |  |
 | [statPath](#fn-memoryfilesystem-statpath) | `self: *const MemoryFilesystem, path: []const u8` | `!FileStat` |  |
 | [readDirAlloc](#fn-memoryfilesystem-readdiralloc) | `self: *const MemoryFilesystem, allocator: std.mem.Allocator, path: []const u8` | `![]DirectoryEntry` |  |
@@ -346,6 +349,18 @@ References: [`MemoryFilesystem`](#type-memoryfilesystem)
 
 ```zig
 pub fn writeFile(self: *MemoryFilesystem, path: []const u8, contents: []const u8) !void
+```
+
+References: [`MemoryFilesystem`](#type-memoryfilesystem)
+
+<a id="fn-memoryfilesystem-writeat"></a>
+
+### MemoryFilesystem.writeAt
+
+Overwrites or extends an existing file at `offset` without truncating it.
+
+```zig
+pub fn writeAt(self: *MemoryFilesystem, path: []const u8, offset: usize, contents: []const u8) !void
 ```
 
 References: [`MemoryFilesystem`](#type-memoryfilesystem)
@@ -638,11 +653,24 @@ pub const PopenResult = struct {
 };
 ```
 
+<a id="type-warninghandler"></a>
+
+## WarningHandler
+
+Exit requested by `os.exit`; the state unwinds with `error.LuaExit`.
+Receives each complete Lua warning while warnings are on, without the
+`Lua warning: ` prefix or the final newline.
+
+```zig
+pub const WarningHandler = struct {
+    context: ?*anyopaque = null,
+    emit: *const fn (context: ?*anyopaque, message: []const u8) void,
+};
+```
+
 <a id="type-exitrequest"></a>
 
 ## ExitRequest
-
-Exit requested by `os.exit`; the state unwinds with `error.LuaExit`.
 
 ```zig
 pub const ExitRequest = struct {

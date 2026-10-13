@@ -87,7 +87,6 @@ pub const PosixRule = struct {
         /// Local time of day in seconds; may be negative or exceed one day.
         time: i32 = 2 * 3600,
 
-        /// Seconds since the epoch at local midnight-based `time` in `year`.
         fn localSeconds(self: Transition, year: i64) i64 {
             const jan1 = daysFromCivil(year, 1, 1);
             const day: i64 = switch (self.kind) {
@@ -176,7 +175,6 @@ pub const PosixRule = struct {
             return result;
         }
 
-        /// POSIX offsets are positive west of UTC; the result is east of UTC.
         fn offset(self: *Parser) ?i32 {
             const seconds = self.clockTime(24) orelse return null;
             return -seconds;
@@ -343,16 +341,12 @@ pub fn localToUtc(context: anytype, comptime offsetAt: fn (@TypeOf(context), i64
         if (second.offset == resolved.offset) {
             guess = local - resolved.offset;
         } else {
-            // The local time falls in a gap skipped by a forward transition:
-            // read it with the earlier (smaller) offset, as C libraries do.
             const earlier = if (first.offset < resolved.offset) first else resolved;
             guess = local - earlier.offset;
             resolved = earlier;
         }
     }
     if (is_dst) |wanted| if (resolved.is_dst != wanted) {
-        // Use an offset with the requested daylight-saving state: first across
-        // a nearby transition, then from elsewhere in the year.
         var days: i64 = 1;
         while (days <= 366) : (days = if (days == 1) 30 else days + 30) {
             inline for (.{ -1, 1 }) |sign| {
@@ -381,16 +375,13 @@ test "civil date round trips across eras" {
 
 test "posix rules resolve standard and daylight offsets" {
     const rule = PosixRule.parse("EST5EDT,M3.2.0,M11.1.0").?;
-    // 2024-01-15T12:00:00Z is standard time.
     const winter = rule.offsetAt(1705320000);
     try std.testing.expectEqual(@as(i32, -5 * 3600), winter.offset);
     try std.testing.expect(!winter.is_dst);
     try std.testing.expectEqualStrings("EST", winter.name.?);
-    // 2024-07-04T12:00:00Z is daylight time.
     const summer = rule.offsetAt(1720094400);
     try std.testing.expectEqual(@as(i32, -4 * 3600), summer.offset);
     try std.testing.expect(summer.is_dst);
-    // DST starts 2024-03-10T07:00:00Z.
     try std.testing.expect(!rule.offsetAt(1710053999).is_dst);
     try std.testing.expect(rule.offsetAt(1710054000).is_dst);
 
@@ -412,7 +403,6 @@ test "local times convert back to UTC like mktime" {
         }
     };
     const context = Context{ .rule = PosixRule.parse("EST5EDT,M3.2.0,M11.1.0").? };
-    // 2024-07-04 08:00:00 local daylight time.
     const local = daysFromCivil(2024, 7, 4) * seconds_per_day + 8 * 3600;
     try std.testing.expectEqual(@as(i64, 1720094400), try localToUtc(&context, Context.offsetAt, local, null));
     try std.testing.expectEqual(@as(i64, 1720094400), try localToUtc(&context, Context.offsetAt, local, true));
@@ -420,7 +410,6 @@ test "local times convert back to UTC like mktime" {
 }
 
 test "tzif zones use transitions and the footer rule" {
-    // Minimal v2 TZif with one transition from LMT to EST and an EST5EDT footer.
     var bytes: std.ArrayList(u8) = .empty;
     defer bytes.deinit(std.testing.allocator);
     const allocator = std.testing.allocator;

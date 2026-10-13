@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const compile = @import("../compile.zig");
 const runtime = @import("../runtime.zig");
 const host = @import("../runtime/host.zig");
@@ -85,11 +86,72 @@ pub fn fileFailure(state: *State, thread: *Thread, op: bytecode.Call, path: ?[]c
     try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.intern(message) }, .{ .integer = info.errno } });
 }
 
+/// Like `mkstemp` in PUC's `os.tmpname`, creates an empty file with an
+/// unpredictable name and returns the name; the caller removes the file.
 pub fn tmpname(state: *State, thread: *Thread, op: bytecode.Call) !void {
-    const timestamp = state.currentTime() catch 0;
-    const name = try std.fmt.allocPrint(state.allocator, "zlua_tmp_{d}_{d}.tmp", .{ timestamp, state.table_allocations.items.len });
+    const name = try createTempFile(state) orelse return state.fail("unable to generate a unique filename");
     defer state.allocator.free(name);
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(name) }});
+}
+
+const temp_name_prefix = "lua_";
+const temp_name_random_len = 6;
+const temp_name_attempts = 100;
+
+fn createTempFile(state: *State) !?[]u8 {
+    const directory: ?[]const u8 = switch (state.options.filesystem) {
+        .host_cwd => tempDirectory(state),
+        else => null,
+    };
+    var attempt: usize = 0;
+    while (attempt < temp_name_attempts) : (attempt += 1) {
+        var random: [temp_name_random_len]u8 = undefined;
+        randomNameBytes(state, &random);
+        const name = if (directory) |dir|
+            try std.fmt.allocPrint(state.allocator, "{s}{c}" ++ temp_name_prefix ++ "{s}", .{ std.mem.trimEnd(u8, dir, "/\\"), std.fs.path.sep, &random })
+        else
+            try std.fmt.allocPrint(state.allocator, temp_name_prefix ++ "{s}", .{&random});
+        state.fsCreateFileExclusive(name) catch |err| {
+            state.allocator.free(name);
+            switch (err) {
+                error.OutOfMemory => return err,
+                error.PathAlreadyExists => continue,
+                else => return null,
+            }
+        };
+        return name;
+    }
+    return null;
+}
+
+fn tempDirectory(state: *State) []const u8 {
+    const variables: []const []const u8 = if (builtin.os.tag == .windows) &.{ "TMP", "TEMP", "USERPROFILE" } else &.{"TMPDIR"};
+    for (variables) |name| {
+        if (state.getenv(name)) |value| if (value.len != 0) return value;
+    }
+    return if (builtin.os.tag == .windows) "C:\\Windows\\Temp" else "/tmp";
+}
+
+var temp_name_counter = std.atomic.Value(u32).init(0);
+
+fn randomNameBytes(state: *State, out: []u8) void {
+    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    var bytes: [16]u8 = undefined;
+    if (state.options.io) |io| {
+        io.random(&bytes);
+    } else {
+        const count = temp_name_counter.fetchAdd(1, .monotonic);
+        var hasher = std.hash.Wyhash.init(count);
+        const identity = @intFromPtr(state);
+        hasher.update(std.mem.asBytes(&identity));
+        hasher.update(std.mem.asBytes(&state.instruction_count));
+        hasher.update(std.mem.asBytes(&state.file_generation));
+        const first = hasher.final();
+        const second = std.hash.Wyhash.hash(first, std.mem.asBytes(&count));
+        @memcpy(bytes[0..8], std.mem.asBytes(&first));
+        @memcpy(bytes[8..16], std.mem.asBytes(&second));
+    }
+    for (out, 0..) |*byte, index| byte.* = alphabet[bytes[index % bytes.len] % alphabet.len];
 }
 
 pub fn difftime(state: *State, thread: *Thread, op: bytecode.Call) !void {
@@ -201,7 +263,6 @@ fn tableToTime(state: *State, value: Value) !i64 {
     const isdst_value = table.get(.{ .string = "isdst" });
     const is_dst: ?bool = if (isdst_value == .nil) null else runtime.truthy(isdst_value);
 
-    // Normalize like mktime: out-of-range fields carry into larger units.
     const months = year * 12 + (month - 1);
     const days = timezone.daysFromCivil(@divFloor(months, 12), @mod(months, 12) + 1, 1) + (day - 1);
     const local = days * timezone.seconds_per_day + hour * 3600 + min * 60 + sec;
@@ -213,8 +274,6 @@ fn tableToTime(state: *State, value: Value) !i64 {
     return timestamp;
 }
 
-/// Reads a date field like Lua's `getfield`, enforcing C `int` bounds after
-/// subtracting `delta`.
 fn dateField(state: *State, table: *runtime.Table, comptime name: []const u8, default: ?i64, comptime delta: i64) !i64 {
     const value = table.get(.{ .string = name });
     const integer = luaInteger(value) orelse {
@@ -229,7 +288,6 @@ fn dateField(state: *State, table: *runtime.Table, comptime name: []const u8, de
     return integer;
 }
 
-/// Converts like `lua_tointegerx`: integers, integral floats, and numeric strings.
 fn luaInteger(value: Value) ?i64 {
     return switch (value) {
         .number => |number| runtime.floatToInteger(number),
@@ -238,7 +296,6 @@ fn luaInteger(value: Value) ?i64 {
     };
 }
 
-/// Checks an integer argument like `luaL_checkinteger`.
 fn integerArgument(state: *State, thread: *Thread, op: bytecode.Call, comptime name: []const u8, index: u16) !i64 {
     const value = runtime.argValue(state, thread, op, index);
     if (luaInteger(value)) |integer| return integer;
@@ -249,7 +306,6 @@ fn integerArgument(state: *State, thread: *Thread, op: bytecode.Call, comptime n
 const weekday_names = [_][]const u8{ "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };
 const month_names = [_][]const u8{ "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December" };
 
-/// Conversions accepted by Lua 5.5's C99 `os.date`; two-byte entries follow `||`.
 const single_conversions = "aAbBcCdDeFgGhHIjmMnprRStTuUVwWxXyYzZ%";
 const double_conversions = [_][]const u8{ "Ec", "EC", "Ex", "EX", "Ey", "EY", "Od", "Oe", "OH", "OI", "Om", "OM", "OS", "Ou", "OU", "OV", "Ow", "OW", "Oy" };
 
@@ -365,7 +421,6 @@ fn appendPadded(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: an
     }
 }
 
-/// ISO 8601 week-based year and week number.
 fn isoWeekYear(parts: DateParts) struct { year: i64, week: i64 } {
     const iso_wday: i64 = if (parts.wday == 0) 7 else parts.wday;
     const week = @divFloor(@as(i64, parts.yday) - iso_wday + 10, 7);
@@ -391,7 +446,6 @@ test "date fields follow strftime in the C locale" {
     try std.testing.expectEqual(@as(i64, 1969), before.year);
     try std.testing.expectEqual(@as(u8, 23), before.hour);
     try std.testing.expectEqual(@as(u16, 365), before.yday);
-    // 2021-01-03 belongs to ISO week 53 of 2020.
     const iso = isoWeekYear(brokenDownTime(1609632000, .{}).?);
     try std.testing.expectEqual(@as(i64, 2020), iso.year);
     try std.testing.expectEqual(@as(i64, 53), iso.week);
@@ -404,7 +458,6 @@ test "os.date supports the C99 conversions in the C locale" {
         .clock = .{ .fixed = 0 },
     });
     defer state.deinit();
-    // Expected strings match Lua 5.5 with glibc and macOS strftime.
     try state.executeSourceChunk(
         \\local fmt = "!%a %A %b %B %c %C %d %D %e %F %g %G %h %H %I %j %m %M %n %p %r %R %S %t %T %u %U %V %w %W %x %X %y %Y %z %%"
         \\assert(os.date(fmt, 1609632000) == "Sun Sunday Jan January Sun Jan  3 00:00:00 2021 20 03 01/03/21  3 2021-01-03 20 2020 Jan 00 12 003 01 00 \n AM 12:00:00 AM 00:00 00 \t 00:00:00 7 01 53 0 00 01/03/21 00:00:00 21 2021 +0000 %")

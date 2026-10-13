@@ -26,7 +26,9 @@ pub const RuntimeError = types.RuntimeError;
 
 const default_max_stack_values: usize = 65536;
 const default_max_call_frames: usize = 256;
-const max_error_handler_depth: usize = 200;
+const lua_max_c_calls: usize = 200;
+const stack_error_frames: usize = 32;
+const stack_error_values: usize = 200;
 const max_metamethod_depth: usize = 15;
 
 pub const Value = types.Value;
@@ -38,7 +40,6 @@ pub const ApiCallbackDispatchFn = types.ApiCallbackDispatchFn;
 pub const ApiCallbackContext = types.ApiCallbackContext;
 pub const RuntimeErrorPayload = types.RuntimeErrorPayload;
 const ProtectedCallContext = types.ProtectedCallContext;
-const ProtectedContinuationKind = types.ProtectedContinuationKind;
 const ProtectedContinuation = types.ProtectedContinuation;
 const GenericForContinuation = types.GenericForContinuation;
 const BranchContinuation = types.BranchContinuation;
@@ -114,6 +115,10 @@ pub const StateOptions = struct {
     /// Also keep Lua stdout/stderr bytes in `State.stdout`/`State.stderr`.
     /// Streaming hosts with writers can disable this to bound memory.
     capture_output: bool = true,
+    /// Start with Lua warnings on. Lua's `warn("@on")` and `warn("@off")` switch them.
+    warnings: bool = false,
+    /// Receives warnings instead of stderr.
+    warning_handler: ?host.WarningHandler = null,
     filesystem: FilesystemCapability = .disabled,
     environment: EnvironmentCapability = .disabled,
     clock: ClockCapability = .system,
@@ -167,6 +172,9 @@ pub const State = struct {
     table_finalizer_head: ?*Table = null,
     table_finalizer_serial: u64 = 0,
     table_pending_finalizer_head: ?*Table = null,
+    /// Userdata separated for their Lua `__gc`, in queue order shared with
+    /// `table_pending_finalizer_head`.
+    userdata_lua_pending_head: ?*Userdata = null,
     userdata_pending_finalizer_head: ?*Userdata = null,
     table_metatable_count: usize = 0,
     userdata_allocations: std.ArrayList(*Userdata) = .empty,
@@ -189,8 +197,11 @@ pub const State = struct {
     /// Advanced by filesystem mutations so buffered file handles reload contents.
     file_generation: u64 = 0,
     last_error: ?RuntimeErrorPayload = null,
-    last_error_in_close: bool = false,
-    traceback_error_in_close: bool = false,
+    /// Lua warnings are on, as switched by `@on` and `@off` control messages.
+    warnings_on: bool = false,
+    /// The current error already went through a message handler (or must
+    /// skip one, like a memory error or an error in error handling).
+    error_handled: bool = false,
     current_thread: ?*Thread = null,
     api_callback_dispatch: ?ApiCallbackDispatchFn = null,
     api_callback_user_data: ?*anyopaque = null,
@@ -201,9 +212,11 @@ pub const State = struct {
     boolean_metatable: ?*Table = null,
     nil_metatable: ?*Table = null,
     file_metatable: ?*Table = null,
+    /// Metatable of `fs` file handles, which add the `fs` file methods.
+    fs_file_metatable: ?*Table = null,
     /// Default files of `io.read`/`io.write`, rooted outside Lua-visible tables.
-    io_input: ?*Table = null,
-    io_output: ?*Table = null,
+    io_input: ?*Userdata = null,
+    io_output: ?*Userdata = null,
     zerde_null: ?*Table = null,
     zerde_array_metatable: ?*Table = null,
     zerde_object_metatable: ?*Table = null,
@@ -223,7 +236,7 @@ pub const State = struct {
     gc_remembered: std.ArrayList(types.GcObject) = .empty,
     gc_weak: std.ArrayList(*Table) = .empty,
     gc_tables: std.ArrayList(*Table) = .empty,
-    gc_finalizers: std.ArrayList(*Table) = .empty,
+    gc_finalizers: std.ArrayList(types.FinalizerObject) = .empty,
     gc_major_pending: bool = false,
     gc_cycle_start_total: usize = 0,
     gc_found_young: bool = false,
@@ -281,6 +294,7 @@ pub const State = struct {
             .string_allocation_index = PointerAllocationIndex.init(allocator),
             .table_allocation_index = PointerAllocationIndex.init(allocator),
             .options = options,
+            .warnings_on = options.warnings,
         };
         errdefer state.deinit();
 
@@ -315,8 +329,6 @@ pub const State = struct {
     pub fn fileMetatable(state: *State) !*Table {
         if (state.file_metatable) |metatable| return metatable;
 
-        // PUC layout: metamethods in the metatable, methods in a separate
-        // table reached through `__index`.
         const metatable = (try state.newTableWithHints(0, 5)).table;
         state.file_metatable = metatable;
         errdefer state.file_metatable = null;
@@ -324,16 +336,64 @@ pub const State = struct {
         try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("__index") }, methods);
         try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("__name") }, .{ .string = stdlib_static_strings.get("FILE*") });
         try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("__tostring") }, .{ .native = .io_file_tostring });
-        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("__close") }, .{ .native = .io_file_close });
-        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("__gc") }, .{ .native = .io_file_close });
-        try state.setTableRaw(methods.table, .{ .string = stdlib_static_strings.get("read") }, .{ .native = .io_file_read });
-        try state.setTableRaw(methods.table, .{ .string = stdlib_static_strings.get("write") }, .{ .native = .io_file_write });
-        try state.setTableRaw(methods.table, .{ .string = stdlib_static_strings.get("close") }, .{ .native = .io_file_close });
-        try state.setTableRaw(methods.table, .{ .string = stdlib_static_strings.get("seek") }, .{ .native = .io_file_seek });
-        try state.setTableRaw(methods.table, .{ .string = stdlib_static_strings.get("flush") }, .{ .native = .io_file_flush });
-        try state.setTableRaw(methods.table, .{ .string = stdlib_static_strings.get("lines") }, .{ .native = .io_file_lines });
-        try state.setTableRaw(methods.table, .{ .string = stdlib_static_strings.get("setvbuf") }, .{ .native = .io_file_setvbuf });
+        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("__close") }, .{ .native = .io_file_gc });
+        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("__gc") }, .{ .native = .io_file_gc });
+        try setFileMethods(state, methods.table);
         return metatable;
+    }
+
+    /// `fs` file handles share the `FILE*` metamethods, and their method table
+    /// adds `stat`, `tell`, `truncate`, `path`, and `sync`.
+    pub fn fsFileMetatable(state: *State) !*Table {
+        if (state.fs_file_metatable) |metatable| return metatable;
+        const file_metatable = try state.fileMetatable();
+        const metatable = (try state.newTableWithHints(0, 5)).table;
+        state.fs_file_metatable = metatable;
+        errdefer state.fs_file_metatable = null;
+        for (file_metatable.entries.items) |entry| {
+            if (entry.value != .nil) try state.setTableRaw(metatable, entry.key, entry.value);
+        }
+        const methods = try state.newTableWithHints(0, 12);
+        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("__index") }, methods);
+        try setFileMethods(state, methods.table);
+        try state.setTableRaw(methods.table, .{ .string = try state.intern("stat") }, .{ .native = .fs_file_stat });
+        try state.setTableRaw(methods.table, .{ .string = try state.intern("tell") }, .{ .native = .fs_file_tell });
+        try state.setTableRaw(methods.table, .{ .string = try state.intern("truncate") }, .{ .native = .fs_file_truncate });
+        try state.setTableRaw(methods.table, .{ .string = stdlib_static_strings.get("path") }, .{ .native = .fs_file_path });
+        try state.setTableRaw(methods.table, .{ .string = try state.intern("sync") }, .{ .native = .io_file_flush });
+        return metatable;
+    }
+
+    fn setFileMethods(state: *State, methods: *Table) !void {
+        try state.setTableRaw(methods, .{ .string = stdlib_static_strings.get("read") }, .{ .native = .io_file_read });
+        try state.setTableRaw(methods, .{ .string = stdlib_static_strings.get("write") }, .{ .native = .io_file_write });
+        try state.setTableRaw(methods, .{ .string = stdlib_static_strings.get("close") }, .{ .native = .io_file_close });
+        try state.setTableRaw(methods, .{ .string = stdlib_static_strings.get("seek") }, .{ .native = .io_file_seek });
+        try state.setTableRaw(methods, .{ .string = stdlib_static_strings.get("flush") }, .{ .native = .io_file_flush });
+        try state.setTableRaw(methods, .{ .string = stdlib_static_strings.get("lines") }, .{ .native = .io_file_lines });
+        try state.setTableRaw(methods, .{ .string = stdlib_static_strings.get("setvbuf") }, .{ .native = .io_file_setvbuf });
+    }
+
+    /// True for userdata types implemented by the runtime, such as files.
+    pub fn isBuiltinUserdata(userdata: *const Userdata) bool {
+        return userdata.type_id == stdlib.io.fileTypeId();
+    }
+
+    /// Runs the finalizer of a userdata type implemented by the runtime, which
+    /// needs the state. Returns false for other userdata.
+    pub fn finalizeBuiltinUserdata(self: *State, userdata: *Userdata) bool {
+        if (!isBuiltinUserdata(userdata)) return false;
+        stdlib.io.finalizeFile(self, userdata);
+        return true;
+    }
+
+    pub fn closeFinalizerOrder(userdata: *Userdata) ?u64 {
+        return stdlib.io.closeFinalizerOrder(userdata);
+    }
+
+    /// The creation order of runtime userdata, on the finalizer order scale.
+    pub fn builtinFinalizerOrder(userdata: *Userdata) u64 {
+        return stdlib.io.fileOf(.{ .userdata = userdata }).?.finalizer_order;
     }
 
     pub fn discard(self: *State) void {
@@ -341,8 +401,26 @@ pub const State = struct {
         self.deinit();
     }
 
+    /// Frees the state like `lua_close`: first calls every pending finalizer,
+    /// running `__gc` metamethods and closing open files, newest first. The
+    /// instruction budget restarts for each one. Discarded states, such as
+    /// snapshot images, call none.
     pub fn deinit(self: *State) void {
+        self.deinitClosing(true);
+    }
+
+    /// Frees the state without calling Lua `__gc` metamethods, as a process
+    /// exiting without `lua_close` does; open files are still flushed and closed.
+    pub fn deinitWithoutFinalizers(self: *State) void {
+        self.deinitClosing(false);
+    }
+
+    fn deinitClosing(self: *State, run_finalizers: bool) void {
         if (self.rollback) |journal| journal.abandon(self);
+        if (!self.discarding) {
+            if (run_finalizers) self.runCloseFinalizers();
+            stdlib.io.closeOpenFiles(self);
+        }
         self.snapshot_busy = true;
         if (self.local_zone) |zone| {
             zone.deinit();
@@ -390,7 +468,7 @@ pub const State = struct {
 
     pub fn execute(self: *State, proto: *proto_mod.Proto) !void {
         try value_mod.prepareProtoTree(proto);
-        try self.executeClosure(try self.newRootClosure(proto), .{});
+        try self.executeClosure(try self.newRootClosure(proto), .{ .host_frame = true });
     }
 
     // Host frames must have stable identities when coroutine.running() exposes
@@ -451,6 +529,7 @@ pub const State = struct {
         defer self.retireHostThread(thread);
         try self.setRootThreadArgs(thread, args);
         thread.frames.items[0].return_count = bytecode.multret_count;
+        installHostErrorHandler(thread, handler);
         const previous_thread = self.current_thread;
         self.current_thread = thread;
         defer self.current_thread = previous_thread;
@@ -475,15 +554,15 @@ pub const State = struct {
         defer self.retireHostThread(thread);
         try self.setRootThreadArgs(thread, args);
         thread.frames.items[0].return_count = bytecode.multret_count;
+        installHostErrorHandler(thread, handler);
         const previous_thread = self.current_thread;
         self.current_thread = thread;
         defer self.current_thread = previous_thread;
 
         self.last_error = null;
-        self.last_error_in_close = false;
         self.runThreadUntil(thread, 0) catch |err| switch (err) {
             error.RuntimeError, error.StackOverflow, error.UnsupportedOpcode => {
-                if (err == error.StackOverflow and self.last_error == null) self.last_error = .{ .diagnostic = "stack overflow" };
+                self.noteCaughtError(err);
                 if (self.options.debug_errors) self.appendUnhandledErrorDebugDump(thread, err) catch {};
                 self.applyHostErrorHandler(thread, handler) catch |handler_err| {
                     thread.status = .dead;
@@ -529,14 +608,12 @@ pub const State = struct {
             else => return err,
         };
         defer self.retireHostThread(thread);
+        installHostErrorHandler(thread, handler);
         const previous_thread = self.current_thread;
         self.current_thread = thread;
         defer self.current_thread = previous_thread;
         self.last_error = null;
-        self.last_error_in_close = false;
         return self.callCollect(thread, function, args) catch |err| {
-            // A native entry runs no interpreter loop of its own, so deliver
-            // an interrupt it raised here.
             if (err == error.Interrupted and self.execution_depth == 0) self.consumeInterrupt();
             try self.unwindHostThread(thread, err, handler);
             return err;
@@ -578,6 +655,7 @@ pub const State = struct {
             else => return err,
         };
         defer self.retireHostThread(thread);
+        installHostErrorHandler(thread, handler);
         const previous_thread = self.current_thread;
         self.current_thread = thread;
         defer self.current_thread = previous_thread;
@@ -588,56 +666,150 @@ pub const State = struct {
         thread.status = .dead;
     }
 
-    /// Unwinds a host thread after `err` escaped its interpreter loop. Runtime
-    /// errors run `handler` while the failing frames are live, then close them
-    /// with `__close`. `os.exit` closes only when asked. An interrupt runs no
-    /// more Lua: its frames are dropped and the retiring thread closes upvalues.
+    fn installHostErrorHandler(thread: *Thread, handler: HostErrorHandler) void {
+        thread.error_handler = handler.message_handler;
+        thread.host_frame = handler.host_frame;
+    }
+
     fn unwindHostThread(self: *State, thread: *Thread, err: anyerror, handler: HostErrorHandler) !void {
         defer thread.status = .dead;
         if (err == error.LuaExit) return self.finishExitUnwind(thread);
         if (err == error.Interrupted) return;
-        if (err == error.StackOverflow and self.last_error == null) self.last_error = .{ .diagnostic = "stack overflow" };
+        self.noteCaughtError(err);
         if (self.options.debug_errors and isRuntimeError(err)) self.appendUnhandledErrorDebugDump(thread, err) catch {};
         if (isRuntimeError(err)) try self.applyHostErrorHandler(thread, handler);
         try self.closeFramesTo(thread, 0, self.currentErrorValue());
     }
 
-    /// Runs `handler` for the current error while the failing frames are
-    /// still on `thread`, like a Lua message handler.
     fn applyHostErrorHandler(self: *State, thread: *Thread, handler: HostErrorHandler) !void {
         if (handler.traceback) |out| {
             if (out.*) |previous| self.allocator.free(previous);
             out.* = null;
             out.* = try debug_mod.formatTraceback(State, self, thread, handler.host_frame);
         }
-        if (handler.message_handler != .nil and thread.frames.items.len != 0) {
-            const handled = try self.runHostMessageHandler(thread, handler.message_handler, self.currentErrorValue());
-            self.last_error = .{ .lua_value = handled };
+        if (thread.frames.items.len != 0) try self.applyMessageHandler(thread);
+    }
+
+    /// Records the error for a Zig error caught from Lua execution: a stack
+    /// overflow that has no message yet, or a memory error, which skips
+    /// message handlers as in Lua.
+    pub fn noteCaughtError(self: *State, err: anyerror) void {
+        switch (err) {
+            error.StackOverflow => if (self.last_error == null) {
+                self.last_error = .{ .diagnostic = "stack overflow" };
+                self.error_handled = false;
+            },
+            error.OutOfMemory => {
+                if (self.last_error == null) self.last_error = .{ .diagnostic = "not enough memory" };
+                self.error_handled = true;
+            },
+            else => {},
         }
     }
 
-    /// Calls a host message handler on top of the failing frames. An error in
-    /// the handler is handled again, as `xpcall` does, up to a fixed depth.
-    fn runHostMessageHandler(self: *State, thread: *Thread, handler: Value, error_value: Value) !Value {
-        var current = error_value;
-        var depth: usize = 0;
-        while (depth < max_error_handler_depth) : (depth += 1) {
-            const context = self.protectedCallContextWithErrors(thread);
-            const result = try self.runProtectedCall(thread, context, handler, &.{current});
-            switch (result) {
-                .success => |values| {
-                    defer self.allocator.free(values);
-                    return if (values.len == 0) .nil else values[0];
-                },
-                .failure => |failure| current = failure,
+    /// Runs the thread's message handler for the current error at the error
+    /// point, like `luaG_errormsg`, unless the error already went through
+    /// one. The handler runs on top of the live failing frames; an error in
+    /// it is handled again on top of the handler's frames. The retries model
+    /// Lua's C-call limit: the handler sees "C stack overflow" at
+    /// `LUAI_MAXCCALLS` and the error becomes "error in error handling" a
+    /// little later.
+    pub fn applyMessageHandler(self: *State, thread: *Thread) !void {
+        if (self.error_handled) return;
+        self.error_handled = true;
+        const handler = thread.error_handler;
+        if (handler == .nil) return;
+        var error_value = self.currentErrorValue();
+        const mark_count = thread.native_mark_count;
+        defer thread.native_mark_count = mark_count;
+        const start_frames = thread.frames.items.len;
+        var c_calls = self.execution_depth + 2;
+        var overflowed = false;
+        var native_calls: usize = 0;
+        while (true) {
+            c_calls = @max(c_calls + 1, self.execution_depth + 3 + native_calls + debug_mod.indirectFrameCount(thread, start_frames));
+            if (c_calls >= lua_max_c_calls and !overflowed) {
+                overflowed = true;
+                error_value = try self.cStackOverflowValue(thread);
+                native_calls += 1;
+                continue;
             }
+            if (c_calls >= lua_max_c_calls / 10 * 11) {
+                error_value = .{ .string = try self.intern("error in error handling") };
+                break;
+            }
+            if (handler != .closure) native_calls += 1;
+            const frame_count = thread.frames.items.len;
+            if (try self.callMessageHandler(thread, handler, error_value)) |result| {
+                error_value = result;
+                break;
+            }
+            if (handler != .closure and thread.frames.items.len > frame_count) pushNativeMark(thread, frame_count, handler);
+            error_value = self.currentErrorValue();
+            if (self.error_handled) break;
         }
-        return .{ .string = try self.intern("error in error handling") };
+        self.last_error = .{ .lua_value = error_value };
+        self.error_handled = true;
+    }
+
+    fn callMessageHandler(self: *State, thread: *Thread, handler: Value, error_value: Value) !?Value {
+        const context = self.protectedCallContext(thread);
+        thread.ensureStack(self.allocator, context.absolute_base + 2, self.stackValueLimit() + stack_error_values) catch |err| switch (err) {
+            error.StackOverflow => return self.errorInErrorHandling(),
+            else => return err,
+        };
+        thread.stack.items[context.absolute_base] = handler;
+        thread.stack.items[context.absolute_base + 1] = error_value;
+        thread.native_call_depth += 1;
+        defer thread.native_call_depth -= 1;
+        const name = debug_mod.messageHandlerCallName(thread);
+        thread.next_call_name = if (name) |known| known.name else null;
+        thread.next_call_namewhat = if (name) |known| known.namewhat else null;
+        self.invokeValue(thread, .{ .base = context.relative_base, .arg_count = 1, .return_count = bytecode.multret_count }, 0) catch |err| return self.messageHandlerFailure(err);
+        self.runThreadUntil(thread, context.frame_count) catch |err| return self.messageHandlerFailure(err);
+        const result = if (thread.last_result_count == 0) Value.nil else thread.stack.items[thread.last_result_base];
+        thread.stack.items.len = context.stack_len;
+        thread.last_result_base = context.last_result_base;
+        thread.last_result_count = context.last_result_count;
+        return result;
+    }
+
+    fn cStackOverflowValue(self: *State, thread: *Thread) !Value {
+        const message = "C stack overflow";
+        if (!debug_mod.errorRaisedByLuaCode(thread)) return .{ .string = try self.intern(message) };
+        const frame = thread.frames.items[thread.frames.items.len - 1];
+        const site = self.instructionErrorSite(thread) orelse return .{ .string = try self.intern(message) };
+        var out = std.ArrayList(u8).empty;
+        defer out.deinit(self.allocator);
+        try appendFmt(self.allocator, &out, "{s}:{d}: {s}", .{ runtimeSourceName(frame.proto.source_name), site.line, message });
+        return .{ .string = try self.intern(out.items) };
+    }
+
+    /// Records a native function without a calling instruction for tracebacks.
+    pub fn pushNativeMark(thread: *Thread, frame_count: usize, callee: Value) void {
+        if (thread.native_mark_count == thread.native_marks.len) return;
+        thread.native_marks[thread.native_mark_count] = .{ .frame_count = @intCast(frame_count), .callee = callee };
+        thread.native_mark_count += 1;
+    }
+
+    fn messageHandlerFailure(self: *State, err: anyerror) !?Value {
+        switch (err) {
+            error.RuntimeError, error.StackOverflow, error.UnsupportedOpcode, error.OutOfMemory => {
+                self.noteCaughtError(err);
+                return null;
+            },
+            else => return err,
+        }
+    }
+
+    fn errorInErrorHandling(self: *State) !?Value {
+        self.last_error = .{ .lua_value = .{ .string = try self.intern("error in error handling") } };
+        self.error_handled = true;
+        return null;
     }
 
     pub fn runThreadUntil(self: *State, thread: *Thread, target_frame_count: usize) anyerror!void {
         self.runThreadLoop(thread, target_frame_count) catch |err| {
-            // The outermost interpreter loop delivers an interrupt to the host.
             if (err == error.Interrupted and self.execution_depth == 0) self.consumeInterrupt();
             return err;
         };
@@ -650,15 +822,13 @@ pub const State = struct {
         defer self.execution_depth -= 1;
         try rollback_mod.threadWritable(thread);
         while (thread.frames.items.len > target_frame_count) {
-            // One combined test keeps the common case to a few loads; the
-            // ordered checks below are unchanged when any of them can fire.
             if (thread.pending_unwind_error != null or thread.pending_yield_hook_return or hasPendingContinuations(thread)) {
                 if (thread.pending_unwind_error != null and thread.frames.items.len == thread.pending_unwind_resume_frame_count) {
                     const error_value = thread.pending_unwind_error.?;
                     const target = thread.pending_unwind_target_frame_count;
                     thread.pending_unwind_error = null;
                     try self.closeFramesTo(thread, target, error_value);
-                    return self.throwValue(error_value);
+                    return self.rethrowValue(error_value);
                 }
                 if (try self.completeReadyPairsContinuation(thread)) continue;
                 if (try self.completeReadyCallOneContinuation(thread)) continue;
@@ -683,7 +853,6 @@ pub const State = struct {
             frame.pc += 1;
             try self.checkExecutionLimits(thread);
             if (self.options.trace_vm) try self.traceInstruction(frame.*, pc, instruction);
-            // Both hooks require an installed hook function.
             if (thread.hook != .nil) {
                 try self.callLineHook(thread);
                 try self.callCountHook(thread);
@@ -942,14 +1111,8 @@ pub const State = struct {
         if (thread.hook != .nil and (thread.hook_line or thread.hook_count != 0 or thread.hook_running)) return false;
         if (self.gc_running and self.shouldRunAutoGc()) return false;
 
-        // Nothing below grows the stack or frame list, installs hooks, or
-        // queues continuations, so these bounds hold for the whole loop.
         const stack_limit = @min(thread.stack.items.len, self.stackValueLimit());
         const frame_limit = @min(thread.frames.capacity, self.callFrameLimit());
-        // The outer interpreter completes continuations and stops at host
-        // call boundaries before executing a caller. Every pending item
-        // becomes ready when the frame count drops to its own count, so
-        // returns from frames above all of them cannot make one ready.
         const return_floor: usize = if (thread.pending_unwind_error != null or thread.pending_yield_hook_return or thread.hook_return)
             std.math.maxInt(usize)
         else if (hasPendingContinuations(thread))
@@ -957,32 +1120,15 @@ pub const State = struct {
         else
             target_frame_count;
 
-        // The frame list does not grow here, so its storage stays put and
-        // neighbouring frames are adjacent. Calls and returns carry the next
-        // frame's state in locals instead of reloading the frame they just
-        // stored, which would put a store-to-load round trip on every
-        // transition's critical path. `thread.frames.items.len` is always
-        // `frame_index + 1`.
         var frame_index = thread.frames.items.len - 1;
         var frame = &thread.frames.items[frame_index];
         var proto = frame.proto;
         var pc = frame.pc;
         var base = frame.base;
-        // Opcodes executed by this call are `pc +% count_bias`: straight-line
-        // opcodes advance PC alone, a taken branch subtracts its displacement,
-        // and a frame switch rebases the bias on the new PC. One register
-        // replaces per-block counters that the hot loops had to spill.
         var count_bias: u64 = 0 -% pc;
         defer self.instruction_count = self.instruction_count +| (pc +% count_bias);
-        // The count when the current frame segment began. Every completed
-        // segment retires its CALL or RET, so a nonzero count at a segment
-        // start also means the loop did work.
         var segment_start: u64 = 0;
         frames: while (true) {
-            // Prepared prototypes record whether their last opcode stops
-            // sequential dispatch (or checks the bound itself, as CLOSE
-            // does). Branches still check their targets. `frame.pc` is
-            // current in memory whenever a segment starts.
             if (!proto.fast_loop_entry) return segment_start != 0;
             const instructions = proto.instructions.items;
             if (pc >= instructions.len) return segment_start != 0;
@@ -1007,11 +1153,6 @@ pub const State = struct {
                 },
                 .load_const => {
                     const op = instructions[pc].load_const;
-                    // Executed prototypes with constants are prepared, so the
-                    // index is in bounds (safety-checked in debug builds). Read
-                    // through pointers: copying the union to a local spills
-                    // the dispatch state. `proto` is live already, and right
-                    // after a call `frame.proto` would be a just-stored load.
                     const decoded = &proto.constant_values[op.constant];
                     if (decoded.* != .string) {
                         stack[op.dest] = decoded.*;
@@ -1044,7 +1185,6 @@ pub const State = struct {
                         if (upvalue.owner.rollback) |record| if (!record.header.detached) break :fast_loop;
                         rollback_mod.touch(upvalue);
                         upvalue.owner.stack.items[upvalue.stack_index] = stack[op.register];
-                        // Another thread's registers are not revisited unless remembered.
                         if (upvalue.owner != thread) gc_mod.rememberObject(State, self, .{ .thread = upvalue.owner });
                     } else {
                         rollback_mod.touch(upvalue);
@@ -1252,7 +1392,6 @@ pub const State = struct {
                         count_bias +%= source_pc -% pc;
                         if (pc < source_pc) {
                             frame.last_hook_line = null;
-                            // Backward jumps are safepoints for host interrupts.
                             if (self.fastLoopInterrupted()) break :fast_loop;
                         }
                     }
@@ -1267,7 +1406,6 @@ pub const State = struct {
                     count_bias +%= source_pc -% pc;
                     if (pc < source_pc) {
                         frame.last_hook_line = null;
-                        // Backward jumps are safepoints for host interrupts.
                         if (self.fastLoopInterrupted()) break :fast_loop;
                     }
                     if (pc >= instructions.len) break :fast_loop;
@@ -1282,7 +1420,6 @@ pub const State = struct {
                         count_bias +%= source_pc -% pc;
                         if (pc < source_pc) {
                             frame.last_hook_line = null;
-                            // Backward jumps are safepoints for host interrupts.
                             if (self.fastLoopInterrupted()) break :fast_loop;
                         }
                     }
@@ -1300,7 +1437,6 @@ pub const State = struct {
                         count_bias +%= source_pc -% pc;
                         if (pc < source_pc) {
                             frame.last_hook_line = null;
-                            // Backward jumps are safepoints for host interrupts.
                             if (self.fastLoopInterrupted()) break :fast_loop;
                         }
                     }
@@ -1330,7 +1466,6 @@ pub const State = struct {
                         count_bias +%= source_pc -% pc;
                         if (pc < source_pc) {
                             frame.last_hook_line = null;
-                            // Backward jumps are safepoints for host interrupts.
                             if (self.fastLoopInterrupted()) break :fast_loop;
                         }
                     }
@@ -1380,8 +1515,6 @@ pub const State = struct {
                     if (!callee_proto.fast_loop_call) break :fast_loop;
                     const callee_index = frame_index + 1;
                     if (callee_index >= frame_limit) break :fast_loop;
-                    // Registers start just above the function slot, where
-                    // the arguments already are; results go to the slot.
                     const function_slot = base + op.base;
                     const callee_base = function_slot + 1;
                     const register_count = @max(callee_proto.max_registers, 1);
@@ -1417,7 +1550,6 @@ pub const State = struct {
                     count_bias = segment_start;
                     pc = 0;
                     base = callee_base;
-                    // Lua calls and returns are safepoints for host interrupts.
                     if (self.fastLoopInterrupted()) return true;
                     continue :frames;
                 },
@@ -1426,7 +1558,6 @@ pub const State = struct {
                     if (frame_index <= return_floor) break :fast_loop;
                     if (op.count == bytecode.multret_count or frame.return_count == bytecode.multret_count or
                         frame.owns_varargs or frame.pending_returns != null) break :fast_loop;
-                    // Open upvalues are sorted by descending stack index.
                     if (thread.open_upvalues) |upvalue| if (upvalue.stack_index >= base) break :fast_loop;
                     const return_start = frame.return_start;
                     const return_count = frame.return_count;
@@ -1446,7 +1577,6 @@ pub const State = struct {
                     pc = frame.pc;
                     count_bias = segment_start -% pc;
                     base = frame.base;
-                    // Lua calls and returns are safepoints for host interrupts.
                     if (self.fastLoopInterrupted()) return true;
                     continue :frames;
                 },
@@ -1504,8 +1634,6 @@ pub const State = struct {
         return vm_mod.checkInterrupt(State, self);
     }
 
-    /// Fast-loop poll: true when an interrupt is pending. Forces the general
-    /// loop to take its checkpoint at the next instruction.
     inline fn fastLoopInterrupted(self: *State) bool {
         if (!self.interruptRequested()) return false;
         self.instruction_checkpoint = 0;
@@ -1545,8 +1673,6 @@ pub const State = struct {
         self.instruction_checkpoint = 0;
     }
 
-    /// Clears a delivered interrupt once `error.Interrupted` leaves the
-    /// outermost interpreter entry, so the next host call starts fresh.
     fn consumeInterrupt(self: *State) void {
         if (self.interrupt) |control| control.clear();
         self.instruction_checkpoint = 0;
@@ -1896,7 +2022,7 @@ pub const State = struct {
             thread.last_result_base = previous_result_base;
             thread.last_result_count = previous_result_count;
         }
-        _ = try self.callOneResult(thread, thread.hook, args);
+        _ = try call_mod.callOneNamed(State, self, thread, "?", "hook", thread.hook, args);
     }
 
     fn callLineHook(self: *State, thread: *Thread) !void {
@@ -2028,6 +2154,40 @@ pub const State = struct {
         if (self.options.stdout) |writer| try writeOutput(writer, self.options.stdout_flush, bytes);
     }
 
+    /// Emits one warning made of `parts`, like consecutive `lua_warning`
+    /// calls that continue every part but the last. A single part starting
+    /// with `@` is a control message: `@on` and `@off` switch warnings, and
+    /// other controls are ignored.
+    pub fn warn(self: *State, parts: []const []const u8) !void {
+        if (parts.len == 1 and std.mem.startsWith(u8, parts[0], "@")) {
+            const control = parts[0][1..];
+            if (std.mem.eql(u8, control, "on")) self.warnings_on = true;
+            if (std.mem.eql(u8, control, "off")) self.warnings_on = false;
+            return;
+        }
+        if (!self.warnings_on) return;
+        if (self.options.warning_handler) |handler| {
+            const message = try std.mem.concat(self.allocator, u8, parts);
+            defer self.allocator.free(message);
+            handler.emit(handler.context, message);
+            return;
+        }
+        try self.writeStderr("Lua warning: ");
+        for (parts) |part| try self.writeStderr(part);
+        try self.writeStderr("\n");
+    }
+
+    /// Warns about an error caught where Lua cannot report it, like
+    /// `luaE_warnerror`: `error in <where> (<message>)`.
+    pub fn warnError(self: *State, where: []const u8, error_value: Value) void {
+        const message = switch (error_value) {
+            .string => |text| text,
+            .nil => "<no error object>",
+            else => "error object is not a string",
+        };
+        self.warn(&.{ "error in ", where, " (", message, ")" }) catch {};
+    }
+
     pub fn writeStderr(self: *State, bytes: []const u8) !void {
         if (self.options.capture_output) {
             if (self.rollback) |journal| try journal.outputWritable(self);
@@ -2045,7 +2205,6 @@ pub const State = struct {
         }
     }
 
-    /// `print` ends like `lua_writeline`, which flushes C stdout.
     fn flushStdoutAfterPrint(self: *State) !void {
         if (self.options.stdout_flush == .print) try self.flushStdout();
     }
@@ -2148,6 +2307,52 @@ pub const State = struct {
                 return root.dir.writeFile(io, .{ .sub_path = normalized, .data = data });
             },
         }
+    }
+
+    /// Creates an empty file, failing with `error.PathAlreadyExists` when the
+    /// path exists, so the caller reserves the name like `mkstemp`. Host
+    /// filesystems create exclusively; memory and callback filesystems check
+    /// first, as they have no exclusive create.
+    pub fn fsCreateFileExclusive(self: *State, path: []const u8) anyerror!void {
+        switch (self.options.filesystem) {
+            .disabled => return error.FilesystemDisabled,
+            .memory => return error.FilesystemReadOnly,
+            .memory_rw => |filesystem| {
+                if (filesystem.statPath(path)) |_| return error.PathAlreadyExists else |err| if (err != error.FileNotFound) return err;
+                try filesystem.writeFile(path, "");
+            },
+            .custom => |filesystem| {
+                const write = filesystem.write_file orelse return error.OperationUnsupported;
+                if (filesystem.stat) |stat| {
+                    if (stat(filesystem.context, path, false)) |_| return error.PathAlreadyExists else |err| if (err != error.FileNotFound) return err;
+                } else if (filesystem.read_file_alloc(filesystem.context, self.allocator, path)) |bytes| {
+                    self.allocator.free(bytes);
+                    return error.PathAlreadyExists;
+                } else |err| switch (err) {
+                    error.FileNotFound => {},
+                    error.IsDir => return error.PathAlreadyExists,
+                    else => return err,
+                }
+                try write(filesystem.context, path, "");
+            },
+            .host_cwd => if (comptime builtin.os.tag == .freestanding) return error.OperationUnsupported else {
+                const io = self.options.io orelse return error.IoUnavailable;
+                const file = if (std.fs.path.isAbsolute(path))
+                    try Dir.createFileAbsolute(io, path, .{ .exclusive = true })
+                else
+                    try Dir.cwd().createFile(io, path, .{ .exclusive = true });
+                file.close(io);
+            },
+            .host_dir => |root| if (comptime builtin.os.tag == .freestanding) return error.OperationUnsupported else {
+                if (root.read_only) return error.FilesystemReadOnly;
+                const io = self.options.io orelse return error.IoUnavailable;
+                const normalized = try host.MemoryFilesystem.normalizePathAlloc(self.allocator, path, host.MemoryFilesystem.default_max_path_len);
+                defer self.allocator.free(normalized);
+                const file = try root.dir.createFile(io, normalized, .{ .exclusive = true });
+                file.close(io);
+            },
+        }
+        self.file_generation +%= 1;
     }
 
     /// Writes `data` at `offset` of an existing file without truncating it, so
@@ -2438,8 +2643,6 @@ pub const State = struct {
         return timezone.localToUtc(self, localOffsetCallback, local, is_dst);
     }
 
-    /// Loads the host time zone from `TZ` (read through the environment
-    /// capability) or `/etc/localtime`, falling back to UTC.
     fn systemZone(self: *State) !*const timezone.Zone {
         if (self.local_zone) |zone| return zone;
         const zone = try self.allocator.create(timezone.Zone);
@@ -2563,8 +2766,6 @@ pub const State = struct {
         self.exit_request = .{ .code = code, .close = close };
     }
 
-    /// Unwinds a host thread after `os.exit`; `close` runs pending to-be-closed
-    /// variables like `lua_close`.
     fn finishExitUnwind(self: *State, thread: *Thread) !void {
         const request = self.exit_request orelse return;
         if (!request.close) return;
@@ -2764,8 +2965,6 @@ pub const State = struct {
         };
     }
 
-    /// Prepared prototypes decode scalar constants once. Strings are interned
-    /// per State, so they remain in each closure's lazily allocated cache.
     inline fn protoConstant(self: *State, closure: *Closure, proto: *const proto_mod.Proto, index: bytecode.ConstantIndex) !Value {
         if (index < proto.constant_values.len) {
             const decoded = proto.constant_values[index];
@@ -2809,8 +3008,6 @@ pub const State = struct {
         return self.adoptString(try self.allocator.dupe(u8, bytes));
     }
 
-    /// Registers `allocated`, which must come from `self.allocator`, as a
-    /// collectable string. Frees it on failure.
     fn adoptString(self: *State, allocated: []u8) ![]const u8 {
         errdefer self.allocator.free(allocated);
         try self.registerAllocation("string_allocations", StringAllocation{ .bytes = allocated });
@@ -2867,7 +3064,6 @@ pub const State = struct {
                         value = value * 10 + lexeme[index] - '0';
                         index += 1;
                     }
-                    // The lexer rejects these; binary chunks bypass it.
                     if (value > 255) return self.fail("decimal escape too large");
                     try out.append(self.allocator, @intCast(value));
                 },
@@ -3067,8 +3263,6 @@ pub const State = struct {
         return .{ .closure = closure };
     }
 
-    /// Open upvalues are kept sorted by descending stack index, so closing a
-    /// frame only visits the upvalues it closes.
     fn captureUpvalue(self: *State, thread: *Thread, stack_index: usize) !*Upvalue {
         var previous: ?*Upvalue = null;
         var current = thread.open_upvalues;
@@ -3116,8 +3310,6 @@ pub const State = struct {
     }
 
     pub fn closeUpvalues(self: *State, thread: *Thread, first_stack_index: usize) void {
-        // The list is sorted by descending stack index (see captureUpvalue),
-        // so the upvalues to close form a prefix.
         while (thread.open_upvalues) |upvalue| {
             if (upvalue.stack_index < first_stack_index) break;
             std.debug.assert(upvalue.is_open);
@@ -3141,9 +3333,9 @@ pub const State = struct {
             if (self.toBeClosedLocalName(thread, register)) |name| {
                 const message = try std.fmt.allocPrint(self.allocator, "variable '{s}' got a non-closable value", .{name});
                 defer self.allocator.free(message);
-                return self.fail(try self.intern(message));
+                return self.failRuntimeDetail(thread, message);
             }
-            return self.fail("variable got a non-closable value");
+            return self.failRuntimeDetail(thread, "variable got a non-closable value");
         }
     }
 
@@ -3169,13 +3361,10 @@ pub const State = struct {
             thread.stack.items[absolute_register] = .nil;
             return self.fail("metamethod 'close'");
         };
-        const previous_call_name = thread.next_call_name;
-        thread.next_call_name = "close";
-        defer thread.next_call_name = previous_call_name;
         _ = (if (error_value) |err_value|
-            self.callOneResult(thread, metamethod, &.{ value, err_value })
+            call_mod.callOneNamed(State, self, thread, "close", "metamethod", metamethod, &.{ value, try self.caughtErrorValue(err_value) })
         else
-            self.callOneResult(thread, metamethod, &.{value})) catch |err| {
+            call_mod.callOneNamed(State, self, thread, "close", "metamethod", metamethod, &.{value})) catch |err| {
             if (err == error.CoroutineYield and error_value != null) {
                 thread.pending_unwind_error = error_value.?;
                 self.threadBarrier(thread, error_value.?);
@@ -3184,12 +3373,13 @@ pub const State = struct {
             }
             if (isRuntimeError(err)) {
                 var close_err = err;
+                self.noteCaughtError(err);
+                try self.applyMessageHandler(thread);
                 self.closeFramesTo(thread, frame_count, self.currentErrorValue()) catch |unwind_err| {
                     close_err = unwind_err;
                     if (!isRuntimeError(unwind_err)) return unwind_err;
                 };
                 thread.stack.items[absolute_register] = .nil;
-                self.last_error_in_close = true;
                 return close_err;
             }
             thread.stack.items[absolute_register] = .nil;
@@ -3320,13 +3510,14 @@ pub const State = struct {
             };
         }
 
-        if (close_failed) return self.throwValue(pending_error.?);
+        if (close_failed) return self.rethrowValue(pending_error.?);
     }
 
     fn closeActiveToBeClosedInTopFrame(self: *State, thread: *Thread, error_value: ?Value) !void {
         const frame_index = thread.frames.items.len - 1;
         const frame = thread.frames.items[frame_index];
-        const pc = frame.pc;
+        if (frame.pc == 0) return;
+        const pc = frame.pc - 1;
         var pending_error = error_value;
         var close_failed = false;
 
@@ -3345,7 +3536,7 @@ pub const State = struct {
             };
         }
 
-        if (close_failed) return self.throwValue(pending_error.?);
+        if (close_failed) return self.rethrowValue(pending_error.?);
     }
 
     pub fn closeFramesTo(self: *State, thread: *Thread, frame_count: usize, error_value: ?Value) !void {
@@ -3363,7 +3554,7 @@ pub const State = struct {
             thread.frames.items[thread.frames.items.len - 1].deinit(self.allocator);
             thread.frames.items.len -= 1;
         }
-        if (close_failed) return self.throwValue(pending_error.?);
+        if (close_failed) return self.rethrowValue(pending_error.?);
     }
 
     fn discardFramesTo(self: *State, thread: *Thread, frame_count: usize) void {
@@ -3583,7 +3774,6 @@ pub const State = struct {
         return self.concatStringValues(&.{ lhs, rhs });
     }
 
-    /// Joins strings and numbers into a single exactly sized allocation.
     fn concatStringValues(self: *State, values: []const Value) !Value {
         var scratch: [value_mod.max_number_text_len]u8 = undefined;
         var total: usize = 0;
@@ -3756,13 +3946,12 @@ pub const State = struct {
             },
             .native_rawlen => {
                 const value = argValue(self, thread, resolved, 0);
-                if (value != .string and (value != .table or isFileValue(value))) return self.failArgumentType("rawlen", 1, "table or string", value);
+                if (value != .string and value != .table) return self.failArgumentType("rawlen", 1, "table or string", value);
                 try self.returnValues(thread, resolved.base, resolved.return_count, &.{try self.rawLen(value)});
             },
             .native_next => {
                 _ = try self.expectArgumentTable(thread, resolved, "next", 0);
                 const values = try self.nextValues(argValue(self, thread, resolved, 0), argValue(self, thread, resolved, 1));
-                // Like Lua's `next`, an exhausted traversal returns a single nil.
                 const count: usize = if (values[0] == .nil) 1 else 2;
                 try self.returnValues(thread, resolved.base, resolved.return_count, values[0..count]);
             },
@@ -3789,7 +3978,6 @@ pub const State = struct {
             .native_table_create => {
                 const array_hint = try self.tableCreateHint(thread, resolved, 0);
                 const hash_hint = try self.tableCreateHint(thread, resolved, 1);
-                // Lua's hash part holds at most 2^MAXHBITS (2^30) nodes.
                 if (hash_hint > 1 << 30) return self.fail("table overflow");
                 try self.returnValues(thread, resolved.base, resolved.return_count, &.{try self.newTableWithHints(array_hint, hash_hint)});
             },
@@ -3932,12 +4120,14 @@ pub const State = struct {
         thread.stack.items.len = context.stack_len;
         thread.last_result_base = context.last_result_base;
         thread.last_result_count = context.last_result_count;
+        thread.error_handler = context.previous_error_handler;
+        if (thread.frames.items.len < self.callFrameLimit()) thread.stack_error_space = false;
         self.last_error = context.last_error;
         return failure;
     }
 
-    pub fn pushProtectedContinuation(self: *State, thread: *Thread, context: ProtectedCallContext, base: bytecode.Register, return_count: u16, kind: ProtectedContinuationKind, handler: Value, handler_depth: usize) !void {
-        return call_mod.pushProtectedContinuation(State, self, thread, context, base, return_count, kind, handler, handler_depth);
+    pub fn pushProtectedContinuation(self: *State, thread: *Thread, context: ProtectedCallContext, base: bytecode.Register, return_count: u16) !void {
+        return call_mod.pushProtectedContinuation(State, self, thread, context, base, return_count);
     }
 
     pub fn readyProtectedContinuationIndex(thread: *Thread) ?usize {
@@ -3952,8 +4142,8 @@ pub const State = struct {
         return call_mod.completeReadyProtectedContinuation(State, self, thread);
     }
 
-    pub fn completeProtectedContinuationError(self: *State, thread: *Thread, error_value: Value) !bool {
-        return call_mod.completeProtectedContinuationError(State, self, thread, error_value);
+    pub fn completeProtectedContinuationError(self: *State, thread: *Thread) !bool {
+        return call_mod.completeProtectedContinuationError(State, self, thread);
     }
 
     pub fn returnProtectedContinuationSuccess(self: *State, thread: *Thread, continuation: ProtectedContinuation, values: []Value) !void {
@@ -3965,19 +4155,10 @@ pub const State = struct {
     }
 
     pub fn valueToString(self: *State, thread: *Thread, value: Value) anyerror![]const u8 {
-        if (isFileValue(value)) {
-            if (isClosedFileValue(value)) return self.intern("file (closed)");
-            var file_name = std.ArrayList(u8).empty;
-            defer file_name.deinit(self.allocator);
-            try appendFmt(self.allocator, &file_name, "file (0x{x})", .{@intFromPtr(value.table)});
-            return self.intern(file_name.items);
-        }
-
         if (try self.getMetaEvent(value, .__tostring)) |metamethod| {
             const result = try self.callOneResult(thread, metamethod, &.{value});
             return switch (result) {
                 .string => |string| string,
-                // `luaL_tolstring` accepts anything `lua_isstring` accepts.
                 .integer, .number => {
                     var buffer: [value_mod.max_number_text_len]u8 = undefined;
                     return self.intern(value_mod.formatNumber(&buffer, result));
@@ -3997,7 +4178,7 @@ pub const State = struct {
 
         var out = std.ArrayList(u8).empty;
         defer out.deinit(self.allocator);
-        try appendValue(self.allocator, &out, value);
+        try value_mod.appendValue(self.allocator, &out, value);
         return self.intern(out.items);
     }
 
@@ -4059,6 +4240,7 @@ pub const State = struct {
                 rollback_mod.touch(userdata);
                 userdata.metatable = metatable;
                 if (metatable) |mt| self.writeBarrier(userdata, .{ .table = mt });
+                self.checkUserdataFinalizer(userdata);
             },
             .string => self.string_metatable = metatable,
             .integer, .number => self.number_metatable = metatable,
@@ -4107,6 +4289,18 @@ pub const State = struct {
         if (metatable) |mt| self.writeBarrier(table, .{ .table = mt });
     }
 
+    /// Registers `userdata` for its metatable's `__gc`, like
+    /// `luaC_checkfinalizer` when a metatable is set. File handles keep
+    /// their built-in close for the file metatable's own `__gc`.
+    pub fn checkUserdataFinalizer(self: *State, userdata: *Userdata) void {
+        gc_mod.checkUserdataFinalizer(State, self, userdata);
+    }
+
+    pub fn nextFinalizerOrder(self: *State) u64 {
+        self.table_finalizer_serial += 1;
+        return self.table_finalizer_serial;
+    }
+
     pub fn noteTableMetatableChanged(self: *State, table: *Table, old_has_metatable: bool) void {
         return gc_mod.noteTableMetatableChanged(State, self, table, old_has_metatable);
     }
@@ -4116,7 +4310,6 @@ pub const State = struct {
     }
 
     pub fn luaTypeNameForError(self: *State, value: Value) []const u8 {
-        if (isFileValue(value)) return "FILE*";
         if (self.getMetaEvent(value, .__name) catch null) |name| {
             if (name == .string) return name.string;
         }
@@ -4273,7 +4466,7 @@ pub const State = struct {
     fn rawLen(self: *State, value: Value) !Value {
         return switch (value) {
             .string => |string| .{ .integer = @intCast(string.len) },
-            .table => |table| if (isFileValue(value)) self.fail("table or string expected") else .{ .integer = table.len() },
+            .table => |table| .{ .integer = table.len() },
             else => self.fail("table or string expected"),
         };
     }
@@ -4322,12 +4515,21 @@ pub const State = struct {
         }
     }
 
+    fn checkFrameOverflow(self: *State, thread: *Thread) !void {
+        if (!thread.stack_error_space) {
+            thread.stack_error_space = true;
+            return self.failRuntimeDetail(thread, "stack overflow");
+        }
+        if (thread.frames.items.len < self.callFrameLimit() + stack_error_frames) return;
+        _ = try self.errorInErrorHandling();
+        return error.RuntimeError;
+    }
+
     fn callClosure(self: *State, thread: *Thread, op: bytecode.Call, closure: *Closure, debug_name_override: ?[]const u8, debug_namewhat_override: ?[]const u8) !void {
-        if (thread.frames.items.len >= self.callFrameLimit()) return self.fail("stack overflow");
+        if (thread.frames.items.len >= self.callFrameLimit()) try self.checkFrameOverflow(thread);
 
         const caller = thread.frames.items[thread.frames.items.len - 1];
         const base = caller.base + op.base;
-        // Registers start above the function slot, where the arguments are.
         var frame = try self.prepareClosureFrame(thread, closure, base, base + 1, @intCast(op.arg_count), base, op.return_count);
         frame.debug_name_override = debug_name_override;
         frame.debug_namewhat_override = debug_namewhat_override;
@@ -4661,11 +4863,9 @@ pub const State = struct {
 
         const condition = argValue(self, thread, op, 0);
         if (!truthy(condition)) {
-            // `assert` calls `error` with level 1, so string messages get
-            // the caller's position.
             const message = if (op.arg_count >= 2) argValue(self, thread, op, 1) else Value{ .string = "assertion failed!" };
             if (message == .string) return self.throwStringWithLocation(thread, message.string, 1);
-            return self.throwValue(try self.errorObjectValue(message));
+            return self.throwValue(message);
         }
 
         const values = try self.allocator.alloc(Value, op.arg_count);
@@ -4675,26 +4875,21 @@ pub const State = struct {
     }
 
     fn errorValue(self: *State, thread: *Thread, op: bytecode.Call) !void {
-        const raw_value = argValue(self, thread, op, 0);
-        const value = try self.errorObjectValue(raw_value);
+        const value = argValue(self, thread, op, 0);
         const level = if (op.arg_count >= 2) toInteger(argValue(self, thread, op, 1)) orelse 1 else 1;
-        if (level <= 0 or value != .string or raw_value == .nil) return self.throwValue(value);
+        if (level <= 0 or value != .string) return self.throwValue(value);
 
         const level_index = std.math.cast(usize, level) orelse return self.throwValue(value);
         return self.throwStringWithLocation(thread, value.string, level_index);
     }
 
     fn throwStringWithLocation(self: *State, thread: *Thread, message_text: []const u8, requested_level: usize) !void {
-        // Level 1 is the caller of `error`; when that is a library function
-        // such as `pcall`, it has no position, and higher levels skip it.
         var level = requested_level;
         if (activeNativeCall(thread)) |call| {
             if (call.from_native) {
                 if (level == 1) return self.throwValue(.{ .string = try self.intern(message_text) });
                 level -= 1;
             } else if (level >= 2 and call.outer_frame_count != null and call.outer_frame_count.? + 1 == call.frame_count) {
-                // The Lua function at level 1 was called by a library
-                // function (such as `pcall`), which is level 2.
                 if (level == 2) return self.throwValue(.{ .string = try self.intern(message_text) });
                 level -= 1;
             }
@@ -4706,7 +4901,9 @@ pub const State = struct {
         return self.throwValue(.{ .string = try self.intern(message) });
     }
 
-    fn errorObjectValue(self: *State, value: Value) !Value {
+    /// The error object Lua sees where an error is caught without a message
+    /// handler: like `luaG_errormsg`, nil becomes `<no error object>`.
+    pub fn caughtErrorValue(self: *State, value: Value) !Value {
         if (value == .nil) return .{ .string = try self.intern("<no error object>") };
         return value;
     }
@@ -4715,20 +4912,7 @@ pub const State = struct {
         if (op.arg_count == 0) return self.failArgumentMessage("pcall", 1, "value expected");
         const args = try self.collectArgs(thread, op, 1);
         defer self.allocator.free(args);
-
-        const context = self.protectedCallContextWithErrors(thread);
-        const previous_traceback_native_name = thread.traceback_native_name;
-        thread.traceback_native_name = "pcall";
-        defer thread.traceback_native_name = previous_traceback_native_name;
-        const result = self.runProtectedCall(thread, context, argValue(self, thread, op, 0), args) catch |err| switch (err) {
-            error.CoroutineYield => {
-                try self.pushProtectedContinuation(thread, context, op.base, op.return_count, .pcall, .nil, 0);
-                return err;
-            },
-            else => return err,
-        };
-        defer freeProtectedResult(self.allocator, result);
-        try self.returnProtectedResult(thread, op.base, op.return_count, result);
+        try self.protectedCallValues(thread, op, argValue(self, thread, op, 0), args, .nil);
     }
 
     fn xpcallValues(self: *State, thread: *Thread, op: bytecode.Call) !void {
@@ -4736,64 +4920,21 @@ pub const State = struct {
         if (!functionLike(handler)) return self.failArgumentType("xpcall", 2, "function", handler);
         const args = try self.collectArgs(thread, op, 2);
         defer self.allocator.free(args);
+        try self.protectedCallValues(thread, op, argValue(self, thread, op, 0), args, handler);
+    }
 
-        const context = self.protectedCallContextWithErrors(thread);
-        const result = self.runProtectedCall(thread, context, argValue(self, thread, op, 0), args) catch |err| switch (err) {
+    fn protectedCallValues(self: *State, thread: *Thread, op: bytecode.Call, callable: Value, args: []const Value, handler: Value) !void {
+        var context = self.protectedCallContextWithErrors(thread);
+        context.error_handler = handler;
+        const result = self.runProtectedCall(thread, context, callable, args) catch |err| switch (err) {
             error.CoroutineYield => {
-                try self.pushProtectedContinuation(thread, context, op.base, op.return_count, .xpcall, handler, 0);
+                try self.pushProtectedContinuation(thread, context, op.base, op.return_count);
                 return err;
             },
             else => return err,
         };
         defer freeProtectedResult(self.allocator, result);
-        switch (result) {
-            .success => try self.returnProtectedResult(thread, op.base, op.return_count, result),
-            .failure => |error_value| try self.returnXpcallFailure(thread, op.base, op.return_count, handler, error_value),
-        }
-    }
-
-    pub fn returnXpcallFailure(self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, handler: Value, error_value: Value) !void {
-        try self.returnXpcallFailureFromDepth(thread, base, return_count, handler, error_value, 0);
-    }
-
-    pub fn returnXpcallFailureFromDepth(self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, handler: Value, error_value: Value, initial_depth: usize) !void {
-        var current_error = error_value;
-        var depth = initial_depth;
-        while (true) : (depth += 1) {
-            const handler_error = if (depth >= max_error_handler_depth)
-                Value{ .string = try self.intern("C stack overflow") }
-            else
-                current_error;
-            const context = self.protectedCallContextWithErrors(thread);
-            const previous_traceback_close = self.traceback_error_in_close;
-            self.traceback_error_in_close = self.last_error_in_close;
-            const handler_result = self.runProtectedCall(thread, context, handler, &.{handler_error}) catch |err| switch (err) {
-                error.CoroutineYield => {
-                    try self.pushProtectedContinuation(thread, context, base, return_count, .xpcall_handler, handler, depth);
-                    return err;
-                },
-                else => {
-                    self.traceback_error_in_close = previous_traceback_close;
-                    return err;
-                },
-            };
-            self.traceback_error_in_close = previous_traceback_close;
-            switch (handler_result) {
-                .success => |values| {
-                    defer self.allocator.free(values);
-                    const handled = if (values.len == 0) Value.nil else values[0];
-                    try self.returnValues(thread, base, return_count, &.{ .{ .boolean = false }, handled });
-                    return;
-                },
-                .failure => |failure| {
-                    if (depth >= max_error_handler_depth) {
-                        try self.returnValues(thread, base, return_count, &.{ .{ .boolean = false }, .{ .string = try self.intern("error in error handling") } });
-                        return;
-                    }
-                    current_error = failure;
-                },
-            }
-        }
+        try self.returnProtectedResult(thread, op.base, op.return_count, result);
     }
 
     fn tracebackValue(self: *State, thread: *Thread, op: bytecode.Call) !void {
@@ -4827,50 +4968,61 @@ pub const State = struct {
             try self.returnValues(thread, op.base, op.return_count, &.{.{ .string = try self.intern(out.items) }});
             return;
         }
-        if (message != .nil and message != .string) {
+        if (message != .nil and message != .string and message != .integer and message != .number) {
             try self.returnValues(thread, op.base, op.return_count, &.{message});
             return;
         }
-        if (message != .nil) {
-            try appendValue(self.allocator, &out, message);
-            try out.append(self.allocator, '\n');
-        }
-        try out.appendSlice(self.allocator, "stack traceback:");
-        if (thread.traceback_native_name) |name| try appendFmt(self.allocator, &out, "\n\t{s}", .{name});
-        if (self.traceback_error_in_close) try out.appendSlice(self.allocator, "\n\tzlua:?: in metamethod 'close'");
+        const text: ?[]const u8 = if (message == .nil) null else try self.valueToString(thread, message);
         const level = if (op.arg_count >= 2) toInteger(argValue(self, thread, op, 1)) orelse 1 else 1;
-        if (level <= 0) try out.appendSlice(self.allocator, "\n\t'traceback'");
-        const skip = if (level <= 0) thread.frames.items.len else std.math.cast(usize, level - 1) orelse thread.frames.items.len;
-        var index = if (skip >= thread.frames.items.len) @as(usize, 0) else thread.frames.items.len - skip;
-        if (index > 21) {
-            var first = index;
-            var emitted: usize = 0;
-            while (emitted < 10) : (emitted += 1) {
-                first -= 1;
-                try self.appendThreadTracebackFrame(&out, thread, first);
-            }
-            try out.appendSlice(self.allocator, "\n\t...\t(skip)");
-            var tail: usize = 11;
-            while (tail > 0) {
-                tail -= 1;
-                try self.appendThreadTracebackFrame(&out, thread, tail);
-            }
-        } else {
-            while (index > 0) {
-                index -= 1;
-                try self.appendThreadTracebackFrame(&out, thread, index);
-            }
+        if (level < 0) {
+            try appendFmt(self.allocator, &out, "{s}{s}stack traceback:", .{ text orelse "", if (text == null) "" else "\n" });
+            try self.returnValues(thread, op.base, op.return_count, &.{.{ .string = try self.intern(out.items) }});
+            return;
         }
-
-        try self.returnValues(thread, op.base, op.return_count, &.{.{ .string = try self.intern(out.items) }});
+        const traceback = try debug_mod.formatTracebackWith(State, self, thread, .{
+            .message = text,
+            .level = std.math.cast(usize, level) orelse std.math.maxInt(usize),
+            .level_zero_is_callee = calledByTopInstruction(thread, op),
+            .level_zero = .native_debug_traceback,
+            .host_frame = thread.host_frame,
+        });
+        defer self.allocator.free(traceback);
+        try self.returnValues(thread, op.base, op.return_count, &.{.{ .string = try self.intern(traceback) }});
     }
 
-    fn appendThreadTracebackFrame(self: *State, out: *std.ArrayList(u8), thread: *Thread, frame_index: usize) !void {
-        const frame = thread.frames.items[frame_index];
-        const line = lineForFrame(frame) orelse 0;
-        try out.appendSlice(self.allocator, "\n\tzlua:");
-        try appendFmt(self.allocator, out, "{d}", .{line});
-        try out.appendSlice(self.allocator, if (thread.hook_running and frame_index == thread.frames.items.len - 1) ": in hook" else ": in function");
+    /// The standalone interpreter's message handler (`msghandler` in
+    /// `lua.c`): adds a traceback to the error message, or reports an error
+    /// object by its `__tostring` result or its type.
+    pub fn tracebackMessageHandler(self: *State, thread: *Thread, op: bytecode.Call) !void {
+        const message = argValue(self, thread, op, 0);
+        const text = switch (message) {
+            .string => |bytes| bytes,
+            .integer, .number => try self.valueToString(thread, message),
+            else => blk: {
+                if (try self.getMetaEvent(message, .__tostring)) |metamethod| {
+                    const result = try self.callOneResult(thread, metamethod, &.{message});
+                    if (result == .string) return self.returnValues(thread, op.base, op.return_count, &.{result});
+                }
+                var out = std.ArrayList(u8).empty;
+                defer out.deinit(self.allocator);
+                try appendFmt(self.allocator, &out, "(error object is a {s} value)", .{luaTypeName(message)});
+                break :blk try self.intern(out.items);
+            },
+        };
+        const traceback = try debug_mod.formatTracebackWith(State, self, thread, .{ .message = text, .host_frame = thread.host_frame });
+        defer self.allocator.free(traceback);
+        try self.returnValues(thread, op.base, op.return_count, &.{.{ .string = try self.intern(traceback) }});
+    }
+
+    fn calledByTopInstruction(thread: *Thread, op: bytecode.Call) bool {
+        const frames = thread.frames.items;
+        if (frames.len == 0) return false;
+        const frame = frames[frames.len - 1];
+        if (frame.pc == 0 or frame.pc > frame.proto.instructions.items.len) return false;
+        return switch (frame.proto.instructions.items[frame.pc - 1]) {
+            .call, .tail_call => |call| call.base == op.base,
+            else => false,
+        };
     }
 
     fn appendCoroutineTracebackFrame(self: *State, out: *std.ArrayList(u8), target: *Thread, frame: CallFrame, level: i64) !void {
@@ -5087,7 +5239,6 @@ pub const State = struct {
         const values: []const Value = switch (iterator) {
             .native_next => blk: {
                 if (state != .table) {
-                    // Report it as Lua does for the iterator call.
                     const previous_native_call = thread.native_call;
                     defer thread.native_call = previous_native_call;
                     thread.native_call = nativeCallInfo(thread, .{ .base = op.base, .arg_count = 2, .return_count = 0 }, null, "for iterator", "for iterator");
@@ -5237,8 +5388,6 @@ pub const State = struct {
         };
     }
 
-    /// Mirrors `luaL_checkinteger`/`luaL_optinteger` plus the `INT_MAX`
-    /// range check used by Lua 5.5's `table.create(nseq [, nrec])`.
     fn tableCreateHint(self: *State, thread: *Thread, op: bytecode.Call, index: u16) !u32 {
         const function_name = "table.create";
         const arg_number = index + 1;
@@ -5251,7 +5400,6 @@ pub const State = struct {
                 break :blk floatToInteger(number) orelse return self.failArgumentMessage(function_name, arg_number, "number has no integer representation");
             },
             .nil => blk: {
-                // `nrec` is optional; `nseq` distinguishes nil from no value.
                 if (index == 1) break :blk 0;
                 if (index >= op.arg_count) return self.failArgument(function_name, arg_number, .{ .expected = .{ .expected = "number", .actual = "no value" } });
                 return self.failArgumentType(function_name, arg_number, "number", value);
@@ -5455,6 +5603,22 @@ pub const State = struct {
 
     /// Provide a protected execution frame for GC requested by an idle host.
     /// Allocate it before consuming any pending registration so OOM is retryable.
+    /// Calls every pending finalizer as `deinit` does, keeping the state.
+    /// Later finalizer registrations are left for `deinit`.
+    pub fn runCloseFinalizers(self: *State) void {
+        if (self.execution_depth != 0 or self.current_thread != null) return;
+        if (self.table_pending_finalizer_head == null and self.table_finalizer_head == null and !gc_mod.hasUserdataLuaFinalizers(State, self) and !stdlib.io.hasOpenFiles(self)) return;
+        var proto = proto_mod.Proto.init(self.allocator);
+        defer proto.deinit();
+        proto.source_name = "=[C]";
+        var closure = Closure{ .proto = &proto, .upvalues = &.{} };
+        const thread = self.newHostThread(&closure) catch return;
+        defer self.retireHostThread(thread);
+        self.current_thread = thread;
+        defer self.current_thread = null;
+        gc_mod.runCloseFinalizers(State, self, thread);
+    }
+
     pub fn runFinalizersFromHost(self: *State, limit: usize) anyerror!bool {
         var proto = proto_mod.Proto.init(self.allocator);
         defer proto.deinit();
@@ -5586,14 +5750,10 @@ pub const State = struct {
 
     fn failDivisionByZero(self: *State, thread: *Thread, lhs: Value, rhs: Value, op: BinaryOp) RuntimeError {
         const message = if (op == .mod) "attempt to perform 'n%0'" else "attempt to divide by zero";
-        // String operands go through the string library's arithmetic
-        // metamethods, which raise this from C without a position.
         if (lhs == .string or rhs == .string) return self.fail(message);
         return self.failRuntimeDetail(thread, message);
     }
 
-    /// `luaG_tointerror`: both operands are numbers, at least one without
-    /// an integer value.
     fn failNoIntegerRepresentation(self: *State, thread: *Thread, lhs: Value) RuntimeError {
         var detail = std.ArrayList(u8).empty;
         defer detail.deinit(self.allocator);
@@ -5611,7 +5771,6 @@ pub const State = struct {
         switch (op) {
             .add, .sub, .mul, .div, .idiv, .mod, .pow => {
                 if (lhs == .string or rhs == .string) {
-                    // lstrlib's `trymt` names raw types, ignoring `__name`.
                     appendFmt(self.allocator, &detail, "attempt to {s} a '{s}' with a '{s}'", .{ arithmeticVerb(op), luaTypeName(lhs), luaTypeName(rhs) }) catch return self.fail("attempt to perform operation on unsupported values");
                     return self.failRuntimeDetail(thread, detail.items);
                 }
@@ -5637,9 +5796,6 @@ pub const State = struct {
         return self.failRuntimeDetail(thread, detail.items);
     }
 
-    /// Names the offending operand by its position in the `concat_range`,
-    /// as PUC names the register. A slot that held a string constant can
-    /// report it once a metamethod result replaced it.
     fn failConcatRangeTypeError(self: *State, thread: *Thread, lhs: Value, rhs: Value, lhs_index: usize) RuntimeError {
         var detail = std.ArrayList(u8).empty;
         defer detail.deinit(self.allocator);
@@ -5724,8 +5880,6 @@ pub const State = struct {
     fn appendRuntimeErrorPrefix(self: *State, out: *std.ArrayList(u8), thread: ?*Thread) !void {
         const active = thread orelse return;
         if (active.frames.items.len == 0) return;
-        // Errors raised while a library function runs come from C in Lua,
-        // and `luaG_runerror` adds no position for C functions.
         if (activeNativeCall(active) != null) return;
         if (active.frames.items[active.frames.items.len - 1].closure.stripped_debug) {
             try out.appendSlice(self.allocator, "?:?: ");
@@ -5736,16 +5890,11 @@ pub const State = struct {
         try appendFmt(self.allocator, out, "{s}:{d}: ", .{ runtimeSourceName(frame.proto.source_name), site.line });
     }
 
-    /// Where the running Lua code is, for naming operands in VM errors.
-    /// While a library function runs the error comes from "C", so there is
-    /// no Lua site.
     fn currentErrorSite(self: *State, thread: *Thread) ?proto_mod.ErrorSite {
         if (activeNativeCall(thread) != null) return null;
         return self.instructionErrorSite(thread);
     }
 
-    /// The site of the instruction the top frame is executing, which is the
-    /// calling instruction while a library function runs.
     fn instructionErrorSite(self: *State, thread: *Thread) ?proto_mod.ErrorSite {
         _ = self;
         if (thread.frames.items.len == 0) return null;
@@ -5788,12 +5937,13 @@ pub const State = struct {
         if (self.last_error == null) return allocator.dupe(u8, @errorName(err));
         var out = std.ArrayList(u8).empty;
         defer out.deinit(allocator);
-        try appendValue(allocator, &out, self.currentErrorValue());
+        try appendErrorValue(allocator, &out, self.currentErrorValue());
         return allocator.dupe(u8, out.items);
     }
 
     pub fn fail(self: *State, message: []const u8) RuntimeError {
         self.last_error = .{ .diagnostic = message };
+        self.error_handled = false;
         return error.RuntimeError;
     }
 
@@ -5803,6 +5953,7 @@ pub const State = struct {
     /// function is named from the calling instruction when Lua code made the
     /// call, else by a search of the loaded libraries, else `function_name`.
     pub fn failArgument(self: *State, function_name: []const u8, index: u16, detail: errors.ArgumentErrorDetail) RuntimeError {
+        self.error_handled = false;
         const rendered = self.renderArgumentError(function_name, index, detail) catch {
             self.last_error = .{ .argument = .{ .function_name = function_name, .index = index, .detail = detail } };
             return error.RuntimeError;
@@ -5854,15 +6005,12 @@ pub const State = struct {
         return self.failLibrary(message);
     }
 
-    /// The running native call, when its frame is still on top.
     fn activeNativeCall(thread: *Thread) ?types.NativeCall {
         const call = thread.native_call orelse return null;
         if (call.frame_count == 0 or thread.frames.items.len != call.frame_count) return null;
         return call;
     }
 
-    /// `luaL_where(L, 1)`: the position of the Lua code that called the
-    /// running library function, or nothing when native code called it.
     fn appendLibraryWhere(self: *State, out: *std.ArrayList(u8)) !void {
         const thread = self.current_thread orelse return;
         const call = activeNativeCall(thread) orelse return;
@@ -5875,7 +6023,6 @@ pub const State = struct {
 
     const CallName = struct { name: []const u8, namewhat: []const u8 };
 
-    /// Mirrors `getinfo(L, "n")` for the running native function.
     fn nativeCallName(self: *State, thread: *Thread, call: types.NativeCall) ?CallName {
         if (call.from_native) return null;
         if (call.name) |name| {
@@ -5884,8 +6031,6 @@ pub const State = struct {
             return .{ .name = name, .namewhat = "metamethod" };
         }
         const frame = thread.frames.items[thread.frames.items.len - 1];
-        // Calls made through `callCollect` and friends sit above the frame's
-        // registers; only CALL instructions name their callee.
         if (call.base >= frame.proto.max_registers) return null;
         const site = self.instructionErrorSite(thread) orelse return null;
         const origin = site.call_name orelse return null;
@@ -5903,15 +6048,12 @@ pub const State = struct {
 
     /// Mirrors `pushglobalfuncname`: finds `callee` as a global or as a
     /// field of a loaded module.
-    fn appendGlobalFunctionName(self: *State, out: *std.ArrayList(u8), callee: Value) !bool {
+    pub fn appendGlobalFunctionName(self: *State, out: *std.ArrayList(u8), callee: Value) !bool {
         const globals = self.global_table orelse return false;
         if (findFunctionField(globals, callee)) |key| {
             try out.appendSlice(self.allocator, key);
             return true;
         }
-        // Lua keeps the loaded-module table in the registry. zlua reaches it
-        // through `package`; sandboxes without `package` fall back to the
-        // global library tables.
         const package = globals.get(.{ .string = "package" });
         const loaded = if (package == .table) package.table.get(.{ .string = "loaded" }) else Value.nil;
         const modules = if (loaded == .table) loaded.table else globals;
@@ -5940,7 +6082,6 @@ pub const State = struct {
 
         var actual_detail = detail;
         if (call) |native| switch (actual_detail) {
-            // `luaL_typeerror` reports a missing argument as "no value".
             .expected => |*expected| if (raw_index > native.arg_count and std.mem.eql(u8, expected.actual, "nil")) {
                 expected.actual = "no value";
             },
@@ -5963,8 +6104,6 @@ pub const State = struct {
         if (name) |known| {
             try out.appendSlice(self.allocator, known.name);
         } else {
-            // Host callbacks keep their registered names; library functions
-            // that Lua cannot name are "?", as in `luaL_argerror`.
             var fallback = function_name;
             if (call) |native| {
                 const active = thread.?;
@@ -6054,11 +6193,20 @@ pub const State = struct {
 
     pub fn failValue(self: *State, value: Value) RuntimeError {
         self.last_error = .{ .lua_value = value };
+        self.error_handled = false;
         return error.RuntimeError;
     }
 
     pub fn throwValue(self: *State, value: Value) RuntimeError {
         return self.failValue(value);
+    }
+
+    /// Raises `value` again after closing variables for an error that
+    /// already went through any message handler at its error point.
+    pub fn rethrowValue(self: *State, value: Value) RuntimeError {
+        self.last_error = .{ .lua_value = value };
+        self.error_handled = true;
+        return error.RuntimeError;
     }
 
     pub fn currentErrorValue(self: *State) Value {
@@ -6250,7 +6398,6 @@ inline fn rawIntegerBitwiseOpFast(lhs: Value, rhs: Value, comptime op: BinaryOp)
 
 fn equalityHasMetamethod(lhs: Value, rhs: Value) bool {
     return switch (lhs) {
-        // Tables whose metatables are absent or known to lack `__eq` compare raw.
         .table => |table| rhs == .table and !(noMetaEvent(table, .__eq) and noMetaEvent(rhs.table, .__eq)),
         .userdata => rhs == .userdata,
         else => false,
@@ -6276,7 +6423,6 @@ fn rawUnaryOp(value: Value, op: UnaryMetamethodOp) ?Value {
         .unm => switch (value) {
             .integer => |integer| .{ .integer = -%integer },
             .number => |number| .{ .number = -number },
-            // Numeric strings convert as `tonumber` would, keeping integers.
             .string => if (toInteger(value)) |integer| .{ .integer = -%integer } else if (toNumberMaybe(value)) |number| .{ .number = -number } else null,
             else => null,
         },
@@ -6284,8 +6430,6 @@ fn rawUnaryOp(value: Value, op: UnaryMetamethodOp) ?Value {
     };
 }
 
-/// Lua 5.5 bitwise operands: integers and floats with an exact integer
-/// value. Strings have no bitwise metamethods, so they are not converted.
 fn toBitwiseInteger(value: Value) ?i64 {
     return switch (value) {
         .integer => |integer| integer,
@@ -6830,9 +6974,6 @@ fn fastTableArrayGet(table_value: Value, key_value: Value) ?Value {
     return null;
 }
 
-/// True when the table has no metatable or its metatable is known to lack
-/// `event`. Unknown absence returns false so the caller takes the general
-/// path, which performs (and caches) the lookup.
 inline fn noMetaEvent(table: *const Table, comptime event: types.MetaEvent) bool {
     const metatable = table.metatable orelse return true;
     return metatable.metaEventAbsent(event);
@@ -6846,8 +6987,6 @@ inline fn noNewindexMetamethod(table: *const Table) bool {
     return noMetaEvent(table, .__newindex);
 }
 
-/// The fast loop indexes `constant_values` directly, so every prototype that
-/// can run LOAD_CONST must have been prepared (`value.prepareProtoTree`).
 fn assertProtoPrepared(proto: *const proto_mod.Proto) void {
     std.debug.assert(proto.runtime_prepared or proto.constants.items.len == 0);
 }
@@ -6860,7 +6999,6 @@ inline fn hasPendingContinuations(thread: *const Thread) bool {
         thread.generic_for_continuations.items.len) != 0;
 }
 
-/// The deepest frame count at which a pending continuation becomes ready.
 fn maxPendingContinuationFrameCount(thread: *const Thread) usize {
     var result: usize = 0;
     for (thread.pairs_continuations.items) |continuation| result = @max(result, continuation.frame_count);
@@ -6878,8 +7016,6 @@ fn fastTableRawGet(table_value: Value, key_value: Value) ?Value {
     const value = table.get(key_value);
     if (value != .nil) return value;
     const metatable = table.metatable orelse return value;
-    // Follow one `__index` table, the usual class layout. Anything else uses
-    // the general path, which also caches an absent `__index`.
     if (metatable.metaEventAbsent(.__index)) return value;
     const handler = metatable.metaEvent(.__index);
     if (handler == .nil) return value;
@@ -6905,16 +7041,31 @@ pub fn argValue(state: *State, thread: *Thread, op: bytecode.Call, index: u16) V
     return value_mod.argValue(state, thread, op, index);
 }
 
+/// Formats a value without metamethods. File handles format like their
+/// `__tostring`, as a Lua error object that is a file does.
+/// Appends an error object like `appendValue`, describing a nil error
+/// object as `<no error object>`, the message Lua substitutes for it.
+pub fn appendErrorValue(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: Value) !void {
+    if (value == .nil) return out.appendSlice(allocator, "<no error object>");
+    return appendValue(allocator, out, value);
+}
+
 pub fn appendValue(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: Value) !void {
+    if (stdlib.io.fileOf(value)) |file| {
+        if (file.closed) return out.appendSlice(allocator, "file (closed)");
+        return appendFmt(allocator, out, "file (0x{x})", .{@intFromPtr(value.userdata)});
+    }
     return value_mod.appendValue(allocator, out, value);
 }
 
+/// True for `FILE*` userdata from the io library.
 pub fn isFileValue(value: Value) bool {
-    return value_mod.isFileValue(value);
+    return stdlib.io.fileOf(value) != null;
 }
 
 pub fn isClosedFileValue(value: Value) bool {
-    return value_mod.isClosedFileValue(value);
+    const file = stdlib.io.fileOf(value) orelse return false;
+    return file.closed;
 }
 
 fn appendNamedValue(allocator: std.mem.Allocator, out: *std.ArrayList(u8), name: []const u8, value: Value) !void {

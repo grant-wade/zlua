@@ -26,6 +26,7 @@
 - [runtime.chunk](../runtime/chunk.md)
 - [reflection](../reflection.md)
 - [runtime.value](../runtime/value.md)
+- [runtime.number_format](../runtime/number_format.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
 - [runtime.state](../runtime/state.md)
@@ -45,6 +46,7 @@
 - [stdlib.coroutine](../stdlib/coroutine.md)
 - [stdlib.debug](../stdlib/debug.md)
 - [stdlib.io](../stdlib/io.md)
+- [stdlib.static_strings](../stdlib/static_strings.md)
 - [stdlib.os](../stdlib/os.md)
 - [stdlib.package](../stdlib/package.md)
 - [stdlib.json](../stdlib/json.md)
@@ -53,7 +55,6 @@
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
-- [stdlib.static_strings](../stdlib/static_strings.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
@@ -93,6 +94,7 @@
 - [callOneResultWithContinuation](#fn-calloneresultwithcontinuation)
 - [callOneMetamethodWithContinuation](#fn-callonemetamethodwithcontinuation)
 - [callOneMetamethod](#fn-callonemetamethod)
+- [callOneNamed](#fn-callonenamed)
 - [metamethodDebugName](#fn-metamethoddebugname)
 - [callOneResultMaybeContinuation](#fn-calloneresultmaybecontinuation)
 - [pushCallOneContinuation](#fn-pushcallonecontinuation)
@@ -108,7 +110,6 @@
 - [completeReadyProtectedContinuation](#fn-completereadyprotectedcontinuation)
 - [completeProtectedContinuationError](#fn-completeprotectedcontinuationerror)
 - [returnProtectedContinuationSuccess](#fn-returnprotectedcontinuationsuccess)
-- [returnProtectedContinuationFailure](#fn-returnprotectedcontinuationfailure)
 - [returnProtectedResult](#fn-returnprotectedresult)
 - [collectArgs](#fn-collectargs)
 - [resolveReturnCount](#fn-resolvereturncount)
@@ -144,6 +145,16 @@ pub fn callOneMetamethodWithContinuation(comptime State: type, self: *State, thr
 
 ```zig
 pub fn callOneMetamethod(comptime State: type, self: *State, thread: *Thread, name: []const u8, callable: Value, args: []const Value) anyerror!Value
+```
+
+<a id="fn-callonenamed"></a>
+
+## callOneNamed
+
+Calls `callable` for one result; a Lua callee reports `namewhat 'name'`.
+
+```zig
+pub fn callOneNamed(comptime State: type, self: *State, thread: *Thread, name: []const u8, namewhat: []const u8, callable: Value, args: []const Value) anyerror!Value
 ```
 
 <a id="fn-metamethoddebugname"></a>
@@ -223,7 +234,7 @@ pub fn runProtectedCall(comptime State: type, self: *State, thread: *Thread, con
 ## pushProtectedContinuation
 
 ```zig
-pub fn pushProtectedContinuation(comptime State: type, self: *State, thread: *Thread, context: ProtectedCallContext, base: bytecode.Register, return_count: u16, kind: ProtectedContinuationKind, handler: Value, handler_depth: usize) !void
+pub fn pushProtectedContinuation(comptime State: type, self: *State, thread: *Thread, context: ProtectedCallContext, base: bytecode.Register, return_count: u16) !void
 ```
 
 <a id="fn-readyprotectedcontinuationindex"></a>
@@ -255,7 +266,7 @@ pub fn completeReadyProtectedContinuation(comptime State: type, self: *State, th
 ## completeProtectedContinuationError
 
 ```zig
-pub fn completeProtectedContinuationError(comptime State: type, self: *State, thread: *Thread, error_value: Value) !bool
+pub fn completeProtectedContinuationError(comptime State: type, self: *State, thread: *Thread) !bool
 ```
 
 <a id="fn-returnprotectedcontinuationsuccess"></a>
@@ -264,14 +275,6 @@ pub fn completeProtectedContinuationError(comptime State: type, self: *State, th
 
 ```zig
 pub fn returnProtectedContinuationSuccess(comptime State: type, self: *State, thread: *Thread, continuation: ProtectedContinuation, values: []Value) !void
-```
-
-<a id="fn-returnprotectedcontinuationfailure"></a>
-
-## returnProtectedContinuationFailure
-
-```zig
-pub fn returnProtectedContinuationFailure(comptime State: type, self: *State, thread: *Thread, continuation: ProtectedContinuation, failure: Value) !void
 ```
 
 <a id="fn-returnprotectedresult"></a>

@@ -104,8 +104,6 @@ const Loop = struct {
     close_register: bytecode.Register,
 };
 
-/// Keys constants by kind and lexeme, matching `bytecode.constantEql`, so
-/// integer `1` and float `1.0` stay distinct entries.
 const ConstantKeyContext = struct {
     pub fn hash(_: ConstantKeyContext, key: bytecode.Constant) u64 {
         var hasher = std.hash.Wyhash.init(0);
@@ -732,8 +730,6 @@ const FunctionCompiler = struct {
         }
     }
 
-    /// Evaluates numeric constant expressions exactly where PUC Lua's
-    /// `constfolding` would; see fold.zig for the rules.
     fn foldConstant(self: *FunctionCompiler, expr: *const ast.Expr) !?fold.Numeral {
         switch (expr.*) {
             .integer, .float => return fold.literal(expr),
@@ -753,8 +749,6 @@ const FunctionCompiler = struct {
         }
     }
 
-    /// Compiling an operator retries folding on each operand. Remembering
-    /// operators whose nested operand failed keeps long chains linear.
     fn noteFoldFailure(self: *FunctionCompiler, expr: *const ast.Expr, operand: *const ast.Expr) !?fold.Numeral {
         switch (operand.*) {
             .unary, .binary, .grouped => try self.fold_failures.put(self.allocator, expr, {}),
@@ -766,7 +760,6 @@ const FunctionCompiler = struct {
     fn emitFoldedConstant(self: *FunctionCompiler, expr: *const ast.Expr, value: fold.Numeral, dest: bytecode.Register) !void {
         var buffer: [fold.render_buffer_len]u8 = undefined;
         const constant = try self.addConstant(fold.constant(&buffer, value));
-        // PUC loads a folded constant once its last token has been read.
         self.current_line = lastTokenLine(expr);
         _ = try self.emit(.{ .load_const = .{ .dest = dest, .constant = constant } });
     }
@@ -867,9 +860,6 @@ const FunctionCompiler = struct {
         const direct_left = self.sourceRegister(binary.left);
         const direct_right = self.sourceRegister(binary.right);
         // Lua keeps local operands in their registers while evaluating the
-        // right side, which may itself update a captured local. Concatenation
-        // copies its operands first, so it only reads the local in place when
-        // the right side cannot run code.
         const use_direct_left = direct_left != null and (binary.op != .concat or self.evaluationIsInert(binary.right));
         const use_direct_right = direct_right != null and direct_right.? != dest;
         const right = if (use_direct_right) direct_right.? else try self.allocReg();
@@ -891,16 +881,11 @@ const FunctionCompiler = struct {
         self.release(mark);
     }
 
-    /// Compiles `a .. b .. c ...` (three or more operands) into consecutive
-    /// registers and one `concat_range`, like PUC's merged OP_CONCAT. Returns
-    /// false for a two-operand concatenation, which uses `concat`.
     fn compileConcatChain(self: *FunctionCompiler, binary: ast.BinaryExpr, dest: bytecode.Register) anyerror!bool {
         var operands = std.ArrayList(*const ast.Expr).empty;
         defer operands.deinit(self.allocator);
         var operator_lines = std.ArrayList(usize).empty;
         defer operator_lines.deinit(self.allocator);
-        // `..` is right associative. As in PUC, a right operand that is itself
-        // a concatenation joins the chain even when parenthesized.
         var link = binary;
         while (true) {
             try operands.append(self.allocator, link.left);
@@ -926,13 +911,11 @@ const FunctionCompiler = struct {
             const register = first + @as(bytecode.Register, @intCast(index));
             origins[index] = try self.exprOrigin(operand);
             if (index + 1 < count) {
-                // Each left operand is moved to its register at its operator.
                 try self.compileExprForcedLine(operand, register, operator_lines.items[index]);
             } else {
                 try self.compileExpr(operand, register);
             }
         }
-        // PUC fixes the line of a merged OP_CONCAT at the last operator.
         self.current_line = operator_lines.items[count - 2];
         _ = try self.emitWithErrorSite(.{ .concat_range = .{ .dest = dest, .first = first, .count = @intCast(count) } }, .concat, origins, null);
         self.current_line = exprLine(operands.items[count - 1].*);
@@ -940,7 +923,6 @@ const FunctionCompiler = struct {
         return true;
     }
 
-    /// Whether evaluating `expr` cannot run code, so no local can change.
     fn evaluationIsInert(self: *FunctionCompiler, expr: *const ast.Expr) bool {
         return switch (expr.*) {
             .nil, .boolean, .integer, .float, .string, .vararg, .function_literal => true,
@@ -1558,7 +1540,6 @@ const FunctionCompiler = struct {
     fn addConstant(self: *FunctionCompiler, constant: bytecode.Constant) !bytecode.ConstantIndex {
         if (self.constant_indices.get(constant)) |index| return index;
         const index = try self.proto.appendConstant(constant);
-        // Key by the proto-owned copy; folded lexemes live in stack buffers.
         try self.constant_indices.put(self.allocator, self.proto.constants.items[index], index);
         return index;
     }
@@ -1833,7 +1814,6 @@ test "folds numeric constant expressions into one load" {
     var proto = try compile(std.testing.allocator, &tree);
     defer proto.deinit();
 
-    // GET_UPVALUE _ENV, LOAD_CONST x, RETURN.
     try std.testing.expectEqual(@as(usize, 3), proto.instructions.items.len);
     const load = proto.instructions.items[1].load_const;
     try std.testing.expectEqual(@as(bytecode.Register, 1), load.dest);
@@ -1890,7 +1870,6 @@ test "deduplicates constants by kind and lexeme" {
     var proto = try compile(std.testing.allocator, &tree);
     defer proto.deinit();
 
-    // int(1), num(1.0), str("1"), str(x), int(2).
     try std.testing.expectEqual(@as(usize, 5), proto.constants.items.len);
 }
 

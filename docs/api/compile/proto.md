@@ -26,6 +26,7 @@
 - [runtime.chunk](../runtime/chunk.md)
 - [reflection](../reflection.md)
 - [runtime.value](../runtime/value.md)
+- [runtime.number_format](../runtime/number_format.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
 - [runtime.state](../runtime/state.md)
@@ -45,6 +46,7 @@
 - [stdlib.coroutine](../stdlib/coroutine.md)
 - [stdlib.debug](../stdlib/debug.md)
 - [stdlib.io](../stdlib/io.md)
+- [stdlib.static_strings](../stdlib/static_strings.md)
 - [stdlib.os](../stdlib/os.md)
 - [stdlib.package](../stdlib/package.md)
 - [stdlib.json](../stdlib/json.md)
@@ -53,7 +55,6 @@
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
-- [stdlib.static_strings](../stdlib/static_strings.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
@@ -223,6 +224,12 @@ pub const Proto = struct {
     /// defaults select the general VM paths for unprepared prototypes.
     runtime_prepared: bool = false,
     named_vararg_readonly: bool = false,
+    /// The plain fast loop may run this prototype: it has no to-be-closed
+    /// locals and its last opcode stops sequential dispatch.
+    fast_loop_entry: bool = false,
+    /// `fast_loop_entry` with a fixed parameter list, so the fast loop's
+    /// call path can push a frame for it without capturing varargs.
+    fast_loop_call: bool = false,
     /// Decoded non-string constants, indexed like `constants`. A `.string`
     /// slot means the value is per-State (interned) and uses the closure cache.
     constant_values: []const RuntimeValue = &.{},

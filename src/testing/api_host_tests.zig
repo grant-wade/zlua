@@ -217,3 +217,126 @@ test "failed userdata construction never takes the host finalizer obligation" {
         try std.testing.expectEqual(failing.allocated_bytes, failing.freed_bytes);
     }
 }
+
+test "warnings go to stderr or the host warning handler" {
+    const Collector = struct {
+        messages: std.ArrayList(u8) = .empty,
+
+        fn emit(context: ?*anyopaque, message: []const u8) void {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            self.messages.appendSlice(std.testing.allocator, message) catch {};
+            self.messages.append(std.testing.allocator, '|') catch {};
+        }
+    };
+    var collector: Collector = .{};
+    defer collector.messages.deinit(std.testing.allocator);
+    {
+        var lua = try api.State.init(std.testing.allocator, .{ .capabilities = .{ .io = .{ .warning_handler = .{ .context = &collector, .emit = Collector.emit } } } });
+        defer lua.deinit();
+        try lua.doString(
+            \\warn("off by default")
+            \\warn("@on")
+            \\warn("a", "b")
+            \\setmetatable({}, { __gc = function() error("gc", 0) end })
+            \\collectgarbage()
+            \\warn("@off")
+            \\warn("hidden")
+            \\KEEP = setmetatable({}, { __gc = function() error("closing", 0) end })
+        , .{});
+        lua.setWarnings(true);
+        try lua.doString("warn('again')", .{});
+    }
+    try std.testing.expectEqualStrings("ab|error in __gc (gc)|again|error in __gc (closing)|", collector.messages.items);
+
+    var buffer: [128]u8 = undefined;
+    var stderr: std.Io.Writer = .fixed(&buffer);
+    var lua = try api.State.init(std.testing.allocator, .{ .capabilities = .{ .io = .{ .stderr = &stderr, .warnings = true } } });
+    defer lua.deinit();
+    try lua.doString("warn('hi', 1)", .{});
+    try std.testing.expectEqualStrings("Lua warning: hi1\n", stderr.buffered());
+}
+
+test "userdata __gc metamethods run before host finalizers" {
+    const Item = struct {
+        log: *std.ArrayList(u8),
+
+        fn finalize(self: *@This()) void {
+            self.log.appendSlice(std.testing.allocator, "host;") catch {};
+        }
+    };
+    const Counted = struct {
+        hits: *usize,
+
+        pub fn __gc(self: *@This()) void {
+            self.hits.* += 1;
+        }
+    };
+    var log: std.ArrayList(u8) = .empty;
+    defer log.deinit(std.testing.allocator);
+    var hits: usize = 0;
+    {
+        var lua = try api.State.init(std.testing.allocator, .{});
+        defer lua.deinit();
+        try lua.doString(
+            \\events = {}
+            \\meta = { __gc = function(u) events[#events + 1] = "lua"; saved = u end }
+        , .{});
+        var meta = try lua.getGlobal("meta", api.Table);
+        defer meta.deinit();
+        var item = try lua.newUserdata(Item, .{ .log = &log }, .{ .metatable = meta, .finalizer = Item.finalize });
+        item.deinit();
+        try lua.collect();
+        try lua.doString("assert(#events == 1 and saved ~= nil)", .{});
+        try std.testing.expectEqualStrings("", log.items);
+        try lua.doString("saved = nil", .{});
+        try lua.collect();
+        try lua.collect();
+        try lua.doString("assert(#events == 1)", .{});
+        try std.testing.expectEqualStrings("host;", log.items);
+
+        var counted = try lua.newUserdataAuto(Counted, .{ .hits = &hits }, .{});
+        counted.deinit();
+        try lua.collect();
+        try std.testing.expectEqual(@as(usize, 1), hits);
+
+        var kept = try lua.newUserdataAuto(Counted, .{ .hits = &hits }, .{});
+        try lua.setGlobal("kept", kept);
+        kept.deinit();
+    }
+    try std.testing.expectEqual(@as(usize, 2), hits);
+}
+
+test "os.exit in a finalizer stops deinit finalizers and reaches the exit callback" {
+    const Host = struct {
+        exit_code: ?i32 = null,
+
+        fn execute(_: ?*anyopaque, _: []const u8) anyerror!api.ProcessResult {
+            return .{ .status = .exit, .code = 0 };
+        }
+
+        fn exit(context: ?*anyopaque, code: i32, _: bool) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            self.exit_code = code;
+        }
+    };
+    var host: Host = .{};
+    var buffer: [64]u8 = undefined;
+    var stdout: std.Io.Writer = .fixed(&buffer);
+    {
+        var lua = try api.State.init(std.testing.allocator, .{
+            .stdlib = .full,
+            .capabilities = .{
+                .io = .{ .stdout = &stdout },
+                .process = .{ .custom = .{ .context = &host, .execute = Host.execute, .exit = Host.exit } },
+            },
+        });
+        defer lua.deinit();
+        try lua.doString(
+            \\A = setmetatable({}, { __gc = function() print("older") end })
+            \\B = setmetatable({}, { __gc = function() print("exit") os.exit(7) end })
+            \\C = setmetatable({}, { __gc = function() print("newest") end })
+        , .{});
+    }
+    try std.testing.expectEqual(@as(?i32, 7), host.exit_code);
+    try std.testing.expectEqualStrings("newest\nexit\n", stdout.buffered());
+}

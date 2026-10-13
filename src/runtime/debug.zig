@@ -166,23 +166,50 @@ const TracebackEntry = union(enum) {
     /// A Lua frame, by index into `thread.frames`.
     lua: usize,
     /// A native function, named from its call site when known.
-    native: ?proto_mod.OperandOrigin,
+    native: NativeEntry,
     /// A native function called as a generic `for` iterator.
     native_iterator,
 };
 
-/// Formats a `luaL_traceback`-style traceback of `thread` without a message:
-/// `stack traceback:` followed by one line per level, innermost first. Called
-/// at an error point it shows the native function that raised the error and
-/// the Lua frames that were active. Lua frame names come from the calling
-/// instruction, as in Lua 5.5. With `host_frame`, the traceback ends with the
-/// `[C]: in ?` entry that the standalone interpreter reports for its own call.
-/// The caller owns the returned slice, allocated with `self.allocator`.
+const NativeEntry = struct {
+    origin: ?proto_mod.OperandOrigin = null,
+    callee: Value = .nil,
+};
+
+pub const TracebackOptions = struct {
+    /// Text placed before `stack traceback:`.
+    message: ?[]const u8 = null,
+    /// First level shown. Level 0 is the function producing the traceback.
+    level: usize = 1,
+    /// Level 0 is the native function called by the top frame's current
+    /// instruction. Otherwise it is not on the thread, as for a message
+    /// handler, and `level_zero` names it.
+    level_zero_is_callee: bool = false,
+    level_zero: Value = .nil,
+    /// End with the `[C]: in ?` entry that the standalone interpreter
+    /// reports for its own call.
+    host_frame: bool = false,
+};
+
+/// Formats a `luaL_traceback`-style traceback of `thread` without a message,
+/// starting at level 1 as a message handler sees it. See `formatTracebackWith`.
 pub fn formatTraceback(comptime State: type, self: *State, thread: *Thread, host_frame: bool) ![]u8 {
+    return formatTracebackWith(State, self, thread, .{ .host_frame = host_frame });
+}
+
+/// Formats a `luaL_traceback`-style traceback: `stack traceback:` followed
+/// by one line per level, innermost first. Called at an error point it shows
+/// the native function that raised the error and the Lua frames that were
+/// active. Names come from the calling instruction, as in Lua 5.5, or else
+/// from the global and loaded-module tables. The caller owns the returned
+/// slice, allocated with `self.allocator`.
+pub fn formatTracebackWith(comptime State: type, self: *State, thread: *Thread, options: TracebackOptions) ![]u8 {
     var entries = std.ArrayList(TracebackEntry).empty;
     defer entries.deinit(self.allocator);
     const frames = thread.frames.items;
+    if (!options.level_zero_is_callee) try entries.append(self.allocator, .{ .native = .{ .callee = options.level_zero } });
     if (frames.len != 0) {
+        try appendNativeMarks(self.allocator, &entries, thread, frames.len);
         if (nativeCallee(thread, frames.len - 1)) |entry| try entries.append(self.allocator, entry);
     }
     var index = frames.len;
@@ -190,40 +217,73 @@ pub fn formatTraceback(comptime State: type, self: *State, thread: *Thread, host
         index -= 1;
         try entries.append(self.allocator, .{ .lua = index });
         if (index > 0 and !isDirectCallee(frames, index)) {
+            try appendNativeMarks(self.allocator, &entries, thread, index);
             if (nativeCallee(thread, index - 1)) |entry| try entries.append(self.allocator, entry);
         }
     }
-    if (host_frame) try entries.append(self.allocator, .{ .native = null });
+    if (options.host_frame) try entries.append(self.allocator, .{ .native = .{} });
 
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(self.allocator);
+    if (options.message) |message| {
+        try out.appendSlice(self.allocator, message);
+        try out.append(self.allocator, '\n');
+    }
     try out.appendSlice(self.allocator, "stack traceback:");
-    const total = entries.items.len;
-    const skip = total > traceback_levels_head + traceback_levels_tail + 1;
-    for (entries.items, 0..) |entry, position| {
-        if (skip and position >= traceback_levels_head and position < total - traceback_levels_tail) {
-            // Lua reports one level fewer than it omits; keep its wording.
-            if (position == traceback_levels_head) try appendFmt(self.allocator, &out, "\n\t...\t(skipping {d} levels)", .{total - traceback_levels_head - traceback_levels_tail - 1});
+    const last = entries.items.len -| 1;
+    var level = options.level;
+    var limit: isize = if (level <= last and last - level > traceback_levels_head + traceback_levels_tail) traceback_levels_head else -1;
+    while (level <= last and entries.items.len != 0) {
+        const current = level;
+        level += 1;
+        const show_skip = limit == 0;
+        limit -= 1;
+        if (show_skip) {
+            const skipped = last - level - traceback_levels_tail + 1;
+            try appendFmt(self.allocator, &out, "\n\t...\t(skipping {d} levels)", .{skipped});
+            level += skipped;
             continue;
         }
-        switch (entry) {
-            .native => |origin| {
+        switch (entries.items[current]) {
+            .native => |native| {
                 try out.appendSlice(self.allocator, "\n\t[C]: in ");
-                const named = if (origin) |value| originNamewhat(value) else null;
+                const named = if (native.origin) |value| originNamewhat(value) else null;
                 if (named) |namewhat| {
-                    try appendFmt(self.allocator, &out, "{s} '{s}'", .{ namewhat, originName(origin.?) });
-                } else {
+                    try appendFmt(self.allocator, &out, "{s} '{s}'", .{ namewhat, originName(native.origin.?) });
+                } else if (!try appendGlobalName(State, self, &out, native.callee)) {
                     try out.append(self.allocator, '?');
                 }
             },
             .native_iterator => try out.appendSlice(self.allocator, "\n\t[C]: in for iterator 'for iterator'"),
-            .lua => |frame_index| try appendTracebackFrame(self.allocator, &out, frames, frame_index),
+            .lua => |frame_index| try appendTracebackFrame(State, self, &out, frames, frame_index),
         }
     }
     return out.toOwnedSlice(self.allocator);
 }
 
-fn appendTracebackFrame(allocator: std.mem.Allocator, out: *std.ArrayList(u8), frames: []const CallFrame, index: usize) !void {
+fn appendNativeMarks(allocator: std.mem.Allocator, entries: *std.ArrayList(TracebackEntry), thread: *Thread, frame_count: usize) !void {
+    var index: usize = thread.native_mark_count;
+    while (index > 0) {
+        index -= 1;
+        const mark = thread.native_marks[index];
+        if (mark.frame_count == frame_count) try entries.append(allocator, .{ .native = .{ .callee = mark.callee } });
+    }
+}
+
+fn appendGlobalName(comptime State: type, self: *State, out: *std.ArrayList(u8), callee: Value) !bool {
+    if (callee == .nil) return false;
+    const start = out.items.len;
+    try out.appendSlice(self.allocator, "function '");
+    if (!try self.appendGlobalFunctionName(out, callee)) {
+        out.items.len = start;
+        return false;
+    }
+    try out.append(self.allocator, '\'');
+    return true;
+}
+
+fn appendTracebackFrame(comptime State: type, self: *State, out: *std.ArrayList(u8), frames: []const CallFrame, index: usize) !void {
+    const allocator = self.allocator;
     const frame = frames[index];
     if (isNativeEntryFrame(frame)) {
         try out.appendSlice(allocator, "\n\t[C]: in ?");
@@ -243,16 +303,67 @@ fn appendTracebackFrame(allocator: std.mem.Allocator, out: *std.ArrayList(u8), f
         try appendFmt(allocator, out, "{s} '{s}'", .{ name.namewhat, name.name });
     } else if (frame.proto.defined_line == 0) {
         try out.appendSlice(allocator, "main chunk");
-    } else {
+    } else if (!try appendGlobalName(State, self, out, .{ .closure = frame.closure })) {
         try appendFmt(allocator, out, "function <{s}:{d}>", .{ source, frame.proto.defined_line });
     }
     if (frame.is_tail_call) try out.appendSlice(allocator, "\n\t(...tail calls...)");
 }
 
-const CallSiteName = struct { namewhat: []const u8, name: []const u8 };
+pub const CallName = struct { namewhat: []const u8, name: []const u8 };
 
-/// Names frame `index` from the instruction in its caller that called it.
-fn callSiteName(frames: []const CallFrame, index: usize) ?CallSiteName {
+/// Frames from `start` up that Lua would have entered through a C call,
+/// such as a metamethod or a message handler, rather than a call instruction.
+pub fn indirectFrameCount(thread: *Thread, start: usize) usize {
+    const frames = thread.frames.items;
+    var count: usize = 0;
+    for (@max(start, 1)..frames.len) |index| {
+        if (!isDirectCallee(frames, index)) count += 1;
+    }
+    return count;
+}
+
+/// True when Lua code in the top frame raised the current error, rather
+/// than a native function it called.
+pub fn errorRaisedByLuaCode(thread: *Thread) bool {
+    const frames = thread.frames.items;
+    if (frames.len == 0) return false;
+    const top = frames[frames.len - 1];
+    if (isNativeEntryFrame(top) or top.closure.stripped_debug) return false;
+    for (thread.native_marks[0..thread.native_mark_count]) |mark| {
+        if (mark.frame_count == frames.len) return false;
+    }
+    return nativeCallee(thread, frames.len - 1) == null;
+}
+
+/// Names a message handler called at an error point the way Lua names a
+/// function from its caller's current instruction (`funcnamefromcode`).
+/// An error raised inside a native function leaves the handler unnamed.
+pub fn messageHandlerCallName(thread: *Thread) ?CallName {
+    const frames = thread.frames.items;
+    if (frames.len == 0) return null;
+    const top = frames.len - 1;
+    const frame = frames[top];
+    if (isNativeEntryFrame(frame) or frame.closure.stripped_debug) return null;
+    if (nativeCallee(thread, top) != null) return null;
+    const instruction = currentInstruction(frame) orelse return null;
+    const event: []const u8 = switch (instruction) {
+        .call, .tail_call => {
+            const origin = callOrigin(frame) orelse return null;
+            return .{ .namewhat = originNamewhat(origin) orelse return null, .name = originName(origin) };
+        },
+        .tfor_call => return .{ .namewhat = "for iterator", .name = "for iterator" },
+        .get_global, .get_table, .get_field => "index",
+        .set_global, .set_table, .set_array, .set_field => "newindex",
+        .concat, .concat_range => "concat",
+        .compare_branch => |op| @tagName(op.op),
+        .close, .ret => "close",
+        inline .add, .sub, .mul, .div, .idiv, .mod, .pow, .unm, .band, .bor, .bxor, .bnot, .shl, .shr, .eq, .lt, .le, .len => |_, tag| @tagName(tag),
+        else => return null,
+    };
+    return .{ .namewhat = "metamethod", .name = event };
+}
+
+fn callSiteName(frames: []const CallFrame, index: usize) ?CallName {
     if (index == 0 or frames[index].is_tail_call or !isDirectCallee(frames, index)) return null;
     const caller = frames[index - 1];
     if (caller.closure.stripped_debug) return null;
@@ -262,20 +373,16 @@ fn callSiteName(frames: []const CallFrame, index: usize) ?CallSiteName {
     return .{ .namewhat = originNamewhat(origin) orelse return null, .name = originName(origin) };
 }
 
-/// True when frame `index` was called directly by the call instruction its
-/// caller is executing, rather than by a native function or metamethod.
 fn isDirectCallee(frames: []const CallFrame, index: usize) bool {
     const caller = frames[index - 1];
     const callee = frames[index];
     return switch (currentInstruction(caller) orelse return false) {
-        // Callee registers start just above the function slot.
         .call => |op| callee.base == caller.base + op.base + 1,
         .tfor_call => |op| callee.base > caller.base + op.base and callee.base <= caller.base + caller.proto.max_registers,
         else => false,
     };
 }
 
-/// The native function that frame `index` is calling, if any.
 fn nativeCallee(thread: *Thread, index: usize) ?TracebackEntry {
     const frame = thread.frames.items[index];
     const instruction = currentInstruction(frame) orelse return null;
@@ -289,7 +396,7 @@ fn nativeCallee(thread: *Thread, index: usize) ?TracebackEntry {
     const callee = thread.stack.items[slot];
     if (callee == .closure or !std.mem.eql(u8, debugValueTypeName(callee), "function")) return null;
     if (instruction == .tfor_call) return .native_iterator;
-    return .{ .native = if (frame.closure.stripped_debug) null else callOrigin(frame) };
+    return .{ .native = .{ .origin = if (frame.closure.stripped_debug) null else callOrigin(frame), .callee = callee } };
 }
 
 fn currentInstruction(frame: CallFrame) ?compile.bytecode.Instruction {
@@ -304,7 +411,6 @@ fn callOrigin(frame: CallFrame) ?proto_mod.OperandOrigin {
     return null;
 }
 
-/// Host calls of native functions run in a placeholder frame without instructions.
 fn isNativeEntryFrame(frame: CallFrame) bool {
     return frame.proto.instructions.items.len == 0 and std.mem.eql(u8, frame.proto.source_name, "=[C]");
 }

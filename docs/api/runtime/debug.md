@@ -26,6 +26,7 @@
 - [runtime.chunk](../runtime/chunk.md)
 - [reflection](../reflection.md)
 - [runtime.value](../runtime/value.md)
+- [runtime.number_format](../runtime/number_format.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
 - [runtime.state](../runtime/state.md)
@@ -45,6 +46,7 @@
 - [stdlib.coroutine](../stdlib/coroutine.md)
 - [stdlib.debug](../stdlib/debug.md)
 - [stdlib.io](../stdlib/io.md)
+- [stdlib.static_strings](../stdlib/static_strings.md)
 - [stdlib.os](../stdlib/os.md)
 - [stdlib.package](../stdlib/package.md)
 - [stdlib.json](../stdlib/json.md)
@@ -53,7 +55,6 @@
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
-- [stdlib.static_strings](../stdlib/static_strings.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
@@ -96,6 +97,17 @@
 - [appendDebugUpvalues](#fn-appenddebugupvalues)
 - [appendDebugStack](#fn-appenddebugstack)
 - [appendDebugValue](#fn-appenddebugvalue)
+- [formatTraceback](#fn-formattraceback)
+- [formatTracebackWith](#fn-formattracebackwith)
+- [indirectFrameCount](#fn-indirectframecount)
+- [errorRaisedByLuaCode](#fn-errorraisedbyluacode)
+- [messageHandlerCallName](#fn-messagehandlercallname)
+- [chunkId](#fn-chunkid)
+
+## Types
+
+- [TracebackOptions](#type-tracebackoptions)
+- [CallName](#type-callname)
 
 <a id="fn-appendunhandlederrordebugdump"></a>
 
@@ -151,5 +163,111 @@ pub fn appendDebugStack(comptime State: type, self: *State, out: *std.ArrayList(
 
 ```zig
 pub fn appendDebugValue(comptime State: type, self: *State, out: *std.ArrayList(u8), value: Value) !void
+```
+
+<a id="type-tracebackoptions"></a>
+
+## TracebackOptions
+
+```zig
+pub const TracebackOptions = struct {
+    /// Text placed before `stack traceback:`.
+    message: ?[]const u8 = null,
+    /// First level shown. Level 0 is the function producing the traceback.
+    level: usize = 1,
+    /// Level 0 is the native function called by the top frame's current
+    /// instruction. Otherwise it is not on the thread, as for a message
+    /// handler, and `level_zero` names it.
+    level_zero_is_callee: bool = false,
+    level_zero: Value = .nil,
+    /// End with the `[C]: in ?` entry that the standalone interpreter
+    /// reports for its own call.
+    host_frame: bool = false,
+};
+```
+
+<a id="fn-formattraceback"></a>
+
+## formatTraceback
+
+Formats a `luaL_traceback`-style traceback of `thread` without a message,
+starting at level 1 as a message handler sees it. See `formatTracebackWith`.
+
+```zig
+pub fn formatTraceback(comptime State: type, self: *State, thread: *Thread, host_frame: bool) ![]u8
+```
+
+<a id="fn-formattracebackwith"></a>
+
+## formatTracebackWith
+
+Formats a `luaL_traceback`-style traceback: `stack traceback:` followed
+by one line per level, innermost first. Called at an error point it shows
+the native function that raised the error and the Lua frames that were
+active. Names come from the calling instruction, as in Lua 5.5, or else
+from the global and loaded-module tables. The caller owns the returned
+slice, allocated with `self.allocator`.
+
+```zig
+pub fn formatTracebackWith(comptime State: type, self: *State, thread: *Thread, options: TracebackOptions) ![]u8
+```
+
+References: [`TracebackOptions`](#type-tracebackoptions)
+
+<a id="type-callname"></a>
+
+## CallName
+
+```zig
+pub const CallName = struct {
+    namewhat: []const u8,
+    name: []const u8,
+};
+```
+
+<a id="fn-indirectframecount"></a>
+
+## indirectFrameCount
+
+Frames from `start` up that Lua would have entered through a C call,
+such as a metamethod or a message handler, rather than a call instruction.
+
+```zig
+pub fn indirectFrameCount(thread: *Thread, start: usize) usize
+```
+
+<a id="fn-errorraisedbyluacode"></a>
+
+## errorRaisedByLuaCode
+
+True when Lua code in the top frame raised the current error, rather
+than a native function it called.
+
+```zig
+pub fn errorRaisedByLuaCode(thread: *Thread) bool
+```
+
+<a id="fn-messagehandlercallname"></a>
+
+## messageHandlerCallName
+
+Names a message handler called at an error point the way Lua names a
+function from its caller's current instruction (`funcnamefromcode`).
+An error raised inside a native function leaves the handler unnamed.
+
+```zig
+pub fn messageHandlerCallName(thread: *Thread) ?CallName
+```
+
+References: [`CallName`](#type-callname)
+
+<a id="fn-chunkid"></a>
+
+## chunkId
+
+Formats a chunk name for messages, as `luaO_chunkid` does.
+
+```zig
+pub fn chunkId(buffer: *[chunk_id_size]u8, source: []const u8) []const u8
 ```
 

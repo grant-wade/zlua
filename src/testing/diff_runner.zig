@@ -151,7 +151,6 @@ fn runOne(
         try out.print("skip {s} ({s})\n", .{ path, meta.reason });
         return;
     }
-    // Fixtures that drive collections themselves can opt out of forced ones.
     if (meta.gc_stress == .skip and (options.gc_stress or options.gc_step_stress)) {
         counts.skipped += 1;
         try out.print("skip {s} (gc stress: {s})\n", .{ path, meta.reason });

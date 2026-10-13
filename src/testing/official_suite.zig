@@ -205,8 +205,6 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !Options {
 }
 
 fn parseMode(value: []const u8) !Mode {
-    // Upstream's internal mode needs CLua and zlua built with the testC
-    // library (`T`), which this harness does not provide.
     if (std.mem.eql(u8, value, "internal")) return error.InternalModeUnsupported;
     return std.meta.stringToEnum(Mode, value) orelse error.InvalidMode;
 }

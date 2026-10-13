@@ -31,8 +31,6 @@ fn optionalPath(state: *State, thread: *Thread, op: bytecode.Call, function_name
     return try state.expectArgumentString(thread, op, function_name, 0);
 }
 
-/// Loads a chunk like `luaL_loadfilex`: a null path reads the stdin capability.
-/// Failures raise the message `loadfile` would return.
 fn loadChunkFile(state: *State, path: ?[]const u8, mode: []const u8, environment: Value) !Value {
     const source = if (path) |name| try state.readFileAlloc(name) else try io_lib.readAllStdin(state);
     var keep_source = false;
@@ -114,7 +112,6 @@ pub fn require(state: *State, thread: *Thread, op: bytecode.Call) !void {
     var loader = preload.get(name_key);
     var loader_data: Value = .nil;
     if (loader != .nil) {
-        // Lua 5.5 passes ":preload:" as loader data for package.preload entries.
         loader_data = .{ .string = try state.intern(":preload:") };
     } else {
         const path_value = package.get(.{ .string = try state.intern("path") });
@@ -129,8 +126,6 @@ pub fn require(state: *State, thread: *Thread, op: bytecode.Call) !void {
         loader_data = .{ .string = try state.intern(found) };
     }
 
-    // The loader receives `loader_data` only as an argument and may
-    // overwrite that register, so keep it alive until `require` returns it.
     const loader_data_root = try state.rootValue(loader_data);
     defer state.unrootValue(loader_data_root);
     const values = try state.callCollect(thread, loader, &.{ name_key, loader_data });

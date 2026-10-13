@@ -50,7 +50,6 @@ pub fn formatFloat(buffer: *[max_formatted_len]u8, spec: Spec, value: f64) []con
     if (std.math.isNan(value)) {
         body.pushSlice("nan");
         numeric = false;
-        // BSD libc prints NaN without any sign, even with '+' or ' '.
         if (darwin_printf) allow_sign = false;
     } else if (std.math.isInf(value)) {
         body.pushSlice("inf");
@@ -105,7 +104,6 @@ pub fn formatFloat(buffer: *[max_formatted_len]u8, spec: Spec, value: f64) []con
         out.pushN(' ', padding);
     } else if (clamped.zero_pad and numeric) {
         if (sign) |byte| out.push(byte);
-        // Zeros go after the "0x" prefix of hexadecimal floats.
         const prefix_len: usize = if (conversion == 'a') 2 else 0;
         out.pushSlice(text[0..prefix_len]);
         out.pushN('0', padding);
@@ -138,17 +136,11 @@ fn luaFiniteFloat(scratch: *[max_formatted_len]u8, value: f64) []const u8 {
     var precision: usize = 15;
     const magnitude = @abs(value);
     if (magnitude != 0 and magnitude < std.math.floatMin(f64)) {
-        // Subnormals have fewer significant bits, so 15 digits can name
-        // one even when fewer would; use the definition directly.
         const text = formatFloat(scratch, .{ .conversion = 'g', .precision = 15 }, value);
         if ((std.fmt.parseFloat(f64, text) catch value) == value) return text;
         return formatFloat(scratch, .{ .conversion = 'g', .precision = 17 }, value);
     }
     if (magnitude != 0) {
-        // The shortest round-trip digits decide without big arithmetic: up
-        // to 15 of them are exactly what %.15g prints (15 digits always
-        // round-trip and pin down a double), and 17 shortest digits are the
-        // correctly rounded %.17g. Only 16 needs the exact expansion.
         shortestDecimal(magnitude, &decimal);
         if (decimal.len == 16) {
             decimal = .{};
@@ -164,7 +156,6 @@ fn luaFiniteFloat(scratch: *[max_formatted_len]u8, value: f64) []const u8 {
     return out.slice();
 }
 
-/// The shortest digits that read back as `value` (Zig's Ryu formatting).
 fn shortestDecimal(value: f64, out: *Decimal) void {
     var buffer: [64]u8 = undefined;
     const text = std.fmt.bufPrint(&buffer, "{e}", .{value}) catch unreachable;
@@ -213,12 +204,8 @@ const Out = struct {
     }
 };
 
-/// The longest exact decimal expansion of a double has 767 significant
-/// digits (the largest subnormal).
 const max_digits = 800;
 
-/// A non-negative decimal `d0.d1d2... * 10^exponent` without trailing zeros.
-/// `len == 0` means zero.
 const Decimal = struct {
     digits: [max_digits]u8 = undefined,
     len: usize = 0,
@@ -230,7 +217,6 @@ const Decimal = struct {
     }
 };
 
-/// Little-endian base-2^32 integer big enough for `mantissa * 5^1074`.
 const BigInt = struct {
     limbs: [90]u32 = undefined,
     len: usize = 0,
@@ -294,7 +280,6 @@ const BigInt = struct {
     }
 };
 
-/// Writes every significant decimal digit of a positive finite float.
 fn exactDecimal(value: f64, out: *Decimal) void {
     const bits: u64 = @bitCast(value);
     const exponent_bits: u32 = @intCast((bits >> 52) & 0x7ff);
@@ -309,7 +294,6 @@ fn exactDecimal(value: f64, out: *Decimal) void {
         exponent += 1;
     }
 
-    // value == big / 10^scale
     var big = BigInt.init(mantissa);
     var scale: i32 = 0;
     if (exponent >= 0) {
@@ -354,8 +338,6 @@ fn exactDecimal(value: f64, out: *Decimal) void {
     out.len = len;
 }
 
-/// Keeps `count` significant digits, rounding half to even. A count of zero
-/// or less rounds at a position left of the first digit.
 fn roundDecimal(decimal: *Decimal, count: isize) void {
     if (decimal.len == 0 or count >= decimal.len) return;
     if (count < 0) {
@@ -370,7 +352,6 @@ fn roundDecimal(decimal: *Decimal, count: isize) void {
     else if (next < '5')
         false
     else if (decimal.len > keep + 1)
-        // Trailing zeros are stripped, so any later digit is nonzero.
         true
     else
         keep > 0 and (decimal.digits[keep - 1] - '0') % 2 == 1;
@@ -435,7 +416,6 @@ fn appendGeneralStyle(out: *Out, decimal: *Decimal, requested_precision: ?usize,
     }
     if (alternate) return;
 
-    // Drop trailing fraction zeros, and the point when nothing follows it.
     const text = out.buf[start..out.len];
     const point = std.mem.indexOfScalar(u8, text, '.') orelse return;
     const mantissa_end = std.mem.indexOfScalar(u8, text, 'e') orelse text.len;
@@ -460,7 +440,6 @@ fn appendHex(out: *Out, magnitude: f64, precision: ?usize, alternate: bool) void
         exponent = 0;
     } else if (exponent_bits == 0) {
         if (darwin_printf) {
-            // BSD libc normalizes subnormals: 0x1p-1074.
             var mantissa = fraction;
             exponent = -1022;
             while (mantissa & (@as(u64, 1) << 52) == 0) {
@@ -469,7 +448,6 @@ fn appendHex(out: *Out, magnitude: f64, precision: ?usize, alternate: bool) void
             }
             fraction = mantissa & fraction_mask;
         } else {
-            // glibc keeps them denormal: 0x0.0000000000001p-1022.
             lead = 0;
             exponent = -1022;
         }
@@ -484,7 +462,6 @@ fn appendHex(out: *Out, magnitude: f64, precision: ?usize, alternate: bool) void
         if (wanted < 13) {
             const next = digits[wanted];
             const round_up = if (darwin_printf) blk: {
-                // BSD __hdtoa only inspects the next digit and the one after.
                 const after: u8 = if (wanted + 1 < 13) digits[wanted + 1] else 0;
                 break :blk next > 8 or (next == 8 and after & 1 == 1);
             } else blk: {

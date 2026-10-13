@@ -150,6 +150,7 @@ pub const NativeFn = enum {
     io_file_lines,
     io_file_setvbuf,
     io_file_tostring,
+    io_file_gc,
     io_lines_iter,
     os_time,
     os_clock,
@@ -177,6 +178,7 @@ pub const NativeFn = enum {
     debug_getuservalue,
     debug_getmetatable,
     debug_debug,
+    traceback_message_handler,
     json_read,
     json_write,
     toml_read,
@@ -316,6 +318,7 @@ pub const NativeFn = enum {
             .io_file_lines => "file:lines",
             .io_file_setvbuf => "file:setvbuf",
             .io_file_tostring => "file:__tostring",
+            .io_file_gc => "file:__gc",
             .io_lines_iter => "file lines iterator",
             .os_time => "os.time",
             .os_clock => "os.clock",
@@ -343,6 +346,7 @@ pub const NativeFn = enum {
             .debug_getuservalue => "debug.getuservalue",
             .debug_getmetatable => "debug.getmetatable",
             .debug_debug => "debug.debug",
+            .traceback_message_handler => "msghandler",
             .json_read => "json.read",
             .json_write => "json.write",
             .toml_read => "toml.read",
@@ -589,12 +593,16 @@ pub const ProtectedCallContext = struct {
     last_result_base: usize,
     last_result_count: usize,
     last_error: ?RuntimeErrorPayload,
+    /// Message handler installed for the call, like `lua_pcall`'s `msgh`.
+    error_handler: Value = .nil,
+    /// The thread's handler before the call, restored when it ends.
+    previous_error_handler: Value = .nil,
 };
 
-pub const ProtectedContinuationKind = enum {
-    pcall,
-    xpcall,
-    xpcall_handler,
+pub const NativeMark = struct {
+    /// Frame count when the native function was called.
+    frame_count: u32,
+    callee: Value,
 };
 
 pub const ProtectedContinuation = struct {
@@ -602,9 +610,6 @@ pub const ProtectedContinuation = struct {
     context: ProtectedCallContext,
     base: bytecode.Register,
     return_count: u16,
-    kind: ProtectedContinuationKind,
-    handler: Value = .nil,
-    handler_depth: usize = 0,
 };
 
 pub const GenericForContinuation = struct {
@@ -975,6 +980,27 @@ pub const Userdata = struct {
     finalized: bool = false,
     finalization_pending: bool = false,
     finalizer_next: ?*Userdata = null,
+    /// Registered to call its metatable's `__gc`, as a table is with
+    /// `Table.finalizer_registered`. The host finalizer runs once the
+    /// userdata is unreachable after that.
+    lua_finalizer_registered: bool = false,
+    /// Registration order on the `Table.finalizer_order` scale, then the
+    /// position in the finalizer queue once separated.
+    lua_finalizer_order: u64 = 0,
+    lua_finalizer_next: ?*Userdata = null,
+};
+
+/// An object separated for a Lua `__gc` call.
+pub const FinalizerObject = union(enum) {
+    table: *Table,
+    userdata: *Userdata,
+
+    pub fn order(self: FinalizerObject) u64 {
+        return switch (self) {
+            .table => |table| table.finalizer_order,
+            .userdata => |userdata| userdata.lua_finalizer_order,
+        };
+    }
 };
 
 pub const Thread = struct {
@@ -1015,8 +1041,19 @@ pub const Thread = struct {
     yield_result_count: u16 = 0,
     native_call_depth: usize = 0,
     native_call: ?NativeCall = null,
-    traceback_native_name: ?[]const u8 = null,
     protected_close_depth: usize = 0,
+    /// Message handler for errors raised on this thread, like `L->errfunc`.
+    error_handler: Value = .nil,
+    /// Set after a stack overflow so a message handler can still run on top
+    /// of the full stack; cleared once the stack unwinds below the limit.
+    stack_error_space: bool = false,
+    /// Tracebacks end with the `[C]: in ?` entry of a standalone host call.
+    host_frame: bool = false,
+    /// Native functions with no calling instruction (called by `xpcall` or
+    /// a message handler) that are still on the stack while a message
+    /// handler runs, oldest first, so tracebacks can show them.
+    native_marks: [4]NativeMark = undefined,
+    native_mark_count: u8 = 0,
     close_error_value: ?Value = null,
     error_traceback: ?[]const u8 = null,
     pending_unwind_error: ?Value = null,

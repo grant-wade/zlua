@@ -63,12 +63,13 @@ fn loadSource(state: *State, thread: *Thread, op: bytecode.Call) !LoadSource {
     while (true) {
         state.conservative_gc_depth += 1;
         defer state.conservative_gc_depth -= 1;
-        const result = try state.protectedCall(thread, source_value, &.{});
+        var context = state.protectedCallContextWithErrors(thread);
+        context.error_handler = thread.error_handler;
+        const result = try state.runProtectedCall(thread, context, source_value, &.{});
         const values = switch (result) {
             .success => |values| values,
             .failure => |failure| {
-                const message = if (failure == .string) failure.string else "reader function failed";
-                try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.intern(message) } });
+                try state.returnValues(thread, op.base, op.return_count, &.{ .nil, try state.caughtErrorValue(failure) });
                 return error.LoadReturned;
             },
         };
@@ -89,8 +90,6 @@ fn loadSource(state: *State, thread: *Thread, op: bytecode.Call) !LoadSource {
     }
 }
 
-/// Mirrors `checkmode` in ldo.c: a chunk kind missing from `mode` fails
-/// the load with a message instead of raising an error.
 fn loadModeError(state: *State, thread: *Thread, op: bytecode.Call, source: []const u8) !?[]const u8 {
     const mode = if (op.arg_count >= 3 and runtime.argValue(state, thread, op, 2) == .string) runtime.argValue(state, thread, op, 2).string else "bt";
     const binary = looksLikeBinaryChunk(source);
@@ -102,7 +101,6 @@ fn loadModeError(state: *State, thread: *Thread, op: bytecode.Call, source: []co
     return try state.intern(message.items);
 }
 
-/// `getMode` in lbaselib rejects only 'B' (fixed buffers).
 fn invalidLoadMode(state: *State, thread: *Thread, op: bytecode.Call) bool {
     const mode = if (op.arg_count >= 3 and runtime.argValue(state, thread, op, 2) == .string) runtime.argValue(state, thread, op, 2).string else "bt";
     return std.mem.indexOfScalar(u8, mode, 'B') != null;
@@ -156,11 +154,15 @@ pub fn tonumber(state: *State, thread: *Thread, op: bytecode.Call) !void {
 }
 
 pub fn warn(state: *State, thread: *Thread, op: bytecode.Call) !void {
+    const count = @max(op.arg_count, 1);
+    const parts = try state.allocator.alloc([]const u8, count);
+    defer state.allocator.free(parts);
+    for (parts, 0..) |*part, index| part.* = try state.expectArgumentString(thread, op, "warn", @intCast(index));
+    try state.warn(parts);
     try state.returnValues(thread, op.base, op.return_count, &.{});
 }
 
 fn typeName(value: Value) []const u8 {
-    if (runtime.isFileValue(value)) return "userdata";
     return switch (value) {
         .nil => "nil",
         .boolean => "boolean",

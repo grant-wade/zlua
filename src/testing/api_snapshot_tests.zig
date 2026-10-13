@@ -33,7 +33,6 @@ test "snapshot reset keeps metamethod absence caches consistent" {
     var worker = try snapshot.newState(a);
     defer worker.deinit();
     for (0..3) |_| {
-        // Cache absences, then add events to the baseline metatables.
         try worker.doString(
             \\for _ = 1, 3 do assert(a.k == nil and #a == 0) end
             \\empty_mt.__index = function(_, k) return "new:" .. k end
@@ -496,21 +495,21 @@ test "incremental reset restores memory limit and keeps host results freeable" {
     try std.testing.expectEqual(original_allocator.ptr, lua.allocator().ptr);
 }
 
-test "snapshot resumes xpcall handler yields and to-be-closed coroutine frames" {
+test "snapshot resumes xpcall yields and to-be-closed coroutine frames" {
     var lua = try api.State.init(a, .{});
     defer lua.deinit();
     try lua.doString(
         \\closed = 0
         \\co = coroutine.create(function()
         \\  local x <close> = setmetatable({}, {__close=function() closed=closed+1 end})
-        \\  return xpcall(function() error('failure') end, function(e) coroutine.yield('handler'); return e end)
+        \\  return xpcall(function() coroutine.yield('body'); error('failure') end, function(e) return 'handled ' .. e end)
         \\end)
-        \\local ok, v = coroutine.resume(co); assert(ok and v == 'handler')
+        \\local ok, v = coroutine.resume(co); assert(ok and v == 'body')
     , .{});
     var snapshot = try lua.snapshot(a);
     defer snapshot.deinit();
     for (0..2) |_| {
-        try lua.doString("local ok, success, err = coroutine.resume(co); assert(ok and not success and string.find(err, 'failure')); assert(closed == 1)", .{});
+        try lua.doString("local ok, success, err = coroutine.resume(co); assert(ok and not success and string.find(err, '^handled .*failure')); assert(closed == 1)", .{});
         try lua.reset();
         try std.testing.expectEqual(@as(i64, 0), try lua.getGlobal("closed", i64));
     }
@@ -1744,4 +1743,65 @@ test "snapshot restores io default files, write runs, and stdin position" {
     const bytes = try filesystem.readFileAlloc(a, "log.txt");
     defer a.free(bytes);
     try std.testing.expectEqual(@as(usize, 5000), bytes.len);
+}
+
+test "snapshot restores open file contents, positions, and closed state mid-write" {
+    var filesystem = api.MemoryFilesystem.init(a);
+    defer filesystem.deinit();
+    var lua = try api.State.init(a, .{ .stdlib = .full, .capabilities = .{ .filesystem = .{ .memory_rw = &filesystem } } });
+    defer lua.deinit();
+    try lua.doString(
+        \\done = assert(io.open('done.txt', 'w')); done:write('x'); done:close()
+        \\scratch = assert(io.tmpfile())
+        \\scratch:write('scratch'); scratch:seek('set', 2)
+        \\log = assert(io.open('log.txt', 'w+'))
+        \\log:write('abc')
+    , .{});
+    var snapshot = try lua.snapshot(a);
+    defer snapshot.deinit();
+    const check =
+        \\assert(io.type(log) == 'file' and log:seek('cur') == 3)
+        \\assert(log:seek('set') == 0 and log:read('a') == 'abc')
+        \\log:write('defgh'); assert(log:seek('end') == 8)
+        \\assert(scratch:seek('cur') == 2 and scratch:read('a') == 'ratch')
+        \\scratch:write(string.rep('z', 100000)); scratch:close()
+        \\assert(io.type(done) == 'closed file' and not pcall(done.write, done, 'y'))
+        \\assert(tostring(done) == 'file (closed)')
+        \\log:close(); assert(io.type(log) == 'closed file')
+        \\local extra = assert(io.tmpfile()); extra:write(string.rep('e', 100000))
+        \\collectgarbage()
+    ;
+    for (0..3) |_| {
+        try lua.doString(check, .{});
+        try lua.reset();
+    }
+    var worker = try snapshot.newState(a);
+    defer worker.deinit();
+    try worker.doString(check, .{});
+    try lua.doString("assert(log:seek('cur') == 3); assert(log:close())", .{});
+    const bytes = try filesystem.readFileAlloc(a, "log.txt");
+    defer a.free(bytes);
+    try std.testing.expectEqualStrings("abc", bytes);
+}
+
+test "snapshot reset restores userdata __gc registrations" {
+    const Box = struct { value: i64 };
+    var lua = try api.State.init(a, .{});
+    defer lua.deinit();
+    try lua.doString("count = 0 meta = { __gc = function() count = count + 1 end }", .{});
+    var meta = try lua.getGlobal("meta", api.Table);
+    defer meta.deinit();
+    var ud = try lua.newUserdata(Box, .{ .value = 5 }, .{ .metatable = meta });
+    try lua.setGlobal("keep", ud);
+    ud.deinit();
+    var snapshot = try lua.snapshot(a);
+    defer snapshot.deinit();
+    for (0..2) |_| {
+        try lua.doString("keep = nil collectgarbage() collectgarbage() assert(count == 1)", .{});
+        try lua.reset();
+        try lua.doString("assert(count == 0 and keep ~= nil)", .{});
+    }
+    var worker = try snapshot.newState(a);
+    defer worker.deinit();
+    try worker.doString("keep = nil collectgarbage() assert(count == 1)", .{});
 }

@@ -180,7 +180,6 @@ pub const names = [_][]const u8{
     "searchpath",
     "setupvalue",
     "zerde null",
-    "__zlua_file",
     "charpattern",
     "getregistry",
     "is_absolute",
@@ -194,19 +193,7 @@ pub const names = [_][]const u8{
     "zerde object",
     "[\x00-\x7F\xC2-\xFD][\x80-\xBF]*",
     "collectgarbage",
-    "__zlua_file_cut",
-    "__zlua_file_pos",
-    "__zlua_file_mode",
-    "__zlua_file_path",
-    "__zlua_file_blocks",
-    "__zlua_file_chunks",
-    "__zlua_file_closed",
-    "__zlua_file_synced",
-    "__zlua_file_content",
-    "__zlua_file_generation",
     "./?.lua;./?/init.lua",
-    "__zlua_file_standard",
-    "__zlua_file_buffer_mode",
 };
 
 const StaticMap = std.StaticStringMap(usize);

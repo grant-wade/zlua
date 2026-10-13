@@ -25,6 +25,7 @@
 - [runtime.chunk](runtime/chunk.md)
 - [reflection](reflection.md)
 - [runtime.value](runtime/value.md)
+- [runtime.number_format](runtime/number_format.md)
 - [runtime.execute](runtime/execute.md)
 - [testing.process](testing/process.md)
 - [runtime.state](runtime/state.md)
@@ -44,6 +45,7 @@
 - [stdlib.coroutine](stdlib/coroutine.md)
 - [stdlib.debug](stdlib/debug.md)
 - [stdlib.io](stdlib/io.md)
+- [stdlib.static_strings](stdlib/static_strings.md)
 - [stdlib.os](stdlib/os.md)
 - [stdlib.package](stdlib/package.md)
 - [stdlib.json](stdlib/json.md)
@@ -52,7 +54,6 @@
 - [stdlib.msgpack](stdlib/msgpack.md)
 - [stdlib.csv](stdlib/csv.md)
 - [stdlib.fs](stdlib/fs.md)
-- [stdlib.static_strings](stdlib/static_strings.md)
 - [runtime.vm](runtime/vm.md)
 - [runtime.tests](runtime/tests.md)
 - [runtime.internal](runtime/internal.md)
@@ -114,6 +115,8 @@
 - [ResumeResult](#alias-resumeresult)
 - [CallResult](#alias-callresult)
 - [ErrorRef](#alias-errorref)
+- [CallOptions](#alias-calloptions)
+- [InterruptHandle](#alias-interrupthandle)
 - [Context](#alias-context)
 - [Error](#alias-error)
 - [BytecodeLoadOptions](#alias-bytecodeloadoptions)
@@ -139,6 +142,7 @@
 - [CustomProcess](#alias-customprocess)
 - [ProcessResult](#alias-processresult)
 - [ProcessStatus](#alias-processstatus)
+- [OutputFlush](#alias-outputflush)
 
 ## Imports
 
@@ -432,6 +436,26 @@ pub const ErrorRef = api.ErrorRef;
 
 References: [`api.ErrorRef`](api.md#type-errorref)
 
+<a id="alias-calloptions"></a>
+
+## CallOptions
+
+```zig
+pub const CallOptions = api.CallOptions;
+```
+
+References: [`api.CallOptions`](api.md#type-calloptions)
+
+<a id="alias-interrupthandle"></a>
+
+## InterruptHandle
+
+```zig
+pub const InterruptHandle = api.InterruptHandle;
+```
+
+References: [`api.InterruptHandle`](api.md#type-interrupthandle)
+
 <a id="alias-context"></a>
 
 ## Context
@@ -681,4 +705,14 @@ pub const ProcessStatus = api.ProcessStatus;
 ```
 
 References: [`api.ProcessStatus`](api.md#alias-processstatus)
+
+<a id="alias-outputflush"></a>
+
+## OutputFlush
+
+```zig
+pub const OutputFlush = api.OutputFlush;
+```
+
+References: [`api.OutputFlush`](api.md#alias-outputflush)
 

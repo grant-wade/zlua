@@ -33,7 +33,6 @@ test "table get and set honor function and table metamethods; raw access bypasse
 
     try t.set("doubled", 21);
     try std.testing.expectEqual(@as(i64, 42), try t.rawGet("doubled", i64));
-    // Existing keys are assigned directly, as in Lua.
     try t.set("doubled", 5);
     try std.testing.expectEqual(@as(i64, 5), try t.rawGet("doubled", i64));
     try t.rawSet("bypass", 3);
@@ -47,7 +46,6 @@ test "table get and set honor function and table metamethods; raw access bypasse
     try std.testing.expectEqual(@as(?bool, null), try chained.rawGet("forwarded", ?bool));
     try lua.doString("assert(proxy.forwarded == true)", .{});
 
-    // Float keys normalize like Lua, and invalid keys raise Lua errors.
     try t.rawSet(2.0, "two");
     try std.testing.expectEqualStrings("two", try t.rawGet(2, []const u8));
     try std.testing.expectEqualStrings("two", try t.get(@as(f64, 2.0), []const u8));
@@ -57,7 +55,6 @@ test "table get and set honor function and table metamethods; raw access bypasse
     defer plain.deinit();
     try expectLuaError(&lua, plain.set(null, 1), "table index is nil");
 
-    // Metamethod failures surface as Lua errors.
     try lua.doString("bad = setmetatable({}, { __index = function() error('index boom') end, __newindex = function() error('newindex boom') end })", .{});
     var bad = try lua.getGlobal("bad", api.Table);
     defer bad.deinit();
@@ -131,7 +128,6 @@ test "table setMetatable matches lua_setmetatable and getMetatable round trips" 
         \\assert(not pcall(setmetatable, t, {}))
     , .{});
 
-    // The host API ignores __metatable protection like the C API.
     var replacement = try lua.createTable(.{});
     defer replacement.deinit();
     try t.setMetatable(replacement);
@@ -140,7 +136,6 @@ test "table setMetatable matches lua_setmetatable and getMetatable round trips" 
     try std.testing.expect((try t.getMetatable()) == null);
     try lua.doString("assert(getmetatable(t) == nil)", .{});
 
-    // Metatables from other states are rejected.
     var foreign = try api.State.init(a, .{});
     defer foreign.deinit();
     var foreign_meta = try foreign.createTable(.{});
@@ -214,7 +209,6 @@ test "table raw iterator roots keys values and the table across forced collectio
     var table = try lua.getGlobal("holder", api.Table);
     var iterator = try table.rawIterator();
     defer iterator.deinit();
-    // Only the iterator keeps the table alive from here.
     table.deinit();
     try lua.setGlobal("holder", null);
 
@@ -281,7 +275,6 @@ test "table raw iterator allows clearing and updating fields during traversal" {
         switch (entry.key) {
             .integer => |index| try table.rawSet(index, index * 100),
             .string => |key| {
-                // The key string is reachable only through the iterator once cleared.
                 try table.set(entry.key, null);
                 cleared += 1;
                 try lua.collect();
@@ -338,7 +331,6 @@ test "table pairs honors __pairs, closing values, and errors" {
         count += 1;
         try lua.collect();
         try std.testing.expectEqual(count, entry.key.integer);
-        // The value string is reachable only through the iterator's root.
         try std.testing.expectEqual(@as(usize, @intCast(count * count)), entry.value.string.len);
         for (entry.value.string) |byte| try std.testing.expectEqual(@as(u8, '#'), byte);
     }
@@ -346,7 +338,6 @@ test "table pairs honors __pairs, closing values, and errors" {
     try std.testing.expectEqual(@as(i64, 5), count);
     try lua.doString("assert(#closed == 1 and closed[1] == 'squares:nil', closed[1])", .{});
 
-    // rawIterator ignores __pairs.
     var raw = try squares.rawIterator();
     defer raw.deinit();
     const raw_entry = (try raw.next()).?;
@@ -373,7 +364,6 @@ test "table pairs honors __pairs, closing values, and errors" {
     try std.testing.expect((try early_iterator.next()) == null);
     try lua.doString("assert(#closed == 3 and closed[3] == 'early:nil')", .{});
 
-    // deinit releases without calling Lua.
     var abandoned = try early.pairs();
     _ = (try abandoned.next()).?;
     abandoned.deinit();
@@ -386,7 +376,6 @@ test "table pairs honors __pairs, closing values, and errors" {
     defer pairs_error.deinit();
     try expectLuaError(&lua, pairs_error.pairs(), "pairs boom");
 
-    // Without __pairs, pairs is raw traversal.
     var plain = try lua.getGlobal("plain", api.Table);
     defer plain.deinit();
     var plain_iterator = try plain.pairs();
@@ -488,7 +477,6 @@ test "table toSlice converts raw sequences with ownership and type errors" {
     var mixed = try lua.getGlobal("mixed", api.Table);
     defer mixed.deinit();
     try std.testing.expectError(error.TypeMismatch, mixed.toSlice(i64, a));
-    // Handles converted before a failure are released.
     var partial = try lua.getGlobal("partial", api.Table);
     defer partial.deinit();
     const roots_with_partial = lua.raw_state.activeRootCount();
@@ -582,13 +570,11 @@ test "preloadModule installs Lua loaders and host require reports errors" {
     try std.testing.expectEqual(@as(i64, 3), try lua.getGlobal("loads", i64));
     try expectLuaError(&lua, lua.require("missing", api.Table), "module 'missing' not found");
 
-    // Host require uses the built-in function even if Lua replaces the global.
     try lua.doString("require = function() error('replaced') end", .{});
     var again = try lua.require("lazy", api.Table);
     defer again.deinit();
     try std.testing.expectEqual(try result.get(0).identity(), try again.identity());
 
-    // setLoadedModule bypasses loaders and accepts any value.
     var eager = try lua.createModule("eager");
     defer eager.deinit();
     try eager.set("ready", true);

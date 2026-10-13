@@ -70,8 +70,6 @@ pub fn binary(op: ast.BinaryOp, lhs: Numeral, rhs: Numeral) ?Numeral {
             } };
         },
         .div, .idiv, .mod => blk: {
-            // Division by zero either raises an error or produces a value
-            // PUC prefers to compute at run time.
             if (toFloat(rhs) == 0) return null;
             break :blk arithmetic(op, lhs, rhs);
         },
@@ -97,7 +95,6 @@ pub fn constant(buffer: *[render_buffer_len]u8, value: Numeral) bytecode.Constan
 fn accept(result: Numeral) ?Numeral {
     switch (result) {
         .integer => return result,
-        // Folding neither NaN nor 0.0 avoids problems with -0.0.
         .number => |number| return if (std.math.isNan(number) or number == 0) null else result,
     }
 }

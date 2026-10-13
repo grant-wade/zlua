@@ -92,7 +92,6 @@ pub const Instruction = union(enum(u8)) {
     tfor_call: GenericFor,
     tfor_loop: GenericFor,
 
-    // Appended so the serialized tags of older instructions stay stable.
     concat_range: ConcatRange,
 };
 

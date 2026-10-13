@@ -132,8 +132,6 @@ pub fn suspendCoroutine(comptime State: type, self: *State, thread: *Thread, op:
     thread.yield_values.clearRetainingCapacity();
     thread.yield_values.appendSliceAssumeCapacity(values);
     for (values) |value| self.threadBarrier(thread, value);
-    // Registers written while the thread ran had no barrier, and a minor
-    // cycle during the run may have dropped it from the remembered set.
     @import("gc.zig").rememberObject(State, self, .{ .thread = thread });
     const frame = thread.frames.items[thread.frames.items.len - 1];
     thread.yield_result_base = frame.base + op.base;
@@ -234,8 +232,6 @@ pub fn closeCoroutine(comptime State: type, self: *State, target: *Thread, error
     const previous_thread = self.current_thread;
     const previous_parent = target.resume_parent;
     self.current_thread = target;
-    // A coroutine closing itself keeps its resumer, which the collector must
-    // still reach; linking the thread to itself would drop it.
     if (previous_thread != target) target.resume_parent = previous_thread;
     target.status = .running;
     target.closing = true;
@@ -248,8 +244,9 @@ pub fn closeCoroutine(comptime State: type, self: *State, target: *Thread, error
 
     const failure = error_value orelse target.close_error_value;
     defer target.close_error_value = null;
+    target.error_handler = .nil;
     self.closeFramesTo(target, 0, failure) catch |err| switch (err) {
-        error.RuntimeError, error.StackOverflow, error.UnsupportedOpcode => return self.currentErrorValue(),
+        error.RuntimeError, error.StackOverflow, error.UnsupportedOpcode => return try self.caughtErrorValue(self.currentErrorValue()),
         else => return err,
     };
     return failure;
@@ -283,7 +280,6 @@ pub fn resumeCoroutine(comptime State: type, self: *State, target: *Thread, args
     }
 
     self.last_error = null;
-    self.last_error_in_close = false;
     var first = true;
     while (true) {
         const execution = if (first) beginResume(State, self, target, args) else self.runThreadUntil(target, 0);
@@ -292,13 +288,13 @@ pub fn resumeCoroutine(comptime State: type, self: *State, target: *Thread, args
             error.CoroutineYield => return .{ .success = try copyValues(State, self, target.yield_values.items) },
             error.CoroutineClose => return .{ .success = try copyValues(State, self, &.{}) },
             error.RuntimeError, error.StackOverflow, error.UnsupportedOpcode => {
-                if (err == error.StackOverflow and self.last_error == null) self.last_error = .{ .diagnostic = "stack overflow" };
-                const error_value = self.currentErrorValue();
-                const completed = self.completeProtectedContinuationError(target, error_value) catch |continuation_err| switch (continuation_err) {
+                self.noteCaughtError(err);
+                const completed = self.completeProtectedContinuationError(target) catch |continuation_err| switch (continuation_err) {
                     error.CoroutineYield => return .{ .success = try copyValues(State, self, target.yield_values.items) },
                     else => return continuation_err,
                 };
                 if (completed) continue;
+                const error_value = try self.caughtErrorValue(self.currentErrorValue());
                 target.error_traceback = try self.snapshotCoroutineErrorTraceback(target);
                 target.close_error_value = error_value;
                 self.threadBarrier(target, error_value);
@@ -306,8 +302,6 @@ pub fn resumeCoroutine(comptime State: type, self: *State, target: *Thread, args
                 return .{ .failure = error_value };
             },
             error.Interrupted => {
-                // An interrupt kills the coroutine without running more Lua;
-                // closures keep the values of its captured locals.
                 self.closeUpvalues(target, 0);
                 return err;
             },

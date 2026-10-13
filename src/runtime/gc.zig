@@ -81,7 +81,7 @@ pub fn reserveQueues(comptime State: type, self: *State, extra: usize) !void {
     try self.gc_remembered.ensureTotalCapacity(self.allocator, count);
     try self.gc_weak.ensureTotalCapacity(self.allocator, self.table_allocations.items.len + extra);
     try self.gc_tables.ensureTotalCapacity(self.allocator, self.table_allocations.items.len + extra);
-    try self.gc_finalizers.ensureTotalCapacity(self.allocator, self.table_allocations.items.len + extra);
+    try self.gc_finalizers.ensureTotalCapacity(self.allocator, self.table_allocations.items.len + self.userdata_allocations.items.len + extra);
 }
 
 pub fn prepareRegistration(comptime State: type, self: *State, comptime field: []const u8) !void {
@@ -492,8 +492,9 @@ fn atomic(comptime State: type, self: *State) !void {
         }
     }
     clearWeakValues(State, self);
-    prepareTableFinalizers(State, self);
-    separateUserdataFinalizers(State, self);
+    separateUserdataFinalizers(State, self, .builtin);
+    prepareLuaFinalizers(State, self);
+    separateUserdataFinalizers(State, self, .host);
     drain(State, self);
     convergeEphemerons(State, self);
     clearWeakTables(State, self);
@@ -501,9 +502,6 @@ fn atomic(comptime State: type, self: *State) !void {
     if (!self.mark_all_stack_registers) clearUnmarkedStackSlots(State, self);
 }
 
-/// A precise collection marks only active locals, so other stack slots can
-/// still name objects it is about to free. Later conservative steps scan
-/// whole stacks; clearing those slots keeps them from marking freed memory.
 fn clearUnmarkedStackSlots(comptime State: type, self: *State) void {
     for (self.thread_allocations.items) |thread| {
         if (!isMarked(State, self, thread)) continue;
@@ -542,8 +540,7 @@ pub fn step(comptime State: type, self: *State, thread: ?*Thread, conservative: 
                 self.gc_major_pending = self.gc_params.minormajor != 0 and
                     self.gc_known_total > self.gc_major_base +| @max(256, self.gc_major_base *| @as(usize, @intCast(@max(self.gc_params.minormajor, 0))) / 100);
                 self.gc_phase = .finalize;
-                _ = try runUserdataFinalizerBatch(State, self, 1);
-                _ = try runFinalizerBatch(State, self, thread, 1);
+                if (try runFinalizerBatch(State, self, thread, 1)) _ = try runUserdataFinalizerBatch(State, self, 1);
                 drain(State, self);
                 self.gc_phase = .pause;
                 resetAutoGcThreshold(State, self);
@@ -588,8 +585,7 @@ pub fn step(comptime State: type, self: *State, thread: ?*Thread, conservative: 
             }
         },
         .finalize => {
-            const userdata_done = try runUserdataFinalizerBatch(State, self, 1);
-            if (try runFinalizerBatch(State, self, thread, 1) and userdata_done) {
+            if (try runFinalizerBatch(State, self, thread, 1) and try runUserdataFinalizerBatch(State, self, 1)) {
                 drain(State, self);
                 const major = self.gc_cycle == .major;
                 if (major) {
@@ -688,6 +684,8 @@ pub fn markRoots(comptime State: type, self: *State) void {
     while (pending_userdata) |userdata| : (pending_userdata = userdata.finalizer_next) markUserdata(State, self, userdata);
     var pending = self.table_pending_finalizer_head;
     while (pending) |table| : (pending = table.finalizer_next) markTable(State, self, table);
+    var lua_pending = self.userdata_lua_pending_head;
+    while (lua_pending) |userdata| : (lua_pending = userdata.lua_finalizer_next) markUserdata(State, self, userdata);
     var scope = self.userdata_scope;
     while (scope) |active| : (scope = active.previous) markUserdata(State, self, active.userdata);
     if (self.global_table) |table| if (isTrackedTable(State, self, table)) markTable(State, self, table);
@@ -705,8 +703,9 @@ pub fn markRoots(comptime State: type, self: *State) void {
     markRuntimeErrorPayload(State, self, self.last_error);
     if (self.current_thread) |thread| forceEnqueue(State, self, .{ .thread = thread });
     if (self.file_metatable) |metatable| if (isTrackedTable(State, self, metatable)) markTable(State, self, metatable);
-    if (self.io_input) |file| if (isTrackedTable(State, self, file)) markTable(State, self, file);
-    if (self.io_output) |file| if (isTrackedTable(State, self, file)) markTable(State, self, file);
+    if (self.fs_file_metatable) |metatable| if (isTrackedTable(State, self, metatable)) markTable(State, self, metatable);
+    if (self.io_input) |file| if (isTrackedUserdata(State, self, file)) markUserdata(State, self, file);
+    if (self.io_output) |file| if (isTrackedUserdata(State, self, file)) markUserdata(State, self, file);
     if (self.string_metatable) |metatable| if (isTrackedTable(State, self, metatable)) markTable(State, self, metatable);
     if (self.number_metatable) |metatable| if (isTrackedTable(State, self, metatable)) markTable(State, self, metatable);
     if (self.boolean_metatable) |metatable| if (isTrackedTable(State, self, metatable)) markTable(State, self, metatable);
@@ -870,9 +869,6 @@ fn traceThread(comptime State: type, self: *State, thread: *Thread) void {
     syncThreadStorage(State, self, thread);
     markValue(State, self, thread.entry);
     if (thread.resume_parent) |parent| {
-        // A resumer is suspended mid-call, so its stack and open upvalues still
-        // change. Trace it even when old: minor cycles skip old threads that
-        // are neither current nor remembered.
         if (isTrackedThread(State, self, parent) and !isOld(State, self, parent)) self.gc_found_young = true;
         forceEnqueue(State, self, .{ .thread = parent });
     }
@@ -883,12 +879,14 @@ fn traceThread(comptime State: type, self: *State, thread: *Thread) void {
     for (thread.yield_values.items) |value| markValue(State, self, value);
     if (thread.close_error_value) |value| markValue(State, self, value);
     if (thread.pending_unwind_error) |value| markValue(State, self, value);
-    inline for (.{ "error_traceback", "hook_return_name", "next_call_name", "next_call_namewhat", "traceback_native_name" }) |field| {
+    markValue(State, self, thread.error_handler);
+    inline for (.{ "error_traceback", "hook_return_name", "next_call_name", "next_call_namewhat" }) |field| {
         if (@field(thread, field)) |name| markString(State, self, name);
     }
     for (thread.protected_continuations.items) |continuation| {
         markRuntimeErrorPayload(State, self, continuation.context.last_error);
-        markValue(State, self, continuation.handler);
+        markValue(State, self, continuation.context.error_handler);
+        markValue(State, self, continuation.context.previous_error_handler);
     }
     for (thread.frames.items) |frame| {
         markClosure(State, self, frame.closure);
@@ -909,8 +907,6 @@ pub fn markThreadStack(comptime State: type, self: *State, thread: *Thread) void
     }
     const frames = thread.frames.items;
     for (frames, 0..) |frame, index| {
-        // Registers are allocated as a stack, so every register below a
-        // pending call is an active local or an operand still in use.
         const live_end = if (index + 1 < frames.len) frames[index + 1].base else innermostLiveEnd(frame);
         if (live_end > frame.base) markStackRange(State, self, thread, frame.base, live_end - frame.base);
         for (frame.proto.locals.items) |local| {
@@ -923,10 +919,6 @@ pub fn markThreadStack(comptime State: type, self: *State, thread: *Thread) void
     markStackRange(State, self, thread, thread.yield_result_base, thread.yield_result_count);
 }
 
-/// End of the live registers in a thread's newest frame. A call (such as
-/// `collectgarbage()`) keeps its callee and arguments; other instructions can
-/// only reach a precise collection through a native metamethod, so keep the
-/// whole frame. Registers above the end are dead, as above Lua's stack top.
 fn innermostLiveEnd(frame: types.CallFrame) usize {
     const whole = frame.base + frame.proto.max_registers;
     if (frame.pc == 0 or frame.pc > frame.proto.instructions.items.len) return whole;
@@ -934,7 +926,6 @@ fn innermostLiveEnd(frame: types.CallFrame) usize {
         .call, .tail_call => |op| op,
         else => return whole,
     };
-    // Variable argument lists end at the last results, which are marked separately.
     const args: usize = if (op.arg_count == bytecode.multret_count) 0 else op.arg_count;
     return frame.base + op.base + 1 + args;
 }
@@ -1142,18 +1133,22 @@ pub fn writeBarrier(comptime State: type, self: *State, parent: anytype, child: 
     markValue(State, self, child);
 }
 
-fn prepareTableFinalizers(comptime State: type, self: *State) void {
+fn prepareLuaFinalizers(comptime State: type, self: *State) void {
     self.gc_finalizers.clearRetainingCapacity();
     // gc_tables contains young and remembered tables in a minor collection.
     // Doubly linked registrations let us separate those objects without walking
     // the old registration list. Selection precedes resurrection tracing.
     for (self.gc_tables.items) |table| {
         if (!table.finalizer_registered or isMarked(State, self, table)) continue;
-        self.gc_finalizers.appendAssumeCapacity(table);
+        self.gc_finalizers.appendAssumeCapacity(.{ .table = table });
     }
-    std.mem.sort(*Table, self.gc_finalizers.items, {}, struct {
-        fn newer(_: void, a: *Table, b: *Table) bool {
-            return a.finalizer_order > b.finalizer_order;
+    for (self.userdata_allocations.items[if (self.gc_cycle == .minor) self.gc_old.userdata_allocations else 0..]) |userdata| {
+        if (!userdata.lua_finalizer_registered or userdata.finalized or isMarked(State, self, userdata)) continue;
+        self.gc_finalizers.appendAssumeCapacity(.{ .userdata = userdata });
+    }
+    std.mem.sort(types.FinalizerObject, self.gc_finalizers.items, {}, struct {
+        fn newer(_: void, a: types.FinalizerObject, b: types.FinalizerObject) bool {
+            return a.order() > b.order();
         }
     }.newer);
     var tail = &self.table_pending_finalizer_head;
@@ -1162,25 +1157,45 @@ fn prepareTableFinalizers(comptime State: type, self: *State) void {
         tail = &table.finalizer_next;
         tail_owner = table;
     }
-    for (self.gc_finalizers.items) |table| {
-        rollback.touch(table);
-        if (table.finalizer_prev) |prev| {
-            rollback.touch(prev);
-            prev.finalizer_next = table.finalizer_next;
-        } else self.table_finalizer_head = table.finalizer_next;
-        if (table.finalizer_next) |next| {
-            rollback.touch(next);
-            next.finalizer_prev = table.finalizer_prev;
-        }
-        if (tail_owner) |owner| rollback.touch(owner);
-        table.finalizer_prev = null;
-        tail.* = table;
-        tail_owner = table;
-        tail = &table.finalizer_next;
+    var userdata_tail = &self.userdata_lua_pending_head;
+    var userdata_tail_owner: ?*Userdata = null;
+    while (userdata_tail.*) |userdata| {
+        userdata_tail = &userdata.lua_finalizer_next;
+        userdata_tail_owner = userdata;
     }
+    for (self.gc_finalizers.items) |object| switch (object) {
+        .table => |table| {
+            rollback.touch(table);
+            if (table.finalizer_prev) |prev| {
+                rollback.touch(prev);
+                prev.finalizer_next = table.finalizer_next;
+            } else self.table_finalizer_head = table.finalizer_next;
+            if (table.finalizer_next) |next| {
+                rollback.touch(next);
+                next.finalizer_prev = table.finalizer_prev;
+            }
+            if (tail_owner) |owner| rollback.touch(owner);
+            table.finalizer_prev = null;
+            table.finalizer_order = self.nextFinalizerOrder();
+            tail.* = table;
+            tail_owner = table;
+            tail = &table.finalizer_next;
+        },
+        .userdata => |userdata| {
+            rollback.touch(userdata);
+            if (userdata_tail_owner) |owner| rollback.touch(owner);
+            userdata.lua_finalizer_order = self.nextFinalizerOrder();
+            userdata_tail.* = userdata;
+            userdata_tail_owner = userdata;
+            userdata_tail = &userdata.lua_finalizer_next;
+        },
+    };
     tail.* = null;
+    userdata_tail.* = null;
     var pending = self.table_pending_finalizer_head;
     while (pending) |table| : (pending = table.finalizer_next) markTable(State, self, table);
+    var lua_pending = self.userdata_lua_pending_head;
+    while (lua_pending) |userdata| : (lua_pending = userdata.lua_finalizer_next) markUserdata(State, self, userdata);
     self.gc_finalizers.clearRetainingCapacity();
     drain(State, self);
     convergeEphemerons(State, self);
@@ -1190,43 +1205,179 @@ pub fn runPendingFinalizers(comptime State: type, self: *State, thread: ?*Thread
     _ = try runFinalizerBatch(State, self, thread, std.math.maxInt(usize));
 }
 
+fn nextPendingFinalizer(comptime State: type, self: *State) ?types.FinalizerObject {
+    const table = self.table_pending_finalizer_head;
+    const userdata = self.userdata_lua_pending_head;
+    if (table) |t| {
+        if (userdata) |u| if (u.lua_finalizer_order < t.finalizer_order) return .{ .userdata = u };
+        return .{ .table = t };
+    }
+    if (userdata) |u| return .{ .userdata = u };
+    return null;
+}
+
 pub fn runFinalizerBatch(comptime State: type, self: *State, thread: ?*Thread, limit: usize) !bool {
-    if (self.table_pending_finalizer_head == null) return true;
+    if (nextPendingFinalizer(State, self) == null) return true;
     const active_thread = thread orelse return self.runFinalizersFromHost(limit);
     var count: usize = 0;
-    while (self.table_pending_finalizer_head) |table| {
+    while (nextPendingFinalizer(State, self)) |object| {
         if (count >= limit) return false;
         // protectedCall's initial stack reservation can fail before protected
         // execution begins. Keep the registration pending until it succeeds.
         const frame = active_thread.frames.items[active_thread.frames.items.len - 1];
         try active_thread.ensureStack(self.allocator, frame.base + @as(usize, frame.proto.max_registers) + 2, self.stackValueLimit());
         count += 1;
-        rollback.touch(table);
-        self.table_pending_finalizer_head = table.finalizer_next;
-        table.finalizer_next = null;
-        table.finalizer_registered = false;
-        const metatable = table.metatable orelse continue;
-        const finalizer = metatable.get(.{ .string = "__gc" });
-        if (finalizer == .nil) continue;
-        const previous_name = active_thread.next_call_name;
-        const previous_namewhat = active_thread.next_call_namewhat;
-        active_thread.next_call_name = "__gc";
-        active_thread.next_call_namewhat = "metamethod";
-        active_thread.native_call_depth += 1;
-        defer {
-            active_thread.next_call_name = previous_name;
-            active_thread.next_call_namewhat = previous_namewhat;
-            active_thread.native_call_depth -= 1;
+        switch (object) {
+            .table => |table| {
+                rollback.touch(table);
+                self.table_pending_finalizer_head = table.finalizer_next;
+                table.finalizer_next = null;
+                table.finalizer_registered = false;
+                try callLuaFinalizer(State, self, active_thread, .{ .table = table }, table.metatable);
+            },
+            .userdata => |userdata| {
+                rollback.touch(userdata);
+                self.userdata_lua_pending_head = userdata.lua_finalizer_next;
+                userdata.lua_finalizer_next = null;
+                userdata.lua_finalizer_registered = false;
+                try callLuaFinalizer(State, self, active_thread, .{ .userdata = userdata }, userdata.metatable);
+            },
         }
-        const result = try self.protectedCall(active_thread, finalizer, &.{.{ .table = table }});
-        value_mod.freeProtectedResult(self.allocator, result);
     }
     return true;
 }
 
-fn separateUserdataFinalizers(comptime State: type, self: *State) void {
+fn callLuaFinalizer(comptime State: type, self: *State, thread: *Thread, object: Value, metatable: ?*Table) !void {
+    const finalizer = (metatable orelse return).get(.{ .string = "__gc" });
+    if (finalizer == .nil) return;
+    const previous_name = thread.next_call_name;
+    const previous_namewhat = thread.next_call_namewhat;
+    thread.next_call_name = "__gc";
+    thread.next_call_namewhat = "metamethod";
+    thread.native_call_depth += 1;
+    defer {
+        thread.next_call_name = previous_name;
+        thread.next_call_namewhat = previous_namewhat;
+        thread.native_call_depth -= 1;
+    }
+    const result = try self.protectedCall(thread, finalizer, &.{object});
+    defer value_mod.freeProtectedResult(self.allocator, result);
+    switch (result) {
+        .success => {},
+        .failure => |failure| self.warnError("__gc", failure),
+    }
+}
+
+/// Registers `userdata` for its metatable's `__gc` when it is not yet
+/// registered, like `luaC_checkfinalizer`. Lua registers a file handle when
+/// it is created, so one given another metatable calls whatever `__gc` that
+/// metatable has when it dies, in its creation order; with the file
+/// metatable it keeps the built-in close.
+pub fn checkUserdataFinalizer(comptime State: type, self: *State, userdata: *Userdata) void {
+    if (userdata.lua_finalizer_registered or userdata.finalized or userdata.finalization_pending) return;
+    const metatable = userdata.metatable orelse return;
+    const builtin = State.isBuiltinUserdata(userdata);
+    if (builtin) {
+        if (metatable == self.file_metatable or metatable == self.fs_file_metatable) return;
+    } else if (metatable.get(.{ .string = "__gc" }) == .nil) return;
+    rollback.touch(userdata);
+    userdata.lua_finalizer_registered = true;
+    userdata.lua_finalizer_order = if (builtin) State.builtinFinalizerOrder(userdata) else self.nextFinalizerOrder();
+}
+
+pub fn hasUserdataLuaFinalizers(comptime State: type, self: *State) bool {
+    if (self.userdata_lua_pending_head != null) return true;
+    for (self.userdata_allocations.items) |userdata| {
+        if (userdata.lua_finalizer_registered) return true;
+    }
+    return false;
+}
+
+const CloseFinalizer = struct {
+    object: union(enum) { table: *Table, userdata: *Userdata, file: *Userdata },
+    order: u64,
+
+    fn newer(_: void, a: CloseFinalizer, b: CloseFinalizer) bool {
+        if (a.order != b.order) return a.order > b.order;
+        return a.object != .file and b.object == .file;
+    }
+};
+
+/// Calls all pending finalizers like `luaC_freeallobjects`, ignoring errors.
+/// An interrupt, `os.exit`, or a host failure stops the calls.
+pub fn runCloseFinalizers(comptime State: type, self: *State, thread: *Thread) void {
+    var finalizers = std.ArrayList(CloseFinalizer).empty;
+    defer finalizers.deinit(self.allocator);
+    collectCloseFinalizers(State, self, &finalizers) catch return;
+
+    var pending = self.table_pending_finalizer_head;
+    while (pending) |table| : (pending = table.finalizer_next) table.finalizer_registered = false;
+    var registered = self.table_finalizer_head;
+    while (registered) |table| {
+        registered = table.finalizer_next;
+        table.finalizer_registered = false;
+        table.finalizer_next = null;
+        table.finalizer_prev = null;
+    }
+    self.table_pending_finalizer_head = null;
+    self.table_finalizer_head = null;
+    while (self.userdata_lua_pending_head) |userdata| {
+        self.userdata_lua_pending_head = userdata.lua_finalizer_next;
+        userdata.lua_finalizer_next = null;
+    }
+    for (self.userdata_allocations.items) |userdata| userdata.lua_finalizer_registered = false;
+
+    const previous_collecting = self.is_collecting;
+    self.is_collecting = true;
+    defer self.is_collecting = previous_collecting;
+    for (finalizers.items) |finalizer| switch (finalizer.object) {
+        inline .table, .userdata => |object, tag| {
+            const frame = thread.frames.items[thread.frames.items.len - 1];
+            thread.ensureStack(self.allocator, frame.base + @as(usize, frame.proto.max_registers) + 2, self.stackValueLimit()) catch return;
+            self.resetInstructionBudget();
+            callLuaFinalizer(State, self, thread, @unionInit(Value, @tagName(tag), object), object.metatable) catch return;
+        },
+        .file => |userdata| _ = self.finalizeBuiltinUserdata(userdata),
+    };
+}
+
+fn collectCloseFinalizers(comptime State: type, self: *State, finalizers: *std.ArrayList(CloseFinalizer)) !void {
+    const a = self.allocator;
+    var pending_table = self.table_pending_finalizer_head;
+    var pending_lua = self.userdata_lua_pending_head;
+    while (pending_table != null or pending_lua != null) {
+        const take_table = if (pending_table) |table| if (pending_lua) |userdata| table.finalizer_order <= userdata.lua_finalizer_order else true else false;
+        if (take_table) {
+            try finalizers.append(a, .{ .object = .{ .table = pending_table.? }, .order = 0 });
+            pending_table = pending_table.?.finalizer_next;
+        } else {
+            try finalizers.append(a, .{ .object = .{ .userdata = pending_lua.? }, .order = 0 });
+            pending_lua = pending_lua.?.lua_finalizer_next;
+        }
+    }
+    var pending_userdata = self.userdata_pending_finalizer_head;
+    while (pending_userdata) |userdata| : (pending_userdata = userdata.finalizer_next) {
+        if (State.closeFinalizerOrder(userdata) != null) try finalizers.append(a, .{ .object = .{ .file = userdata }, .order = 0 });
+    }
+    const separated = finalizers.items.len;
+    var registered = self.table_finalizer_head;
+    while (registered) |table| : (registered = table.finalizer_next) try finalizers.append(a, .{ .object = .{ .table = table }, .order = table.finalizer_order });
+    for (self.userdata_allocations.items) |userdata| {
+        if (userdata.lua_finalizer_registered and userdata.lua_finalizer_next == null and self.userdata_lua_pending_head != userdata) {
+            try finalizers.append(a, .{ .object = .{ .userdata = userdata }, .order = userdata.lua_finalizer_order });
+        }
+        if (userdata.finalization_pending) continue;
+        const order = State.closeFinalizerOrder(userdata) orelse continue;
+        try finalizers.append(a, .{ .object = .{ .file = userdata }, .order = order });
+    }
+    std.mem.sort(CloseFinalizer, finalizers.items[separated..], {}, CloseFinalizer.newer);
+}
+
+fn separateUserdataFinalizers(comptime State: type, self: *State, comptime kind: enum { builtin, host }) void {
     for (self.userdata_allocations.items[if (self.gc_cycle == .minor) self.gc_old.userdata_allocations else 0..]) |userdata| {
         if (isMarked(State, self, userdata) or userdata.finalized or userdata.finalization_pending or userdata.finalizer == null) continue;
+        if (userdata.lua_finalizer_registered) continue;
+        if (State.isBuiltinUserdata(userdata) != (kind == .builtin)) continue;
         rollback.touch(userdata);
         userdata.finalization_pending = true;
         userdata.finalizer_next = self.userdata_pending_finalizer_head;
@@ -1250,6 +1401,7 @@ fn runUserdataFinalizerBatch(comptime State: type, self: *State, limit: usize) !
         userdata.finalizer_next = null;
         userdata.finalization_pending = false;
         userdata.finalized = true;
+        if (self.finalizeBuiltinUserdata(userdata)) continue;
         if (userdata.payload) |payload| payload.finalize() else if (userdata.finalizer) |finalizer| finalizer(userdata.ptr, userdata.finalizer_data);
     }
     return true;
@@ -1435,9 +1587,6 @@ pub fn isTrackedUpvalue(comptime State: type, self: *State, upvalue: *Upvalue) b
     return trackedIn(State, self, "upvalue_allocations", upvalue);
 }
 
-/// Closures, upvalues, threads, and userdata share one address index. Check the
-/// owning registry too: conservative stack scans can see a stale pointer whose
-/// address now belongs to an object of another kind.
 fn trackedIn(comptime State: type, self: *State, comptime field: []const u8, pointer: anytype) bool {
     const index = self.object_allocation_index.get(@intFromPtr(pointer)) orelse return false;
     const items = @field(self, field).items;
@@ -1520,8 +1669,7 @@ pub fn noteTableMetatableChanged(comptime State: type, self: *State, table: *Tab
         if (table.metatable) |metatable| {
             if (metatable.get(.{ .string = "__gc" }) != .nil) {
                 table.finalizer_registered = true;
-                self.table_finalizer_serial += 1;
-                table.finalizer_order = self.table_finalizer_serial;
+                table.finalizer_order = self.nextFinalizerOrder();
                 table.finalizer_prev = null;
                 if (self.table_finalizer_head) |head| {
                     rollback.touch(head);

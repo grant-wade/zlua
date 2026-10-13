@@ -3,7 +3,7 @@
 ## Navigation
 
 - [API Index](README.md)
-- Submodules: [stdlib.base](stdlib/base.md), [stdlib.table](stdlib/table.md), [stdlib.string](stdlib/string.md), [stdlib.math](stdlib/math.md), [stdlib.utf8](stdlib/utf8.md), [stdlib.coroutine](stdlib/coroutine.md), [stdlib.debug](stdlib/debug.md), [stdlib.io](stdlib/io.md), [stdlib.os](stdlib/os.md), [stdlib.package](stdlib/package.md), [stdlib.json](stdlib/json.md), [stdlib.zerde_lua](stdlib/zerde_lua.md), [stdlib.toml](stdlib/toml.md), [stdlib.msgpack](stdlib/msgpack.md), [stdlib.csv](stdlib/csv.md), [stdlib.fs](stdlib/fs.md), [stdlib.static_strings](stdlib/static_strings.md)
+- Submodules: [stdlib.base](stdlib/base.md), [stdlib.table](stdlib/table.md), [stdlib.string](stdlib/string.md), [stdlib.math](stdlib/math.md), [stdlib.utf8](stdlib/utf8.md), [stdlib.coroutine](stdlib/coroutine.md), [stdlib.debug](stdlib/debug.md), [stdlib.io](stdlib/io.md), [stdlib.static_strings](stdlib/static_strings.md), [stdlib.os](stdlib/os.md), [stdlib.package](stdlib/package.md), [stdlib.json](stdlib/json.md), [stdlib.zerde_lua](stdlib/zerde_lua.md), [stdlib.toml](stdlib/toml.md), [stdlib.msgpack](stdlib/msgpack.md), [stdlib.csv](stdlib/csv.md), [stdlib.fs](stdlib/fs.md)
 
 <details>
 <summary>All documents</summary>
@@ -26,6 +26,7 @@
 - [runtime.chunk](runtime/chunk.md)
 - [reflection](reflection.md)
 - [runtime.value](runtime/value.md)
+- [runtime.number_format](runtime/number_format.md)
 - [runtime.execute](runtime/execute.md)
 - [testing.process](testing/process.md)
 - [runtime.state](runtime/state.md)
@@ -45,6 +46,7 @@
 - [stdlib.coroutine](stdlib/coroutine.md)
 - [stdlib.debug](stdlib/debug.md)
 - [stdlib.io](stdlib/io.md)
+- [stdlib.static_strings](stdlib/static_strings.md)
 - [stdlib.os](stdlib/os.md)
 - [stdlib.package](stdlib/package.md)
 - [stdlib.json](stdlib/json.md)
@@ -53,7 +55,6 @@
 - [stdlib.msgpack](stdlib/msgpack.md)
 - [stdlib.csv](stdlib/csv.md)
 - [stdlib.fs](stdlib/fs.md)
-- [stdlib.static_strings](stdlib/static_strings.md)
 - [runtime.vm](runtime/vm.md)
 - [runtime.tests](runtime/tests.md)
 - [runtime.internal](runtime/internal.md)
@@ -90,7 +91,6 @@
 ## Functions
 
 - [initHints](#fn-inithints)
-- [initHintsWithStdin](#fn-inithintswithstdin)
 - [openLibraries](#fn-openlibraries)
 - [installGlobalTable](#fn-installglobaltable)
 - [installGlobalTableWithHint](#fn-installglobaltablewithhint)
@@ -374,16 +374,6 @@ pub const InitHints = struct {
 
 ```zig
 pub fn initHints(selection: LibrarySelection) InitHints
-```
-
-References: [`LibrarySelection`](#type-libraryselection), [`InitHints`](#type-inithints)
-
-<a id="fn-inithintswithstdin"></a>
-
-## initHintsWithStdin
-
-```zig
-pub fn initHintsWithStdin(selection: LibrarySelection, stdin: []const u8) InitHints
 ```
 
 References: [`LibrarySelection`](#type-libraryselection), [`InitHints`](#type-inithints)

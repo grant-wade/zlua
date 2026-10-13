@@ -309,18 +309,14 @@ pub fn prepareProtoTree(proto: *proto_mod.Proto) !void {
         value.* = switch (constant) {
             .nil => .nil,
             .boolean => |boolean| .{ .boolean = boolean },
-            // Malformed lexemes keep their lazy load-time error.
             .integer => |lexeme| parseIntegerLiteral(lexeme) catch .{ .string = "" },
             .number => |lexeme| if (parseLuaNumber(lexeme)) |number| .{ .number = number } else |_| .{ .string = "" },
-            // Strings are interned per State and cached by each closure.
             .string => .{ .string = "" },
         };
     }
     proto.constant_values = values;
     proto.named_vararg_readonly = proto.hasReadOnlyNamedVararg();
     const instructions = proto.instructions.items;
-    // The fast loop checks the instruction bound only at branches, so the
-    // final opcode must leave sequential dispatch (CLOSE checks it itself).
     const last_stops = instructions.len != 0 and switch (instructions[instructions.len - 1]) {
         .ret, .tail_call, .close => true,
         else => false,
@@ -474,13 +470,7 @@ pub fn appendValue(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value:
             try out.appendSlice(allocator, formatNumber(&buffer, value));
         },
         .string => |string| try out.appendSlice(allocator, string),
-        .table => |table| if (isFileValue(value)) {
-            if (isClosedFileValue(value)) {
-                try out.appendSlice(allocator, "file (closed)");
-            } else {
-                try appendFmt(allocator, out, "file (0x{x})", .{@intFromPtr(table)});
-            }
-        } else try appendFmt(allocator, out, "table: 0x{x}", .{@intFromPtr(table)}),
+        .table => |table| try appendFmt(allocator, out, "table: 0x{x}", .{@intFromPtr(table)}),
         .userdata => |userdata| try appendFmt(allocator, out, "userdata: 0x{x}", .{@intFromPtr(userdata)}),
         .closure => |closure| try appendFmt(allocator, out, "function: 0x{x}", .{@intFromPtr(closure)}),
         .thread => |thread| try appendFmt(allocator, out, "thread: 0x{x}", .{@intFromPtr(thread)}),
@@ -520,16 +510,6 @@ pub fn appendValue(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value:
             try out.appendSlice(allocator, native.name());
         },
     }
-}
-
-pub fn isFileValue(value: Value) bool {
-    return value == .table and value.table.get(.{ .string = "__zlua_file" }) != .nil;
-}
-
-pub fn isClosedFileValue(value: Value) bool {
-    if (!isFileValue(value)) return false;
-    const closed = value.table.get(.{ .string = "__zlua_file_closed" });
-    return closed == .boolean and closed.boolean;
 }
 
 pub fn appendNamedValue(allocator: std.mem.Allocator, out: *std.ArrayList(u8), name: []const u8, value: Value) !void {

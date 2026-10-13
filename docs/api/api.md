@@ -25,6 +25,7 @@
 - [runtime.chunk](runtime/chunk.md)
 - [reflection](reflection.md)
 - [runtime.value](runtime/value.md)
+- [runtime.number_format](runtime/number_format.md)
 - [runtime.execute](runtime/execute.md)
 - [testing.process](testing/process.md)
 - [runtime.state](runtime/state.md)
@@ -44,6 +45,7 @@
 - [stdlib.coroutine](stdlib/coroutine.md)
 - [stdlib.debug](stdlib/debug.md)
 - [stdlib.io](stdlib/io.md)
+- [stdlib.static_strings](stdlib/static_strings.md)
 - [stdlib.os](stdlib/os.md)
 - [stdlib.package](stdlib/package.md)
 - [stdlib.json](stdlib/json.md)
@@ -52,7 +54,6 @@
 - [stdlib.msgpack](stdlib/msgpack.md)
 - [stdlib.csv](stdlib/csv.md)
 - [stdlib.fs](stdlib/fs.md)
-- [stdlib.static_strings](stdlib/static_strings.md)
 - [runtime.vm](runtime/vm.md)
 - [runtime.tests](runtime/tests.md)
 - [runtime.internal](runtime/internal.md)
@@ -149,6 +150,8 @@ and should not be treated as a stable embedding contract.
 - [IoCapability](#type-iocapability)
 - [Capabilities](#type-capabilities)
 - [Limits](#type-limits)
+- [CallOptions](#type-calloptions)
+- [InterruptHandle](#type-interrupthandle)
 - [InstructionBudget](#type-instructionbudget)
 - [GcOptions](#type-gcoptions)
 - [DebugOptions](#type-debugoptions)
@@ -180,6 +183,7 @@ and should not be treated as a stable embedding contract.
 - [LibrarySet](#alias-libraryset)
 - [MemoryFile](#alias-memoryfile)
 - [MemoryFilesystem](#alias-memoryfilesystem)
+- [OutputFlush](#alias-outputflush)
 - [FilesystemCapability](#alias-filesystemcapability)
 - [CustomFilesystem](#alias-customfilesystem)
 - [HostDirectory](#alias-hostdirectory)
@@ -199,6 +203,7 @@ and should not be treated as a stable embedding contract.
 - [ProcessStatus](#alias-processstatus)
 - [PopenResult](#alias-popenresult)
 - [ExitRequest](#alias-exitrequest)
+- [WarningHandler](#alias-warninghandler)
 - [GcMode](#alias-gcmode)
 - [GcParam](#alias-gcparam)
 - [GcParams](#alias-gcparams)
@@ -211,12 +216,14 @@ and should not be treated as a stable embedding contract.
 
 `LuaError`: Lua raised a syntax or runtime error.
 `LuaExit`: Lua called `os.exit` with process access; read `State.exitRequest`.
-Lua cannot catch an exit with `pcall`.
+`Interrupted`: the host interrupted execution through an `InterruptHandle`.
+Lua cannot catch an exit or an interrupt with `pcall`, `xpcall`, or coroutines.
 
 ```zig
 pub const Error = error{
     LuaError,
     LuaExit,
+    Interrupted,
 };
 ```
 
@@ -339,6 +346,18 @@ pub const MemoryFilesystem = runtime.MemoryFilesystem;
 
 References: [`runtime.MemoryFilesystem`](runtime.md#alias-memoryfilesystem)
 
+<a id="alias-outputflush"></a>
+
+## OutputFlush
+
+When Lua output writers are flushed beyond explicit flush points.
+
+```zig
+pub const OutputFlush = runtime.OutputFlush;
+```
+
+References: [`runtime.OutputFlush`](runtime.md#alias-outputflush)
+
 <a id="type-iocapability"></a>
 
 ## IoCapability
@@ -355,6 +374,17 @@ pub const IoCapability = struct {
     stdout: ?*std.Io.Writer = null,
     /// Optional writer used for Lua stderr.
     stderr: ?*std.Io.Writer = null,
+    /// When the runtime flushes `stdout` besides `io.flush`, `os.exit`, and
+    /// child process starts. `.line` behaves like a line-buffered C stream.
+    stdout_flush: OutputFlush = .explicit,
+    /// When the runtime flushes `stderr`; `.always` behaves like unbuffered C stderr.
+    stderr_flush: OutputFlush = .explicit,
+    /// Start with Lua warnings on, as `lua -W` does. Lua code switches them
+    /// with `warn("@on")` and `warn("@off")`.
+    warnings: bool = false,
+    /// Receives each complete warning instead of `stderr`, which otherwise
+    /// gets `Lua warning: <message>` lines. It must not call back into the state.
+    warning_handler: ?WarningHandler = null,
 };
 ```
 
@@ -602,6 +632,18 @@ pub const ExitRequest = runtime.ExitRequest;
 
 References: [`runtime.ExitRequest`](runtime.md#alias-exitrequest)
 
+<a id="alias-warninghandler"></a>
+
+## WarningHandler
+
+Host receiver for Lua warnings; see `IoCapability.warning_handler`.
+
+```zig
+pub const WarningHandler = runtime.WarningHandler;
+```
+
+References: [`runtime.WarningHandler`](runtime.md#alias-warninghandler)
+
 <a id="type-capabilities"></a>
 
 ## Capabilities
@@ -662,6 +704,84 @@ pub const Limits = struct {
     max_file_bytes: usize = runtime.default_max_file_bytes,
 };
 ```
+
+<a id="type-calloptions"></a>
+
+## CallOptions
+
+[Options](#type-options) for `Function.callWith` and `Function.protectedCallWith`.
+
+```zig
+pub const CallOptions = struct {
+    /// Maximum VM instructions for this call, including nested Lua calls,
+    /// callbacks that call back into Lua, and coroutines resumed inside it.
+    /// Nested budgeted calls keep the tighter of the two budgets. Exhaustion
+    /// raises the same "instruction limit exceeded" error as `Limits.max_instructions`,
+    /// which still applies. Null adds no per-call budget.
+    max_instructions: ?u64 = null,
+    /// Capture a traceback at the error point, before the failing frames unwind.
+    /// Read it with `ErrorRef.traceback`; after `callWith`, take it with `State.takeErrorValue`.
+    traceback: bool = false,
+    /// Message handler with `xpcall` semantics. It runs at the error point, on
+    /// top of the failing frames and before `__close` handlers, and its first
+    /// result becomes the error value; an error inside it is handled again
+    /// until Lua's C-stack limit. Must belong to the called state.
+    message_handler: ?Function = null,
+};
+```
+
+<a id="type-interrupthandle"></a>
+
+## InterruptHandle
+
+Copyable, thread-safe handle that asks a `State` to stop running Lua.
+
+`interrupt` may be called from any thread while the [State](#type-state) is alive; join
+threads that use the handle before `State.deinit`. Execution stops at the
+next safepoint: loop back edges, calls, every few hundred instructions,
+and inside long-running library functions. The interrupted host call
+returns `error.Interrupted`. Lua `pcall`, `xpcall`, and coroutines cannot
+catch it, and pending `__close` handlers of the interrupted frames do not
+run. The request is consumed when the error reaches the host; a request
+made while no Lua is running applies to the next execution that reaches a
+safepoint, unless `State.clearInterrupt` drops it first.
+
+```zig
+pub const InterruptHandle = struct {
+    control: *runtime.InterruptControl,
+};
+```
+
+### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [interrupt](#fn-interrupthandle-interrupt) | `self: InterruptHandle` | `void` | Requests that the State stop at its next safepoint. |
+| [isPending](#fn-interrupthandle-ispending) | `self: InterruptHandle` | `bool` | Reports whether an interrupt is pending. |
+
+<a id="fn-interrupthandle-interrupt"></a>
+
+### InterruptHandle.interrupt
+
+Requests that the [State](#type-state) stop at its next safepoint.
+
+```zig
+pub fn interrupt(self: InterruptHandle) void
+```
+
+References: [`InterruptHandle`](#type-interrupthandle)
+
+<a id="fn-interrupthandle-ispending"></a>
+
+### InterruptHandle.isPending
+
+Reports whether an interrupt is pending.
+
+```zig
+pub fn isPending(self: InterruptHandle) bool
+```
+
+References: [`InterruptHandle`](#type-interrupthandle)
 
 <a id="type-instructionbudget"></a>
 
@@ -910,6 +1030,8 @@ pub const State = struct {
     raw_state: runtime.State,
     /// Registry root for the last captured Lua error value.
     last_error_root: ?usize = null,
+    /// Traceback captured with the last error value by `Function.callWith`.
+    last_error_traceback: ?[]u8 = null,
     /// Owned memory-file entries visible to the configured memory filesystem.
     memory_files: std.ArrayList(MemoryFile) = .empty,
     /// Tracks whether each memory-file entry owns its contents slice.
@@ -924,12 +1046,15 @@ pub const State = struct {
 | Name | Parameters | Return Type | Description |
 | --- | --- | --- | --- |
 | [init](#fn-state-init) | `state_allocator: std.mem.Allocator, options: Options` | `!State` | Creates a new Lua state using &#96;state_allocator&#96; and the supplied options. |
-| [deinit](#fn-state-deinit) | `self: *State` | `void` | Releases all resources owned by the state and invalidates outstanding API handles. |
+| [deinit](#fn-state-deinit) | `self: *State` | `void` | Releases all resources owned by the state and invalidates outstanding API handles. First calls pending finalizers like &#96;lua_close&#96;: &#96;__gc&#96; metamethods run, newest first, with errors ignored, and open Lua file handles are closed, flushing buffered writes through the filesystem capability and ignoring failures. Each finalizer gets a fresh &#96;max_instructions&#96; budget; a pending interrupt stops them, as does &#96;os.exit&#96;, whose request only a custom process &#96;exit&#96; callback observes. &#96;reset&#96; calls no finalizers. |
 | [snapshot](#fn-state-snapshot) | `self: *State, snapshot_allocator: std.mem.Allocator` | `!Snapshot` | Captures an idle VM, including suspended Lua coroutines, and installs a new baseline. Earlier Snapshots remain independently usable; reset restores only the new baseline. Uses &#96;snapshot_allocator&#96; for snapshot storage. Borrowed host capabilities must outlive the snapshot and states created from it. The source retains the baseline after the public wrapper is destroyed; keep the snapshot allocator valid until all retaining states release it. |
-| [reset](#fn-state-reset) | `self: *State` | `!void` | Incrementally restores this State's active baseline and invalidates prior handles. Returns &#96;error.NoSnapshot&#96; until capture installs a baseline. Unchanged baselines without eager resource hooks allocate nothing. Fallible eager userdata copies are prepared before rollback commits. Atomic failure semantics do not make State concurrently usable. Rollback skips Lua &#96;__gc&#96; and &#96;__close&#96; handlers. |
+| [reset](#fn-state-reset) | `self: *State` | `!void` | Incrementally restores this State's active baseline and invalidates prior handles. Returns &#96;error.NoSnapshot&#96; until capture installs a baseline. Unchanged baselines without eager resource hooks allocate nothing. Fallible eager userdata copies are prepared before rollback commits. Atomic failure semantics do not make State concurrently usable. Rollback skips Lua &#96;__gc&#96; and &#96;__close&#96; handlers, and discards file handles opened since the baseline without flushing them. |
 | [allocator](#fn-state-allocator) | `self: *State` | `std.mem.Allocator` | Returns the allocator used for API-owned allocations returned to the host. |
 | [instructionBudget](#fn-state-instructionbudget) | `self: *const State` | `InstructionBudget` | Returns the cumulative instruction budget usage for this state. |
 | [resetInstructionBudget](#fn-state-resetinstructionbudget) | `self: *State` | `void` | Resets the cumulative instruction counter to zero. |
+| [interruptHandle](#fn-state-interrupthandle) | `self: *State` | `!InterruptHandle` | Returns a thread-safe handle that interrupts this State. See &#96;InterruptHandle&#96;. |
+| [clearInterrupt](#fn-state-clearinterrupt) | `self: *State` | `void` | Drops a pending interrupt request, for example one that arrived after the script it targeted had already finished. |
+| [isInterruptPending](#fn-state-isinterruptpending) | `self: *const State` | `bool` | Reports whether an interrupt request is pending. |
 | [openLibs](#fn-state-openlibs) | `self: *State, selection: Stdlib` | `!void` | Opens additional standard libraries after state creation. |
 | [collect](#fn-state-collect) | `self: *State` | `!void` | Runs a full collection and pending finalizers, even while automatic GC is stopped. |
 | [stepGc](#fn-state-stepgc) | `self: *State, budget: GcBudget` | `!GcStepResult` | Runs at most the requested number of basic steps, even while stopped. This limits work, not elapsed time; large objects and finalizers may take longer. |
@@ -967,7 +1092,8 @@ pub const State = struct {
 | [doFile](#fn-state-dofile) | `self: *State, path: []const u8, options: DoOptions` | `!void` | Loads and immediately executes a chunk from the configured filesystem. |
 | [exitRequest](#fn-state-exitrequest) | `self: *const State` | `?ExitRequest` | Returns the exit recorded by Lua's &#96;os.exit&#96; after an API call returned &#96;error.LuaExit&#96;, or null. When &#96;close&#96; is true, Lua asked for the state to be closed; its pending to-be-closed variables have already run. |
 | [clearExitRequest](#fn-state-clearexitrequest) | `self: *State` | `void` | Clears a recorded &#96;os.exit&#96; request so the state can keep running Lua. |
-| [errorMessage](#fn-state-errormessage) | `self: *State` | `![]const u8` | Formats the last Lua error value as an allocated message. |
+| [setWarnings](#fn-state-setwarnings) | `self: *State, on: bool` | `void` | Turns Lua warnings on or off, like &#96;warn("@on")&#96; and &#96;warn("@off")&#96;. |
+| [errorMessage](#fn-state-errormessage) | `self: *State` | `![]const u8` | Formats the last Lua error value as an allocated message. A nil error object is described as &#96;<no error object>&#96;. |
 | [takeErrorValue](#fn-state-takeerrorvalue) | `self: *State` | `?ErrorRef` | Takes ownership of the last captured Lua error value, if one exists. |
 
 <a id="fn-state-init"></a>
@@ -990,6 +1116,12 @@ References: [`Options`](#type-options), [`State`](#type-state)
 ### State.deinit
 
 Releases all resources owned by the state and invalidates outstanding API handles.
+First calls pending finalizers like `lua_close`: `__gc` metamethods
+run, newest first, with errors ignored, and open Lua file handles are
+closed, flushing buffered writes through the filesystem capability
+and ignoring failures. Each finalizer gets a fresh `max_instructions`
+budget; a pending interrupt stops them, as does `os.exit`, whose request
+only a custom process `exit` callback observes. `reset` calls no finalizers.
 
 ```zig
 pub fn deinit(self: *State) void
@@ -1023,7 +1155,8 @@ Returns `error.NoSnapshot` until capture installs a baseline.
 Unchanged baselines without eager resource hooks allocate nothing.
 Fallible eager userdata copies are prepared before rollback commits.
 Atomic failure semantics do not make [State](#type-state) concurrently usable.
-Rollback skips Lua `__gc` and `__close` handlers.
+Rollback skips Lua `__gc` and `__close` handlers, and discards file
+handles opened since the baseline without flushing them.
 
 ```zig
 pub fn reset(self: *State) !void
@@ -1063,6 +1196,47 @@ Resets the cumulative instruction counter to zero.
 
 ```zig
 pub fn resetInstructionBudget(self: *State) void
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-interrupthandle"></a>
+
+### State.interruptHandle
+
+Returns a thread-safe handle that interrupts this [State](#type-state). See `InterruptHandle`.
+
+The first call allocates the shared interrupt flag; later calls return
+handles to the same flag, which stays valid across `reset` until `deinit`.
+While a handle exists, the dispatch loop polls the flag periodically.
+
+```zig
+pub fn interruptHandle(self: *State) !InterruptHandle
+```
+
+References: [`State`](#type-state), [`InterruptHandle`](#type-interrupthandle)
+
+<a id="fn-state-clearinterrupt"></a>
+
+### State.clearInterrupt
+
+Drops a pending interrupt request, for example one that arrived after
+the script it targeted had already finished.
+
+```zig
+pub fn clearInterrupt(self: *State) void
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-isinterruptpending"></a>
+
+### State.isInterruptPending
+
+Reports whether an interrupt request is pending.
+
+```zig
+pub fn isInterruptPending(self: *const State) bool
 ```
 
 References: [`State`](#type-state)
@@ -1542,11 +1716,24 @@ pub fn clearExitRequest(self: *State) void
 
 References: [`State`](#type-state)
 
+<a id="fn-state-setwarnings"></a>
+
+### State.setWarnings
+
+Turns Lua warnings on or off, like `warn("@on")` and `warn("@off")`.
+
+```zig
+pub fn setWarnings(self: *State, on: bool) void
+```
+
+References: [`State`](#type-state)
+
 <a id="fn-state-errormessage"></a>
 
 ### State.errorMessage
 
-Formats the last Lua error value as an allocated message.
+Formats the last Lua error value as an allocated message. A nil
+error object is described as `<no error object>`.
 
 The caller owns the returned slice and must free it with `allocator()`.
 
@@ -2057,7 +2244,9 @@ pub const Function = struct {
 | --- | --- | --- | --- |
 | [deinit](#fn-function-deinit) | `self: *Function` | `void` | Releases this function handle's root. |
 | [call](#fn-function-call) | `self: Function, args: anytype, comptime R: type` | `!R` | Calls the function with tuple arguments and converts the first or tuple result to &#96;R&#96;. &#96;[]const u8&#96; results borrow VM memory and may be collected by the next GC-capable API call if nothing references them; see &#96;Value.string&#96;. |
+| [callWith](#fn-function-callwith) | `self: Function, args: anytype, comptime R: type, options: CallOptions` | `!R` | Like &#96;call&#96;, with a per-call instruction budget, traceback capture, or message handler; see &#96;CallOptions&#96;. On &#96;error.LuaError&#96;, the handled error value and any traceback are captured on the state for &#96;errorMessage&#96; and &#96;takeErrorValue&#96;. |
 | [protectedCall](#fn-function-protectedcall) | `self: Function, args: anytype, comptime R: type` | `!CallResult(R)` | Calls the function and returns Lua failures as an &#96;ErrorRef&#96; instead of &#96;error.LuaError&#96;. Successful results convert and borrow strings as in &#96;call&#96;. |
+| [protectedCallWith](#fn-function-protectedcallwith) | `self: Function, args: anytype, comptime R: type, options: CallOptions` | `!CallResult(R)` | Like &#96;protectedCall&#96;, with a per-call instruction budget, traceback capture, or message handler; see &#96;CallOptions&#96;. A captured traceback is owned by the returned &#96;ErrorRef&#96;. |
 | [dumpBytecode](#fn-function-dumpbytecode) | `self: Function, options: BytecodeDumpOptions` | `![]const u8` | Dumps this Lua function to zlua bytecode. Native host callbacks return &#96;error.TypeMismatch&#96;. |
 
 <a id="fn-function-deinit"></a>
@@ -2088,6 +2277,21 @@ pub fn call(self: Function, args: anytype, comptime R: type) !R
 
 References: [`Function`](#type-function)
 
+<a id="fn-function-callwith"></a>
+
+### Function.callWith
+
+Like `call`, with a per-call instruction budget, traceback capture, or
+message handler; see `CallOptions`. On `error.LuaError`, the handled
+error value and any traceback are captured on the state for `errorMessage`
+and `takeErrorValue`.
+
+```zig
+pub fn callWith(self: Function, args: anytype, comptime R: type, options: CallOptions) !R
+```
+
+References: [`Function`](#type-function), [`CallOptions`](#type-calloptions)
+
 <a id="fn-function-protectedcall"></a>
 
 ### Function.protectedCall
@@ -2100,6 +2304,20 @@ pub fn protectedCall(self: Function, args: anytype, comptime R: type) !CallResul
 ```
 
 References: [`Function`](#type-function)
+
+<a id="fn-function-protectedcallwith"></a>
+
+### Function.protectedCallWith
+
+Like `protectedCall`, with a per-call instruction budget, traceback
+capture, or message handler; see `CallOptions`. A captured traceback is
+owned by the returned `ErrorRef`.
+
+```zig
+pub fn protectedCallWith(self: Function, args: anytype, comptime R: type, options: CallOptions) !CallResult(R)
+```
+
+References: [`Function`](#type-function), [`CallOptions`](#type-calloptions)
 
 <a id="fn-function-dumpbytecode"></a>
 
@@ -2187,6 +2405,8 @@ Rooted handle to a Lua error value.
 ```zig
 pub const ErrorRef = struct {
     ref: Ref,
+    /// Traceback owned by this handle; read it with `traceback`.
+    traceback_text: ?[]const u8 = null,
 };
 ```
 
@@ -2194,18 +2414,35 @@ pub const ErrorRef = struct {
 
 | Name | Parameters | Return Type | Description |
 | --- | --- | --- | --- |
-| [deinit](#fn-errorref-deinit) | `self: *ErrorRef` | `void` | Releases this error handle's root. |
+| [deinit](#fn-errorref-deinit) | `self: *ErrorRef` | `void` | Releases this error handle's root and traceback. |
+| [traceback](#fn-errorref-traceback) | `self: ErrorRef` | `?[]const u8` | Returns the traceback captured at the error point when the call requested &#96;CallOptions.traceback&#96;, or null. The text has the form of Lua's &#96;debug.traceback&#96; without a message: &#96;stack traceback:&#96; followed by one tab-indented line per level, innermost first. It is valid until &#96;deinit&#96;. |
 | [value](#fn-errorref-value) | `self: ErrorRef` | `!Value` | Returns the raw Lua error value as a high-level &#96;Value&#96;. |
-| [message](#fn-errorref-message) | `self: ErrorRef` | `![]const u8` | Formats the Lua error value as an allocated message. |
+| [message](#fn-errorref-message) | `self: ErrorRef` | `![]const u8` | Formats the Lua error value as an allocated message. A nil error object, which &#96;value&#96; returns as &#96;.nil&#96;, is described as &#96;<no error object>&#96;. |
 
 <a id="fn-errorref-deinit"></a>
 
 ### ErrorRef.deinit
 
-Releases this error handle's root.
+Releases this error handle's root and traceback.
 
 ```zig
 pub fn deinit(self: *ErrorRef) void
+```
+
+References: [`ErrorRef`](#type-errorref)
+
+<a id="fn-errorref-traceback"></a>
+
+### ErrorRef.traceback
+
+Returns the traceback captured at the error point when the call
+requested `CallOptions.traceback`, or null. The text has the form of
+Lua's `debug.traceback` without a message: `stack traceback:` followed
+by one tab-indented line per level, innermost first. It is valid until
+`deinit`.
+
+```zig
+pub fn traceback(self: ErrorRef) ?[]const u8
 ```
 
 References: [`ErrorRef`](#type-errorref)
@@ -2226,7 +2463,8 @@ References: [`ErrorRef`](#type-errorref), [`Value`](#type-value)
 
 ### ErrorRef.message
 
-Formats the Lua error value as an allocated message.
+Formats the Lua error value as an allocated message. A nil error
+object, which `value` returns as `.nil`, is described as `<no error object>`.
 
 The caller owns the returned slice and must free it with the state's allocator.
 

@@ -387,7 +387,7 @@ pub fn debugPrompt(state: *State, thread: *Thread, op: bytecode.Call) !void {
         try state.registerAllocation("source_allocations", source);
         switch (try state.runProtectedCall(thread, state.protectedCallContextWithErrors(thread), closure, &.{})) {
             .success => |values| state.allocator.free(values),
-            .failure => |failure| try writeDebugError(state, thread, failure),
+            .failure => |failure| try writeDebugError(state, thread, try state.caughtErrorValue(failure)),
         }
     }
     try state.returnValues(thread, op.base, op.return_count, &.{});
@@ -405,12 +405,12 @@ fn writeDebugError(state: *State, thread: *Thread, value: Value) !void {
 pub fn setuservalue(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const target = runtime.argValue(state, thread, op, 0);
     if (isLightUserdataPlaceholder(target)) return state.failArgumentMessage("debug.setuservalue", 1, "userdata expected, got light userdata");
-    if (target != .table or !runtime.isFileValue(target)) return state.failArgumentType("debug.setuservalue", 1, "userdata", target);
+    if (target != .userdata) return state.failArgumentType("debug.setuservalue", 1, "userdata", target);
     try state.returnValues(thread, op.base, op.return_count, &.{.nil});
 }
 
 pub fn getuservalue(state: *State, thread: *Thread, op: bytecode.Call) !void {
-    try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .boolean = false } });
+    try state.returnValues(thread, op.base, op.return_count, &.{.nil});
 }
 
 fn upvalueIndex(value: Value) ?usize {
@@ -524,7 +524,6 @@ fn localOrTemporaryAtIndex(thread: *Thread, frame_index: usize, index: i64, incl
 
     if (!include_temporaries) return null;
 
-    // Temporaries end at the callee's function slot, just below its registers.
     const register_limit = if (frame_index + 1 < thread.frames.items.len)
         @min(frame.proto.max_registers, thread.frames.items[frame_index + 1].base - 1 - frame.base)
     else

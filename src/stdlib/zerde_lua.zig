@@ -1,6 +1,7 @@
 const std = @import("std");
 const zerde = @import("zerde");
 const runtime = @import("../runtime.zig");
+const io = @import("io.zig");
 
 const State = runtime.State;
 const Value = runtime.Value;
@@ -27,28 +28,13 @@ pub fn nullValue(state: *State) !Value {
 pub fn inputBytes(state: *State, value: Value, function_name: []const u8) ![]const u8 {
     return switch (value) {
         .string => |string| string,
-        else => if (runtime.isFileValue(value))
-            try remainingFileBytes(state, value.table, function_name)
-        else
-            state.failArgumentType(function_name, 1, "string or FILE*", value),
+        else => if (io.checkedFile(state, value) != null) {
+            const file = io.fileOf(value).?;
+            if (file.closed) return state.failArgumentMessage(function_name, 1, "closed file");
+            if (!file.readable) return state.failArgumentMessage(function_name, 1, "file is not readable");
+            return io.readRemaining(state, value.userdata);
+        } else state.failArgumentType(function_name, 1, "string or FILE*", value),
     };
-}
-
-fn remainingFileBytes(state: *State, file: *runtime.Table, function_name: []const u8) ![]const u8 {
-    try ensureOpen(state, file, function_name);
-    if (!fileReadable(file)) return state.failArgumentMessage(function_name, 1, "file is not readable");
-    return @import("io.zig").readRemaining(state, file);
-}
-
-fn ensureOpen(state: *State, file: *runtime.Table, function_name: []const u8) !void {
-    const closed = file.get(.{ .string = "__zlua_file_closed" });
-    if (closed == .boolean and closed.boolean) return state.failArgumentMessage(function_name, 1, "closed file");
-}
-
-fn fileReadable(file: *runtime.Table) bool {
-    const mode = file.get(.{ .string = "__zlua_file_mode" });
-    if (mode != .string or mode.string.len == 0) return false;
-    return mode.string[0] == 'r' or std.mem.indexOfScalar(u8, mode.string, '+') != null;
 }
 
 fn zerdeMetatable(state: *State, name: []const u8) !*Table {

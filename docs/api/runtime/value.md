@@ -26,6 +26,7 @@
 - [runtime.chunk](../runtime/chunk.md)
 - [reflection](../reflection.md)
 - [runtime.value](../runtime/value.md)
+- [runtime.number_format](../runtime/number_format.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
 - [runtime.state](../runtime/state.md)
@@ -45,6 +46,7 @@
 - [stdlib.coroutine](../stdlib/coroutine.md)
 - [stdlib.debug](../stdlib/debug.md)
 - [stdlib.io](../stdlib/io.md)
+- [stdlib.static_strings](../stdlib/static_strings.md)
 - [stdlib.os](../stdlib/os.md)
 - [stdlib.package](../stdlib/package.md)
 - [stdlib.json](../stdlib/json.md)
@@ -53,7 +55,6 @@
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
-- [stdlib.static_strings](../stdlib/static_strings.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
@@ -114,8 +115,6 @@
 - [runtimeArgValue](#fn-runtimeargvalue)
 - [argValue](#fn-argvalue)
 - [appendValue](#fn-appendvalue)
-- [isFileValue](#fn-isfilevalue)
-- [isClosedFileValue](#fn-isclosedfilevalue)
 - [appendNamedValue](#fn-appendnamedvalue)
 - [freeProtectedResult](#fn-freeprotectedresult)
 - [appendNumber](#fn-appendnumber)
@@ -391,26 +390,6 @@ References: [`Thread`](#alias-thread), [`Value`](#alias-value)
 
 ```zig
 pub fn appendValue(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: Value) !void
-```
-
-References: [`Value`](#alias-value)
-
-<a id="fn-isfilevalue"></a>
-
-## isFileValue
-
-```zig
-pub fn isFileValue(value: Value) bool
-```
-
-References: [`Value`](#alias-value)
-
-<a id="fn-isclosedfilevalue"></a>
-
-## isClosedFileValue
-
-```zig
-pub fn isClosedFileValue(value: Value) bool
 ```
 
 References: [`Value`](#alias-value)

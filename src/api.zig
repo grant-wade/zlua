@@ -143,6 +143,12 @@ pub const IoCapability = struct {
     stdout_flush: OutputFlush = .explicit,
     /// When the runtime flushes `stderr`; `.always` behaves like unbuffered C stderr.
     stderr_flush: OutputFlush = .explicit,
+    /// Start with Lua warnings on, as `lua -W` does. Lua code switches them
+    /// with `warn("@on")` and `warn("@off")`.
+    warnings: bool = false,
+    /// Receives each complete warning instead of `stderr`, which otherwise
+    /// gets `Lua warning: <message>` lines. It must not call back into the state.
+    warning_handler: ?WarningHandler = null,
 
     /// I/O capability with no host I/O handles or captured streams.
     pub const disabled: IoCapability = .{};
@@ -187,6 +193,8 @@ pub const ProcessStatus = runtime.ProcessStatus;
 pub const PopenResult = runtime.PopenResult;
 /// Exit code and close flag recorded by `os.exit`; see `State.exitRequest`.
 pub const ExitRequest = runtime.ExitRequest;
+/// Host receiver for Lua warnings; see `IoCapability.warning_handler`.
+pub const WarningHandler = runtime.WarningHandler;
 
 /// Host services Lua code may use when matching standard-library functions are open.
 pub const Capabilities = struct {
@@ -231,9 +239,10 @@ pub const CallOptions = struct {
     /// Capture a traceback at the error point, before the failing frames unwind.
     /// Read it with `ErrorRef.traceback`; after `callWith`, take it with `State.takeErrorValue`.
     traceback: bool = false,
-    /// Message handler with `xpcall` semantics. It runs on top of the failing
-    /// frames and its first result becomes the error value; an error inside it
-    /// is handled again, up to a fixed depth. Must belong to the called state.
+    /// Message handler with `xpcall` semantics. It runs at the error point, on
+    /// top of the failing frames and before `__close` handlers, and its first
+    /// result becomes the error value; an error inside it is handled again
+    /// until Lua's C-stack limit. Must belong to the called state.
     message_handler: ?Function = null,
 };
 
@@ -522,10 +531,17 @@ pub const State = struct {
     }
 
     /// Releases all resources owned by the state and invalidates outstanding API handles.
+    /// First calls pending finalizers like `lua_close`: `__gc` metamethods
+    /// run, newest first, with errors ignored, and open Lua file handles are
+    /// closed, flushing buffered writes through the filesystem capability
+    /// and ignoring failures. Each finalizer gets a fresh `max_instructions`
+    /// budget; a pending interrupt stops them, as does `os.exit`, whose request
+    /// only a custom process `exit` callback observes. `reset` calls no finalizers.
     pub fn deinit(self: *State) void {
         const state_allocator = self.allocator();
         if (self.last_error_traceback) |text| state_allocator.free(text);
         self.abandonRollbackMetadata();
+        self.bindDispatch();
         self.raw_state.deinit();
         self.deinitOwnedMemoryFiles(state_allocator);
         self.memory_files.deinit(state_allocator);
@@ -568,7 +584,8 @@ pub const State = struct {
     /// Unchanged baselines without eager resource hooks allocate nothing.
     /// Fallible eager userdata copies are prepared before rollback commits.
     /// Atomic failure semantics do not make State concurrently usable.
-    /// Rollback skips Lua `__gc` and `__close` handlers.
+    /// Rollback skips Lua `__gc` and `__close` handlers, and discards file
+    /// handles opened since the baseline without flushing them.
     pub fn reset(self: *State) !void {
         const baseline = self.baseline orelse return error.NoSnapshot;
         const journal = self.raw_state.rollback orelse return error.NoSnapshot;
@@ -1090,14 +1107,20 @@ pub const State = struct {
         self.raw_state.exit_request = null;
     }
 
-    /// Formats the last Lua error value as an allocated message.
+    /// Turns Lua warnings on or off, like `warn("@on")` and `warn("@off")`.
+    pub fn setWarnings(self: *State, on: bool) void {
+        self.raw_state.warnings_on = on;
+    }
+
+    /// Formats the last Lua error value as an allocated message. A nil
+    /// error object is described as `<no error object>`.
     ///
     /// The caller owns the returned slice and must free it with `allocator()`.
     pub fn errorMessage(self: *State) ![]const u8 {
         const value = self.lastErrorValue();
         var out = std.ArrayList(u8).empty;
         defer out.deinit(self.allocator());
-        try runtime.appendValue(self.allocator(), &out, value);
+        try runtime.appendErrorValue(self.allocator(), &out, value);
         return self.allocator().dupe(u8, out.items);
     }
 
@@ -1701,7 +1724,6 @@ pub const Table = struct {
             };
         }
 
-        // Runs a pending closing value at most once, as a generic `for` does.
         fn finish(self: *Iterator, failure: runtime.Value) !void {
             self.done = true;
             const index = self.roots[@intFromEnum(Slot.closing)] orelse return;
@@ -1719,7 +1741,6 @@ pub const Table = struct {
             return self.state.raw_state.rootedValue(index);
         }
 
-        // Nil is never rooted: the runtime treats nil root slots as free.
         fn store(self: *Iterator, slot: Slot, value: runtime.Value) !void {
             self.release(slot);
             if (value == .nil) return;
@@ -1745,7 +1766,6 @@ pub const Table = struct {
     }
 };
 
-// PUC Lua's MAXTAGLOOP bound for __index/__newindex table chains.
 const max_metamethod_chain = 2000;
 
 fn readableTableKey(key: runtime.Value) ?runtime.Value {
@@ -1764,15 +1784,12 @@ fn writableTableKey(state: *State, key: runtime.Value) !runtime.Value {
     };
 }
 
-// Calls a Lua value on a host thread and returns its first result.
 fn callFirstResult(state: *State, callable: runtime.Value, args: []const runtime.Value) !runtime.Value {
     const results = try state.raw_state.callFunction(callable, args);
     defer state.allocator().free(results);
     return if (results.len == 0) .nil else results[0];
 }
 
-// Mirrors the runtime's table indexing, but calls function metamethods on a
-// host thread because API calls have no active Lua thread.
 fn indexTable(state: *State, start: *runtime.Table, key: runtime.Value) !runtime.Value {
     var table = start;
     const lookup = readableTableKey(key);
@@ -1811,8 +1828,6 @@ fn assignTable(state: *State, start: *runtime.Table, key: runtime.Value, value: 
     return state.raw_state.fail("'__newindex' chain too long; possible loop");
 }
 
-// Raw store with the runtime's snapshot copy-on-write and GC write barrier.
-// Existing keys are updated in place so traversal order is preserved.
 fn storeRaw(state: *State, table: *runtime.Table, key: runtime.Value, value: runtime.Value) !void {
     if (table.rollback != null and table.get(key) != .nil) {
         try rollback_runtime.tableWritable(table);
@@ -2059,6 +2074,7 @@ pub fn Userdata(comptime T: type) type {
 
             const metatable = try self.metatableValue();
             try self.ref.state.raw_state.setTableValue(metatable, .{ .string = try self.ref.state.raw_state.intern(name) }, try metamethod_function.ref.rawValue());
+            if (std.mem.eql(u8, name, "__gc")) self.ref.state.raw_state.checkUserdataFinalizer(try self.rawUserdata());
         }
 
         fn initMetatable(self: @This()) !void {
@@ -2163,13 +2179,14 @@ pub const ErrorRef = struct {
         return self.ref.value();
     }
 
-    /// Formats the Lua error value as an allocated message.
+    /// Formats the Lua error value as an allocated message. A nil error
+    /// object, which `value` returns as `.nil`, is described as `<no error object>`.
     ///
     /// The caller owns the returned slice and must free it with the state's allocator.
     pub fn message(self: ErrorRef) ![]const u8 {
         var out = std.ArrayList(u8).empty;
         defer out.deinit(self.ref.state.allocator());
-        try runtime.appendValue(self.ref.state.allocator(), &out, try self.ref.rawValue());
+        try runtime.appendErrorValue(self.ref.state.allocator(), &out, try self.ref.rawValue());
         return self.ref.state.allocator().dupe(u8, out.items);
     }
 };
@@ -2533,7 +2550,6 @@ pub const Coroutine = struct {
     }
 };
 
-/// Narrows the state's per-call instruction deadline for one host call.
 const CallBudget = struct {
     active: bool,
     previous: ?u64,
@@ -2570,6 +2586,8 @@ fn runtimeOptions(options: Options) runtime.StateOptions {
         .stderr = options.capabilities.io.stderr,
         .stdout_flush = options.capabilities.io.stdout_flush,
         .stderr_flush = options.capabilities.io.stderr_flush,
+        .warnings = options.capabilities.io.warnings,
+        .warning_handler = options.capabilities.io.warning_handler,
         .filesystem = options.capabilities.filesystem,
         .environment = options.capabilities.environment,
         .clock = options.capabilities.clock,
@@ -4389,8 +4407,10 @@ test "api full stdlib still denies ambient host access by default" {
         \\local ok_input, input_err = pcall(io.input, 'missing.lua')
         \\assert(ok_input == false and tostring(input_err):find('cannot open file'))
         \\local tmp = assert(io.tmpfile())
-        \\local ok_tmp_close, tmp_close_err = pcall(function() return tmp:close() end)
-        \\assert(ok_tmp_close == false and tostring(tmp_close_err):find('filesystem write access disabled'))
+        \\assert(tmp:write('scratch') == tmp and tmp:seek('set') == 0 and tmp:read('a') == 'scratch')
+        \\assert(tmp:close() == true)
+        \\local ok_tmpname, tmpname_err = pcall(os.tmpname)
+        \\assert(ok_tmpname == false and tostring(tmpname_err):find('unable to generate a unique filename'))
         \\local loaded, load_err = loadfile('missing.lua')
         \\assert(loaded == nil and load_err == 'cannot open missing.lua: filesystem access disabled')
         \\local ok_file, file_err = pcall(dofile, 'missing.lua')
@@ -4483,8 +4503,8 @@ test "api read-only memory filesystem denies stdlib writes" {
         \\assert(appended == nil and tostring(append_err):find('filesystem write access disabled'))
         \\local tmp = assert(io.tmpfile())
         \\assert(tmp:write('temporary'))
-        \\local ok_tmp, tmp_err = pcall(function() return tmp:close() end)
-        \\assert(ok_tmp == false and tostring(tmp_err):find('filesystem write access disabled'))
+        \\assert(tmp:close() == true)
+        \\assert(not pcall(os.tmpname))
         \\local removed, remove_err = os.remove('seed.txt')
         \\assert(removed == nil and tostring(remove_err):find('filesystem write access disabled'))
         \\local renamed, rename_err = os.rename('seed.txt', 'renamed.txt')
@@ -5733,8 +5753,8 @@ comptime {
         .copied = "raw_state memory_files memory_file_owned_contents callbacks",
     });
     snapshot_runtime.review(runtime.StateOptions, .{
-        .copied = "stdlib stdin stdout_flush stderr_flush capture_output max_file_bytes max_memory max_stack_values max_call_frames max_instructions debug_errors trace_vm",
-        .external = "io stdout stderr stdin_reader filesystem environment clock process",
+        .copied = "stdlib stdin stdout_flush stderr_flush capture_output warnings max_file_bytes max_memory max_stack_values max_call_frames max_instructions debug_errors trace_vm",
+        .external = "io stdout stderr stdin_reader warning_handler filesystem environment clock process",
     });
 }
 
@@ -5914,6 +5934,7 @@ test "api userdata table index and Lua iteration metamethods" {
 
 test {
     _ = @import("testing/api_host_tests.zig");
+    _ = @import("testing/api_file_tests.zig");
     _ = @import("testing/api_coroutine_tests.zig");
     _ = @import("testing/api_limit_tests.zig");
     _ = @import("testing/api_table_tests.zig");

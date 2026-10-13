@@ -542,7 +542,6 @@ test "PUC binary chunks are rejected explicitly" {
 
 const Opcode = std.meta.Tag(bytecode.Instruction);
 
-// Exercises every opcode family the compiler emits.
 const verified_chunk_program =
     \\local log = {}
     \\local function add(...)
@@ -631,7 +630,6 @@ test "zlua binary chunks verify and round-trip every compiled opcode family" {
 
     var seen: std.EnumSet(Opcode) = .empty;
     collectOpcodes(loaded.closure.proto, &seen);
-    // Generic loops advance in tfor_prep, and globals resolve through _ENV.
     const never_emitted = [_]Opcode{ .tfor_call, .get_global, .set_global };
     for (std.enums.values(Opcode)) |opcode| {
         const expected = std.mem.indexOfScalar(Opcode, &never_emitted, opcode) == null;
@@ -730,8 +728,6 @@ fn hasNamedVararg(proto: *const proto_mod.Proto) bool {
     return proto.named_vararg;
 }
 
-/// Breaks one invariant the verifier checks. Returns false if the program
-/// lacks the construct, so the caller can insist each mutation applied.
 fn applyChunkMutation(root: *proto_mod.Proto, mutation: ChunkMutation) !bool {
     switch (mutation) {
         .register => {
@@ -891,7 +887,6 @@ fn appendNestedProtoChunk(out: *std.ArrayList(u8), depth: usize) !void {
     try out.appendSlice(allocator, binary_chunk_payload_magic);
     try out.append(allocator, 0);
     for (0..depth) |level| {
-        // Only the root names its source; children inherit it.
         if (level == 0) try out.appendSlice(allocator, &.{ 1, 0, 0, 0, 0 }) else try out.append(allocator, 0);
         try out.append(allocator, 0);
         try out.appendNTimes(allocator, 0, 8 + 8 + 2 + 2 + 1 + 1 + 5 * 4);
@@ -938,8 +933,6 @@ test "load reports malformed binary chunks to Lua" {
     try std.testing.expectEqualStrings("nil\ttruncated binary chunk\nnil\tbad binary chunk\n2\n", result.stdout);
 }
 
-// Locals, upvalues, loops and tables only: corrupted chunks must not reach
-// host-facing library functions.
 const corrupted_chunk_program =
     \\local function iter(limit, control)
     \\  if control < limit then return control + 1, control * 2 end
@@ -1014,8 +1007,6 @@ test "randomly corrupted zlua binary chunks load safely or fail" {
             state.allocator.free(values);
         } else |_| {}
     }
-    // Corruption that keeps the chunk well formed, such as in line numbers,
-    // must still run safely.
     try std.testing.expect(loaded_count > 0);
 }
 
@@ -1350,7 +1341,6 @@ test "minor cycles trace old suspended threads changed without barriers" {
         }
     }.check;
     try std.testing.expect(isOld(&state, thread));
-    // The setter stores straight into the old thread's stack slot.
     try state.executeSourceChunk("set({ 'young' })");
     const slot = thread.open_upvalues.?.stack_index;
     const young = thread.stack.items[slot];

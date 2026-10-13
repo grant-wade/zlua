@@ -30,8 +30,6 @@ pub fn concat(state: *State, thread: *Thread, op: bytecode.Call) !void {
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(out.items) }});
 }
 
-/// Like `luaL_len`: `#value` (honoring `__len`) converted to an integer.
-/// Integral floats and numeric strings are accepted.
 fn lengthInteger(state: *State, thread: *Thread, table_value: Value) !i64 {
     const length = try state.lengthOf(thread, table_value);
     const integer = switch (length) {

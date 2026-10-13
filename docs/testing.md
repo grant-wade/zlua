@@ -101,7 +101,7 @@ just extensions --show-output tests/extensions/fs/basic.lua
 
 The harness uses safe libraries by default and full libraries for fixtures under `tests/extensions/fs`.
 
-`--bless` rewrites expectations from the actual run instead of failing: it writes `<fixture>.lua.out`, writes `.err` only when stderr is non-empty and `.exit` only when the exit status is nonzero, and removes stale `.err`/`.exit` files. Each changed file is printed, and files that already match are left alone. Timeouts and signals are never blessed. Review the resulting diff before committing it.
+`--bless` rewrites the expected `.out`, `.err`, and `.exit` files from the actual run.
 
 ```sh
 just extensions --bless tests/extensions/string/split_edges.lua

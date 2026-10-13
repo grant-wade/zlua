@@ -26,6 +26,7 @@
 - [runtime.chunk](../runtime/chunk.md)
 - [reflection](../reflection.md)
 - [runtime.value](../runtime/value.md)
+- [runtime.number_format](../runtime/number_format.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
 - [runtime.state](../runtime/state.md)
@@ -45,6 +46,7 @@
 - [stdlib.coroutine](../stdlib/coroutine.md)
 - [stdlib.debug](../stdlib/debug.md)
 - [stdlib.io](../stdlib/io.md)
+- [stdlib.static_strings](../stdlib/static_strings.md)
 - [stdlib.os](../stdlib/os.md)
 - [stdlib.package](../stdlib/package.md)
 - [stdlib.json](../stdlib/json.md)
@@ -53,7 +55,6 @@
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
-- [stdlib.static_strings](../stdlib/static_strings.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
@@ -108,7 +109,6 @@
 - [ApiCallbackContext](#alias-apicallbackcontext)
 - [RuntimeErrorPayload](#alias-runtimeerrorpayload)
 - [ProtectedCallContext](#alias-protectedcallcontext)
-- [ProtectedContinuationKind](#alias-protectedcontinuationkind)
 - [ProtectedContinuation](#alias-protectedcontinuation)
 - [GenericForContinuation](#alias-genericforcontinuation)
 - [BranchContinuation](#alias-branchcontinuation)
@@ -152,8 +152,6 @@
 - [runtimeArgValue](#alias-runtimeargvalue)
 - [argValue](#alias-argvalue)
 - [appendValue](#alias-appendvalue)
-- [isFileValue](#alias-isfilevalue)
-- [isClosedFileValue](#alias-isclosedfilevalue)
 - [appendNumber](#alias-appendnumber)
 - [appendFmt](#alias-appendfmt)
 
@@ -409,14 +407,6 @@ pub const RuntimeErrorPayload = types.RuntimeErrorPayload;
 
 ```zig
 pub const ProtectedCallContext = types.ProtectedCallContext;
-```
-
-<a id="alias-protectedcontinuationkind"></a>
-
-## ProtectedContinuationKind
-
-```zig
-pub const ProtectedContinuationKind = types.ProtectedContinuationKind;
 ```
 
 <a id="alias-protectedcontinuation"></a>
@@ -761,22 +751,6 @@ pub const argValue = value.argValue;
 
 ```zig
 pub const appendValue = value.appendValue;
-```
-
-<a id="alias-isfilevalue"></a>
-
-## isFileValue
-
-```zig
-pub const isFileValue = value.isFileValue;
-```
-
-<a id="alias-isclosedfilevalue"></a>
-
-## isClosedFileValue
-
-```zig
-pub const isClosedFileValue = value.isClosedFileValue;
 ```
 
 <a id="alias-appendnumber"></a>

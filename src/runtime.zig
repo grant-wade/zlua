@@ -58,6 +58,7 @@ pub const ProcessResult = host.ProcessResult;
 pub const ProcessStatus = host.ProcessStatus;
 pub const PopenResult = host.PopenResult;
 pub const ExitRequest = host.ExitRequest;
+pub const WarningHandler = host.WarningHandler;
 pub const default_max_file_bytes = host.default_max_file_bytes;
 
 pub const CompareOp = state_mod.CompareOp;
@@ -74,6 +75,7 @@ pub const trimAscii = state_mod.trimAscii;
 pub const runtimeArgValue = state_mod.runtimeArgValue;
 pub const argValue = state_mod.argValue;
 pub const appendValue = state_mod.appendValue;
+pub const appendErrorValue = state_mod.appendErrorValue;
 pub const isFileValue = state_mod.isFileValue;
 pub const isClosedFileValue = state_mod.isClosedFileValue;
 pub const appendNumber = state_mod.appendNumber;

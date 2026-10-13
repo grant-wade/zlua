@@ -155,10 +155,6 @@ fn runOne(
     }
 }
 
-/// Rewrites `<fixture>.out`, `.err`, and `.exit` to match an actual run.
-/// `.out` always exists; `.err` and `.exit` exist only for non-empty stderr
-/// and a nonzero exit status. Files whose contents already match are left
-/// untouched so line-ending-only differences do not churn.
 fn blessFixture(
     allocator: std.mem.Allocator,
     io: std.Io,

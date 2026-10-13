@@ -526,6 +526,13 @@ pub const PopenResult = struct {
 };
 
 /// Exit requested by `os.exit`; the state unwinds with `error.LuaExit`.
+/// Receives each complete Lua warning while warnings are on, without the
+/// `Lua warning: ` prefix or the final newline.
+pub const WarningHandler = struct {
+    context: ?*anyopaque = null,
+    emit: *const fn (context: ?*anyopaque, message: []const u8) void,
+};
+
 pub const ExitRequest = struct {
     code: i32,
     /// Lua asked for the state to be closed before the process exits.
@@ -555,7 +562,8 @@ const errno_values = struct {
 pub fn fileError(err: anyerror) FileError {
     return switch (err) {
         error.FileNotFound, error.NoDevice => .{ .message = "No such file or directory", .errno = 2 },
-        error.AccessDenied, error.PermissionDenied, error.InvalidPath => .{ .message = "Permission denied", .errno = 13 },
+        error.AccessDenied, error.InvalidPath => .{ .message = "Permission denied", .errno = 13 },
+        error.PermissionDenied => .{ .message = "Operation not permitted", .errno = 1 },
         error.FilesystemDisabled => .{ .message = "filesystem access disabled", .errno = 13 },
         error.FilesystemReadOnly => .{ .message = "filesystem write access disabled", .errno = 30 },
         error.ReadOnlyFileSystem => .{ .message = "Read-only file system", .errno = 30 },

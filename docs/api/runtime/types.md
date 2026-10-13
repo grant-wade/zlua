@@ -26,6 +26,7 @@
 - [runtime.chunk](../runtime/chunk.md)
 - [reflection](../reflection.md)
 - [runtime.value](../runtime/value.md)
+- [runtime.number_format](../runtime/number_format.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
 - [runtime.state](../runtime/state.md)
@@ -45,6 +46,7 @@
 - [stdlib.coroutine](../stdlib/coroutine.md)
 - [stdlib.debug](../stdlib/debug.md)
 - [stdlib.io](../stdlib/io.md)
+- [stdlib.static_strings](../stdlib/static_strings.md)
 - [stdlib.os](../stdlib/os.md)
 - [stdlib.package](../stdlib/package.md)
 - [stdlib.json](../stdlib/json.md)
@@ -53,7 +55,6 @@
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
-- [stdlib.static_strings](../stdlib/static_strings.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
@@ -99,7 +100,7 @@
 - [ApiCallbackContext](#type-apicallbackcontext)
 - [RuntimeErrorPayload](#type-runtimeerrorpayload)
 - [ProtectedCallContext](#type-protectedcallcontext)
-- [ProtectedContinuationKind](#type-protectedcontinuationkind)
+- [NativeMark](#type-nativemark)
 - [ProtectedContinuation](#type-protectedcontinuation)
 - [GenericForContinuation](#type-genericforcontinuation)
 - [PairsContinuation](#type-pairscontinuation)
@@ -116,8 +117,10 @@
 - [Table](#type-table)
 - [UserdataScope](#type-userdatascope)
 - [Userdata](#type-userdata)
+- [FinalizerObject](#type-finalizerobject)
 - [Thread](#type-thread)
 - [ThreadStatus](#type-threadstatus)
+- [NativeCall](#type-nativecall)
 - [CallFrame](#type-callframe)
 - [StringAllocation](#type-stringallocation)
 - [GcMeta](#type-gcmeta)
@@ -298,6 +301,7 @@ pub const NativeFn = enum {
     io_file_lines,
     io_file_setvbuf,
     io_file_tostring,
+    io_file_gc,
     io_lines_iter,
     os_time,
     os_clock,
@@ -325,6 +329,7 @@ pub const NativeFn = enum {
     debug_getuservalue,
     debug_getmetatable,
     debug_debug,
+    traceback_message_handler,
     json_read,
     json_write,
     toml_read,
@@ -770,18 +775,22 @@ pub const ProtectedCallContext = struct {
     last_result_base: usize,
     last_result_count: usize,
     last_error: ?RuntimeErrorPayload,
+    /// Message handler installed for the call, like `lua_pcall`'s `msgh`.
+    error_handler: Value = .nil,
+    /// The thread's handler before the call, restored when it ends.
+    previous_error_handler: Value = .nil,
 };
 ```
 
-<a id="type-protectedcontinuationkind"></a>
+<a id="type-nativemark"></a>
 
-## ProtectedContinuationKind
+## NativeMark
 
 ```zig
-pub const ProtectedContinuationKind = enum {
-    pcall,
-    xpcall,
-    xpcall_handler,
+pub const NativeMark = struct {
+    /// Frame count when the native function was called.
+    frame_count: u32,
+    callee: Value,
 };
 ```
 
@@ -795,9 +804,6 @@ pub const ProtectedContinuation = struct {
     context: ProtectedCallContext,
     base: bytecode.Register,
     return_count: u16,
-    kind: ProtectedContinuationKind,
-    handler: Value = .nil,
-    handler_depth: usize = 0,
 };
 ```
 
@@ -1250,8 +1256,45 @@ pub const Userdata = struct {
     finalized: bool = false,
     finalization_pending: bool = false,
     finalizer_next: ?*Userdata = null,
+    /// Registered to call its metatable's `__gc`, as a table is with
+    /// `Table.finalizer_registered`. The host finalizer runs once the
+    /// userdata is unreachable after that.
+    lua_finalizer_registered: bool = false,
+    /// Registration order on the `Table.finalizer_order` scale, then the
+    /// position in the finalizer queue once separated.
+    lua_finalizer_order: u64 = 0,
+    lua_finalizer_next: ?*Userdata = null,
 };
 ```
+
+<a id="type-finalizerobject"></a>
+
+## FinalizerObject
+
+An object separated for a Lua `__gc` call.
+
+```zig
+pub const FinalizerObject = union(enum) {
+    table: *Table,
+    userdata: *Userdata,
+};
+```
+
+### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [order](#fn-finalizerobject-order) | `self: FinalizerObject` | `u64` |  |
+
+<a id="fn-finalizerobject-order"></a>
+
+### FinalizerObject.order
+
+```zig
+pub fn order(self: FinalizerObject) u64
+```
+
+References: [`FinalizerObject`](#type-finalizerobject)
 
 <a id="type-thread"></a>
 
@@ -1295,8 +1338,20 @@ pub const Thread = struct {
     yield_result_base: usize = 0,
     yield_result_count: u16 = 0,
     native_call_depth: usize = 0,
-    traceback_native_name: ?[]const u8 = null,
+    native_call: ?NativeCall = null,
     protected_close_depth: usize = 0,
+    /// Message handler for errors raised on this thread, like `L->errfunc`.
+    error_handler: Value = .nil,
+    /// Set after a stack overflow so a message handler can still run on top
+    /// of the full stack; cleared once the stack unwinds below the limit.
+    stack_error_space: bool = false,
+    /// Tracebacks end with the `[C]: in ?` entry of a standalone host call.
+    host_frame: bool = false,
+    /// Native functions with no calling instruction (called by `xpcall` or
+    /// a message handler) that are still on the stack while a message
+    /// handler runs, oldest first, so tracebacks can show them.
+    native_marks: [4]NativeMark = undefined,
+    native_mark_count: u8 = 0,
     close_error_value: ?Value = null,
     error_traceback: ?[]const u8 = null,
     pending_unwind_error: ?Value = null,
@@ -1372,6 +1427,32 @@ pub const ThreadStatus = enum {
     running,
     normal,
     dead,
+};
+```
+
+<a id="type-nativecall"></a>
+
+## NativeCall
+
+The innermost non-Lua function running on a thread. Library errors use it
+the way `luaL_argerror` and `luaL_where` use the C call stack: to find the
+calling Lua function, the call-site name, and the argument count.
+
+```zig
+pub const NativeCall = struct {
+    /// Callee register, relative to the frame on top when it was called.
+    base: bytecode.Register,
+    arg_count: u16,
+    frame_count: usize,
+    /// True when another native function made the call (like `pcall(f)`),
+    /// so no Lua code is the immediate caller.
+    from_native: bool,
+    /// Frame count of the enclosing native call, if any.
+    outer_frame_count: ?usize = null,
+    /// Name supplied by the runtime for calls that are not CALL instructions:
+    /// metamethods, generic-for iterators, and `__close`. Always static.
+    name: ?[]const u8 = null,
+    namewhat: ?[]const u8 = null,
 };
 ```
 

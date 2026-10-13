@@ -103,8 +103,6 @@ pub const InitHints = struct {
 pub fn initHints(selection: LibrarySelection) InitHints {
     const libraries = selection.toSet();
     var globals: u32 = 1; // _G
-    // Library setup uses only static strings; stdin bytes stay with the
-    // capability instead of being interned into `io.stdin`.
     const strings: usize = 0;
     var tables: usize = 1; // _G
 
@@ -130,9 +128,8 @@ pub fn initHints(selection: LibrarySelection) InitHints {
         tables += 1;
     }
     if (libraries.io) {
-        // io, stdin, stdout, stderr, and the shared file metatable and method table.
         globals += 1;
-        tables += 6;
+        tables += 3;
     }
     if (libraries.os) {
         globals += 1;
@@ -164,7 +161,6 @@ pub fn initHints(selection: LibrarySelection) InitHints {
         tables += 2;
     }
     if (libraries.package) {
-        // package and require, plus loadfile/dofile when base did not install them.
         globals += if (libraries.base) 2 else 4;
         tables += 4;
     }
@@ -394,15 +390,14 @@ fn openIo(state: *State) !void {
     };
     const io_lib = try newStaticTable(state, &fields, 3);
     try putStaticGlobal(state, "io", io_lib);
-    const stdin = try newStandardFile(state, static_strings.get("stdin"), static_strings.get("r"));
+    const stdin = try io.newStandardFile(state, .stdin);
     try setStaticField(state, io_lib, "stdin", stdin);
-    const stdout = try newStandardFile(state, static_strings.get("stdout"), static_strings.get("w"));
+    const stdout = try io.newStandardFile(state, .stdout);
     try setStaticField(state, io_lib, "stdout", stdout);
-    const stderr = try newStandardFile(state, static_strings.get("stderr"), static_strings.get("w"));
+    const stderr = try io.newStandardFile(state, .stderr);
     try setStaticField(state, io_lib, "stderr", stderr);
-    // Default files live in State roots, like PUC's registry IO_INPUT/IO_OUTPUT.
-    state.io_input = stdin.table;
-    state.io_output = stdout.table;
+    state.io_input = stdin.userdata;
+    state.io_output = stdout.userdata;
 }
 
 fn openOs(state: *State) !void {
@@ -561,23 +556,6 @@ fn openPackage(state: *State, libraries: LibrarySet) !void {
     try putStaticGlobal(state, "package", package_lib);
 }
 
-fn newStandardFile(state: *State, path: []const u8, mode: []const u8) !Value {
-    const value = try state.newTableWithHints(0, 8);
-    const file = value.table;
-    try setStaticField(state, value, "__zlua_file", .{ .boolean = true });
-    try setStaticField(state, value, "__zlua_file_path", .{ .string = path });
-    try setStaticField(state, value, "__zlua_file_mode", .{ .string = mode });
-    // Standard streams read and write through the state's stdin source and
-    // output writers, never through buffered file contents.
-    try setStaticField(state, value, "__zlua_file_content", .{ .string = static_strings.get("") });
-    try setStaticField(state, value, "__zlua_file_pos", .{ .integer = 1 });
-    try setStaticField(state, value, "__zlua_file_closed", .{ .boolean = false });
-    try setStaticField(state, value, "__zlua_file_standard", .{ .boolean = true });
-    try setStaticField(state, value, "__zlua_file_buffer_mode", .{ .string = static_strings.get("full") });
-    state.setTableMetatableRaw(file, try state.fileMetatable());
-    return value;
-}
-
 pub const NativeFn = runtime.NativeFn;
 
 pub fn callNative(state: *State, native: NativeFn, thread: *Thread, op: bytecode.Call) !void {
@@ -665,6 +643,7 @@ pub fn callNative(state: *State, native: NativeFn, thread: *Thread, op: bytecode
         .io_type => try io.typeValue(state, thread, op),
         .io_popen => try io.popen(state, thread, op),
         .io_file_tostring => try io.fileTostring(state, thread, op),
+        .io_file_gc => try io.fileGc(state, thread, op),
         .io_file_read => try io.fileRead(state, thread, op),
         .io_file_write => try io.fileWrite(state, thread, op),
         .io_file_close => try io.fileClose(state, thread, op),
@@ -699,6 +678,7 @@ pub fn callNative(state: *State, native: NativeFn, thread: *Thread, op: bytecode
         .debug_getuservalue => try debug.getuservalue(state, thread, op),
         .debug_getmetatable => try debug.getmetatable(state, thread, op),
         .debug_debug => try debug.debugPrompt(state, thread, op),
+        .traceback_message_handler => try state.tracebackMessageHandler(thread, op),
         .json_read => try json.read(state, thread, op),
         .json_write => try json.write(state, thread, op),
         .toml_read => try toml.read(state, thread, op),
@@ -779,12 +759,12 @@ test "IO files share one PUC-layout metatable and method table" {
     defer state.deinit();
 
     const io_table = state.getGlobal("io").table;
-    const stdin = io_table.get(.{ .string = static_strings.get("stdin") }).table;
-    const stdout = io_table.get(.{ .string = static_strings.get("stdout") }).table;
-    const stderr = io_table.get(.{ .string = static_strings.get("stderr") }).table;
+    const stdin = io_table.get(.{ .string = static_strings.get("stdin") }).userdata;
+    const stdout = io_table.get(.{ .string = static_strings.get("stdout") }).userdata;
+    const stderr = io_table.get(.{ .string = static_strings.get("stderr") }).userdata;
+    try std.testing.expect(stdin.type_id == io.fileTypeId());
     try std.testing.expect(stdin.metatable == stdout.metatable);
     try std.testing.expect(stdin.metatable == stderr.metatable);
-    try std.testing.expect(stdin.get(.{ .string = static_strings.get("read") }) == .nil);
     const metatable = stdin.metatable.?;
     try std.testing.expectEqual(@as(usize, 5), metatable.entries.items.len);
     try std.testing.expect(metatable.get(.{ .string = static_strings.get("read") }) == .nil);
@@ -796,7 +776,6 @@ test "IO files share one PUC-layout metatable and method table" {
     try std.testing.expectEqual(@as(usize, 7), methods.entries.items.len);
     try std.testing.expect(methods.get(.{ .string = static_strings.get("read") }) == .native);
     try std.testing.expect(methods.get(.{ .string = static_strings.get("setvbuf") }) == .native);
-    // Default input/output files are State roots, not io table fields.
     try std.testing.expectEqual(@as(usize, 14), io_table.entries.items.len);
     try std.testing.expect(state.io_input.? == stdin);
     try std.testing.expect(state.io_output.? == stdout);

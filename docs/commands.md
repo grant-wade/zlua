@@ -87,6 +87,7 @@ The CLI starts with full libraries and host filesystem, environment, process, cl
 | `--stdlib MODE` or `--stdlib=MODE` | Select `none`, `base`, `safe`, `full`, or a comma/plus-separated library list. |
 | `-e CHUNK` or `-eCHUNK` | Execute a command-line chunk; may be repeated. |
 | `-i` | Enter the REPL after command-line chunks and a script. |
+| `-W` | Turn warnings on. Like `lua`, the CLI starts with them off and applies `-W` and `-e` in order. |
 | `--debug-errors` | Include internal runtime diagnostics. |
 | `--trace-vm` | Trace VM instructions. |
 | `--dump-ast` | Parse and print an AST-oriented dump. |
@@ -103,10 +104,12 @@ Lua output streams as it is produced, buffered like C `lua`:
 
 - stdout is line buffered on a terminal. Otherwise it is block buffered, and `print` flushes it like `lua_writeline`.
 - stderr is unbuffered.
-- stdout is flushed by `io.flush`/`file:flush`, before `os.execute` and `io.popen` start a child, and when the process exits, including through `os.exit` and after an error message.
+- stdout is flushed by `io.flush`, before child processes start, and at exit.
 - Open file handles that were never closed are flushed at exit, as C `exit` flushes every stream.
 
-`io.read`, `io.lines`, and `loadfile()` read the process stdin incrementally, so scripts can prompt and read one line at a time. They share stdin with the REPL. A line-buffered stdout is flushed before stdin blocks. Seeking stdin returns `nil, "Illegal seek", 29`.
+Chunks run under `lua`'s message handler, so uncaught errors print a traceback.
+
+`io.read`, `io.lines`, and `loadfile()` read stdin incrementally, so scripts can prompt for input.
 
 ## Harnesses
 

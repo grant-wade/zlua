@@ -82,9 +82,11 @@ defer lua.deinit();
 
 The directory handle is borrowed and must outlive the state. Rooted directories reject absolute paths and `..` traversal.
 
-Lua output goes to the configured writers as it is produced. By default (`stdout_flush`/`stderr_flush = .explicit`) the runtime flushes them only for `io.flush`/`file:flush`, `os.exit`, and before `os.execute` or `io.popen` start a child; the writer's own buffer decides the rest. To mimic C stdio over a buffered host stream, choose `.print` (flush after each `print`, like C Lua), `.line` (flush after any write containing a newline), or `.always` (unbuffered). The CLI uses `.line` for a terminal stdout, `.print` otherwise, and `.always` for stderr. Lua stdin reads the `stdin` bytes; snapshots restore the read position.
+Lua output goes to the configured writers as it is produced. `stdout_flush` and `stderr_flush` choose when the runtime flushes them (`.explicit` by default).
 
-File reads by `io`, `loadfile`, `dofile`, `require`, `fs`, and `State.loadFile` share `limits.max_file_bytes` (256 MiB by default). `fs.read`'s `max_bytes` option can only lower it. Failed opens return C-style results such as `nil, "data.txt: No such file or directory", 2`. A disabled filesystem reports `filesystem access disabled` (errno 13), and a read-only one reports `filesystem write access disabled` (errno 30).
+Lua warnings start off. `IoCapability.warnings` turns them on, like `lua -W`, and `IoCapability.warning_handler` receives them instead of stderr.
+
+File reads and writes share `limits.max_file_bytes` (256 MiB by default). Failed opens return C-style results such as `nil, "data.txt: No such file or directory", 2`.
 
 ### Clock and Process
 
@@ -96,7 +98,7 @@ File reads by `io`, `loadfile`, `dofile`, `require`, `fs`, and `State.loadFile` 
 | `.system` | Host wall clock | `TZ`, then `/etc/localtime` | Process CPU time |
 | `.custom` | `now` | `utc_offset` callback, or UTC | `cpu` callback, or `0` |
 
-The system clock reads `TZ` through the environment capability. It accepts a zone name under `/usr/share/zoneinfo`, an absolute TZif path, or a POSIX rule such as `EST5EDT,M3.2.0,M11.1.0`. Without `TZ`, it reads `/etc/localtime`. It loads the zone once per state. It falls back to UTC on Windows, on freestanding targets, and when the zone cannot be read. `os.date` formats use the C locale. `!` formats are always UTC.
+The system clock reads `TZ` (a zone name, TZif path, or POSIX rule), then `/etc/localtime`, and falls back to UTC.
 
 Process modes:
 
@@ -106,9 +108,9 @@ Process modes:
 | `.enabled` | Runs `/bin/sh -c` (`cmd.exe /c` on Windows) with inherited stdio. | Same shell. | Unwinds with `error.LuaExit`. |
 | `.custom` | `execute` callback. | Optional `popen` callback. | Optional `exit` callback, then `error.LuaExit`. |
 
-`io.popen` handles are buffered. Read mode runs the command to completion when it opens and buffers its stdout, up to `max_file_bytes`. Write mode buffers writes, then runs the command with them as stdin when the handle closes. Closing returns `true|nil, "exit"|"signal", code`, like `os.execute`.
+`io.popen` runs the whole command at once: read mode when the handle opens, write mode when it closes.
 
-`os.exit` never terminates the host process from an embedded state. It flushes the configured writers, records the exit, and unwinds every Lua frame with `error.LuaExit`. `pcall`, `xpcall`, and coroutines cannot catch it. `State.exitRequest()` returns the code and the `close` flag. With `close = true`, pending to-be-closed variables of the calling host thread have already run. Call `State.clearExitRequest()` to keep using the state. The CLI turns the request into its process exit status. A custom `exit` callback sees the request first; returning an error raises `process exit failed` in Lua instead.
+`os.exit` never terminates the host process. It unwinds Lua with `error.LuaExit`, which Lua cannot catch, and `State.exitRequest()` returns the requested code.
 
 ### Memory Files
 
@@ -187,7 +189,7 @@ var lua = try zlua.State.init(allocator, .{
 
 `max_instructions` is cumulative across calls and coroutine resumes. Query it with `instructionBudget` and reset it with `resetInstructionBudget`.
 
-`Function.callWith` and `Function.protectedCallWith` take `CallOptions`. Its `max_instructions` budget covers one call, including nested Lua calls, callbacks that call back into Lua, and coroutines resumed inside it. A budgeted call inside another keeps the tighter budget. Exhaustion raises the same `instruction limit exceeded` error as the state budget, which still counts every instruction:
+`Function.callWith` and `Function.protectedCallWith` take `CallOptions`. `max_instructions` limits a single call, including nested calls and coroutines it resumes; nested budgets use the tighter limit.
 
 ```zig
 const result = try handler.protectedCallWith(.{event}, void, .{ .max_instructions = 100_000 });
@@ -195,7 +197,7 @@ const result = try handler.protectedCallWith(.{event}, void, .{ .max_instruction
 
 `max_memory` bounds allocations made through the state, including parsing, compilation, runtime objects, API conversion, memory-file copies, and captured output. Initialization may return `error.OutOfMemory` if the limit cannot hold the requested libraries.
 
-Limit failures become Lua errors during execution. Once a budget is exhausted, every later instruction in its scope fails again, so `pcall` cannot keep the script running.
+Once a budget is exhausted, `pcall` cannot keep the script running.
 
 ### Interrupts
 
@@ -212,9 +214,9 @@ lua.doString(source, .{}) catch |err| switch (err) {
 };
 ```
 
-Lua stops at its next safepoint: a loop back edge, a call, a periodic check in the dispatch loop, or a check inside long-running library functions such as `string.rep`, `string.gsub`, pattern matching, `table.concat`, and `table.sort`. The host call returns `error.Interrupted`; `protectedCall` returns it as a Zig error, not as `lua_error`. Lua code cannot catch an interrupt with `pcall`, `xpcall`, or a coroutine, and pending `__close` handlers of the interrupted frames do not run. A host callback that catches `error.Interrupted` from a nested call cannot resume the script either: the interrupt stays pending until it leaves the outermost call.
+Lua stops at its next safepoint (a loop back edge, a call, or a check inside long-running library functions), and the host call returns `error.Interrupted`, which `pcall` cannot catch.
 
-The request is consumed when `error.Interrupted` reaches the host. A request made while no Lua is running applies to the next execution that reaches a safepoint; call `clearInterrupt` to drop it, and `isInterruptPending` to check. The handle stays valid across `reset` until `deinit`; join threads that use it first. Interrupts need no threads, so freestanding hosts can call `interrupt()` from a callback or signal context. [`watchdog.zig`](../examples/watchdog.zig) runs a watchdog thread.
+The request is consumed when `error.Interrupted` reaches the host. `clearInterrupt` drops a pending request.
 
 ## Garbage Collection
 
@@ -235,6 +237,8 @@ _ = try lua.stepGc(.{ .steps = 1 });
 `stepGc` performs up to the requested number of steps; zero also means one step. It returns `.complete` when a full cycle finishes and `.pending` otherwise. A generational minor collection returns `.pending`. Steps limit the amount of work requested, not elapsed time: a large table or a finalizer can still take longer than expected.
 
 Use `collect()` to finish a full collection, including pending finalizers. Both `collect` and `stepGc` work while automatic collection is stopped. `stopGc()` and `restartGc()` control automatic collection; `isGcRunning()` reports its state.
+
+`deinit` closes the state like `lua_close`: it runs pending `__gc` finalizers, newest first, and closes open files. Errors in finalizers are ignored, and an `os.exit` inside one is dropped. `reset` runs no finalizers.
 
 You can change modes with `setGcMode` and tune collection with `setGcParam`; both return the previous setting. Their query counterparts are `gcMode` and `gcParam`. See [GcParams](api/runtime/types.md#type-gcparams) for parameter names, units, and defaults. Invalid parameter values return `error.InvalidGcParam`.
 
@@ -294,9 +298,9 @@ const value = try cached.call(.{2}, i64);
 
 The format is internal to zlua, version-sensitive, and not compatible with PUC Lua `luac` chunks.
 
-Every load structurally verifies the chunk before it can run: register operands and ranges must fit the function's register count, constant, upvalue and nested-function indexes must exist, jump targets must stay inside the function, and counts and nesting depth must fit the input. Malformed or truncated chunks fail to load with `bad binary chunk` or `truncated binary chunk` instead of reaching the VM, so corrupted bytes cannot cause memory-unsafe execution.
+Loading verifies a chunk's structure before it runs, so a malformed chunk cannot index outside its registers, constants, or code.
 
-Verification does not prove that a chunk came from the zlua compiler or that it behaves sensibly. A crafted chunk that passes can still loop, allocate, raise errors, or compute surprising values. Run untrusted bytecode with the same instruction, memory and capability limits you would apply to untrusted source.
+Verification does not make bytecode trustworthy. Run untrusted chunks with the same limits as untrusted source.
 
 ## Values and Handles
 
@@ -336,14 +340,9 @@ Dynamic `zlua.Value` can represent nil, booleans, numbers, strings, tables, func
 
 ### Borrowed Strings
 
-A `[]const u8` read from Lua is not copied. This includes results from `getGlobal`, `read`, `Table.get`, `Table.rawGet`, `Table.toSlice`, `Function.call`, `State.require`, `Context.arg`, and `Value.string`, including strings inside tuples and table entries. The slice points at a string owned by the VM's garbage collector:
+A `[]const u8` read from Lua (through `getGlobal`, `Table.get`, `Function.call`, `Context.arg`, and similar) points into Lua memory. It stays valid while Lua still references the string; once nothing does, any call that may collect garbage can free it. Callback arguments stay valid until the callback returns, and `deinit` and `reset` invalidate every borrowed slice.
 
-- It stays valid while Lua can still reach the string, for example through a global, a table field, or a live stack slot. A string read from `config.title` stays valid until that field is overwritten and a collection runs.
-- Once nothing references the string, any API call that may collect can free it. This includes `collect`, `stepGc`, calls into Lua, and API writes such as `set`, `setGlobal`, `push`, or `createTable`. Pure reads such as `get` with no metamethods do not collect. For example, `chunk.call(.{}, []const u8)` that returns `"a" .. x` gives a string nothing else references, so use it before the next such call.
-- A string passed to a callback stays valid until the callback returns.
-- `deinit` and a successful `reset` invalidate every borrowed slice.
-
-A `Value` does not root a string. To keep a string, copy it with an allocator (`allocator.dupe(u8, text)`), or read it as a `Ref`, which roots any value, and call `ref.value()` while the `Ref` lives. `Table.Iterator` roots the current key and value until the next step. The same rules apply to [coroutine results](#coroutines) and [after reset](#reset-and-lifetimes).
+To keep a string, copy it or read it as a `Ref`.
 
 ## Tables and Modules
 
@@ -356,9 +355,9 @@ try config.set("max_players", 8);
 try lua.setGlobal("config", config);
 ```
 
-`Table.get` and `Table.set` behave like Lua `t[k]` and `t[k] = v`. They honor `__index` and `__newindex`, whether those are tables or functions. `set` calls `__newindex` only when the key is absent. Function metamethods run like `Function.call`, so they cannot yield, and a failure returns `error.LuaError`.
+`Table.get` and `Table.set` behave like Lua `t[k]` and `t[k] = v`, including function metamethods.
 
-The raw operations skip metamethods. They are `rawGet`, `rawSet`, `rawLen`, `append`, `toSlice`, and `rawIterator`. `len()` is Lua `#t`. It honors `__len` and rejects a non-integer result, as `luaL_len` does. `append(value)` stores at `rawLen() + 1`. `setMetatable(meta)` replaces the metatable, and `setMetatable(null)` removes it. Like `lua_setmetatable`, it ignores `__metatable` protection. `getMetatable()` likewise ignores protection. A `__gc` field already present in the new metatable registers the table for finalization, and a `__mode` field makes it weak. All writes use the runtime's GC write barriers and snapshot copy-on-write, so `reset` restores them.
+`rawGet`, `rawSet`, `rawLen`, `append`, `toSlice`, and `rawIterator` skip metamethods. `len()` is Lua `#t`, and `setMetatable` ignores `__metatable` like `lua_setmetatable`.
 
 `toSlice(T, allocator)` reads the raw sequence `1..rawLen()` into a new slice:
 
@@ -367,7 +366,7 @@ const scores = try list.toSlice(i64, allocator);
 defer allocator.free(scores);
 ```
 
-Elements convert like `rawGet`. A hole or a wrong type returns `error.TypeMismatch`; use `?T` to allow holes. When `T` is a handle type such as `Table` or `Value`, deinitialize each element before freeing the slice. `[]const u8` elements are [borrowed](#borrowed-strings).
+A hole or wrong element type returns `error.TypeMismatch`; use `?T` to allow holes. Deinitialize handle elements, and note that strings are [borrowed](#borrowed-strings).
 
 Iterate with `rawIterator()`, which works like `next`, or `pairs()`, which works like Lua `pairs`:
 
@@ -379,15 +378,15 @@ while (try it.next()) |entry| {
 }
 ```
 
-The iterator roots the table, the current key and value, and any `__pairs` state. A collection during the loop is therefore safe. Each `Entry` belongs to the iterator and stays valid until the next `next`, `close`, or `deinit`. Do not deinitialize entries. To keep a handle beyond that, copy it with `lua.push(entry.value)`.
+The iterator keeps the table and current entry rooted, and owns each `Entry` until the next call, so don't deinitialize entries.
 
-During raw traversal you may assign to existing fields, including setting them to nil. Adding new keys is undefined: entries may be skipped or repeated, or `next` may return `error.LuaError` for an invalid key. When a table has a `__pairs` metamethod, `pairs()` calls it immediately, and each `next` calls the returned iterator function. These calls cannot yield. A fourth `__pairs` result is a closing value. Its `__close` runs when iteration ends or fails, or on `it.close()`, as a generic `for` would run it. `deinit` alone never calls Lua. Lower-level `rawNext(previous_key)` returns entries that the caller must deinitialize. It does not keep the previous key alive.
+During traversal you may assign to existing fields, but adding keys is undefined.
 
 `Table.identity()` returns a state-local token that stays valid while the table is rooted, until reset.
 
 ### Modules
 
-`setLoadedModule(name, module)` stores an already built value in `package.loaded[name]`. `preloadModule(name, loader)` installs a `Function` in `package.preload[name]`. Nothing runs until the first `require(name)`. That call runs `loader(name, ":preload:")` and caches the result, or `true` if the loader returns nothing. Later calls return the cached module. `preloadModuleFn` registers a Zig function as the loader, with parameters converted as in `registerTyped`. All three open the `package` library if needed.
+`setLoadedModule(name, module)` stores a value in `package.loaded[name]`. `preloadModule(name, loader)` installs a loader in `package.preload[name]` that runs on the first `require(name)`; `preloadModuleFn` does the same with a Zig function.
 
 ```zig
 fn openHost(ctx: *zlua.Context, name: []const u8) !zlua.Table {
@@ -403,7 +402,7 @@ var host = try lua.require("host", zlua.Table); // runs openHost once
 defer host.deinit();
 ```
 
-`State.require(name, T)` calls the package library's built-in `require`, even if Lua code has replaced the global. It converts the result to `T`. Use `zlua.Tuple(&.{ M, []const u8 })` to also read the loader data. Loader failures return `error.LuaError`.
+`State.require(name, T)` calls Lua's `require` and converts the result.
 
 ## Host Callbacks
 
@@ -465,7 +464,7 @@ switch (result) {
 }
 ```
 
-`CallOptions.traceback` captures a traceback at the error point, before the failing frames unwind. It follows `debug.traceback` without the message, naming each frame from its call site:
+`CallOptions.traceback` captures a traceback at the error point:
 
 ```zig
 const result = try run.protectedCallWith(.{}, void, .{ .traceback = true });
@@ -483,9 +482,9 @@ switch (result) {
 }
 ```
 
-`CallOptions.message_handler` takes a Lua `Function` with `xpcall` semantics: it runs on top of the failing frames, so `debug.traceback` and `debug.getinfo` see them, and its first result becomes the error value. With `callWith`, the handled value and traceback stay on the state; `takeErrorValue` transfers both to the returned `ErrorRef`.
+`CallOptions.message_handler` takes a Lua `Function` with `xpcall` semantics.
 
-The standalone `zlua` interpreter reports uncaught runtime errors like `lua`: `zlua: message`, then the traceback.
+For `error(nil)`, `ErrorRef.value` returns `.nil`.
 
 ## Coroutines
 
@@ -562,6 +561,8 @@ try lua.setGlobal("counter", counter);
 Lua-owned userdata may receive a finalizer through its options. Both forms support typed callback arguments such as `ctx.arg(0, *Counter)`.
 
 Pass `.metatable = table` to `newUserdata` or `newUserdataPtr` to share a metatable from the same state. Install its methods before sharing it. Failed construction leaves finalizer responsibility with the host.
+
+A `__gc` metamethod works on userdata as on tables. It runs before the host finalizer and deinit hook.
 
 Userdata equality uses `__eq`; `rawequal` compares wrapper identity. `AnyUserdata.as(T)` checks the payload type and returns a new rooted handle.
 

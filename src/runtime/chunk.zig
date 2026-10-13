@@ -10,12 +10,8 @@ const proto_mod = compile.proto;
 pub const binary_chunk_signature = "\x1bLua";
 pub const binary_chunk_payload_magic = "zlua\x00bc1";
 
-// Source nesting is bounded by the parser's 200 syntax levels, so compiled
-// protos never nest deeper. The bound keeps reader recursion shallow.
 const max_proto_depth: usize = 200;
 
-// Smallest encodings of each record. Counts the remaining input cannot hold
-// are rejected before storage is reserved for them.
 const min_proto_bytes: usize = 1 + 1 + 8 + 8 + 2 + 2 + 1 + 1 + 6 * 4;
 const min_constant_bytes: usize = 1;
 const min_instruction_bytes: usize = 1 + 8;
@@ -305,7 +301,6 @@ pub fn verifyProto(proto: *const proto_mod.Proto) bool {
     const registers: usize = proto.max_registers;
     const code_len = proto.instructions.items.len;
     if (proto.param_count > registers) return false;
-    // A named vararg table lives in the register after the parameters.
     if (proto.named_vararg and proto.param_count >= registers) return false;
     if (proto.line_info.items.len != code_len) return false;
     if (!validLine(proto.defined_line) or !validLine(proto.last_defined_line)) return false;
@@ -315,7 +310,6 @@ pub fn verifyProto(proto: *const proto_mod.Proto) bool {
     for (proto.locals.items) |local| {
         if (local.register >= registers or local.start_pc > code_len or local.end_pc > code_len) return false;
     }
-    // Error-site lookup stops at the first entry past the requested pc.
     var previous_site_pc: usize = 0;
     for (proto.error_sites.items) |entry| {
         if (entry.pc >= code_len or entry.pc < previous_site_pc or !validLine(entry.site.line)) return false;
@@ -334,7 +328,6 @@ pub fn verifyProto(proto: *const proto_mod.Proto) bool {
     return true;
 }
 
-// No `else` branch: a new opcode must decide its operand checks here.
 fn verifyInstruction(proto: *const proto_mod.Proto, instruction: bytecode.Instruction, pc: usize) bool {
     const registers: usize = proto.max_registers;
     return switch (instruction) {
@@ -350,8 +343,6 @@ fn verifyInstruction(proto: *const proto_mod.Proto, instruction: bytecode.Instru
         .set_array => |op| op.table < registers and op.value < registers and op.index != 0,
         .get_field => |op| op.dest < registers and op.table < registers and isStringConstant(proto, op.name),
         .set_field => |op| op.table < registers and op.value < registers and isStringConstant(proto, op.name),
-        // Each constructor field emits at least one store, which bounds the
-        // preallocation a chunk can request.
         .new_table => |op| op.dest < registers and @as(u64, op.array_hint) + op.hash_hint <= proto.instructions.items.len,
         .set_list => |op| op.table < registers and op.start_index != 0 and
             (if (op.count == bytecode.multret_count) op.first < registers else registerRange(registers, op.first, op.count)),
@@ -362,20 +353,15 @@ fn verifyInstruction(proto: *const proto_mod.Proto, instruction: bytecode.Instru
         .compare_branch => |op| op.left < registers and op.right < registers and validJump(proto, pc, op.offset),
         .test_op => |op| op.register < registers and validJump(proto, pc, op.offset),
         .test_set => |op| op.dest < registers and op.source < registers and validJump(proto, pc, op.offset),
-        // Arguments follow the callee; fixed results land from the callee slot.
         .call, .tail_call => |op| op.base < registers and
             (op.arg_count == bytecode.multret_count or registerRange(registers, @as(usize, op.base) + 1, op.arg_count)) and
             (op.return_count == bytecode.multret_count or registerRange(registers, op.base, op.return_count)),
         .ret => |op| if (op.count == bytecode.multret_count) op.first < registers else registerRange(registers, op.first, op.count),
         .vararg => |op| if (op.count == bytecode.multret_count) op.dest < registers else registerRange(registers, op.dest, op.count),
         .closure => |op| op.dest < registers and op.proto < proto.children.items.len,
-        // CLOSE names a stack boundary rather than reading a register.
         .close => |register| register <= registers,
         .check_close, .close_tbc => |register| register < registers,
-        // Numeric loops keep the counter, limit and step in three registers.
         .for_prep, .for_loop => |op| registerRange(registers, op.base, 3) and validJump(proto, pc, op.offset),
-        // Generic loops keep iterator, state, control and closing value
-        // before the loop variables.
         .tfor_prep, .tfor_call, .tfor_loop => |op| registerRange(registers, op.base, 4 + @as(usize, op.variable_count)) and validJump(proto, pc, op.offset),
     };
 }
@@ -384,8 +370,6 @@ fn registerRange(registers: usize, first: usize, count: usize) bool {
     return first <= registers and count <= registers - first;
 }
 
-// Branches land on the next instruction plus their offset. Landing exactly at
-// the end returns from the frame, as falling off the last instruction does.
 fn validJump(proto: *const proto_mod.Proto, pc: usize, offset: bytecode.JumpOffset) bool {
     const target = @as(i64, @intCast(pc)) + 1 + offset;
     return target >= 0 and target <= @as(i64, @intCast(proto.instructions.items.len));
@@ -395,15 +379,10 @@ fn isStringConstant(proto: *const proto_mod.Proto, index: bytecode.ConstantIndex
     return index < proto.constants.items.len and proto.constants.items[index] == .string;
 }
 
-// Debug APIs report lines as Lua integers.
 fn validLine(line: usize) bool {
     return @as(u64, line) <= std.math.maxInt(i64);
 }
 
-// Constants hold source lexemes that the VM decodes on first use. Numeric
-// lexemes must parse, and long-bracket strings must have the bracket framing
-// their decoder slices away; names never start with a bracket. Short-string
-// escapes are checked as they decode.
 fn validConstant(constant: bytecode.Constant) bool {
     return switch (constant) {
         .nil, .boolean => true,
