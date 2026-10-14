@@ -151,7 +151,7 @@ fn runOne(
         try out.print("skip {s} ({s})\n", .{ path, meta.reason });
         return;
     }
-    if (meta.gc_stress == .skip and (options.gc_stress or options.gc_step_stress)) {
+    if (meta.gc_stress == .skip and options.gc_stress) {
         counts.skipped += 1;
         try out.print("skip {s} (gc stress: {s})\n", .{ path, meta.reason });
         return;
@@ -222,8 +222,8 @@ fn runZluaForStage(
         .resolve => runZluaResolveStage(allocator, source),
         .compile => runZluaCompileStage(allocator, source),
         .runtime, .stdlib, .official => runtime.executeSourceWithOptions(allocator, source, .{
-            .collect_after_instruction = options.gc_stress,
-            .step_after_instruction = options.gc_step_stress,
+            .stress_collect = options.gc_stress,
+            .stress_step = options.gc_step_stress,
             .state = .{
                 .io = io,
                 .filesystem = .host_cwd,

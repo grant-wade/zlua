@@ -2,8 +2,6 @@
 -- stage: runtime
 -- feature: gc
 -- normalize: none
--- gc-stress: skip
--- reason: finalizer order across separate collections depends on collection timing
 
 -- Objects that die together are finalized newest first, tables and
 -- userdata alike.

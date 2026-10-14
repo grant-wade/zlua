@@ -3,7 +3,7 @@
 -- feature: gc
 -- normalize: none
 -- gc-stress: skip
--- reason: drives generational cycles itself; forced collections make it run for minutes
+-- reason: allocates heavily on purpose; a full collection per allocation takes minutes
 
 -- Old suspended threads are mutated without per-store barriers: open
 -- upvalues written from another thread, resume values, and the coroutine's

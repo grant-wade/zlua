@@ -546,8 +546,9 @@ pub const State = struct {
     zerde_array_metatable: ?*Table = null,
     zerde_object_metatable: ?*Table = null,
     is_collecting: bool = false,
-    collect_after_instruction: bool = false,
-    step_after_instruction: bool = false,
+    stress_collect: bool = false,
+    stress_step: bool = false,
+    stress_mark: usize = 0,
     gc_running: bool = true,
     gc_mode: GcMode = .generational,
     gc_params: GcParams = .{},
@@ -593,6 +594,7 @@ pub const State = struct {
 
 | Name | Parameters | Return Type | Description |
 | --- | --- | --- | --- |
+| [max_c_calls](#alias-state-max_c_calls) |  |  |  |
 | [registerAllocation](#fn-state-registerallocation) | `self: *State, comptime field: []const u8, item: anytype` | `!void` |  |
 | [init](#fn-state-init) | `allocator: std.mem.Allocator` | `!State` |  |
 | [initWithOptions](#fn-state-initwithoptions) | `allocator: std.mem.Allocator, options: StateOptions` | `!State` |  |
@@ -748,6 +750,7 @@ pub const State = struct {
 | [luaTypeNameForError](#fn-state-luatypenameforerror) | `self: *State, value: Value` | `[]const u8` |  |
 | [jumpIfBranchResult](#fn-state-jumpifbranchresult) | `self: *State, thread: *Thread, result: bool, jump_if_truthy: bool, offset: bytecode.JumpOffset` | `!void` |  |
 | [compareValues](#fn-state-comparevalues) | `self: *State, thread: *Thread, lhs: Value, rhs: Value, op: CompareOp` | `!bool` |  |
+| [callStackValueLimit](#fn-state-callstackvaluelimit) | `self: *const State, thread: *const Thread` | `usize` |  |
 | [returnValues](#fn-state-returnvalues) | `self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, values: []const Value` | `!void` |  |
 | [prepareClosureFrame](#fn-state-prepareclosureframe) | `self: *State, thread: *Thread, closure: *Closure, source_base: usize, frame_base: usize, arg_count: usize, return_start: usize, return_count: u16` | `!CallFrame` |  |
 | [captureVarargs](#fn-state-capturevarargs) | `self: *State, thread: *Thread, source_start: usize, count: usize` | `![]const Value` |  |
@@ -868,6 +871,14 @@ pub const State = struct {
 | [throwValue](#fn-state-throwvalue) | `self: *State, value: Value` | `RuntimeError` |  |
 | [rethrowValue](#fn-state-rethrowvalue) | `self: *State, value: Value` | `RuntimeError` | Raises &#96;value&#96; again after closing variables for an error that already went through any message handler at its error point. |
 | [currentErrorValue](#fn-state-currenterrorvalue) | `self: *State` | `Value` |  |
+
+<a id="alias-state-max_c_calls"></a>
+
+### State.max_c_calls
+
+```zig
+pub const max_c_calls = lua_max_c_calls;
+```
 
 <a id="fn-state-registerallocation"></a>
 
@@ -2583,6 +2594,16 @@ pub fn compareValues(self: *State, thread: *Thread, lhs: Value, rhs: Value, op: 
 ```
 
 References: [`State`](#type-state), [`Thread`](#alias-thread), [`Value`](#alias-value), [`CompareOp`](#type-compareop)
+
+<a id="fn-state-callstackvaluelimit"></a>
+
+### State.callStackValueLimit
+
+```zig
+pub fn callStackValueLimit(self: *const State, thread: *const Thread) usize
+```
+
+References: [`State`](#type-state), [`Thread`](#alias-thread)
 
 <a id="fn-state-returnvalues"></a>
 

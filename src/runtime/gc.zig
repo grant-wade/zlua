@@ -269,16 +269,22 @@ fn syncStorage(comptime State: type, self: *State, meta: *types.GcMeta, bytes: u
 
 /// Managed backing capacities; allocator overhead and rollback copies are
 /// measured separately by the embedding allocator, never used to pace GC.
-pub fn threadCapacityBytes(thread: *const Thread) usize {
+pub fn threadCapacityBytes(thread: *Thread) usize {
+    var frame_bytes: usize = 0;
+    for (thread.frames.items) |frame| {
+        if (frame.owns_varargs) frame_bytes += frame.varargs.len * @sizeOf(Value);
+        if (frame.pending_returns) |values| frame_bytes += values.len * @sizeOf(Value);
+    }
+    thread.frame_storage_bytes = frame_bytes;
+    return threadListBytes(thread) + frame_bytes;
+}
+
+fn threadListBytes(thread: *const Thread) usize {
     var bytes: usize = 0;
     inline for (.{ "stack", "frames", "yield_values", "protected_continuations", "generic_for_continuations", "pairs_continuations", "tail_call_continuations", "call_one_continuations" }) |name| {
         const list = @field(thread, name);
         const T = @typeInfo(@TypeOf(list.items)).pointer.child;
         bytes += list.capacity * @sizeOf(T);
-    }
-    for (thread.frames.items) |frame| {
-        if (frame.owns_varargs) bytes += frame.varargs.len * @sizeOf(Value);
-        if (frame.pending_returns) |values| bytes += values.len * @sizeOf(Value);
     }
     return bytes;
 }
@@ -432,8 +438,9 @@ pub fn stepCount(comptime State: type, self: *State, thread: ?*Thread, steps: us
 }
 
 pub fn autoStep(comptime State: type, self: *State, thread: ?*Thread) !void {
-    if (self.step_after_instruction and self.gc_phase == .pause) self.gc_major_pending = true;
-    if (self.collect_after_instruction or luaFastStep(State, self)) return collectGarbageConservatively(State, self, thread);
+    if (self.stress_step and self.gc_phase == .pause) self.gc_major_pending = true;
+    defer self.stress_mark = self.gc_known_total;
+    if (self.stress_collect or luaFastStep(State, self)) return collectGarbageConservatively(State, self, thread);
     _ = try step(State, self, thread, true);
 }
 
@@ -646,7 +653,7 @@ pub fn collectGarbageWithFinalizersMode(comptime State: type, self: *State, thre
 }
 
 pub fn shouldRunAutoGc(comptime State: type, self: *State) bool {
-    if (self.current_thread) |thread| syncThreadStorage(State, self, thread);
+    if (self.current_thread) |thread| syncStorage(State, self, &thread.gc, threadListBytes(thread) + thread.frame_storage_bytes);
     return !self.is_collecting and currentAllocationTotal(State, self) >= self.gc_next_total;
 }
 
@@ -1225,7 +1232,7 @@ pub fn runFinalizerBatch(comptime State: type, self: *State, thread: ?*Thread, l
         // protectedCall's initial stack reservation can fail before protected
         // execution begins. Keep the registration pending until it succeeds.
         const frame = active_thread.frames.items[active_thread.frames.items.len - 1];
-        try active_thread.ensureStack(self.allocator, frame.base + @as(usize, frame.proto.max_registers) + 2, self.stackValueLimit());
+        try active_thread.ensureStack(self.allocator, frame.base + @as(usize, frame.proto.max_registers) + 2, self.callStackValueLimit(active_thread));
         count += 1;
         switch (object) {
             .table => |table| {
@@ -1333,7 +1340,7 @@ pub fn runCloseFinalizers(comptime State: type, self: *State, thread: *Thread) v
     for (finalizers.items) |finalizer| switch (finalizer.object) {
         inline .table, .userdata => |object, tag| {
             const frame = thread.frames.items[thread.frames.items.len - 1];
-            thread.ensureStack(self.allocator, frame.base + @as(usize, frame.proto.max_registers) + 2, self.stackValueLimit()) catch return;
+            thread.ensureStack(self.allocator, frame.base + @as(usize, frame.proto.max_registers) + 2, self.callStackValueLimit(thread)) catch return;
             self.resetInstructionBudget();
             callLuaFinalizer(State, self, thread, @unionInit(Value, @tagName(tag), object), object.metatable) catch return;
         },

@@ -1357,6 +1357,7 @@ pub const Thread = struct {
     pending_unwind_error: ?Value = null,
     pending_unwind_resume_frame_count: usize = 0,
     pending_unwind_target_frame_count: usize = 0,
+    frame_storage_bytes: usize = 0,
     resume_parent: ?*Thread = null,
     entry: Value = .nil,
     marked: bool = false,

@@ -24,8 +24,8 @@ const Dir = std.Io.Dir;
 
 pub const RuntimeError = types.RuntimeError;
 
-const default_max_stack_values: usize = 65536;
-const default_max_call_frames: usize = 256;
+const default_max_stack_values: usize = 1_000_000;
+const default_max_call_frames: usize = 1_000_000;
 const lua_max_c_calls: usize = 200;
 const stack_error_frames: usize = 32;
 const stack_error_values: usize = 200;
@@ -153,6 +153,7 @@ pub const HostErrorHandler = struct {
 };
 
 pub const State = struct {
+    pub const max_c_calls = lua_max_c_calls;
     rollback: ?*rollback_mod.Journal = null,
     userdata_scope: ?*types.UserdataScope = null,
     /// Includes direct interpreter entry, nested calls, and suspended host callbacks.
@@ -221,8 +222,9 @@ pub const State = struct {
     zerde_array_metatable: ?*Table = null,
     zerde_object_metatable: ?*Table = null,
     is_collecting: bool = false,
-    collect_after_instruction: bool = false,
-    step_after_instruction: bool = false,
+    stress_collect: bool = false,
+    stress_step: bool = false,
+    stress_mark: usize = 0,
     gc_running: bool = true,
     gc_mode: GcMode = .generational,
     gc_params: GcParams = .{},
@@ -320,6 +322,10 @@ pub const State = struct {
 
     pub fn stackValueLimit(self: *const State) usize {
         return if (self.options.max_stack_values) |limit| @min(limit, default_max_stack_values) else default_max_stack_values;
+    }
+
+    fn stressPending(self: *const State) bool {
+        return (self.stress_collect or self.stress_step) and self.gc_known_total != self.stress_mark;
     }
 
     pub fn callFrameLimit(self: *const State) usize {
@@ -802,6 +808,19 @@ pub const State = struct {
         }
     }
 
+    fn checkCStack(self: *State, thread: *Thread) !void {
+        if (self.execution_depth >= lua_max_c_calls / 10 * 11) {
+            _ = try self.errorInErrorHandling();
+            return error.RuntimeError;
+        }
+        if (self.execution_depth != lua_max_c_calls) return;
+        const frame_count = thread.frames.items.len;
+        if (frame_count > 1) thread.frames.items.len = frame_count - 1;
+        const value = self.cStackOverflowValue(thread);
+        thread.frames.items.len = frame_count;
+        return self.failValue(try value);
+    }
+
     fn errorInErrorHandling(self: *State) !?Value {
         self.last_error = .{ .lua_value = .{ .string = try self.intern("error in error handling") } };
         self.error_handled = true;
@@ -820,6 +839,7 @@ pub const State = struct {
         gc_mod.rememberObject(State, self, .{ .thread = thread });
         self.execution_depth += 1;
         defer self.execution_depth -= 1;
+        if (self.execution_depth >= lua_max_c_calls) try self.checkCStack(thread);
         try rollback_mod.threadWritable(thread);
         while (thread.frames.items.len > target_frame_count) {
             if (thread.pending_unwind_error != null or thread.pending_yield_hook_return or hasPendingContinuations(thread)) {
@@ -1099,7 +1119,7 @@ pub const State = struct {
                 thread.last_transfer_count = 0;
             }
 
-            if (self.gc_running and (self.collect_after_instruction or self.step_after_instruction or self.shouldRunAutoGc())) try gc_mod.autoStep(State, self, thread);
+            if (self.gc_running and (self.shouldRunAutoGc() or self.stressPending())) try gc_mod.autoStep(State, self, thread);
         }
     }
 
@@ -1107,7 +1127,7 @@ pub const State = struct {
         if (thread.frames.items.len <= target_frame_count) return false;
         if (self.instructionBudgetActive() or self.options.trace_vm) return false;
         if (self.fastLoopInterrupted()) return false;
-        if (self.collect_after_instruction or self.step_after_instruction) return false;
+        if (self.stressPending()) return false;
         if (thread.hook != .nil and (thread.hook_line or thread.hook_count != 0 or thread.hook_running)) return false;
         if (self.gc_running and self.shouldRunAutoGc()) return false;
 
@@ -2946,7 +2966,7 @@ pub const State = struct {
         const frame = thread.frames.items[frame_count - 1];
         const relative_base: bytecode.Register = frame.proto.max_registers;
         const base = frame.base + @as(usize, relative_base);
-        try thread.ensureStack(self.allocator, base + 1 + args.len, self.stackValueLimit());
+        try thread.ensureStack(self.allocator, base + 1 + args.len, self.callStackValueLimit(thread));
         thread.stack.items[base] = callable;
         for (args, 0..) |arg, index| thread.stack.items[base + 1 + index] = arg;
 
@@ -4042,7 +4062,7 @@ pub const State = struct {
     fn prependCallArgument(self: *State, thread: *Thread, resolved: bytecode.Call, metamethod: Value, receiver: Value) !void {
         const frame = thread.frames.items[thread.frames.items.len - 1];
         const base = frame.base + resolved.base;
-        try thread.ensureStack(self.allocator, base + 2 + resolved.arg_count, self.stackValueLimit());
+        try thread.ensureStack(self.allocator, base + 2 + resolved.arg_count, self.callStackValueLimit(thread));
         var index: usize = resolved.arg_count;
         while (index > 0) {
             index -= 1;
@@ -4121,7 +4141,7 @@ pub const State = struct {
         thread.last_result_base = context.last_result_base;
         thread.last_result_count = context.last_result_count;
         thread.error_handler = context.previous_error_handler;
-        if (thread.frames.items.len < self.callFrameLimit()) thread.stack_error_space = false;
+        if (thread.frames.items.len < self.callFrameLimit() and context.stack_len < self.stackValueLimit()) thread.stack_error_space = false;
         self.last_error = context.last_error;
         return failure;
     }
@@ -4515,6 +4535,20 @@ pub const State = struct {
         }
     }
 
+    fn checkStackValueOverflow(self: *State, thread: *Thread, needed: usize) !void {
+        if (!thread.stack_error_space) {
+            thread.stack_error_space = true;
+            return self.failRuntimeDetail(thread, "stack overflow");
+        }
+        if (needed <= self.stackValueLimit() + stack_error_values) return;
+        _ = try self.errorInErrorHandling();
+        return error.RuntimeError;
+    }
+
+    pub fn callStackValueLimit(self: *const State, thread: *const Thread) usize {
+        return self.stackValueLimit() + if (thread.stack_error_space) stack_error_values else 0;
+    }
+
     fn checkFrameOverflow(self: *State, thread: *Thread) !void {
         if (!thread.stack_error_space) {
             thread.stack_error_space = true;
@@ -4530,6 +4564,7 @@ pub const State = struct {
 
         const caller = thread.frames.items[thread.frames.items.len - 1];
         const base = caller.base + op.base;
+        if (base + 1 + @max(closure.proto.max_registers, 1) > self.stackValueLimit()) try self.checkStackValueOverflow(thread, base + 1 + @max(closure.proto.max_registers, 1));
         var frame = try self.prepareClosureFrame(thread, closure, base, base + 1, @intCast(op.arg_count), base, op.return_count);
         frame.debug_name_override = debug_name_override;
         frame.debug_namewhat_override = debug_namewhat_override;
@@ -4621,7 +4656,7 @@ pub const State = struct {
             frame.deinit(self.allocator);
             thread.frames.items.len -= 1;
 
-            try thread.ensureStack(self.allocator, return_start + return_count, self.stackValueLimit());
+            try thread.ensureStack(self.allocator, return_start + return_count, self.callStackValueLimit(thread));
             const copied = @min(return_count, source_count);
             for (0..copied) |index| thread.stack.items[return_start + index] = thread.stack.items[source_start + index];
             for (copied..return_count) |index| thread.stack.items[return_start + index] = .nil;
@@ -4662,7 +4697,7 @@ pub const State = struct {
         self.closeUpvalues(thread, frame.base);
         if (thread.frames.items.len == 1) {
             const result_start = frame.base + first;
-            try thread.ensureStack(self.allocator, result_start + preserved.len, self.stackValueLimit());
+            try thread.ensureStack(self.allocator, result_start + preserved.len, self.callStackValueLimit(thread));
             for (preserved, 0..) |value, index| thread.stack.items[result_start + index] = value;
             thread.last_result_base = result_start;
             thread.last_result_count = preserved.len;
@@ -4677,7 +4712,7 @@ pub const State = struct {
         frame.deinit(self.allocator);
         thread.frames.items.len -= 1;
 
-        try thread.ensureStack(self.allocator, return_start + return_count, self.stackValueLimit());
+        try thread.ensureStack(self.allocator, return_start + return_count, self.callStackValueLimit(thread));
         const copied = @min(return_count, preserved.len);
         for (preserved[0..copied], 0..) |value, index| thread.stack.items[return_start + index] = value;
         for (copied..return_count) |index| thread.stack.items[return_start + index] = .nil;
@@ -4691,7 +4726,7 @@ pub const State = struct {
         const actual_count = try self.resolveReturnCount(return_count, values.len);
         const absolute_base = frame.base + base;
         const stored_count = @max(actual_count, values.len);
-        try thread.ensureStack(self.allocator, absolute_base + stored_count, self.stackValueLimit());
+        try thread.ensureStack(self.allocator, absolute_base + stored_count, self.callStackValueLimit(thread));
         for (0..stored_count) |index| {
             thread.stack.items[absolute_base + index] = if (index < values.len) values[index] else .nil;
         }
@@ -4757,7 +4792,7 @@ pub const State = struct {
         if (frame.proto.named_vararg and !frame.named_vararg_readonly) return self.loadNamedVarargs(thread, frame, op);
         const actual_count = try self.resolveReturnCount(op.count, frame.varargs.len);
         const dest = frame.base + op.dest;
-        try thread.ensureStack(self.allocator, dest + actual_count, self.stackValueLimit());
+        try thread.ensureStack(self.allocator, dest + actual_count, self.callStackValueLimit(thread));
         const copied = @min(actual_count, frame.varargs.len);
         for (0..copied) |index| thread.stack.items[dest + index] = frame.varargs[index];
         for (copied..actual_count) |index| thread.stack.items[dest + index] = .nil;
@@ -4771,7 +4806,7 @@ pub const State = struct {
         const count = try self.namedVarargCount(table);
         const actual_count = try self.resolveReturnCount(op.count, count);
         const dest = frame.base + op.dest;
-        try thread.ensureStack(self.allocator, dest + actual_count, self.stackValueLimit());
+        try thread.ensureStack(self.allocator, dest + actual_count, self.callStackValueLimit(thread));
         const copied = @min(actual_count, count);
         for (0..copied) |index| thread.stack.items[dest + index] = table.get(.{ .integer = @intCast(index + 1) });
         for (copied..actual_count) |index| thread.stack.items[dest + index] = .nil;
@@ -5167,7 +5202,7 @@ pub const State = struct {
         const frame = thread.frames.items[frame_count - 1];
         const relative_base = frame.proto.max_registers;
         const source_base = frame.base + relative_base;
-        try thread.ensureStack(self.allocator, source_base + 4, self.stackValueLimit());
+        try thread.ensureStack(self.allocator, source_base + 4, self.callStackValueLimit(thread));
         thread.stack.items[source_base] = metamethod;
         thread.stack.items[source_base + 1] = value;
         const continuation: types.PairsContinuation = .{

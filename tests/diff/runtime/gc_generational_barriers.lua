@@ -3,7 +3,7 @@
 -- feature: gc
 -- normalize: none
 -- gc-stress: skip
--- reason: drives generational cycles itself; forced collections make it run for minutes
+-- reason: allocates heavily on purpose; a full collection per allocation takes minutes
 
 -- Old objects that receive young values must be revisited by minor
 -- collections. Each case ages the parent with a full collection, stores

@@ -6,8 +6,8 @@ const process = @import("../testing/process.zig");
 const state_mod = @import("state.zig");
 
 pub const ExecuteOptions = struct {
-    collect_after_instruction: bool = false,
-    step_after_instruction: bool = false,
+    stress_collect: bool = false,
+    stress_step: bool = false,
     state: state_mod.StateOptions = .{},
 };
 
@@ -33,9 +33,9 @@ pub fn executeSourceWithOptions(allocator: std.mem.Allocator, source: []const u8
 
     var state = try state_mod.State.initWithOptions(allocator, options.state);
     defer state.deinit();
-    state.collect_after_instruction = options.collect_after_instruction;
-    state.step_after_instruction = options.step_after_instruction;
-    if (options.step_after_instruction) {
+    state.stress_collect = options.stress_collect;
+    state.stress_step = options.stress_step;
+    if (options.stress_step) {
         state.gc_major_pending = true;
         state.gc_params.stepsize = 8;
         state.gc_params.stepmul = 100;

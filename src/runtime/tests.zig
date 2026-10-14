@@ -361,7 +361,7 @@ test "GC stress preserves live locals during execution" {
         \\end
         \\collectgarbage("collect")
         \\print(keep.answer)
-    , .{ .collect_after_instruction = true });
+    , .{ .stress_collect = true });
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(?u8, 0), result.exit_code);
@@ -384,7 +384,7 @@ test "GC stress during table mutation closure allocation and string interning" {
         \\end
         \\collectgarbage("collect")
         \\print(roots.entries["interned-30"].value, roots.entries[30](12))
-    , .{ .collect_after_instruction = true });
+    , .{ .stress_collect = true });
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(?u8, 0), result.exit_code);
@@ -400,7 +400,7 @@ test "GC stress during binary dumping and bytecode loading" {
         \\collectgarbage("collect")
         \\answer = 40
         \\print(loaded(2))
-    , .{ .collect_after_instruction = true });
+    , .{ .stress_collect = true });
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(?u8, 0), result.exit_code);

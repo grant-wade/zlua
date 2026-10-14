@@ -83,7 +83,7 @@ just diff --gc-step-stress
 just diff --show-clua --show-zlua tests/diff/runtime/errors.lua
 ```
 
-Fixtures that drive collections themselves can set `gc-stress: skip` (with a `reason`) to sit out both stress modes. Use `--gc-stress` to look for values that are collected too early, or `--gc-step-stress` to test changes made between collection steps. Add `--feature=gc` to run just the GC fixtures. Both modes respect Lua's stop/restart controls.
+Both stress modes collect at every safepoint reached after an allocation. Fixtures that allocate heavily on purpose can set `gc-stress: skip` (with a `reason`) to sit out `--gc-stress`. Use `--gc-stress` to look for values that are collected too early, or `--gc-step-stress` to test changes made between collection steps. Add `--feature=gc` to run just the GC fixtures. Both modes respect Lua's stop/restart controls.
 
 ### Expected Failures
 

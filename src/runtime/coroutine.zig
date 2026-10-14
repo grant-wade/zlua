@@ -225,7 +225,7 @@ pub fn closeCoroutine(comptime State: type, self: *State, target: *Thread, error
     if (target.is_main) return self.fail("cannot close main coroutine");
     if (target.status == .running and target != self.current_thread) return self.fail("cannot close a running coroutine");
     try @import("rollback.zig").threadWritable(target);
-    if (self.coroutine_close_depth >= self.callFrameLimit()) return .{ .string = try self.intern("C stack overflow") };
+    if (self.coroutine_close_depth >= State.max_c_calls) return .{ .string = try self.intern("C stack overflow") };
     self.coroutine_close_depth += 1;
     defer self.coroutine_close_depth -= 1;
 
@@ -259,7 +259,7 @@ pub fn resumeCoroutine(comptime State: type, self: *State, target: *Thread, args
 
     const parent = self.current_thread;
     if (parent == target) return .{ .failure = .{ .string = try self.intern("cannot resume running coroutine") } };
-    if (resumeChainDepth(parent) >= self.callFrameLimit()) return .{ .failure = .{ .string = try self.intern("C stack overflow") } };
+    if (resumeChainDepth(parent) >= State.max_c_calls) return .{ .failure = .{ .string = try self.intern("C stack overflow") } };
 
     try @import("rollback.zig").threadWritable(target);
     if (parent) |parent_thread| {
@@ -336,14 +336,14 @@ pub fn startCoroutine(comptime State: type, self: *State, target: *Thread, args:
     try @import("rollback.zig").threadWritable(target);
     const closure, const arg_count = switch (target.entry) {
         .closure => |closure| blk: {
-            try target.ensureStack(self.allocator, 1 + args.len, self.stackValueLimit());
+            try target.ensureStack(self.allocator, 1 + args.len, self.callStackValueLimit(target));
             target.stack.items[0] = .{ .closure = closure };
             for (args, 0..) |arg, index| target.stack.items[1 + index] = arg;
             break :blk .{ closure, args.len };
         },
         else => blk: {
             const trampoline = try callableEntryClosure(State, self);
-            try target.ensureStack(self.allocator, 2 + args.len, self.stackValueLimit());
+            try target.ensureStack(self.allocator, 2 + args.len, self.callStackValueLimit(target));
             target.stack.items[0] = .{ .closure = trampoline };
             target.stack.items[1] = target.entry;
             for (args, 0..) |arg, index| target.stack.items[2 + index] = arg;
@@ -388,7 +388,7 @@ pub fn callableEntryClosure(comptime State: type, self: *State) !*Closure {
 pub fn setCoroutineResumeValues(comptime State: type, self: *State, target: *Thread, args: []const Value) !void {
     try @import("rollback.zig").threadWritable(target);
     const actual_count = try self.resolveReturnCount(target.yield_result_count, args.len);
-    try target.ensureStack(self.allocator, target.yield_result_base + actual_count, self.stackValueLimit());
+    try target.ensureStack(self.allocator, target.yield_result_base + actual_count, self.callStackValueLimit(target));
     for (0..actual_count) |index| {
         target.stack.items[target.yield_result_base + index] = if (index < args.len) args[index] else .nil;
     }

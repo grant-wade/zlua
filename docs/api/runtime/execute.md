@@ -103,8 +103,8 @@
 
 ```zig
 pub const ExecuteOptions = struct {
-    collect_after_instruction: bool = false,
-    step_after_instruction: bool = false,
+    stress_collect: bool = false,
+    stress_step: bool = false,
     state: state_mod.StateOptions = .{},
 };
 ```

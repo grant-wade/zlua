@@ -322,7 +322,7 @@ test "suspended host yield values survive GC snapshots independent resumes and r
     var thread = try lua.newCoroutine(chunk);
     defer thread.deinit();
     try lua.setGlobal("co", thread);
-    lua.raw_state.collect_after_instruction = true;
+    lua.raw_state.stress_collect = true;
     var first = try thread.resumeCoroutine(.{}, api.Table, i64);
     defer first.deinit();
     try lua.collect();

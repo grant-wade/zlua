@@ -67,7 +67,7 @@ pub fn callOneResultMaybeContinuation(comptime State: type, self: *State, thread
     const frame = thread.frames.items[frame_count - 1];
     const relative_base: bytecode.Register = frame.proto.max_registers;
     const base = frame.base + @as(usize, relative_base);
-    try thread.ensureStack(self.allocator, base + 1 + args.len, self.stackValueLimit());
+    try thread.ensureStack(self.allocator, base + 1 + args.len, self.callStackValueLimit(thread));
     thread.stack.items[base] = callable;
     for (args, 0..) |arg, index| thread.stack.items[base + 1 + index] = arg;
 
@@ -154,7 +154,7 @@ pub fn protectedCallContextWithErrors(comptime State: type, self: *State, thread
 }
 
 pub fn runProtectedCall(comptime State: type, self: *State, thread: *Thread, context: ProtectedCallContext, callable: Value, args: []const Value) anyerror!ProtectedCallResult {
-    try thread.ensureStack(self.allocator, context.absolute_base + 1 + args.len, self.stackValueLimit());
+    try thread.ensureStack(self.allocator, context.absolute_base + 1 + args.len, self.callStackValueLimit(thread));
     thread.stack.items[context.absolute_base] = callable;
     for (args, 0..) |arg, index| thread.stack.items[context.absolute_base + 1 + index] = arg;
 
@@ -297,7 +297,7 @@ pub fn prepareClosureFrame(comptime State: type, self: *State, thread: *Thread, 
     const copied = @min(arg_count, param_count);
     const varargs = try self.captureVarargs(thread, source_base + 1 + param_count, if (closure.proto.is_vararg and arg_count > param_count) arg_count - param_count else 0);
     errdefer if (varargs.len != 0) self.allocator.free(varargs);
-    try thread.ensureStack(self.allocator, frame_base + register_count, self.stackValueLimit());
+    try thread.ensureStack(self.allocator, frame_base + register_count, self.callStackValueLimit(thread));
 
     if (frame_base != source_base + 1) {
         for (0..copied) |index| thread.stack.items[frame_base + index] = thread.stack.items[source_base + 1 + index];
