@@ -921,6 +921,12 @@ pub fn markThreadStack(comptime State: type, self: *State, thread: *Thread) void
             markStackRange(State, self, thread, frame.base + local.register, 1);
         }
     }
+    if (thread.native_call) |call| if (frames.len != 0 and call.frame_count == frames.len) {
+        const frame = frames[frames.len - 1];
+        const scratch = frame.base + frame.proto.max_registers;
+        const args_end = frame.base + call.base + 1 + call.arg_count;
+        if (args_end > scratch) markStackRange(State, self, thread, scratch, args_end - scratch);
+    };
     markStackRange(State, self, thread, thread.last_result_base, thread.last_result_count);
     markStackRange(State, self, thread, thread.last_transfer_base, thread.last_transfer_count);
     markStackRange(State, self, thread, thread.yield_result_base, thread.yield_result_count);
@@ -1232,7 +1238,7 @@ pub fn runFinalizerBatch(comptime State: type, self: *State, thread: ?*Thread, l
         // protectedCall's initial stack reservation can fail before protected
         // execution begins. Keep the registration pending until it succeeds.
         const frame = active_thread.frames.items[active_thread.frames.items.len - 1];
-        try active_thread.ensureStack(self.allocator, frame.base + @as(usize, frame.proto.max_registers) + 2, self.callStackValueLimit(active_thread));
+        try active_thread.ensureStack(self.allocator, frame.base + @as(usize, active_thread.scratchRegister()) + 2, self.callStackValueLimit(active_thread));
         count += 1;
         switch (object) {
             .table => |table| {
@@ -1340,7 +1346,7 @@ pub fn runCloseFinalizers(comptime State: type, self: *State, thread: *Thread) v
     for (finalizers.items) |finalizer| switch (finalizer.object) {
         inline .table, .userdata => |object, tag| {
             const frame = thread.frames.items[thread.frames.items.len - 1];
-            thread.ensureStack(self.allocator, frame.base + @as(usize, frame.proto.max_registers) + 2, self.callStackValueLimit(thread)) catch return;
+            thread.ensureStack(self.allocator, frame.base + @as(usize, thread.scratchRegister()) + 2, self.callStackValueLimit(thread)) catch return;
             self.resetInstructionBudget();
             callLuaFinalizer(State, self, thread, @unionInit(Value, @tagName(tag), object), object.metatable) catch return;
         },

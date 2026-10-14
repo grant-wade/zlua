@@ -1106,6 +1106,18 @@ pub const Thread = struct {
         try self.stack.resize(allocator, size);
         @memset(self.stack.items[old_len..], .nil);
     }
+
+    /// The register, relative to the top frame, where the runtime places a
+    /// call it makes itself: above the frame's registers and above the
+    /// arguments of any native function running on that frame.
+    pub fn scratchRegister(self: *const Thread) bytecode.Register {
+        const frame_count = self.frames.items.len;
+        const registers = self.frames.items[frame_count - 1].proto.max_registers;
+        const call = self.native_call orelse return registers;
+        if (call.frame_count != frame_count) return registers;
+        const args_end = @as(usize, call.base) + 1 + call.arg_count;
+        return @intCast(@min(@max(registers, args_end), std.math.maxInt(bytecode.Register)));
+    }
 };
 
 pub const ThreadStatus = enum {

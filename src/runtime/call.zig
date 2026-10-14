@@ -64,9 +64,8 @@ pub fn metamethodDebugName(name: []const u8) []const u8 {
 
 pub fn callOneResultMaybeContinuation(comptime State: type, self: *State, thread: *Thread, callable: Value, args: []const Value, continuation_result: ?CallOneContinuationResult) anyerror!Value {
     const frame_count = thread.frames.items.len;
-    const frame = thread.frames.items[frame_count - 1];
-    const relative_base: bytecode.Register = frame.proto.max_registers;
-    const base = frame.base + @as(usize, relative_base);
+    const relative_base = thread.scratchRegister();
+    const base = thread.frames.items[frame_count - 1].base + @as(usize, relative_base);
     try thread.ensureStack(self.allocator, base + 1 + args.len, self.callStackValueLimit(thread));
     thread.stack.items[base] = callable;
     for (args, 0..) |arg, index| thread.stack.items[base + 1 + index] = arg;
@@ -133,12 +132,11 @@ pub fn protectedCall(comptime State: type, self: *State, thread: *Thread, callab
 
 pub fn protectedCallContext(comptime State: type, _: *State, thread: *Thread) ProtectedCallContext {
     const frame_count = thread.frames.items.len;
-    const frame = thread.frames.items[frame_count - 1];
-    const relative_base: bytecode.Register = frame.proto.max_registers;
+    const relative_base = thread.scratchRegister();
     return .{
         .frame_count = frame_count,
         .relative_base = relative_base,
-        .absolute_base = frame.base + @as(usize, relative_base),
+        .absolute_base = thread.frames.items[frame_count - 1].base + @as(usize, relative_base),
         .stack_len = thread.stack.items.len,
         .last_result_base = thread.last_result_base,
         .last_result_count = thread.last_result_count,

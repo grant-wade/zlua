@@ -2991,9 +2991,8 @@ pub const State = struct {
 
     pub fn callCollect(self: *State, thread: *Thread, callable: Value, args: []const Value) anyerror![]Value {
         const frame_count = thread.frames.items.len;
-        const frame = thread.frames.items[frame_count - 1];
-        const relative_base: bytecode.Register = frame.proto.max_registers;
-        const base = frame.base + @as(usize, relative_base);
+        const relative_base = thread.scratchRegister();
+        const base = thread.frames.items[frame_count - 1].base + @as(usize, relative_base);
         try thread.ensureStack(self.allocator, base + 1 + args.len, self.callStackValueLimit(thread));
         thread.stack.items[base] = callable;
         for (args, 0..) |arg, index| thread.stack.items[base + 1 + index] = arg;
@@ -5227,9 +5226,8 @@ pub const State = struct {
 
     fn callPairsMetamethod(self: *State, thread: *Thread, op: bytecode.Call, metamethod: Value, value: Value) !void {
         const frame_count = thread.frames.items.len;
-        const frame = thread.frames.items[frame_count - 1];
-        const relative_base = frame.proto.max_registers;
-        const source_base = frame.base + relative_base;
+        const relative_base = thread.scratchRegister();
+        const source_base = thread.frames.items[frame_count - 1].base + @as(usize, relative_base);
         try thread.ensureStack(self.allocator, source_base + 4, self.callStackValueLimit(thread));
         thread.stack.items[source_base] = metamethod;
         thread.stack.items[source_base + 1] = value;
