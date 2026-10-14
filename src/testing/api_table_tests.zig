@@ -73,8 +73,11 @@ test "table len honors __len and rawLen ignores it" {
     try lua.doString(
         \\seq = setmetatable({ 1, 2, 3 }, { __len = function(t) return rawlen(t) * 10 end })
         \\float_len = setmetatable({}, { __len = function() return 4.0 end })
+        \\string_len = setmetatable({}, { __len = function() return '3' end })
+        \\string_float_len = setmetatable({}, { __len = function() return ' 4.0 ' end })
         \\bad_len = setmetatable({}, { __len = function() return 'long' end })
         \\fractional = setmetatable({}, { __len = function() return 1.5 end })
+        \\fractional_string = setmetatable({}, { __len = function() return '2.5' end })
         \\raising = setmetatable({}, { __len = function() error('len boom') end })
     , .{});
     var seq = try lua.getGlobal("seq", api.Table);
@@ -86,7 +89,15 @@ test "table len honors __len and rawLen ignores it" {
     defer float_len.deinit();
     try std.testing.expectEqual(@as(i64, 4), try float_len.len());
 
-    inline for (.{ "bad_len", "fractional" }) |name| {
+    var string_len = try lua.getGlobal("string_len", api.Table);
+    defer string_len.deinit();
+    try std.testing.expectEqual(@as(i64, 3), try string_len.len());
+
+    var string_float_len = try lua.getGlobal("string_float_len", api.Table);
+    defer string_float_len.deinit();
+    try std.testing.expectEqual(@as(i64, 4), try string_float_len.len());
+
+    inline for (.{ "bad_len", "fractional", "fractional_string" }) |name| {
         var table = try lua.getGlobal(name, api.Table);
         defer table.deinit();
         try expectLuaError(&lua, table.len(), "object length is not an integer");

@@ -159,6 +159,17 @@ pub fn toInteger(value: Value) ?i64 {
     };
 }
 
+/// Converts like `lua_tointegerx`: floats and numeric strings convert only
+/// when their value is an exact integer.
+pub fn coerceToInteger(value: Value) ?i64 {
+    return switch (value) {
+        .integer => |integer| integer,
+        .number => |number| floatToInteger(number),
+        .string => |string| parseIntegerStrict(string) orelse if (parseLuaNumber(string)) |number| floatToInteger(number) else |_| null,
+        else => null,
+    };
+}
+
 pub fn toNumber(value: Value) !f64 {
     return switch (value) {
         .integer => |integer| @floatFromInt(integer),

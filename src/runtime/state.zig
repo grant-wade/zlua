@@ -3817,6 +3817,16 @@ pub const State = struct {
         };
     }
 
+    /// `luaL_len`: the length of `value`, honoring `__len`, as an integer.
+    pub fn lengthInteger(self: *State, thread: *Thread, value: Value) !i64 {
+        return self.lengthToInteger(try self.lengthOf(thread, value));
+    }
+
+    /// Converts a length result to an integer as `luaL_len` does.
+    pub fn lengthToInteger(self: *State, length: Value) !i64 {
+        return value_mod.coerceToInteger(length) orelse self.failLibrary("object length is not an integer");
+    }
+
     fn concatValues(self: *State, lhs: Value, rhs: Value) !Value {
         return self.concatStringValues(&.{ lhs, rhs });
     }

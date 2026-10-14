@@ -1489,11 +1489,7 @@ pub const Table = struct {
         const raw = try self.rawValue();
         const handler = (state.raw_state.getMetamethod(raw, "__len") catch |err| return state.captureLuaError(err)) orelse return raw.table.len();
         const result = callFirstResult(state, handler, &.{ raw, raw }) catch |err| return state.captureLuaError(err);
-        return switch (result) {
-            .integer => |integer| integer,
-            .number => |number| runtime.floatToInteger(number),
-            else => null,
-        } orelse return state.captureLuaError(state.raw_state.fail("object length is not an integer"));
+        return state.raw_state.lengthToInteger(result) catch |err| return state.captureLuaError(err);
     }
 
     /// Returns the raw border length without invoking `__len`, like Lua `rawlen`.

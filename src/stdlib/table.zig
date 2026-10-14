@@ -10,7 +10,7 @@ const Value = runtime.Value;
 pub fn concat(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const table_value = runtime.argValue(state, thread, op, 0);
     _ = try state.expectArgumentTable(thread, op, "table.concat", 0);
-    const len = try lengthInteger(state, thread, table_value);
+    const len = try state.lengthInteger(thread, table_value);
     const sep = try state.optionalArgumentString(thread, op, "table.concat", 1) orelse "";
     const start = try state.optionalArgumentInteger(thread, op, "table.concat", 2, 1);
     const stop = try state.optionalArgumentInteger(thread, op, "table.concat", 3, len);
@@ -30,22 +30,12 @@ pub fn concat(state: *State, thread: *Thread, op: bytecode.Call) !void {
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(out.items) }});
 }
 
-fn lengthInteger(state: *State, thread: *Thread, table_value: Value) !i64 {
-    const length = try state.lengthOf(thread, table_value);
-    const integer = switch (length) {
-        .number => |number| runtime.floatToInteger(number),
-        .string => runtime.toInteger(length) orelse if (runtime.toNumber(length)) |number| runtime.floatToInteger(number) else |_| null,
-        else => runtime.toInteger(length),
-    };
-    return integer orelse state.failLibrary("object length is not an integer");
-}
-
 /// Returns the unique elements from the input sequence in first-occurrence order.
 /// Equality follows raw Lua table-key equality; non-array fields are ignored.
 pub fn dedup(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const table_value = runtime.argValue(state, thread, op, 0);
     _ = try state.expectArgumentTable(thread, op, "table.dedup", 0);
-    const len = try lengthInteger(state, thread, table_value);
+    const len = try state.lengthInteger(thread, table_value);
     if (len > 1_000_000) return state.fail("array too big");
     const count: u32 = if (len > 0) @intCast(len) else 0;
 
@@ -75,12 +65,12 @@ pub fn dedup(state: *State, thread: *Thread, op: bytecode.Call) !void {
 pub fn insert(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const table_value = runtime.argValue(state, thread, op, 0);
     _ = try state.expectArgumentTable(thread, op, "table.insert", 0);
-    const len = try lengthInteger(state, thread, table_value);
+    const first_empty = (try state.lengthInteger(thread, table_value)) +% 1;
     if (op.arg_count < 2 or op.arg_count > 3) return state.failLibrary("wrong number of arguments to 'insert'");
-    const pos = if (op.arg_count == 2) len +% 1 else try state.argumentInteger(thread, op, "table.insert", 1);
+    const pos = if (op.arg_count == 2) first_empty else try state.argumentInteger(thread, op, "table.insert", 1);
     const value = if (op.arg_count == 2) runtime.argValue(state, thread, op, 1) else runtime.argValue(state, thread, op, 2);
-    if (op.arg_count == 3 and (pos < 1 or pos > len + 1)) return state.failArgumentMessage("table.insert", 2, "position out of bounds");
-    var index = len +% 1;
+    if (op.arg_count == 3 and @as(u64, @bitCast(pos)) -% 1 >= @as(u64, @bitCast(first_empty))) return state.failArgumentMessage("table.insert", 2, "position out of bounds");
+    var index = first_empty;
     while (index > pos) : (index -= 1) {
         const shifted = try state.getTableFromThread(thread, table_value, .{ .integer = index - 1 });
         try state.setTableFromThread(thread, table_value, .{ .integer = index }, shifted);
@@ -91,10 +81,10 @@ pub fn insert(state: *State, thread: *Thread, op: bytecode.Call) !void {
 
 pub fn move(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const src_value = runtime.argValue(state, thread, op, 0);
-    _ = try state.expectArgumentTable(thread, op, "table.move", 0);
     const first = try state.argumentInteger(thread, op, "table.move", 1);
     const last = try state.argumentInteger(thread, op, "table.move", 2);
     const dest_start = try state.argumentInteger(thread, op, "table.move", 3);
+    _ = try state.expectArgumentTable(thread, op, "table.move", 0);
     const dest_value = if (op.arg_count >= 5 and runtime.argValue(state, thread, op, 4) != .nil) runtime.argValue(state, thread, op, 4) else runtime.argValue(state, thread, op, 0);
     if (dest_value != .table) return state.failArgumentType("table.move", 5, "table", dest_value);
     if (last >= first) {
@@ -133,20 +123,18 @@ pub fn pack(state: *State, thread: *Thread, op: bytecode.Call) !void {
 pub fn remove(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const table_value = runtime.argValue(state, thread, op, 0);
     _ = try state.expectArgumentTable(thread, op, "table.remove", 0);
-    const len = try lengthInteger(state, thread, table_value);
-    const pos = try state.optionalArgumentInteger(thread, op, "table.remove", 1, len);
-    if (op.arg_count >= 2 and (pos < 0 or (pos == 0 and len != 0) or (pos > len and (len == std.math.maxInt(i64) or pos != len + 1)))) return state.failArgumentMessage("table.remove", 2, "position out of bounds");
-    if (pos > len) {
-        try state.returnValues(thread, op.base, op.return_count, &.{.nil});
-        return;
-    }
+    const size = try state.lengthInteger(thread, table_value);
+    const pos = try state.optionalArgumentInteger(thread, op, "table.remove", 1, size);
+    if (pos != size and @as(u64, @bitCast(pos)) -% 1 > @as(u64, @bitCast(size))) return state.failArgumentMessage("table.remove", 2, "position out of bounds");
     const removed = try state.getTableFromThread(thread, table_value, .{ .integer = pos });
+    const removed_root = if (pos < size) try state.rootValue(removed) else null;
+    defer if (removed_root) |root| state.unrootValue(root);
     var index = pos;
-    while (index < len) : (index += 1) {
+    while (index < size) : (index += 1) {
         const shifted = try state.getTableFromThread(thread, table_value, .{ .integer = index + 1 });
         try state.setTableFromThread(thread, table_value, .{ .integer = index }, shifted);
     }
-    try state.setTableFromThread(thread, table_value, .{ .integer = len }, .nil);
+    try state.setTableFromThread(thread, table_value, .{ .integer = index }, .nil);
     try state.returnValues(thread, op.base, op.return_count, &.{removed});
 }
 
@@ -154,7 +142,7 @@ pub fn sort(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const table_value = runtime.argValue(state, thread, op, 0);
     _ = try state.expectArgumentTable(thread, op, "table.sort", 0);
     const comparator = if (op.arg_count >= 2) runtime.argValue(state, thread, op, 1) else Value.nil;
-    const len = try lengthInteger(state, thread, table_value);
+    const len = try state.lengthInteger(thread, table_value);
     if (len > 1_000_000) return state.failArgumentMessage("table.sort", 1, "array too big");
     if (len > 1 and comparator != .nil and !std.mem.eql(u8, runtime.typeName(comparator), "function")) {
         return state.failArgumentType("table.sort", 2, "function", comparator);
@@ -205,7 +193,7 @@ pub fn unpack(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const table_value = runtime.argValue(state, thread, op, 0);
     _ = try state.expectArgumentTable(thread, op, "table.unpack", 0);
     const start = try state.optionalArgumentInteger(thread, op, "table.unpack", 1, 1);
-    const stop = if (runtime.argValue(state, thread, op, 2) == .nil) try lengthInteger(state, thread, table_value) else try state.argumentInteger(thread, op, "table.unpack", 2);
+    const stop = if (runtime.argValue(state, thread, op, 2) == .nil) try state.lengthInteger(thread, table_value) else try state.argumentInteger(thread, op, "table.unpack", 2);
     if (@as(i128, stop) - @as(i128, start) + 1 > 1_000_000) return state.failLibrary("too many results to unpack");
     var values = std.ArrayList(Value).empty;
     defer values.deinit(state.allocator);
