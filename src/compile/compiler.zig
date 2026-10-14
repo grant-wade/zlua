@@ -860,6 +860,8 @@ const FunctionCompiler = struct {
         const direct_left = self.sourceRegister(binary.left);
         const direct_right = self.sourceRegister(binary.right);
         // Lua keeps local operands in their registers while evaluating the
+        // right side, which may itself update a captured local. Concat copies
+        // the left operand first unless the right side cannot run code.
         const use_direct_left = direct_left != null and (binary.op != .concat or self.evaluationIsInert(binary.right));
         const use_direct_right = direct_right != null and direct_right.? != dest;
         const right = if (use_direct_right) direct_right.? else try self.allocReg();
