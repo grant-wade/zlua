@@ -292,6 +292,40 @@ test "writes to regular files stop at max_file_bytes" {
     try expectFile(&filesystem, "fs.txt", "");
 }
 
+test "append opens leave the file alone and writes land at its current end" {
+    const Backed = struct {
+        fn read(context: ?*anyopaque, allocator: std.mem.Allocator, path: []const u8) anyerror![]const u8 {
+            const filesystem: *api.MemoryFilesystem = @ptrCast(@alignCast(context.?));
+            return filesystem.readFileAlloc(allocator, path);
+        }
+        fn write(context: ?*anyopaque, path: []const u8, contents: []const u8) anyerror!void {
+            const filesystem: *api.MemoryFilesystem = @ptrCast(@alignCast(context.?));
+            return filesystem.writeFile(path, contents);
+        }
+    };
+    for ([_]bool{ false, true }) |custom| {
+        var filesystem = api.MemoryFilesystem.init(a);
+        defer filesystem.deinit();
+        try filesystem.writeFile("log.txt", "start\n");
+        const capability: api.FilesystemCapability = if (custom)
+            .{ .custom = .{ .context = &filesystem, .read_file_alloc = Backed.read, .write_file = Backed.write } }
+        else
+            .{ .memory_rw = &filesystem };
+        var lua = try api.State.init(a, .{ .stdlib = .full, .capabilities = .{ .filesystem = capability } });
+        defer lua.deinit();
+        try lua.doString(
+            \\local a = assert(io.open('log.txt', 'a'))
+            \\local b = assert(io.open('log.txt', 'a+'))
+            \\b:write('B\n'); assert(b:close())
+            \\a:write('A\n'); assert(a:flush())
+            \\a:write('A2\n'); assert(a:close())
+            \\local c = assert(io.open('new.txt', 'a')); c:write('n'); assert(c:close())
+        , .{});
+        try expectFile(&filesystem, "log.txt", "start\nB\nA\nA2\n");
+        try expectFile(&filesystem, "new.txt", "n");
+    }
+}
+
 test "__close and collection ignore flush failures like f_gc" {
     const Failing = struct {
         fn read(_: ?*anyopaque, _: std.mem.Allocator, _: []const u8) anyerror![]const u8 {

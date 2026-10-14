@@ -2380,10 +2380,28 @@ pub const State = struct {
     /// `error.OperationUnsupported` when the capability has no positional
     /// write; callers then rewrite the whole file with `fsWriteFile`.
     pub fn fsWriteFileAt(self: *State, path: []const u8, offset: usize, data: []const u8) anyerror!void {
+        return self.fsWritePositioned(path, offset, data);
+    }
+
+    /// Writes `data` at the current end of an existing file, as a stream
+    /// opened for appending does. Custom filesystems have no positional
+    /// write, so the file is read and written back with `data` added.
+    pub fn fsAppendFile(self: *State, path: []const u8, data: []const u8) anyerror!void {
+        if (self.options.filesystem != .custom) return self.fsWritePositioned(path, null, data);
+        const old = try self.readFileRaw(path);
+        defer self.allocator.free(old);
+        const joined = try std.mem.concat(self.allocator, u8, &.{ old, data });
+        defer self.allocator.free(joined);
+        try self.fsWriteFile(path, joined);
+    }
+
+    /// Writes at `offset`, or at the end of the file when it is null.
+    fn fsWritePositioned(self: *State, path: []const u8, offset: ?usize, data: []const u8) anyerror!void {
         switch (self.options.filesystem) {
             .disabled, .memory => return error.FilesystemReadOnly,
             .memory_rw => |filesystem| {
-                try filesystem.writeAt(path, offset, data);
+                const position = offset orelse std.math.cast(usize, (try filesystem.statPath(path)).size) orelse return error.FileTooBig;
+                try filesystem.writeAt(path, position, data);
                 self.file_generation +%= 1;
             },
             .custom => return error.OperationUnsupported,
@@ -2403,8 +2421,18 @@ pub const State = struct {
                 var file = try root.openFile(io, owned orelse path, .{ .mode = .write_only, .allow_directory = false });
                 defer file.close(io);
                 self.file_generation +%= 1;
-                try file.writePositionalAll(io, data, offset);
+                try file.writePositionalAll(io, data, offset orelse try file.length(io));
             },
+        }
+    }
+
+    /// Checks that an existing file can be opened for writing, as `fopen`
+    /// does for append modes, without changing its bytes. Custom filesystems
+    /// only report whether they accept writes.
+    pub fn fsCheckWritable(self: *State, path: []const u8) anyerror!void {
+        switch (self.options.filesystem) {
+            .custom => |filesystem| if (filesystem.write_file == null) return error.OperationUnsupported,
+            else => try self.fsWriteFileAt(path, 0, ""),
         }
     }
 

@@ -555,6 +555,8 @@ const errno_values = struct {
     const name_too_long: i64 = if (builtin.os.tag == .windows) 38 else if (bsd_like) 63 else 36;
     const not_empty: i64 = if (builtin.os.tag == .windows) 41 else if (bsd_like) 66 else 39;
     const loop: i64 = if (builtin.os.tag == .windows) 114 else if (bsd_like) 62 else 40;
+    const overflow: i64 = if (builtin.os.tag == .windows) 132 else if (bsd_like) 84 else 75;
+    const overflow_message = if (bsd_like) "Value too large to be stored in data type" else "Value too large for defined data type";
 };
 
 /// Maps filesystem errors from std, memory filesystems, and custom callbacks
@@ -575,7 +577,8 @@ pub fn fileError(err: anyerror) FileError {
         error.NameTooLong, error.PathTooLong => .{ .message = "File name too long", .errno = errno_values.name_too_long },
         error.SymLinkLoop => .{ .message = "Too many levels of symbolic links", .errno = errno_values.loop },
         error.NoSpaceLeft, error.QuotaExceeded => .{ .message = "No space left on device", .errno = 28 },
-        error.BadPathName, error.InvalidUtf8, error.InvalidWtf8 => .{ .message = "Invalid argument", .errno = 22 },
+        error.BadPathName, error.InvalidUtf8, error.InvalidWtf8, error.InvalidArgument => .{ .message = "Invalid argument", .errno = 22 },
+        error.ValueTooLarge => .{ .message = errno_values.overflow_message, .errno = errno_values.overflow },
         error.ProcessFdQuotaExceeded, error.SystemFdQuotaExceeded => .{ .message = "Too many open files", .errno = 24 },
         error.FileBusy, error.DeviceBusy => .{ .message = "Device or resource busy", .errno = 16 },
         error.CrossDeviceLink, error.RenameAcrossMountPoints => .{ .message = "Cross-device link", .errno = 18 },

@@ -67,13 +67,17 @@ pub fn open(state: *State, thread: *Thread, op: bytecode.Call) !void {
 
 fn openFile(state: *State, thread: *Thread, op: bytecode.Call, path: []const u8, parsed: io_lib.ParsedMode) !void {
     var contents: []const u8 = "";
+    var found = true;
     if (parsed.reads_existing or parsed.append) {
         contents = state.fsReadFileAlloc(path, state.options.max_file_bytes) catch |err| switch (err) {
-            error.FileNotFound => if (parsed.kind == 'r') return returnFailure(state, thread, op, "open", path, null, err) else "",
+            error.FileNotFound => if (parsed.kind == 'r') return returnFailure(state, thread, op, "open", path, null, err) else blk: {
+                found = false;
+                break :blk "";
+            },
             else => return returnFailure(state, thread, op, "open", path, null, err),
         };
     }
-    if (parsed.kind != 'r') state.fsWriteFile(path, contents) catch |err| {
+    io_lib.prepareWrite(state, path, parsed, found) catch |err| {
         state.allocator.free(contents);
         return returnFailure(state, thread, op, "open", path, null, err);
     };

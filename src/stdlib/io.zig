@@ -278,10 +278,14 @@ pub fn open(state: *State, thread: *Thread, op: bytecode.Call) !void {
     if (specialDevice(path)) |kind| return returnFile(state, thread, op, try newFile(state, .{ .kind = kind, .path = path, .mode = parsed }));
 
     var contents: []const u8 = "";
+    var found = true;
     if (parsed.reads_existing or parsed.append) {
         contents = state.readFileRaw(path) catch |err| switch (err) {
             error.OutOfMemory => return err,
-            error.FileNotFound => if (parsed.kind == 'r') return os_lib.fileFailure(state, thread, op, path, err) else "",
+            error.FileNotFound => if (parsed.kind == 'r') return os_lib.fileFailure(state, thread, op, path, err) else blk: {
+                found = false;
+                break :blk "";
+            },
             error.IsDir => if (parsed.kind == 'r' and !parsed.plus)
                 return returnFile(state, thread, op, try newFile(state, .{ .path = path, .mode = parsed, .is_directory = true }))
             else
@@ -289,11 +293,25 @@ pub fn open(state: *State, thread: *Thread, op: bytecode.Call) !void {
             else => return os_lib.fileFailure(state, thread, op, path, err),
         };
     }
-    if (parsed.kind != 'r') state.fsWriteFile(path, contents) catch |err| {
+    prepareWrite(state, path, parsed, found) catch |err| {
         state.allocator.free(contents);
         return os_lib.fileFailure(state, thread, op, path, err);
     };
     try returnFile(state, thread, op, try newFile(state, .{ .path = path, .mode = parsed, .contents = contents }));
+}
+
+/// Readies the file of an open for its mode, like `fopen`: "w" truncates it,
+/// and "a" creates it when missing or checks it is writable without
+/// rewriting it, so bytes other writers append meanwhile survive.
+pub fn prepareWrite(state: *State, path: []const u8, parsed: ParsedMode, exists: bool) anyerror!void {
+    switch (parsed.kind) {
+        'w' => try state.fsWriteFile(path, ""),
+        'a' => if (exists)
+            try state.fsCheckWritable(path)
+        else
+            state.fsCreateFileExclusive(path) catch |err| if (err != error.PathAlreadyExists) return err,
+        else => {},
+    }
 }
 
 fn returnFile(state: *State, thread: *Thread, op: bytecode.Call, file: Value) !void {
@@ -453,32 +471,35 @@ pub fn fileSeek(state: *State, thread: *Thread, op: bytecode.Call) !void {
             try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.intern("Illegal seek") }, .{ .integer = 29 } });
             return;
         }
-        const base: i64 = switch (kind) {
+        const base: usize = switch (kind) {
             .set => 0,
-            .cur => @intCast(state.stdin_pos),
-            .end => @intCast(state.options.stdin.len),
+            .cur => state.stdin_pos,
+            .end => state.options.stdin.len,
         };
-        const new_pos = base + offset;
-        if (new_pos < 0) return returnInvalidSeek(state, thread, op);
-        state.stdin_pos = @intCast(new_pos);
-        try state.returnValues(thread, op.base, op.return_count, &.{.{ .integer = new_pos }});
+        const new_pos = seekPosition(base, offset) catch |err| return returnResult(state, thread, op, host.fileError(err), .nil);
+        state.stdin_pos = new_pos;
+        try state.returnValues(thread, op.base, op.return_count, &.{.{ .integer = @intCast(new_pos) }});
         return;
     }
 
     try refreshReadable(state, handle);
-    const base: i64 = switch (kind) {
+    const base: usize = switch (kind) {
         .set => 0,
-        .cur => @intCast(file.pos),
-        .end => @intCast(file.content.items.len),
+        .cur => file.pos,
+        .end => file.content.items.len,
     };
-    const new_pos = base + offset;
-    if (new_pos < 0) return returnInvalidSeek(state, thread, op);
-    file.pos = @intCast(new_pos);
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .integer = new_pos }});
+    const new_pos = seekPosition(base, offset) catch |err| return returnResult(state, thread, op, host.fileError(err), .nil);
+    file.pos = new_pos;
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .integer = @intCast(new_pos) }});
 }
 
-fn returnInvalidSeek(state: *State, thread: *Thread, op: bytecode.Call) !void {
-    try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.intern("invalid argument") }, .{ .integer = 22 } });
+/// The position `offset` bytes from `base`, failing like `fseek` when it is
+/// negative or overflows `lua_Integer` or the host position.
+fn seekPosition(base: usize, offset: i64) error{ InvalidArgument, ValueTooLarge }!usize {
+    const start = std.math.cast(i64, base) orelse return error.ValueTooLarge;
+    const target = std.math.add(i64, start, offset) catch return error.ValueTooLarge;
+    if (target < 0) return error.InvalidArgument;
+    return std.math.cast(usize, target) orelse error.ValueTooLarge;
 }
 
 pub fn fileFlush(state: *State, thread: *Thread, op: bytecode.Call) !void {
@@ -522,9 +543,9 @@ pub fn linesNext(state: *State, iterator: Value) ![]const Value {
     var values = std.ArrayList(Value).empty;
     errdefer values.deinit(state.allocator);
     if (specs == .table and specs.table.array.items.len != 0) {
-        for (specs.table.array.items) |spec| try values.append(state.allocator, try readOne(state, handle, spec));
+        for (specs.table.array.items) |spec| if (!try readInto(state, handle, &values, spec)) break;
     } else {
-        try values.append(state.allocator, try readOne(state, handle, .{ .string = try state.intern("l") }));
+        _ = try readInto(state, handle, &values, .{ .string = try state.intern("l") });
     }
     if (values.items.len == 0 or values.items[0] == .nil) {
         values.deinit(state.allocator);
@@ -676,16 +697,22 @@ fn readFromFile(state: *State, thread: *Thread, op: bytecode.Call, handle: Handl
     var values = std.ArrayList(Value).empty;
     defer values.deinit(state.allocator);
     if (op.arg_count <= first_arg) {
-        try values.append(state.allocator, try readOne(state, handle, .{ .string = try state.intern("l") }));
+        _ = try readInto(state, handle, &values, .{ .string = try state.intern("l") });
     } else {
         var index = first_arg;
         while (index < op.arg_count) : (index += 1) {
-            const value = try readOne(state, handle, runtime.argValue(state, thread, op, index));
-            try values.append(state.allocator, value);
-            if (value == .nil) break;
+            if (!try readInto(state, handle, &values, runtime.argValue(state, thread, op, index))) break;
         }
     }
     try state.returnValues(thread, op.base, op.return_count, values.items);
+}
+
+/// Appends the result of one read format; false when it fails, after which
+/// `g_read` reads no further formats.
+fn readInto(state: *State, handle: Handle, values: *std.ArrayList(Value), spec: Value) !bool {
+    const value = try readOne(state, handle, spec);
+    try values.append(state.allocator, value);
+    return value != .nil;
 }
 
 const ReadFormat = union(enum) {
@@ -699,7 +726,7 @@ const ReadFormat = union(enum) {
 fn parseReadFormat(state: *State, spec_value: Value) !ReadFormat {
     if (runtime.toInteger(spec_value)) |count| {
         if (count < 0) return state.fail("invalid format");
-        return .{ .count = @intCast(count) };
+        return .{ .count = std.math.cast(usize, count) orelse std.math.maxInt(usize) };
     }
     var spec = try state.expectString(spec_value);
     if (spec.len != 0 and spec[0] == '*') spec = spec[1..];
@@ -977,7 +1004,7 @@ fn writeBytes(state: *State, handle: Handle, bytes: []const u8) !void {
     const file = handle.file;
     const content = &file.content;
     const pos = if (file.append) content.items.len else file.pos;
-    const end = pos + bytes.len;
+    const end = std.math.add(usize, pos, bytes.len) catch return error.FileTooBig;
     if (end > state.options.max_file_bytes) return error.FileTooBig;
     defer handle.noteSize(state);
     if (pos < file.synced) file.synced = pos;
@@ -1047,6 +1074,14 @@ fn flushFile(state: *State, file: *File) anyerror!void {
     if (!file.writable or !file.hasUnflushedWrites()) return;
 
     const content = file.content.items;
+    if (file.append) {
+        state.fsAppendFile(file.path, content[file.synced..]) catch |err| switch (err) {
+            error.FileNotFound => try state.fsWriteFile(file.path, content),
+            else => return err,
+        };
+        file.synced = content.len;
+        return;
+    }
     var written = false;
     if (file.generation == state.file_generation) {
         if (state.fsWriteFileAt(file.path, file.synced, content[file.synced..])) {
@@ -1176,6 +1211,21 @@ test "host stdin reader is consumed only as far as each read needs" {
     try std.testing.expect(state.getGlobal("g") == .nil);
     try std.testing.expectEqualStrings("Illegal seek", state.getGlobal("h").string);
     try std.testing.expectEqual(@as(i64, 29), state.getGlobal("i").integer);
+}
+
+test "stdin seeks past the integer limits fail without moving" {
+    var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .full, .stdin = "abc" });
+    defer state.deinit();
+    try state.executeSourceChunk(
+        \\assert(io.read(1) == 'a')
+        \\local ok, message, code = io.stdin:seek('cur', math.maxinteger)
+        \\assert(ok == nil and message:find('^Value too large') and (code == 75 or code == 84 or code == 132))
+        \\assert(select(3, io.stdin:seek('end', math.maxinteger)) == code)
+        \\assert(select(3, io.stdin:seek('cur', math.mininteger)) == 22)
+        \\assert(select(2, io.stdin:seek('set', -1)) == 'Invalid argument')
+        \\assert(io.stdin:seek('set', math.maxinteger) == math.maxinteger and io.read(1) == nil)
+        \\assert(io.stdin:seek('set', 1) == 1 and io.read('a') == 'bc')
+    );
 }
 
 test "output flush policies follow C stdio buffering" {
