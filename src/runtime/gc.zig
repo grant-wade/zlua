@@ -914,25 +914,28 @@ pub fn markThreadStack(comptime State: type, self: *State, thread: *Thread) void
     }
     const frames = thread.frames.items;
     for (frames, 0..) |frame, index| {
-        const live_end = if (index + 1 < frames.len) frames[index + 1].base else innermostLiveEnd(frame);
+        const live_end = if (index + 1 < frames.len) frames[index + 1].base else innermostLiveEnd(thread, frame);
         if (live_end > frame.base) markStackRange(State, self, thread, frame.base, live_end - frame.base);
         for (frame.proto.locals.items) |local| {
             if (frame.base + local.register < live_end or !localActiveAt(local, frame.pc)) continue;
             markStackRange(State, self, thread, frame.base + local.register, 1);
         }
     }
-    if (thread.native_call) |call| if (frames.len != 0 and call.frame_count == frames.len) {
-        const frame = frames[frames.len - 1];
-        const scratch = frame.base + frame.proto.max_registers;
-        const args_end = frame.base + call.base + 1 + call.arg_count;
-        if (args_end > scratch) markStackRange(State, self, thread, scratch, args_end - scratch);
-    };
     markStackRange(State, self, thread, thread.last_result_base, thread.last_result_count);
     markStackRange(State, self, thread, thread.last_transfer_base, thread.last_transfer_count);
     markStackRange(State, self, thread, thread.yield_result_base, thread.yield_result_count);
 }
 
-fn innermostLiveEnd(frame: types.CallFrame) usize {
+/// Includes the arguments of a native running from this frame, which can
+/// reach past the CALL operands when they come from multiple results.
+fn innermostLiveEnd(thread: *const Thread, frame: types.CallFrame) usize {
+    const end = callerLiveEnd(frame);
+    const call = thread.native_call orelse return end;
+    if (call.frame_count != thread.frames.items.len) return end;
+    return @max(end, frame.base + call.base + 1 + call.arg_count);
+}
+
+fn callerLiveEnd(frame: types.CallFrame) usize {
     const whole = frame.base + frame.proto.max_registers;
     if (frame.pc == 0 or frame.pc > frame.proto.instructions.items.len) return whole;
     const op = switch (frame.proto.instructions.items[frame.pc - 1]) {
@@ -1358,6 +1361,7 @@ fn collectCloseFinalizers(comptime State: type, self: *State, finalizers: *std.A
     const a = self.allocator;
     var pending_table = self.table_pending_finalizer_head;
     var pending_lua = self.userdata_lua_pending_head;
+    var pending_lua_tail: ?*Userdata = null;
     while (pending_table != null or pending_lua != null) {
         const take_table = if (pending_table) |table| if (pending_lua) |userdata| table.finalizer_order <= userdata.lua_finalizer_order else true else false;
         if (take_table) {
@@ -1365,6 +1369,7 @@ fn collectCloseFinalizers(comptime State: type, self: *State, finalizers: *std.A
             pending_table = pending_table.?.finalizer_next;
         } else {
             try finalizers.append(a, .{ .object = .{ .userdata = pending_lua.? }, .order = 0 });
+            pending_lua_tail = pending_lua;
             pending_lua = pending_lua.?.lua_finalizer_next;
         }
     }
@@ -1376,7 +1381,7 @@ fn collectCloseFinalizers(comptime State: type, self: *State, finalizers: *std.A
     var registered = self.table_finalizer_head;
     while (registered) |table| : (registered = table.finalizer_next) try finalizers.append(a, .{ .object = .{ .table = table }, .order = table.finalizer_order });
     for (self.userdata_allocations.items) |userdata| {
-        if (userdata.lua_finalizer_registered and userdata.lua_finalizer_next == null and self.userdata_lua_pending_head != userdata) {
+        if (userdata.lua_finalizer_registered and userdata.lua_finalizer_next == null and userdata != pending_lua_tail) {
             try finalizers.append(a, .{ .object = .{ .userdata = userdata }, .order = userdata.lua_finalizer_order });
         }
         if (userdata.finalization_pending) continue;

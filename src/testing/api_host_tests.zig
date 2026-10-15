@@ -340,3 +340,48 @@ test "os.exit in a finalizer stops deinit finalizers and reaches the exit callba
     try std.testing.expectEqual(@as(?i32, 7), host.exit_code);
     try std.testing.expectEqualStrings("newest\nexit\n", stdout.buffered());
 }
+
+test "deinit calls each queued userdata __gc once" {
+    const Item = struct { id: usize };
+    var buffer: [128]u8 = undefined;
+    var stdout: std.Io.Writer = .fixed(&buffer);
+    {
+        var lua = try api.State.init(a, .{ .capabilities = .{ .io = .{ .stdout = &stdout } } });
+        defer lua.deinit();
+        _ = lua.setGcMode(.incremental);
+        try runLua(&lua, "ran = 0");
+        for (1..5) |id| {
+            var source: [96]u8 = undefined;
+            try runLua(&lua, try std.fmt.bufPrint(&source, "meta = {{ __gc = function() ran = ran + 1; print('gc', {d}) end }}", .{id}));
+            var meta = try lua.getGlobal("meta", api.Table);
+            defer meta.deinit();
+            var item = try lua.newUserdata(Item, .{ .id = id }, .{ .metatable = meta });
+            item.deinit();
+        }
+        try runLua(&lua, "meta = nil");
+        while (try lua.getGlobal("ran", i64) == 0) _ = try lua.stepGc(.{});
+    }
+    try std.testing.expectEqualStrings("gc\t4\ngc\t3\ngc\t2\ngc\t1\n", stdout.buffered());
+}
+
+test "host callback arguments from multiple results survive a full collection" {
+    const Host = struct {
+        fn join(ctx: *api.Context) !void {
+            try ctx.state().collect();
+            var out: std.ArrayList(u8) = .empty;
+            defer out.deinit(a);
+            for (0..ctx.argCount()) |index| try out.appendSlice(a, try ctx.arg(index, []const u8));
+            try ctx.returnValues(.{out.items});
+        }
+    };
+    var lua = try api.State.init(a, .{});
+    defer lua.deinit();
+    var function = try lua.register("join", Host.join);
+    defer function.deinit();
+    try lua.setGlobal("join", function);
+    try runLua(&lua,
+        \\local function parts() return ("a"):rep(3), ("b"):rep(3), ("c"):rep(3) end
+        \\assert(join(parts()) == "aaabbbccc")
+        \\assert(select(2, pcall(join, parts())) == "aaabbbccc")
+    );
+}

@@ -1263,6 +1263,35 @@ test "automatic finalization runs a bounded userdata batch" {
     try std.testing.expectEqual(@as(usize, 5), calls);
 }
 
+test "closing the state calls each queued userdata finalizer once" {
+    var result = try executeSource(std.testing.allocator,
+        \\ran = 0
+        \\for i = 1, 4 do
+        \\  debug.setmetatable(io.tmpfile(), { __gc = function() ran = ran + 1; print("gc", i) end })
+        \\end
+        \\collectgarbage("incremental")
+        \\repeat collectgarbage("step") until ran > 0
+    );
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(?u8, 0), result.exit_code);
+    try std.testing.expectEqualStrings("gc\t4\ngc\t3\ngc\t2\ngc\t1\n", result.stdout);
+}
+
+test "precise collection inside a native keeps its multiple-result arguments" {
+    var result = try executeSource(std.testing.allocator,
+        \\local function args()
+        \\  return ("collect "):rep(3) .. "collect", "%a+", collectgarbage
+        \\end
+        \\print(string.gsub(args()))
+        \\print(pcall(string.gsub, args()))
+    );
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(?u8, 0), result.exit_code);
+    try std.testing.expectEqualStrings("0 0 0 0\t4\ntrue\t0 0 0 0\t4\n", result.stdout);
+}
+
 test "remembered old metatables keep young metadata through promotion" {
     var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .none });
     defer state.deinit();
