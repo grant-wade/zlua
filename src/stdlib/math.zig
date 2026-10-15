@@ -184,16 +184,7 @@ pub fn tan(state: *State, thread: *Thread, op: bytecode.Call) !void {
 pub fn tointeger(state: *State, thread: *Thread, op: bytecode.Call) !void {
     if (op.arg_count == 0) return state.failArgumentMessage("math.tointeger", 1, "value expected");
     const value = runtime.argValue(state, thread, op, 0);
-    const result: Value = switch (value) {
-        .integer => |integer| .{ .integer = integer },
-        .number => |number| if (runtime.floatToInteger(number)) |integer| .{ .integer = integer } else .nil,
-        .string => |string| blk: {
-            if (runtime.parseIntegerStrict(string)) |integer| break :blk .{ .integer = integer };
-            const number = runtime.parseLuaNumber(string) catch break :blk .nil;
-            break :blk if (runtime.floatToInteger(number)) |integer| .{ .integer = integer } else .nil;
-        },
-        else => .nil,
-    };
+    const result: Value = if (runtime.coerceToInteger(value)) |integer| .{ .integer = integer } else .nil;
     try state.returnValues(thread, op.base, op.return_count, &.{result});
 }
 

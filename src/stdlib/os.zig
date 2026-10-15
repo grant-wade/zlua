@@ -28,7 +28,7 @@ pub fn date(state: *State, thread: *Thread, op: bytecode.Call) !void {
     else
         "%c";
     const when = if (op.arg_count >= 2 and runtime.argValue(state, thread, op, 1) != .nil)
-        try integerArgument(state, thread, op, "os.date", 1)
+        try state.argumentInteger(thread, op, "os.date", 1)
     else
         try state.currentTime();
 
@@ -54,7 +54,7 @@ pub fn exit(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const code: i32 = switch (status) {
         .boolean => |success| if (success) 0 else 1,
         .nil => 0,
-        else => @truncate(try integerArgument(state, thread, op, "os.exit", 0)),
+        else => @truncate(try state.argumentInteger(thread, op, "os.exit", 0)),
     };
     const close = op.arg_count >= 2 and runtime.truthy(runtime.argValue(state, thread, op, 1));
     try state.requestExit(code, close);
@@ -155,8 +155,8 @@ fn randomNameBytes(state: *State, out: []u8) void {
 }
 
 pub fn difftime(state: *State, thread: *Thread, op: bytecode.Call) !void {
-    const t2 = try integerArgument(state, thread, op, "os.difftime", 0);
-    const t1 = try integerArgument(state, thread, op, "os.difftime", 1);
+    const t2 = try state.argumentInteger(thread, op, "os.difftime", 0);
+    const t1 = try state.argumentInteger(thread, op, "os.difftime", 1);
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .number = @as(f64, @floatFromInt(t2)) - @as(f64, @floatFromInt(t1)) }});
 }
 
@@ -276,7 +276,7 @@ fn tableToTime(state: *State, value: Value) !i64 {
 
 fn dateField(state: *State, table: *runtime.Table, comptime name: []const u8, default: ?i64, comptime delta: i64) !i64 {
     const value = table.get(.{ .string = name });
-    const integer = luaInteger(value) orelse {
+    const integer = runtime.coerceToInteger(value) orelse {
         if (value != .nil) return state.failLibrary("field '" ++ name ++ "' is not an integer");
         return default orelse state.failLibrary("field '" ++ name ++ "' missing in date table");
     };
@@ -286,21 +286,6 @@ fn dateField(state: *State, table: *runtime.Table, comptime name: []const u8, de
         @as(i64, std.math.minInt(i32)) + delta <= integer;
     if (!in_bounds) return state.failLibrary("field '" ++ name ++ "' is out-of-bound");
     return integer;
-}
-
-fn luaInteger(value: Value) ?i64 {
-    return switch (value) {
-        .number => |number| runtime.floatToInteger(number),
-        .string => |string| runtime.toInteger(value) orelse if (runtime.parseLuaNumber(string)) |number| runtime.floatToInteger(number) else |_| null,
-        else => runtime.toInteger(value),
-    };
-}
-
-fn integerArgument(state: *State, thread: *Thread, op: bytecode.Call, comptime name: []const u8, index: u16) !i64 {
-    const value = runtime.argValue(state, thread, op, index);
-    if (luaInteger(value)) |integer| return integer;
-    if (value == .number) return state.failArgumentMessage(name, index + 1, "number has no integer representation");
-    return state.argumentInteger(thread, op, name, index);
 }
 
 const weekday_names = [_][]const u8{ "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday" };

@@ -4048,8 +4048,7 @@ pub const State = struct {
                 try self.returnValues(thread, resolved.base, resolved.return_count, values[0..if (values[0] == .nil) @as(usize, 1) else 2]);
             },
             .native_table_create => {
-                const array_hint = try self.tableCreateHint(thread, resolved, 0);
-                const hash_hint = try self.tableCreateHint(thread, resolved, 1);
+                const array_hint, const hash_hint = try self.tableCreateHints(thread, resolved);
                 if (hash_hint > 1 << 30) return self.fail("table overflow");
                 try self.returnValues(thread, resolved.base, resolved.return_count, &.{try self.newTableWithHints(array_hint, hash_hint)});
             },
@@ -5480,26 +5479,17 @@ pub const State = struct {
         };
     }
 
-    fn tableCreateHint(self: *State, thread: *Thread, op: bytecode.Call, index: u16) !u32 {
-        const function_name = "table.create";
-        const arg_number = index + 1;
-        const value = argValue(self, thread, op, index);
-        const integer: i64 = switch (value) {
-            .integer => |integer| integer,
-            .number => |number| floatToInteger(number) orelse return self.failArgumentMessage(function_name, arg_number, "number has no integer representation"),
-            .string => |string| parseIntegerStrict(string) orelse blk: {
-                const number = toNumberMaybe(value) orelse return self.failArgumentType(function_name, arg_number, "number", value);
-                break :blk floatToInteger(number) orelse return self.failArgumentMessage(function_name, arg_number, "number has no integer representation");
-            },
-            .nil => blk: {
-                if (index == 1) break :blk 0;
-                if (index >= op.arg_count) return self.failArgument(function_name, arg_number, .{ .expected = .{ .expected = "number", .actual = "no value" } });
-                return self.failArgumentType(function_name, arg_number, "number", value);
-            },
-            else => return self.failArgumentType(function_name, arg_number, "number", value),
+    fn tableCreateHints(self: *State, thread: *Thread, op: bytecode.Call) ![2]u32 {
+        const sizes = [2]i64{
+            try self.argumentInteger(thread, op, "table.create", 0),
+            try self.optionalArgumentInteger(thread, op, "table.create", 1, 0),
         };
-        if (integer < 0 or integer > std.math.maxInt(i32)) return self.failArgumentMessage(function_name, arg_number, "out of range");
-        return @intCast(integer);
+        var hints: [2]u32 = undefined;
+        for (sizes, &hints, 1..) |size, *hint, arg_number| {
+            if (size < 0 or size > std.math.maxInt(i32)) return self.failArgumentMessage("table.create", @intCast(arg_number), "out of range");
+            hint.* = @intCast(size);
+        }
+        return hints;
     }
 
     fn callNative(self: *State, native: NativeFn, thread: *Thread, op: bytecode.Call) !void {

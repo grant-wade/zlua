@@ -4,6 +4,7 @@ const host = @import("runtime/host.zig");
 const state_mod = @import("runtime/state.zig");
 const tests = @import("runtime/tests.zig");
 const types = @import("runtime/types.zig");
+const value_mod = @import("runtime/value.zig");
 
 pub const RuntimeError = types.RuntimeError;
 pub const binary_chunk_signature = chunk_mod.binary_chunk_signature;
@@ -66,6 +67,7 @@ pub const CompareOp = state_mod.CompareOp;
 pub const valuesEqual = state_mod.valuesEqual;
 pub const truthy = state_mod.truthy;
 pub const toInteger = state_mod.toInteger;
+pub const coerceToInteger = value_mod.coerceToInteger;
 pub const toNumber = state_mod.toNumber;
 pub const appendLuaString = state_mod.appendLuaString;
 pub const localActiveAt = state_mod.localActiveAt;
