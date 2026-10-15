@@ -195,8 +195,8 @@ fn appendBinaryInstruction(allocator: std.mem.Allocator, out: *std.ArrayList(u8)
             try appendBinaryI32(allocator, out, op.offset);
         },
         .call, .tail_call => |op| {
-            try appendBinaryU16(allocator, out, op.base);
-            try appendBinaryU16(allocator, out, op.arg_count);
+            try appendBinaryU16(allocator, out, @intCast(op.base));
+            try appendBinaryU16(allocator, out, if (op.arg_count == bytecode.multret_arg_count) bytecode.multret_count else @intCast(op.arg_count));
             try appendBinaryU16(allocator, out, op.return_count);
         },
         .ret => |op| {
@@ -354,7 +354,7 @@ fn verifyInstruction(proto: *const proto_mod.Proto, instruction: bytecode.Instru
         .test_op => |op| op.register < registers and validJump(proto, pc, op.offset),
         .test_set => |op| op.dest < registers and op.source < registers and validJump(proto, pc, op.offset),
         .call, .tail_call => |op| op.base < registers and
-            (op.arg_count == bytecode.multret_count or registerRange(registers, @as(usize, op.base) + 1, op.arg_count)) and
+            (op.arg_count == bytecode.multret_arg_count or registerRange(registers, @as(usize, op.base) + 1, op.arg_count)) and
             (op.return_count == bytecode.multret_count or registerRange(registers, op.base, op.return_count)),
         .ret => |op| if (op.count == bytecode.multret_count) op.first < registers else registerRange(registers, op.first, op.count),
         .vararg => |op| if (op.count == bytecode.multret_count) op.dest < registers else registerRange(registers, op.dest, op.count),
@@ -557,8 +557,8 @@ pub fn BinaryChunkReader(comptime State: type) type {
                 .compare_branch => .{ .compare_branch = .{ .left = try self.readU16(), .right = try self.readU16(), .op = try self.readEnum(bytecode.CompareBranchOp), .jump_if_truthy = try self.readBool(), .offset = try self.readI32() } },
                 .test_op => .{ .test_op = .{ .register = try self.readU16(), .jump_if_truthy = try self.readBool(), .offset = try self.readI32() } },
                 .test_set => .{ .test_set = .{ .dest = try self.readU16(), .source = try self.readU16(), .jump_if_truthy = try self.readBool(), .offset = try self.readI32() } },
-                .call => .{ .call = .{ .base = try self.readU16(), .arg_count = try self.readU16(), .return_count = try self.readU16() } },
-                .tail_call => .{ .tail_call = .{ .base = try self.readU16(), .arg_count = try self.readU16(), .return_count = try self.readU16() } },
+                .call => .{ .call = .{ .base = try self.readU16(), .arg_count = try self.readArgCount(), .return_count = try self.readU16() } },
+                .tail_call => .{ .tail_call = .{ .base = try self.readU16(), .arg_count = try self.readArgCount(), .return_count = try self.readU16() } },
                 .ret => .{ .ret = .{ .first = try self.readU16(), .count = try self.readU16() } },
                 .vararg => .{ .vararg = .{ .dest = try self.readU16(), .count = try self.readU16() } },
                 .closure => .{ .closure = .{ .dest = try self.readU16(), .proto = try self.readU32() } },
@@ -666,6 +666,11 @@ pub fn BinaryChunkReader(comptime State: type) type {
 
         fn readU16(self: *Self) !u16 {
             return std.mem.readInt(u16, (try self.readBytes(2))[0..2], .little);
+        }
+
+        fn readArgCount(self: *Self) !u32 {
+            const count = try self.readU16();
+            return if (count == bytecode.multret_count) bytecode.multret_arg_count else count;
         }
 
         fn readU32(self: *Self) !u32 {

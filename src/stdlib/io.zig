@@ -682,7 +682,7 @@ fn defaultFile(state: *State, which: CurrentFile) !*Userdata {
     return userdata;
 }
 
-fn readFromFile(state: *State, thread: *Thread, op: bytecode.Call, handle: Handle, first_arg: u16) !void {
+fn readFromFile(state: *State, thread: *Thread, op: bytecode.Call, handle: Handle, first_arg: u32) !void {
     const file = handle.file;
     try ensureOpen(state, file);
     if (!file.readable) {
@@ -948,7 +948,7 @@ fn writeTarget(file: *const File) WriteTarget {
     };
 }
 
-fn writeToFile(state: *State, thread: *Thread, op: bytecode.Call, handle: Handle, first_arg: u16, function_name: []const u8) !void {
+fn writeToFile(state: *State, thread: *Thread, op: bytecode.Call, handle: Handle, first_arg: u32, function_name: []const u8) !void {
     const file = handle.file;
     try ensureOpen(state, file);
     if (!file.writable) {
@@ -1112,7 +1112,7 @@ fn refreshReadable(state: *State, handle: Handle) !void {
     handle.noteSize(state);
 }
 
-fn newLinesIterator(state: *State, thread: *Thread, file_value: Value, op: bytecode.Call, first_arg: u16, auto_close: bool) !Value {
+fn newLinesIterator(state: *State, thread: *Thread, file_value: Value, op: bytecode.Call, first_arg: u32, auto_close: bool) !Value {
     const value = try state.newTableWithHints(0, 4);
     const table = value.table;
     try state.setTableRaw(table, .{ .string = try state.intern("__zlua_lines_iterator") }, .{ .boolean = true });
@@ -1132,7 +1132,7 @@ fn expectFile(state: *State, value: Value) !*Userdata {
     return value.userdata;
 }
 
-fn expectFileArgument(state: *State, value: Value, function_name: []const u8, index: u16) !*Userdata {
+fn expectFileArgument(state: *State, value: Value, function_name: []const u8, index: u32) !*Userdata {
     return checkedFile(state, value) orelse state.failArgumentType(function_name, index, "FILE*", value);
 }
 

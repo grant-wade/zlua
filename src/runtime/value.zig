@@ -461,14 +461,14 @@ pub fn arrayIndex(value: Value) ?usize {
     return std.math.cast(usize, integer);
 }
 
-pub fn runtimeArgValue(state: anytype, thread: *Thread, op: bytecode.Call, index: u16) Value {
+pub fn runtimeArgValue(state: anytype, thread: *Thread, op: bytecode.Call, index: u32) Value {
     _ = state;
     if (index >= op.arg_count) return .nil;
     const frame = thread.frames.items[thread.frames.items.len - 1];
     return thread.stack.items[frame.base + op.base + 1 + index];
 }
 
-pub fn argValue(state: anytype, thread: *Thread, op: bytecode.Call, index: u16) Value {
+pub fn argValue(state: anytype, thread: *Thread, op: bytecode.Call, index: u32) Value {
     return runtimeArgValue(state, thread, op, index);
 }
 

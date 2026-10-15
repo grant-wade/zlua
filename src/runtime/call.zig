@@ -200,7 +200,7 @@ fn protectedCallFailure(comptime State: type, self: *State, thread: *Thread, con
     }
 }
 
-pub fn pushProtectedContinuation(comptime State: type, self: *State, thread: *Thread, context: ProtectedCallContext, base: bytecode.Register, return_count: u16) !void {
+pub fn pushProtectedContinuation(comptime State: type, self: *State, thread: *Thread, context: ProtectedCallContext, base: u32, return_count: u16) !void {
     thread.continuation_order += 1;
     try thread.protected_continuations.append(self.allocator, .{
         .order = thread.continuation_order,
@@ -269,7 +269,7 @@ pub fn returnProtectedContinuationSuccess(comptime State: type, self: *State, th
     try returnProtectedResult(State, self, thread, continuation.base, continuation.return_count, .{ .success = values });
 }
 
-pub fn returnProtectedResult(comptime State: type, self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, result: ProtectedCallResult) !void {
+pub fn returnProtectedResult(comptime State: type, self: *State, thread: *Thread, base: u32, return_count: u16, result: ProtectedCallResult) !void {
     switch (result) {
         .success => |values| {
             var returns = std.ArrayList(Value).empty;
@@ -282,10 +282,10 @@ pub fn returnProtectedResult(comptime State: type, self: *State, thread: *Thread
     }
 }
 
-pub fn collectArgs(comptime State: type, self: *State, thread: *Thread, op: bytecode.Call, first: u16) ![]Value {
+pub fn collectArgs(comptime State: type, self: *State, thread: *Thread, op: bytecode.Call, first: u32) ![]Value {
     if (op.arg_count <= first) return self.allocator.alloc(Value, 0);
     const args = try self.allocator.alloc(Value, op.arg_count - first);
-    for (args, 0..) |*arg, index| arg.* = argValue(self, thread, op, first + @as(u16, @intCast(index)));
+    for (args, 0..) |*arg, index| arg.* = argValue(self, thread, op, first + @as(u32, @intCast(index)));
     return args;
 }
 

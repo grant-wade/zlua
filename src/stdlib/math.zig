@@ -258,7 +258,7 @@ fn integerUnary(state: *State, thread: *Thread, op: bytecode.Call, func: Integer
 fn minMax(state: *State, thread: *Thread, op: bytecode.Call, choose_min: bool) !void {
     if (op.arg_count == 0) return state.failArgumentMessage(if (choose_min) "math.min" else "math.max", 1, "value expected");
     var best = runtime.argValue(state, thread, op, 0);
-    var index: u16 = 1;
+    var index: u32 = 1;
     while (index < op.arg_count) : (index += 1) {
         const value = runtime.argValue(state, thread, op, index);
         const choose = if (choose_min) try state.compareValues(thread, value, best, .lt) else try state.compareValues(thread, best, value, .lt);
@@ -267,12 +267,12 @@ fn minMax(state: *State, thread: *Thread, op: bytecode.Call, choose_min: bool) !
     try state.returnValues(thread, op.base, op.return_count, &.{best});
 }
 
-fn numberArgument(state: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16) !f64 {
+fn numberArgument(state: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) !f64 {
     const value = runtime.argValue(state, thread, op, index);
     return runtime.toNumber(value) catch state.failArgumentType(function_name, index + 1, "number", value);
 }
 
-fn integerArgument(state: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16) !i64 {
+fn integerArgument(state: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) !i64 {
     return state.argumentInteger(thread, op, function_name, index);
 }
 

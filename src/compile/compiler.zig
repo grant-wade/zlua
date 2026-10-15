@@ -1042,7 +1042,7 @@ const FunctionCompiler = struct {
                 try self.compileExpr(call.callee, dest);
                 const arg_count = try self.compileCallArgs(call.args, dest + 1, 0);
                 self.current_line = call.call_line;
-                _ = try self.emitWithErrorSite(if (tail) .{ .tail_call = .{ .base = dest, .arg_count = arg_count, .return_count = returns } } else .{ .call = .{ .base = dest, .arg_count = arg_count, .return_count = returns } }, .call, &.{call_name}, call_name);
+                _ = try self.emitWithErrorSite(if (tail) .{ .tail_call = .{ .base = dest, .arg_count = callArgCount(arg_count), .return_count = returns } } else .{ .call = .{ .base = dest, .arg_count = callArgCount(arg_count), .return_count = returns } }, .call, &.{call_name}, call_name);
                 self.release(callReleaseMark(dest, returns));
                 return dest;
             },
@@ -1059,7 +1059,7 @@ const FunctionCompiler = struct {
                 else
                     proto_mod.OperandOrigin{ .field = call.method.name };
                 self.current_line = call.call_line;
-                _ = try self.emitWithErrorSite(if (tail) .{ .tail_call = .{ .base = dest, .arg_count = arg_count, .return_count = returns } } else .{ .call = .{ .base = dest, .arg_count = arg_count, .return_count = returns } }, .call, &.{method_origin}, method_origin);
+                _ = try self.emitWithErrorSite(if (tail) .{ .tail_call = .{ .base = dest, .arg_count = callArgCount(arg_count), .return_count = returns } } else .{ .call = .{ .base = dest, .arg_count = callArgCount(arg_count), .return_count = returns } }, .call, &.{method_origin}, method_origin);
                 self.release(callReleaseMark(dest, returns));
                 return dest;
             },
@@ -1662,6 +1662,10 @@ fn assignmentTargetDebugName(target: *const ast.Expr) ?[]const u8 {
 
 fn callReleaseMark(dest: bytecode.Register, count: u16) bytecode.Register {
     return if (count == bytecode.multret_count) dest + 1 else dest + count;
+}
+
+fn callArgCount(count: u16) u32 {
+    return if (count == bytecode.multret_count) bytecode.multret_arg_count else count;
 }
 
 fn stmtLine(statement: ast.Stmt) usize {

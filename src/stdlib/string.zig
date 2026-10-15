@@ -16,6 +16,7 @@ pub fn byte(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const first = @max(start, 1);
     const last = @min(stop, source.len);
     if (first <= last) {
+        if (!state.nativeStackFits(thread, op, last - first + 1)) return state.failLibrary("stack overflow (string slice too long)");
         var index = first;
         while (index <= last) : (index += 1) try values.append(state.allocator, .{ .integer = source[index - 1] });
     }
@@ -54,7 +55,7 @@ pub fn format(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const fmt = try state.expectArgumentString(thread, op, function_name, 0);
     var out = std.ArrayList(u8).empty;
     defer out.deinit(state.allocator);
-    var arg: u16 = 0;
+    var arg: u32 = 0;
     var index: usize = 0;
     while (index < fmt.len) {
         if (fmt[index] != '%') {
@@ -464,7 +465,7 @@ fn luaTypeName(value: Value) []const u8 {
     };
 }
 
-fn integerArgument(state: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16) !i64 {
+fn integerArgument(state: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) !i64 {
     return state.argumentInteger(thread, op, function_name, index);
 }
 
@@ -552,7 +553,7 @@ pub fn pack(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const pack_format = try state.expectArgumentString(thread, op, "string.pack", 0);
     var out = std.ArrayList(u8).empty;
     defer out.deinit(state.allocator);
-    var arg: u16 = 1;
+    var arg: u32 = 1;
     var config = PackConfig{};
     var index: usize = 0;
     while (index < pack_format.len) {
@@ -870,6 +871,7 @@ pub fn unpack(state: *State, thread: *Thread, op: bytecode.Call) !void {
         if (item.kind != .fixed_string and item.kind != .zero_string and item.kind != .padding) {
             pos += try packAlignmentPadding(state, pos, item, config.max_align);
         }
+        if (!state.nativeStackFits(thread, op, values.items.len + 2)) return state.failLibrary("stack overflow (too many results)");
         switch (item.kind) {
             .padding => {
                 if (pos + 1 > data.len) return state.failArgumentMessage("string.unpack", 2, "data string too short");
@@ -1488,7 +1490,7 @@ fn isPunctuation(code: u8) bool {
     return (code >= '!' and code <= '/') or (code >= ':' and code <= '@') or (code >= '[' and code <= '`') or (code >= '{' and code <= '~');
 }
 
-fn appendLiteral(state: *State, out: *std.ArrayList(u8), value: Value, arg: u16) !void {
+fn appendLiteral(state: *State, out: *std.ArrayList(u8), value: Value, arg: u32) !void {
     switch (value) {
         .string => |string| try appendQuoted(state.allocator, out, string),
         .integer => |integer| if (integer == std.math.minInt(i64))

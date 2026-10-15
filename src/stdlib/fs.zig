@@ -628,7 +628,7 @@ fn dirPath(state: *State, dir: *Table) ![]const u8 {
     return state.expectString(dir.get(.{ .string = "__zlua_fs_dir_path" }));
 }
 
-fn optionTable(state: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16) !?*Table {
+fn optionTable(state: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) !?*Table {
     if (op.arg_count <= index or runtime.argValue(state, thread, op, index) == .nil) return null;
     const value = runtime.argValue(state, thread, op, index);
     if (value != .table) return state.failArgumentType(function_name, index + 1, "table", value);

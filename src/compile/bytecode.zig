@@ -7,6 +7,7 @@ pub const UpvalueIndex = u16;
 pub const LocalIndex = u16;
 pub const JumpOffset = i32;
 pub const multret_count: u16 = std.math.maxInt(u16);
+pub const multret_arg_count: u32 = std.math.maxInt(u32);
 
 pub const Constant = union(enum) {
     nil,
@@ -217,8 +218,10 @@ pub const TestSet = struct {
 };
 
 pub const Call = struct {
-    base: Register,
-    arg_count: u16,
+    base: u32,
+    /// `multret_arg_count` in bytecode when the arguments end at the last
+    /// multiple results; runtime calls always carry the resolved count.
+    arg_count: u32,
     return_count: u16,
 };
 

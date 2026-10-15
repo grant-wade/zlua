@@ -194,7 +194,7 @@ pub fn callCoroutineWrapper(comptime State: type, self: *State, thread: *Thread,
     try callCoroutineWrapperWithArgs(State, self, thread, op.base, op.return_count, target, args);
 }
 
-pub fn callCoroutineWrapperWithArgs(comptime State: type, self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, target: *Thread, args: []const Value) !void {
+pub fn callCoroutineWrapperWithArgs(comptime State: type, self: *State, thread: *Thread, base: u32, return_count: u16, target: *Thread, args: []const Value) !void {
     const result = try resumeCoroutine(State, self, target, args);
     defer freeCoroutineResumeResult(self.allocator, result);
     switch (result) {
@@ -367,7 +367,7 @@ pub fn callableEntryClosure(comptime State: type, self: *State) !*Closure {
     proto.is_vararg = true;
     proto.source_name = "=(coroutine entry)";
     _ = try proto.emit(.{ .vararg = .{ .dest = 1, .count = bytecode.multret_count } }, 0);
-    _ = try proto.emit(.{ .call = .{ .base = 0, .arg_count = bytecode.multret_count, .return_count = bytecode.multret_count } }, 0);
+    _ = try proto.emit(.{ .call = .{ .base = 0, .arg_count = bytecode.multret_arg_count, .return_count = bytecode.multret_count } }, 0);
     _ = try proto.emit(.{ .ret = .{ .first = 0, .count = bytecode.multret_count } }, 0);
     try self.registerAllocation("proto_allocations", proto);
     errdefer {
@@ -396,7 +396,7 @@ pub fn setCoroutineResumeValues(comptime State: type, self: *State, target: *Thr
     target.last_result_count = actual_count;
 }
 
-pub fn returnCoroutineResumeResult(comptime State: type, self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, result: CoroutineResumeResult) !void {
+pub fn returnCoroutineResumeResult(comptime State: type, self: *State, thread: *Thread, base: u32, return_count: u16, result: CoroutineResumeResult) !void {
     switch (result) {
         .success => |values| {
             var returns = std.ArrayList(Value).empty;

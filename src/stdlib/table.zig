@@ -197,9 +197,9 @@ pub fn unpack(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const table_value = runtime.argValue(state, thread, op, 0);
     const start = try state.optionalArgumentInteger(thread, op, "table.unpack", 1, 1);
     const stop = if (runtime.argValue(state, thread, op, 2) == .nil) try state.lengthInteger(thread, table_value) else try state.argumentInteger(thread, op, "table.unpack", 2);
-    if (@as(i128, stop) - @as(i128, start) + 1 > 1_000_000) return state.failLibrary("too many results to unpack");
-    const count: usize = if (start > stop) 0 else @intCast(stop - start + 1);
-    const values = try state.allocator.alloc(Value, count);
+    const count = @as(i128, stop) - @as(i128, start) + 1;
+    if (count > 0 and (count > std.math.maxInt(u32) or !state.nativeStackFits(thread, op, @intCast(count)))) return state.failLibrary("too many results to unpack");
+    const values = try state.allocator.alloc(Value, if (count > 0) @intCast(count) else 0);
     defer state.allocator.free(values);
     @memset(values, .nil);
     var roots: runtime.ValueRoots = undefined;

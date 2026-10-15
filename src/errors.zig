@@ -22,7 +22,7 @@ pub const Diagnostic = union(enum) {
 
 pub const ArgumentError = struct {
     function_name: []const u8,
-    index: u16,
+    index: u32,
     detail: ArgumentErrorDetail,
 };
 

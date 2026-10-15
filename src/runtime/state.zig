@@ -1498,16 +1498,14 @@ pub const State = struct {
                 .call => {
                     var op = instructions[pc].call;
                     if (thread.hook_call) break :fast_loop;
-                    if (op.arg_count == bytecode.multret_count) {
+                    if (op.arg_count == bytecode.multret_arg_count) {
                         // A preceding call/vararg must still own the last-result
                         // state. Otherwise the general path clears and resolves it.
                         if (pc +% count_bias != segment_start) break :fast_loop;
                         const expected_base = base + op.base + 1;
                         if (thread.last_result_base < expected_base) break :fast_loop;
                         const result_end = thread.last_result_base + thread.last_result_count;
-                        const count = result_end -| expected_base;
-                        if (count >= bytecode.multret_count) break :fast_loop;
-                        op.arg_count = @intCast(count);
+                        op.arg_count = @intCast(result_end -| expected_base);
                     }
                     const callee = stack[op.base];
                     if (callee == .native and !thread.hook_return) {
@@ -1877,7 +1875,7 @@ pub const State = struct {
         try appendFmt(self.allocator, &self.stderr, "[trace-vm] {s}:{d} pc={d} op={s}\n", .{ frame.proto.source_name, line, pc, @tagName(instruction) });
     }
 
-    fn get(_: *State, thread: *Thread, register: bytecode.Register) Value {
+    fn get(_: *State, thread: *Thread, register: usize) Value {
         const frame = thread.frames.items[thread.frames.items.len - 1];
         return thread.stack.items[frame.base + register];
     }
@@ -1894,12 +1892,12 @@ pub const State = struct {
         try self.setTable(table_value, key, self.get(thread, value_register));
     }
 
-    fn set(_: *State, thread: *Thread, register: bytecode.Register, value: Value) void {
+    fn set(_: *State, thread: *Thread, register: usize, value: Value) void {
         const frame = thread.frames.items[thread.frames.items.len - 1];
         thread.stack.items[frame.base + register] = value;
     }
 
-    fn absoluteRegister(_: *State, thread: *Thread, register: bytecode.Register) usize {
+    fn absoluteRegister(_: *State, thread: *Thread, register: usize) usize {
         const frame = thread.frames.items[thread.frames.items.len - 1];
         return frame.base + @as(usize, register);
     }
@@ -3976,7 +3974,7 @@ pub const State = struct {
             .native_print => {
                 for (0..resolved.arg_count) |index| {
                     if (index != 0) try self.writeStdout("\t");
-                    const text = try self.valueToString(thread, self.get(thread, resolved.base + 1 + @as(bytecode.Register, @intCast(index))));
+                    const text = try self.valueToString(thread, argValue(self, thread, resolved, @intCast(index)));
                     try self.writeStdout(text);
                 }
                 try self.writeStdout("\n");
@@ -4197,7 +4195,7 @@ pub const State = struct {
         return failure;
     }
 
-    pub fn pushProtectedContinuation(self: *State, thread: *Thread, context: ProtectedCallContext, base: bytecode.Register, return_count: u16) !void {
+    pub fn pushProtectedContinuation(self: *State, thread: *Thread, context: ProtectedCallContext, base: u32, return_count: u16) !void {
         return call_mod.pushProtectedContinuation(State, self, thread, context, base, return_count);
     }
 
@@ -4596,6 +4594,14 @@ pub const State = struct {
         return error.RuntimeError;
     }
 
+    /// Whether `count` values fit on the stack above the arguments of the
+    /// native call `op`, like `lua_checkstack`.
+    pub fn nativeStackFits(self: *const State, thread: *const Thread, op: bytecode.Call, count: usize) bool {
+        const frame = thread.frames.items[thread.frames.items.len - 1];
+        const top = frame.base + op.base + 1 + op.arg_count;
+        return count <= self.stackValueLimit() -| top;
+    }
+
     pub fn callStackValueLimit(self: *const State, thread: *const Thread) usize {
         return self.stackValueLimit() + if (thread.stack_error_space) stack_error_values else 0;
     }
@@ -4687,7 +4693,7 @@ pub const State = struct {
         }
     }
 
-    fn returnFromFrame(self: *State, thread: *Thread, first: bytecode.Register, count: u16) !void {
+    fn returnFromFrame(self: *State, thread: *Thread, first: u32, count: u16) !void {
         const frame_index = thread.frames.items.len - 1;
         var frame = &thread.frames.items[frame_index];
         if (frame.pending_returns == null and !frame.proto.has_to_close_locals and (!thread.hook_return or thread.hook_running)) {
@@ -4772,7 +4778,7 @@ pub const State = struct {
         thread.last_result_count = return_count;
     }
 
-    pub fn returnValues(self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, values: []const Value) !void {
+    pub fn returnValues(self: *State, thread: *Thread, base: u32, return_count: u16, values: []const Value) !void {
         const frame = thread.frames.items[thread.frames.items.len - 1];
         const actual_count = try self.resolveReturnCount(return_count, values.len);
         const absolute_base = frame.base + base;
@@ -4818,7 +4824,7 @@ pub const State = struct {
     }
 
     fn resolveCall(self: *State, thread: *Thread, op: bytecode.Call) !bytecode.Call {
-        if (op.arg_count != bytecode.multret_count) return op;
+        if (op.arg_count != bytecode.multret_arg_count) return op;
         const frame = thread.frames.items[thread.frames.items.len - 1];
         const expected_base = frame.base + op.base + 1;
         if (thread.last_result_base < expected_base) return self.fail("invalid multiple-return call state");
@@ -5171,7 +5177,7 @@ pub const State = struct {
         return coroutine_mod.callCoroutineWrapper(State, self, thread, op, target);
     }
 
-    pub fn callCoroutineWrapperWithArgs(self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, target: *Thread, args: []const Value) !void {
+    pub fn callCoroutineWrapperWithArgs(self: *State, thread: *Thread, base: u32, return_count: u16, target: *Thread, args: []const Value) !void {
         return coroutine_mod.callCoroutineWrapperWithArgs(State, self, thread, base, return_count, target, args);
     }
 
@@ -5200,7 +5206,7 @@ pub const State = struct {
         return coroutine_mod.setCoroutineResumeValues(State, self, target, args);
     }
 
-    pub fn returnCoroutineResumeResult(self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, result: CoroutineResumeResult) !void {
+    pub fn returnCoroutineResumeResult(self: *State, thread: *Thread, base: u32, return_count: u16, result: CoroutineResumeResult) !void {
         return coroutine_mod.returnCoroutineResumeResult(State, self, thread, base, return_count, result);
     }
 
@@ -5227,11 +5233,11 @@ pub const State = struct {
         return source_name;
     }
 
-    pub fn collectArgs(self: *State, thread: *Thread, op: bytecode.Call, first: u16) ![]Value {
+    pub fn collectArgs(self: *State, thread: *Thread, op: bytecode.Call, first: u32) ![]Value {
         return call_mod.collectArgs(State, self, thread, op, first);
     }
 
-    pub fn returnProtectedResult(self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, result: ProtectedCallResult) !void {
+    pub fn returnProtectedResult(self: *State, thread: *Thread, base: u32, return_count: u16, result: ProtectedCallResult) !void {
         return call_mod.returnProtectedResult(State, self, thread, base, return_count, result);
     }
 
@@ -5423,7 +5429,7 @@ pub const State = struct {
         return true;
     }
 
-    fn pushTailCallContinuation(self: *State, thread: *Thread, frame_count: usize, base: bytecode.Register, return_count: u16) !void {
+    fn pushTailCallContinuation(self: *State, thread: *Thread, frame_count: usize, base: u32, return_count: u16) !void {
         try thread.tail_call_continuations.append(self.allocator, .{
             .frame_count = frame_count,
             .base = base,
@@ -5464,7 +5470,7 @@ pub const State = struct {
     }
 
     /// `getco` in lcorolib: the coroutine argument of a `coroutine` function.
-    pub fn expectArgumentThread(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16) !*Thread {
+    pub fn expectArgumentThread(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) !*Thread {
         const value = argValue(self, thread, op, index);
         return switch (value) {
             .thread => |target| target,
@@ -6034,7 +6040,7 @@ pub const State = struct {
     /// method calls renumber it and report a bad `self` as Lua does. The
     /// function is named from the calling instruction when Lua code made the
     /// call, else by a search of the loaded libraries, else `function_name`.
-    pub fn failArgument(self: *State, function_name: []const u8, index: u16, detail: errors.ArgumentErrorDetail) RuntimeError {
+    pub fn failArgument(self: *State, function_name: []const u8, index: u32, detail: errors.ArgumentErrorDetail) RuntimeError {
         self.error_handled = false;
         const rendered = self.renderArgumentError(function_name, index, detail) catch {
             self.last_error = .{ .argument = .{ .function_name = function_name, .index = index, .detail = detail } };
@@ -6044,11 +6050,11 @@ pub const State = struct {
         return error.RuntimeError;
     }
 
-    pub fn failArgumentMessage(self: *State, function_name: []const u8, index: u16, message: []const u8) RuntimeError {
+    pub fn failArgumentMessage(self: *State, function_name: []const u8, index: u32, message: []const u8) RuntimeError {
         return self.failArgument(function_name, index, .{ .message = message });
     }
 
-    pub fn failArgumentType(self: *State, function_name: []const u8, index: u16, expected: []const u8, actual: Value) RuntimeError {
+    pub fn failArgumentType(self: *State, function_name: []const u8, index: u32, expected: []const u8, actual: Value) RuntimeError {
         return self.failArgument(function_name, index, .{ .expected = .{
             .expected = expected,
             .actual = self.luaTypeNameForError(actual),
@@ -6156,7 +6162,7 @@ pub const State = struct {
         return null;
     }
 
-    fn renderArgumentError(self: *State, function_name: []const u8, raw_index: u16, detail: errors.ArgumentErrorDetail) ![]const u8 {
+    fn renderArgumentError(self: *State, function_name: []const u8, raw_index: u32, detail: errors.ArgumentErrorDetail) ![]const u8 {
         var out = std.ArrayList(u8).empty;
         defer out.deinit(self.allocator);
         const thread = self.current_thread;
@@ -6215,7 +6221,7 @@ pub const State = struct {
     /// `luaL_checklstring`: accepts strings and numbers. A number argument is
     /// converted in place, as Lua does, which also keeps the new string
     /// reachable for the rest of the call.
-    pub fn expectArgumentString(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16) ![]const u8 {
+    pub fn expectArgumentString(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) ![]const u8 {
         const value = argValue(self, thread, op, index);
         return switch (value) {
             .string => |string| string,
@@ -6231,12 +6237,12 @@ pub const State = struct {
     }
 
     /// `luaL_optlstring`: nil or an absent argument gives `null`.
-    pub fn optionalArgumentString(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16) !?[]const u8 {
+    pub fn optionalArgumentString(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) !?[]const u8 {
         if (argValue(self, thread, op, index) == .nil) return null;
         return try self.expectArgumentString(thread, op, function_name, index);
     }
 
-    pub fn expectArgumentTable(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16) !*Table {
+    pub fn expectArgumentTable(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) !*Table {
         const value = argValue(self, thread, op, index);
         return switch (value) {
             .table => |table| table,
@@ -6245,19 +6251,19 @@ pub const State = struct {
     }
 
     /// `luaL_checknumber`.
-    pub fn argumentNumber(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16) !f64 {
+    pub fn argumentNumber(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) !f64 {
         const value = argValue(self, thread, op, index);
         return toNumberMaybe(value) orelse self.failArgumentType(function_name, index + 1, "number", value);
     }
 
     /// `luaL_optinteger`: nil or an absent argument gives `default`.
-    pub fn optionalArgumentInteger(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16, default: i64) !i64 {
+    pub fn optionalArgumentInteger(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32, default: i64) !i64 {
         if (argValue(self, thread, op, index) == .nil) return default;
         return self.argumentInteger(thread, op, function_name, index);
     }
 
     /// `luaL_checkinteger`.
-    pub fn argumentInteger(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16) !i64 {
+    pub fn argumentInteger(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) !i64 {
         const value = argValue(self, thread, op, index);
         if (toInteger(value)) |integer| return integer;
         const number = toNumberMaybe(value) orelse return self.failArgumentType(function_name, index + 1, "number", value);
@@ -7105,11 +7111,11 @@ fn fastLengthNoMetamethod(value: Value) ?Value {
     };
 }
 
-pub fn runtimeArgValue(state: *State, thread: *Thread, op: bytecode.Call, index: u16) Value {
+pub fn runtimeArgValue(state: *State, thread: *Thread, op: bytecode.Call, index: u32) Value {
     return value_mod.runtimeArgValue(state, thread, op, index);
 }
 
-pub fn argValue(state: *State, thread: *Thread, op: bytecode.Call, index: u16) Value {
+pub fn argValue(state: *State, thread: *Thread, op: bytecode.Call, index: u32) Value {
     return value_mod.argValue(state, thread, op, index);
 }
 

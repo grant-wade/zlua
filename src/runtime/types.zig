@@ -562,8 +562,8 @@ pub const ApiCallbackContext = struct {
         return error.LuaError;
     }
 
-    fn argumentIndex(index: usize) u16 {
-        return std.math.cast(u16, index + 1) orelse std.math.maxInt(u16);
+    fn argumentIndex(index: usize) u32 {
+        return std.math.cast(u32, index + 1) orelse std.math.maxInt(u32);
     }
 };
 
@@ -587,7 +587,7 @@ pub const RuntimeErrorPayload = union(enum) {
 
 pub const ProtectedCallContext = struct {
     frame_count: usize,
-    relative_base: bytecode.Register,
+    relative_base: u32,
     absolute_base: usize,
     stack_len: usize,
     last_result_base: usize,
@@ -608,7 +608,7 @@ pub const NativeMark = struct {
 pub const ProtectedContinuation = struct {
     order: usize,
     context: ProtectedCallContext,
-    base: bytecode.Register,
+    base: u32,
     return_count: u16,
 };
 
@@ -622,7 +622,7 @@ pub const PairsContinuation = struct {
     order: usize = 0,
     frame_count: usize,
     source_base: usize,
-    base: bytecode.Register,
+    base: u32,
     return_count: u16,
 };
 
@@ -633,7 +633,7 @@ pub const BranchContinuation = struct {
 
 pub const TailCallContinuation = struct {
     frame_count: usize,
-    base: bytecode.Register,
+    base: u32,
     return_count: u16,
 };
 
@@ -1134,13 +1134,12 @@ pub const Thread = struct {
     /// The register, relative to the top frame, where the runtime places a
     /// call it makes itself: above the frame's registers and above the
     /// arguments of any native function running on that frame.
-    pub fn scratchRegister(self: *const Thread) bytecode.Register {
+    pub fn scratchRegister(self: *const Thread) u32 {
         const frame_count = self.frames.items.len;
         const registers = self.frames.items[frame_count - 1].proto.max_registers;
         const call = self.native_call orelse return registers;
         if (call.frame_count != frame_count) return registers;
-        const args_end = @as(usize, call.base) + 1 + call.arg_count;
-        return @intCast(@min(@max(registers, args_end), std.math.maxInt(bytecode.Register)));
+        return @max(registers, call.base + 1 + call.arg_count);
     }
 };
 
@@ -1156,8 +1155,8 @@ pub const ThreadStatus = enum {
 /// calling Lua function, the call-site name, and the argument count.
 pub const NativeCall = struct {
     /// Callee register, relative to the frame on top when it was called.
-    base: bytecode.Register,
-    arg_count: u16,
+    base: u32,
+    arg_count: u32,
     frame_count: usize,
     /// True when another native function made the call (like `pcall(f)`),
     /// so no Lua code is the immediate caller.

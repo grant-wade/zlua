@@ -944,7 +944,7 @@ fn callerLiveEnd(frame: types.CallFrame) usize {
         .call, .tail_call => |op| op,
         else => return whole,
     };
-    const args: usize = if (op.arg_count == bytecode.multret_count) 0 else op.arg_count;
+    const args: usize = if (op.arg_count == bytecode.multret_arg_count) 0 else op.arg_count;
     return frame.base + op.base + 1 + args;
 }
 

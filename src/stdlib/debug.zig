@@ -108,7 +108,7 @@ pub fn getupvalue(state: *State, thread: *Thread, op: bytecode.Call) !void {
     try state.returnValues(thread, op.base, op.return_count, &.{ .{ .string = try state.intern(name) }, readUpvalue(upvalue) });
 }
 
-fn validateGetinfoOptions(state: *State, options: []const u8, function_name: []const u8, index: u16) !void {
+fn validateGetinfoOptions(state: *State, options: []const u8, function_name: []const u8, index: u32) !void {
     for (options) |option| switch (option) {
         'X', '>' => return state.failArgumentMessage(function_name, index, "invalid option"),
         else => {},
