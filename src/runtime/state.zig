@@ -3828,7 +3828,7 @@ pub const State = struct {
             else => if ((try self.getMetaEvent(value, .__len))) |metamethod|
                 try self.callOneMetamethod(thread, "__len", metamethod, &.{ value, value })
             else
-                self.fail("attempt to get length of a non-string value"),
+                self.failLengthTypeError(thread, value),
         };
     }
 

@@ -195,7 +195,6 @@ fn sortLess(state: *State, thread: *Thread, comparator: Value, lhs: Value, rhs: 
 
 pub fn unpack(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const table_value = runtime.argValue(state, thread, op, 0);
-    _ = try state.expectArgumentTable(thread, op, "table.unpack", 0);
     const start = try state.optionalArgumentInteger(thread, op, "table.unpack", 1, 1);
     const stop = if (runtime.argValue(state, thread, op, 2) == .nil) try state.lengthInteger(thread, table_value) else try state.argumentInteger(thread, op, "table.unpack", 2);
     if (@as(i128, stop) - @as(i128, start) + 1 > 1_000_000) return state.failLibrary("too many results to unpack");
