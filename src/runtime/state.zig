@@ -156,6 +156,7 @@ pub const State = struct {
     pub const max_c_calls = lua_max_c_calls;
     rollback: ?*rollback_mod.Journal = null,
     userdata_scope: ?*types.UserdataScope = null,
+    value_roots: ?*types.ValueRoots = null,
     /// Includes direct interpreter entry, nested calls, and suspended host callbacks.
     execution_depth: usize = 0,
     allocator_lifetime: ?*types.AllocatorLifetime = null,
@@ -2092,6 +2093,16 @@ pub const State = struct {
 
     pub fn unrootValue(self: *State, index: usize) void {
         if (index < self.api_roots.items.len) self.api_roots.items[index] = .nil;
+    }
+
+    pub fn pushValueRoots(self: *State, roots: *types.ValueRoots, values: []const Value) void {
+        roots.* = .{ .values = values, .previous = self.value_roots };
+        self.value_roots = roots;
+    }
+
+    pub fn popValueRoots(self: *State, roots: *types.ValueRoots) void {
+        std.debug.assert(self.value_roots == roots);
+        self.value_roots = roots.previous;
     }
 
     pub fn rootedValue(self: *const State, index: usize) Value {

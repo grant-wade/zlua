@@ -151,6 +151,10 @@ pub fn sort(state: *State, thread: *Thread, op: bytecode.Call) !void {
         const count: usize = @intCast(len);
         const values = try state.allocator.alloc(Value, count);
         defer state.allocator.free(values);
+        @memset(values, .nil);
+        var roots: runtime.ValueRoots = undefined;
+        state.pushValueRoots(&roots, values);
+        defer state.popValueRoots(&roots);
         for (values, 0..) |*slot, index| slot.* = try state.getTableFromThread(thread, table_value, .{ .integer = @intCast(index + 1) });
         try sortValues(state, thread, comparator, values);
         for (values, 0..) |value, index| try state.setTableFromThread(thread, table_value, .{ .integer = @intCast(index + 1) }, value);
@@ -195,13 +199,13 @@ pub fn unpack(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const start = try state.optionalArgumentInteger(thread, op, "table.unpack", 1, 1);
     const stop = if (runtime.argValue(state, thread, op, 2) == .nil) try state.lengthInteger(thread, table_value) else try state.argumentInteger(thread, op, "table.unpack", 2);
     if (@as(i128, stop) - @as(i128, start) + 1 > 1_000_000) return state.failLibrary("too many results to unpack");
-    var values = std.ArrayList(Value).empty;
-    defer values.deinit(state.allocator);
-    var index = start;
-    while (index <= stop) {
-        try values.append(state.allocator, try state.getTableFromThread(thread, table_value, .{ .integer = index }));
-        if (index == stop) break;
-        index += 1;
-    }
-    try state.returnValues(thread, op.base, op.return_count, values.items);
+    const count: usize = if (start > stop) 0 else @intCast(stop - start + 1);
+    const values = try state.allocator.alloc(Value, count);
+    defer state.allocator.free(values);
+    @memset(values, .nil);
+    var roots: runtime.ValueRoots = undefined;
+    state.pushValueRoots(&roots, values);
+    defer state.popValueRoots(&roots);
+    for (values, 0..) |*slot, offset| slot.* = try state.getTableFromThread(thread, table_value, .{ .integer = start + @as(i64, @intCast(offset)) });
+    try state.returnValues(thread, op.base, op.return_count, values);
 }

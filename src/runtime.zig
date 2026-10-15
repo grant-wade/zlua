@@ -33,6 +33,7 @@ pub const Upvalue = types.Upvalue;
 pub const Table = types.Table;
 pub const Userdata = types.Userdata;
 pub const Thread = types.Thread;
+pub const ValueRoots = types.ValueRoots;
 pub const GcMode = types.GcMode;
 pub const GcParam = types.GcParam;
 

@@ -697,6 +697,8 @@ pub fn markRoots(comptime State: type, self: *State) void {
     while (scope) |active| : (scope = active.previous) markUserdata(State, self, active.userdata);
     if (self.global_table) |table| if (isTrackedTable(State, self, table)) markTable(State, self, table);
     for (self.api_roots.items) |root| markValue(State, self, root);
+    var value_roots = self.value_roots;
+    while (value_roots) |roots| : (value_roots = roots.previous) for (roots.values) |value| markValue(State, self, value);
     // Native callbacks have no Lua wrapper whose varargs would keep arguments
     // alive. Reentrant calls may collect while an outer callback is suspended.
     var callback = self.active_api_callback;

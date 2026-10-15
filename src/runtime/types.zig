@@ -963,6 +963,13 @@ pub const UserdataScope = struct {
     previous: ?*UserdataScope,
 };
 
+/// Values a native function holds outside the Lua stack while it runs Lua
+/// code. The collector marks them until the scope is popped.
+pub const ValueRoots = struct {
+    values: []const Value,
+    previous: ?*ValueRoots,
+};
+
 pub const Userdata = struct {
     scope_readers: usize = 0,
     scope_writers: usize = 0,
