@@ -1016,6 +1016,9 @@ pub const Thread = struct {
     continuation_order: usize = 0,
     tail_call_continuations: std.ArrayList(TailCallContinuation) = .empty,
     call_one_continuations: std.ArrayList(CallOneContinuation) = .empty,
+    /// Largest `frame_count` among the pending continuations. Every push calls
+    /// `noteContinuation`; every removal calls `refreshContinuationFrameCount`.
+    continuation_frame_count: usize = 0,
     open_upvalues: ?*Upvalue = null,
     hook: Value = .nil,
     hook_call: bool = false,
@@ -1097,6 +1100,20 @@ pub const Thread = struct {
         self.frames.deinit(allocator);
         self.stack.deinit(allocator);
         self.* = undefined;
+    }
+
+    pub fn noteContinuation(self: *Thread, frame_count: usize) void {
+        self.continuation_frame_count = @max(self.continuation_frame_count, frame_count);
+    }
+
+    pub fn refreshContinuationFrameCount(self: *Thread) void {
+        var result: usize = 0;
+        for (self.pairs_continuations.items) |continuation| result = @max(result, continuation.frame_count);
+        for (self.call_one_continuations.items) |continuation| result = @max(result, continuation.frame_count);
+        for (self.protected_continuations.items) |continuation| result = @max(result, continuation.context.frame_count);
+        for (self.tail_call_continuations.items) |continuation| result = @max(result, continuation.frame_count);
+        for (self.generic_for_continuations.items) |continuation| result = @max(result, continuation.frame_count);
+        self.continuation_frame_count = result;
     }
 
     pub fn ensureStack(self: *Thread, allocator: std.mem.Allocator, size: usize, limit: usize) !void {

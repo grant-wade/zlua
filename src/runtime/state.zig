@@ -850,11 +850,13 @@ pub const State = struct {
                     try self.closeFramesTo(thread, target, error_value);
                     return self.rethrowValue(error_value);
                 }
-                if (try self.completeReadyPairsContinuation(thread)) continue;
-                if (try self.completeReadyCallOneContinuation(thread)) continue;
-                if (try self.completeReadyProtectedContinuation(thread)) continue;
-                if (try self.completeReadyTailCallContinuation(thread)) continue;
-                if (try self.completeReadyGenericForContinuation(thread)) continue;
+                if (thread.frames.items.len <= thread.continuation_frame_count) {
+                    if (try self.completeReadyPairsContinuation(thread)) continue;
+                    if (try self.completeReadyCallOneContinuation(thread)) continue;
+                    if (try self.completeReadyProtectedContinuation(thread)) continue;
+                    if (try self.completeReadyTailCallContinuation(thread)) continue;
+                    if (try self.completeReadyGenericForContinuation(thread)) continue;
+                }
                 if (thread.pending_yield_hook_return) {
                     thread.pending_yield_hook_return = false;
                     try self.callHook(thread, "return");
@@ -1136,7 +1138,7 @@ pub const State = struct {
         const return_floor: usize = if (thread.pending_unwind_error != null or thread.pending_yield_hook_return or thread.hook_return)
             std.math.maxInt(usize)
         else if (hasPendingContinuations(thread))
-            @max(target_frame_count, maxPendingContinuationFrameCount(thread))
+            @max(target_frame_count, thread.continuation_frame_count)
         else
             target_frame_count;
 
@@ -3615,13 +3617,15 @@ pub const State = struct {
     }
 
     fn discardPairsContinuationsTo(thread: *Thread, frame_count: usize) void {
-        var index = thread.pairs_continuations.items.len;
+        const len = thread.pairs_continuations.items.len;
+        var index = len;
         while (index > 0) {
             index -= 1;
             if (thread.pairs_continuations.items[index].frame_count > frame_count) {
                 _ = thread.pairs_continuations.orderedRemove(index);
             }
         }
+        if (thread.pairs_continuations.items.len != len) thread.refreshContinuationFrameCount();
     }
 
     fn getTable(self: *State, table_value: Value, key_value: Value) !Value {
@@ -5271,6 +5275,7 @@ pub const State = struct {
         thread.continuation_order += 1;
         pending.order = thread.continuation_order;
         try thread.pairs_continuations.append(self.allocator, pending);
+        thread.noteContinuation(pending.frame_count);
     }
 
     fn completeReadyPairsContinuation(self: *State, thread: *Thread) !bool {
@@ -5285,6 +5290,7 @@ pub const State = struct {
                 }
             }
             _ = thread.pairs_continuations.orderedRemove(index);
+            thread.refreshContinuationFrameCount();
             try self.returnPairsResults(thread, continuation);
             return true;
         }
@@ -5385,6 +5391,7 @@ pub const State = struct {
             .op = op,
             .jump_on_nil = jump_on_nil,
         });
+        thread.noteContinuation(frame_count);
     }
 
     fn readyGenericForContinuationIndex(thread: *Thread) ?usize {
@@ -5397,6 +5404,7 @@ pub const State = struct {
     fn completeReadyGenericForContinuation(self: *State, thread: *Thread) !bool {
         const index = readyGenericForContinuationIndex(thread) orelse return false;
         const continuation = thread.generic_for_continuations.orderedRemove(index);
+        thread.refreshContinuationFrameCount();
         const values = try self.copyStackSlice(thread, thread.last_result_base, thread.last_result_count);
         defer self.allocator.free(values);
         if (!(try self.applyGenericForValues(thread, continuation.op, values)) and continuation.jump_on_nil) {
@@ -5411,6 +5419,7 @@ pub const State = struct {
             .base = base,
             .return_count = return_count,
         });
+        thread.noteContinuation(frame_count);
     }
 
     fn readyTailCallContinuationIndex(thread: *Thread) ?usize {
@@ -5425,6 +5434,7 @@ pub const State = struct {
     fn completeReadyTailCallContinuation(self: *State, thread: *Thread) !bool {
         const index = readyTailCallContinuationIndex(thread) orelse return false;
         const continuation = thread.tail_call_continuations.orderedRemove(index);
+        thread.refreshContinuationFrameCount();
         try self.returnFromFrame(thread, continuation.base, continuation.return_count);
         return true;
     }
@@ -7068,16 +7078,6 @@ inline fn hasPendingContinuations(thread: *const Thread) bool {
         thread.protected_continuations.items.len |
         thread.tail_call_continuations.items.len |
         thread.generic_for_continuations.items.len) != 0;
-}
-
-fn maxPendingContinuationFrameCount(thread: *const Thread) usize {
-    var result: usize = 0;
-    for (thread.pairs_continuations.items) |continuation| result = @max(result, continuation.frame_count);
-    for (thread.call_one_continuations.items) |continuation| result = @max(result, continuation.frame_count);
-    for (thread.protected_continuations.items) |continuation| result = @max(result, continuation.context.frame_count);
-    for (thread.tail_call_continuations.items) |continuation| result = @max(result, continuation.frame_count);
-    for (thread.generic_for_continuations.items) |continuation| result = @max(result, continuation.frame_count);
-    return result;
 }
 
 fn fastTableRawGet(table_value: Value, key_value: Value) ?Value {

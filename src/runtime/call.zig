@@ -89,6 +89,7 @@ pub fn callOneResultMaybeContinuation(comptime State: type, self: *State, thread
 
 pub fn pushCallOneContinuation(comptime State: type, self: *State, thread: *Thread, frame_count: usize, result: CallOneContinuationResult) !void {
     try thread.call_one_continuations.append(self.allocator, .{ .frame_count = frame_count, .result = result });
+    thread.noteContinuation(frame_count);
 }
 
 pub fn readyCallOneContinuationIndex(thread: *Thread) ?usize {
@@ -101,6 +102,7 @@ pub fn readyCallOneContinuationIndex(thread: *Thread) ?usize {
 pub fn completeReadyCallOneContinuation(comptime State: type, self: *State, thread: *Thread) !bool {
     const index = readyCallOneContinuationIndex(thread) orelse return false;
     const continuation = thread.call_one_continuations.orderedRemove(index);
+    thread.refreshContinuationFrameCount();
     const value = if (thread.last_result_count == 0) Value.nil else thread.stack.items[thread.last_result_base];
     switch (continuation.result) {
         .value => |dest| thread.stack.items[dest] = value,
@@ -206,6 +208,7 @@ pub fn pushProtectedContinuation(comptime State: type, self: *State, thread: *Th
         .base = base,
         .return_count = return_count,
     });
+    thread.noteContinuation(context.frame_count);
 }
 
 pub fn readyProtectedContinuationIndex(thread: *Thread) ?usize {
@@ -236,6 +239,7 @@ pub fn completeReadyProtectedContinuation(comptime State: type, self: *State, th
     defer self.allocator.free(values);
     _ = try self.restoreProtectedCall(thread, continuation.context, .nil);
     _ = thread.protected_continuations.orderedRemove(index);
+    thread.refreshContinuationFrameCount();
     try returnProtectedContinuationSuccess(State, self, thread, continuation, values);
     return true;
 }
@@ -256,6 +260,7 @@ pub fn completeProtectedContinuationError(comptime State: type, self: *State, th
     try self.applyMessageHandler(thread);
     const failure = try self.restoreProtectedCall(thread, continuation.context, self.currentErrorValue());
     _ = thread.protected_continuations.orderedRemove(index);
+    thread.refreshContinuationFrameCount();
     try returnProtectedResult(State, self, thread, continuation.base, continuation.return_count, .{ .failure = failure });
     return true;
 }
