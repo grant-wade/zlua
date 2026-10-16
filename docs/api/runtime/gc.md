@@ -300,7 +300,7 @@ Managed backing capacities; allocator overhead and rollback copies are
 measured separately by the embedding allocator, never used to pace GC.
 
 ```zig
-pub fn threadCapacityBytes(thread: *Thread) usize
+pub fn threadCapacityBytes(thread: *const Thread) usize
 ```
 
 <a id="fn-syncthreadstorage"></a>

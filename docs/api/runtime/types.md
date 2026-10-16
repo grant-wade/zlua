@@ -116,6 +116,7 @@
 - [MetaEvent](#type-metaevent)
 - [Table](#type-table)
 - [UserdataScope](#type-userdatascope)
+- [ValueRoots](#type-valueroots)
 - [Userdata](#type-userdata)
 - [FinalizerObject](#type-finalizerobject)
 - [Thread](#type-thread)
@@ -769,7 +770,7 @@ References: [`RuntimeErrorPayload`](#type-runtimeerrorpayload), [`Value`](#type-
 ```zig
 pub const ProtectedCallContext = struct {
     frame_count: usize,
-    relative_base: bytecode.Register,
+    relative_base: u32,
     absolute_base: usize,
     stack_len: usize,
     last_result_base: usize,
@@ -802,7 +803,7 @@ pub const NativeMark = struct {
 pub const ProtectedContinuation = struct {
     order: usize,
     context: ProtectedCallContext,
-    base: bytecode.Register,
+    base: u32,
     return_count: u16,
 };
 ```
@@ -828,7 +829,7 @@ pub const PairsContinuation = struct {
     order: usize = 0,
     frame_count: usize,
     source_base: usize,
-    base: bytecode.Register,
+    base: u32,
     return_count: u16,
 };
 ```
@@ -851,7 +852,7 @@ pub const BranchContinuation = struct {
 ```zig
 pub const TailCallContinuation = struct {
     frame_count: usize,
-    base: bytecode.Register,
+    base: u32,
     return_count: u16,
 };
 ```
@@ -1234,6 +1235,20 @@ pub const UserdataScope = struct {
 };
 ```
 
+<a id="type-valueroots"></a>
+
+## ValueRoots
+
+Values a native function holds outside the Lua stack while it runs Lua
+code. The collector marks them until the scope is popped.
+
+```zig
+pub const ValueRoots = struct {
+    values: []const Value,
+    previous: ?*ValueRoots,
+};
+```
+
 <a id="type-userdata"></a>
 
 ## Userdata
@@ -1314,6 +1329,9 @@ pub const Thread = struct {
     continuation_order: usize = 0,
     tail_call_continuations: std.ArrayList(TailCallContinuation) = .empty,
     call_one_continuations: std.ArrayList(CallOneContinuation) = .empty,
+    /// Largest `frame_count` among the pending continuations. Every push calls
+    /// `noteContinuation`; every removal calls `refreshContinuationFrameCount`.
+    continuation_frame_count: usize = 0,
     open_upvalues: ?*Upvalue = null,
     hook: Value = .nil,
     hook_call: bool = false,
@@ -1357,6 +1375,8 @@ pub const Thread = struct {
     pending_unwind_error: ?Value = null,
     pending_unwind_resume_frame_count: usize = 0,
     pending_unwind_target_frame_count: usize = 0,
+    /// Bytes of owned varargs and pending returns held by frames made for
+    /// this thread, kept current as frames gain and release them.
     frame_storage_bytes: usize = 0,
     resume_parent: ?*Thread = null,
     entry: Value = .nil,
@@ -1376,7 +1396,11 @@ pub const Thread = struct {
 | [initRoot](#fn-thread-initroot) | `allocator: std.mem.Allocator, closure: *Closure, stack_value_limit: usize` | `!Thread` |  |
 | [initCoroutine](#fn-thread-initcoroutine) | `entry: Value` | `Thread` |  |
 | [deinit](#fn-thread-deinit) | `self: *Thread, allocator: std.mem.Allocator` | `void` |  |
+| [releaseFrame](#fn-thread-releaseframe) | `self: *Thread, frame: *CallFrame, allocator: std.mem.Allocator` | `void` | Frees a frame made for this thread. |
+| [noteContinuation](#fn-thread-notecontinuation) | `self: *Thread, frame_count: usize` | `void` |  |
+| [refreshContinuationFrameCount](#fn-thread-refreshcontinuationframecount) | `self: *Thread` | `void` |  |
 | [ensureStack](#fn-thread-ensurestack) | `self: *Thread, allocator: std.mem.Allocator, size: usize, limit: usize` | `!void` |  |
+| [scratchRegister](#fn-thread-scratchregister) | `self: *const Thread` | `u32` | The register, relative to the top frame, where the runtime places a call it makes itself: above the frame's registers and above the arguments of any native function running on that frame. |
 
 <a id="fn-thread-initroot"></a>
 
@@ -1408,12 +1432,58 @@ pub fn deinit(self: *Thread, allocator: std.mem.Allocator) void
 
 References: [`Thread`](#type-thread)
 
+<a id="fn-thread-releaseframe"></a>
+
+### Thread.releaseFrame
+
+Frees a frame made for this thread.
+
+```zig
+pub fn releaseFrame(self: *Thread, frame: *CallFrame, allocator: std.mem.Allocator) void
+```
+
+References: [`Thread`](#type-thread), [`CallFrame`](#type-callframe)
+
+<a id="fn-thread-notecontinuation"></a>
+
+### Thread.noteContinuation
+
+```zig
+pub fn noteContinuation(self: *Thread, frame_count: usize) void
+```
+
+References: [`Thread`](#type-thread)
+
+<a id="fn-thread-refreshcontinuationframecount"></a>
+
+### Thread.refreshContinuationFrameCount
+
+```zig
+pub fn refreshContinuationFrameCount(self: *Thread) void
+```
+
+References: [`Thread`](#type-thread)
+
 <a id="fn-thread-ensurestack"></a>
 
 ### Thread.ensureStack
 
 ```zig
 pub fn ensureStack(self: *Thread, allocator: std.mem.Allocator, size: usize, limit: usize) !void
+```
+
+References: [`Thread`](#type-thread)
+
+<a id="fn-thread-scratchregister"></a>
+
+### Thread.scratchRegister
+
+The register, relative to the top frame, where the runtime places a
+call it makes itself: above the frame's registers and above the
+arguments of any native function running on that frame.
+
+```zig
+pub fn scratchRegister(self: *const Thread) u32
 ```
 
 References: [`Thread`](#type-thread)
@@ -1442,8 +1512,10 @@ calling Lua function, the call-site name, and the argument count.
 ```zig
 pub const NativeCall = struct {
     /// Callee register, relative to the frame on top when it was called.
-    base: bytecode.Register,
-    arg_count: u16,
+    base: u32,
+    arg_count: u32,
+    /// Arguments prepended by `__call` metamethods, like `lua_Debug.extraargs`.
+    extra_args: u8 = 0,
     frame_count: usize,
     /// True when another native function made the call (like `pcall(f)`),
     /// so no Lua code is the immediate caller.
@@ -1485,7 +1557,18 @@ pub const CallFrame = struct {
 
 | Name | Parameters | Return Type | Description |
 | --- | --- | --- | --- |
+| [storageBytes](#fn-callframe-storagebytes) | `self: CallFrame` | `usize` |  |
 | [deinit](#fn-callframe-deinit) | `self: *CallFrame, allocator: std.mem.Allocator` | `void` |  |
+
+<a id="fn-callframe-storagebytes"></a>
+
+### CallFrame.storageBytes
+
+```zig
+pub fn storageBytes(self: CallFrame) usize
+```
+
+References: [`CallFrame`](#type-callframe)
 
 <a id="fn-callframe-deinit"></a>
 

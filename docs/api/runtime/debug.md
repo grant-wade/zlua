@@ -102,12 +102,17 @@
 - [indirectFrameCount](#fn-indirectframecount)
 - [errorRaisedByLuaCode](#fn-errorraisedbyluacode)
 - [messageHandlerCallName](#fn-messagehandlercallname)
+- [isCoroutineEntryFrame](#fn-iscoroutineentryframe)
 - [chunkId](#fn-chunkid)
 
 ## Types
 
 - [TracebackOptions](#type-tracebackoptions)
 - [CallName](#type-callname)
+
+## Constants
+
+- [coroutine_entry_source](#const-coroutine_entry_source)
 
 <a id="fn-appendunhandlederrordebugdump"></a>
 
@@ -260,6 +265,25 @@ pub fn messageHandlerCallName(thread: *Thread) ?CallName
 ```
 
 References: [`CallName`](#type-callname)
+
+<a id="const-coroutine_entry_source"></a>
+
+## coroutine_entry_source
+
+```zig
+pub const coroutine_entry_source = "=(coroutine entry)";
+```
+
+<a id="fn-iscoroutineentryframe"></a>
+
+## isCoroutineEntryFrame
+
+True for the frame that calls a coroutine's non-Lua body, which Lua
+does not have: the body runs as the coroutine's first function.
+
+```zig
+pub fn isCoroutineEntryFrame(frame: CallFrame) bool
+```
 
 <a id="fn-chunkid"></a>
 

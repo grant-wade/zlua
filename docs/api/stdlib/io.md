@@ -100,6 +100,7 @@
 - [read](#fn-read)
 - [write](#fn-write)
 - [open](#fn-open)
+- [prepareWrite](#fn-preparewrite)
 - [popen](#fn-popen)
 - [fileTostring](#fn-filetostring)
 - [input](#fn-input)
@@ -335,6 +336,20 @@ pub fn write(state: *State, thread: *Thread, op: bytecode.Call) !void
 ```zig
 pub fn open(state: *State, thread: *Thread, op: bytecode.Call) !void
 ```
+
+<a id="fn-preparewrite"></a>
+
+## prepareWrite
+
+Readies the file of an open for its mode, like `fopen`: "w" truncates it,
+and "a" creates it when missing or checks it is writable without
+rewriting it, so bytes other writers append meanwhile survive.
+
+```zig
+pub fn prepareWrite(state: *State, path: []const u8, parsed: ParsedMode, exists: bool) anyerror!void
+```
+
+References: [`ParsedMode`](#type-parsedmode)
 
 <a id="fn-popen"></a>
 

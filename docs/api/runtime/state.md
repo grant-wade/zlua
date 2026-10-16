@@ -480,6 +480,7 @@ pub const HostErrorHandler = struct {
 pub const State = struct {
     rollback: ?*rollback_mod.Journal = null,
     userdata_scope: ?*types.UserdataScope = null,
+    value_roots: ?*types.ValueRoots = null,
     /// Includes direct interpreter entry, nested calls, and suspended host callbacks.
     execution_depth: usize = 0,
     allocator_lifetime: ?*types.AllocatorLifetime = null,
@@ -656,6 +657,8 @@ pub const State = struct {
 | [putGlobal](#fn-state-putglobal) | `self: *State, name: []const u8, value: Value` | `!void` |  |
 | [rootValue](#fn-state-rootvalue) | `self: *State, value: Value` | `!usize` |  |
 | [unrootValue](#fn-state-unrootvalue) | `self: *State, index: usize` | `void` |  |
+| [pushValueRoots](#fn-state-pushvalueroots) | `self: *State, roots: *types.ValueRoots, values: []const Value` | `void` |  |
+| [popValueRoots](#fn-state-popvalueroots) | `self: *State, roots: *types.ValueRoots` | `void` |  |
 | [rootedValue](#fn-state-rootedvalue) | `self: *const State, index: usize` | `Value` |  |
 | [activeRootCount](#fn-state-activerootcount) | `self: State` | `usize` |  |
 | [setApiCallbackDispatch](#fn-state-setapicallbackdispatch) | `self: *State, dispatch: ApiCallbackDispatchFn, user_data: *anyopaque` | `void` |  |
@@ -677,6 +680,8 @@ pub const State = struct {
 | [fsWriteFile](#fn-state-fswritefile) | `self: *State, path: []const u8, data: []const u8` | `anyerror!void` |  |
 | [fsCreateFileExclusive](#fn-state-fscreatefileexclusive) | `self: *State, path: []const u8` | `anyerror!void` | Creates an empty file, failing with &#96;error.PathAlreadyExists&#96; when the path exists, so the caller reserves the name like &#96;mkstemp&#96;. Host filesystems create exclusively; memory and callback filesystems check first, as they have no exclusive create. |
 | [fsWriteFileAt](#fn-state-fswritefileat) | `self: *State, path: []const u8, offset: usize, data: []const u8` | `anyerror!void` | Writes &#96;data&#96; at &#96;offset&#96; of an existing file without truncating it, so buffered handles can flush only their unsynced suffix. Returns &#96;error.OperationUnsupported&#96; when the capability has no positional write; callers then rewrite the whole file with &#96;fsWriteFile&#96;. |
+| [fsAppendFile](#fn-state-fsappendfile) | `self: *State, path: []const u8, data: []const u8` | `anyerror!void` | Writes &#96;data&#96; at the current end of an existing file, as a stream opened for appending does. Custom filesystems have no positional write, so the file is read and written back with &#96;data&#96; added. |
+| [fsCheckWritable](#fn-state-fscheckwritable) | `self: *State, path: []const u8` | `anyerror!void` | Checks that an existing file can be opened for writing, as &#96;fopen&#96; does for append modes, without changing its bytes. Custom filesystems only report whether they accept writes. |
 | [fsStat](#fn-state-fsstat) | `self: *State, path: []const u8, follow_symlinks: bool` | `anyerror!host.FileStat` |  |
 | [fsReadDirAlloc](#fn-state-fsreaddiralloc) | `self: *State, path: []const u8` | `anyerror![]host.DirectoryEntry` |  |
 | [fsMakeDir](#fn-state-fsmakedir) | `self: *State, path: []const u8, parents: bool` | `anyerror!void` |  |
@@ -714,6 +719,8 @@ pub const State = struct {
 | [setTableValue](#fn-state-settablevalue) | `self: *State, table_value: Value, key_value: Value, value: Value` | `!void` |  |
 | [setTableFromThread](#fn-state-settablefromthread) | `self: *State, thread: *Thread, table_value: Value, key_value: Value, value: Value` | `!void` |  |
 | [lengthOf](#fn-state-lengthof) | `self: *State, thread: *Thread, value: Value` | `!Value` |  |
+| [lengthInteger](#fn-state-lengthinteger) | `self: *State, thread: *Thread, value: Value` | `!i64` | &#96;luaL_len&#96;: the length of &#96;value&#96;, honoring &#96;__len&#96;, as an integer. |
+| [lengthToInteger](#fn-state-lengthtointeger) | `self: *State, length: Value` | `!i64` | Converts a length result to an integer as &#96;luaL_len&#96; does. |
 | [finishConcatRange](#fn-state-finishconcatrange) | `self: *State, thread: *Thread, dest: usize, first: usize, count_in: usize` | `!void` | Joins stack slots &#96;first..first+count&#96; right to left like PUC &#96;luaV_concat&#96;: each run of trailing strings and numbers becomes one string, and otherwise the last two operands go to &#96;__concat&#96;. Partial results stay in the operand slots so a yielding metamethod can resume. |
 | [invokeValue](#fn-state-invokevalue) | `self: *State, thread: *Thread, resolved: bytecode.Call, depth: usize` | `anyerror!void` |  |
 | [callOneResult](#fn-state-calloneresult) | `self: *State, thread: *Thread, callable: Value, args: []const Value` | `anyerror!Value` |  |
@@ -730,7 +737,7 @@ pub const State = struct {
 | [protectedCallContextWithErrors](#fn-state-protectedcallcontextwitherrors) | `self: *State, thread: *Thread` | `ProtectedCallContext` |  |
 | [runProtectedCall](#fn-state-runprotectedcall) | `self: *State, thread: *Thread, context: ProtectedCallContext, callable: Value, args: []const Value` | `anyerror!ProtectedCallResult` |  |
 | [restoreProtectedCall](#fn-state-restoreprotectedcall) | `self: *State,         thread: *Thread,         context: ProtectedCallContext,         error_value: Value,` | `!Value` |  |
-| [pushProtectedContinuation](#fn-state-pushprotectedcontinuation) | `self: *State, thread: *Thread, context: ProtectedCallContext, base: bytecode.Register, return_count: u16` | `!void` |  |
+| [pushProtectedContinuation](#fn-state-pushprotectedcontinuation) | `self: *State, thread: *Thread, context: ProtectedCallContext, base: u32, return_count: u16` | `!void` |  |
 | [readyProtectedContinuationIndex](#fn-state-readyprotectedcontinuationindex) | `thread: *Thread` | `?usize` |  |
 | [errorProtectedContinuationIndex](#fn-state-errorprotectedcontinuationindex) | `thread: *Thread` | `?usize` |  |
 | [completeReadyProtectedContinuation](#fn-state-completereadyprotectedcontinuation) | `self: *State, thread: *Thread` | `!bool` |  |
@@ -750,8 +757,9 @@ pub const State = struct {
 | [luaTypeNameForError](#fn-state-luatypenameforerror) | `self: *State, value: Value` | `[]const u8` |  |
 | [jumpIfBranchResult](#fn-state-jumpifbranchresult) | `self: *State, thread: *Thread, result: bool, jump_if_truthy: bool, offset: bytecode.JumpOffset` | `!void` |  |
 | [compareValues](#fn-state-comparevalues) | `self: *State, thread: *Thread, lhs: Value, rhs: Value, op: CompareOp` | `!bool` |  |
+| [nativeStackFits](#fn-state-nativestackfits) | `self: *const State, thread: *const Thread, op: bytecode.Call, count: usize` | `bool` | Whether &#96;count&#96; values fit on the stack above the arguments of the native call &#96;op&#96;, like &#96;lua_checkstack&#96;. |
 | [callStackValueLimit](#fn-state-callstackvaluelimit) | `self: *const State, thread: *const Thread` | `usize` |  |
-| [returnValues](#fn-state-returnvalues) | `self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, values: []const Value` | `!void` |  |
+| [returnValues](#fn-state-returnvalues) | `self: *State, thread: *Thread, base: u32, return_count: u16, values: []const Value` | `!void` |  |
 | [prepareClosureFrame](#fn-state-prepareclosureframe) | `self: *State, thread: *Thread, closure: *Closure, source_base: usize, frame_base: usize, arg_count: usize, return_start: usize, return_count: u16` | `!CallFrame` |  |
 | [captureVarargs](#fn-state-capturevarargs) | `self: *State, thread: *Thread, source_start: usize, count: usize` | `![]const Value` |  |
 | [namedVarargTable](#fn-state-namedvarargtable) | `self: *State, varargs: []const Value` | `!Value` |  |
@@ -768,21 +776,21 @@ pub const State = struct {
 | [coroutineClose](#fn-state-coroutineclose) | `self: *State, thread: *Thread, op: bytecode.Call` | `!void` |  |
 | [coroutineWrap](#fn-state-coroutinewrap) | `self: *State, thread: *Thread, op: bytecode.Call` | `!void` |  |
 | [callCoroutineWrapper](#fn-state-callcoroutinewrapper) | `self: *State, thread: *Thread, op: bytecode.Call, target: *Thread` | `!void` |  |
-| [callCoroutineWrapperWithArgs](#fn-state-callcoroutinewrapperwithargs) | `self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, target: *Thread, args: []const Value` | `!void` |  |
+| [callCoroutineWrapperWithArgs](#fn-state-callcoroutinewrapperwithargs) | `self: *State, thread: *Thread, base: u32, return_count: u16, target: *Thread, args: []const Value` | `!void` |  |
 | [newCoroutineThread](#fn-state-newcoroutinethread) | `self: *State, entry: Value` | `!*Thread` |  |
 | [closeCoroutine](#fn-state-closecoroutine) | `self: *State, target: *Thread, error_value: ?Value` | `!?Value` |  |
 | [resumeCoroutine](#fn-state-resumecoroutine) | `self: *State, target: *Thread, args: []const Value` | `!CoroutineResumeResult` |  |
 | [startCoroutine](#fn-state-startcoroutine) | `self: *State, target: *Thread, args: []const Value` | `!void` |  |
 | [callableEntryClosure](#fn-state-callableentryclosure) | `self: *State` | `!*Closure` |  |
 | [setCoroutineResumeValues](#fn-state-setcoroutineresumevalues) | `self: *State, target: *Thread, args: []const Value` | `!void` |  |
-| [returnCoroutineResumeResult](#fn-state-returncoroutineresumeresult) | `self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, result: CoroutineResumeResult` | `!void` |  |
+| [returnCoroutineResumeResult](#fn-state-returncoroutineresumeresult) | `self: *State, thread: *Thread, base: u32, return_count: u16, result: CoroutineResumeResult` | `!void` |  |
 | [copyValues](#fn-state-copyvalues) | `self: *State, values: []const Value` | `![]Value` |  |
 | [copyStackSlice](#fn-state-copystackslice) | `self: *State, thread: *Thread, base: usize, count: usize` | `![]Value` |  |
-| [collectArgs](#fn-state-collectargs) | `self: *State, thread: *Thread, op: bytecode.Call, first: u16` | `![]Value` |  |
-| [returnProtectedResult](#fn-state-returnprotectedresult) | `self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, result: ProtectedCallResult` | `!void` |  |
+| [collectArgs](#fn-state-collectargs) | `self: *State, thread: *Thread, op: bytecode.Call, first: u32` | `![]Value` |  |
+| [returnProtectedResult](#fn-state-returnprotectedresult) | `self: *State, thread: *Thread, base: u32, return_count: u16, result: ProtectedCallResult` | `!void` |  |
 | [expectTable](#fn-state-expecttable) | `self: *State, value: Value` | `!*Table` |  |
 | [expectString](#fn-state-expectstring) | `self: *State, value: Value` | `![]const u8` |  |
-| [expectArgumentThread](#fn-state-expectargumentthread) | `self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16` | `!*Thread` | &#96;getco&#96; in lcorolib: the coroutine argument of a &#96;coroutine&#96; function. |
+| [expectArgumentThread](#fn-state-expectargumentthread) | `self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32` | `!*Thread` | &#96;getco&#96; in lcorolib: the coroutine argument of a &#96;coroutine&#96; function. |
 | [expectThread](#fn-state-expectthread) | `self: *State, value: Value` | `!*Thread` |  |
 | [collectGarbageValue](#fn-state-collectgarbagevalue) | `self: *State, thread: *Thread, op: bytecode.Call` | `!void` |  |
 | [collectGarbageParam](#fn-state-collectgarbageparam) | `self: *State, value: Value` | `!GcParam` |  |
@@ -854,19 +862,19 @@ pub const State = struct {
 | [failRuntimeDetail](#fn-state-failruntimedetail) | `self: *State, thread: ?*Thread, detail: []const u8` | `RuntimeError` |  |
 | [errorDetailAlloc](#fn-state-errordetailalloc) | `self: *State, allocator: std.mem.Allocator, err: anyerror` | `![]const u8` |  |
 | [fail](#fn-state-fail) | `self: *State, message: []const u8` | `RuntimeError` |  |
-| [failArgument](#fn-state-failargument) | `self: *State, function_name: []const u8, index: u16, detail: errors.ArgumentErrorDetail` | `RuntimeError` | Raises &#96;bad argument #index to 'name' (detail)&#96; like &#96;luaL_argerror&#96;. &#96;index&#96; is the 1-based position among the native call's arguments; method calls renumber it and report a bad &#96;self&#96; as Lua does. The function is named from the calling instruction when Lua code made the call, else by a search of the loaded libraries, else &#96;function_name&#96;. |
-| [failArgumentMessage](#fn-state-failargumentmessage) | `self: *State, function_name: []const u8, index: u16, message: []const u8` | `RuntimeError` |  |
-| [failArgumentType](#fn-state-failargumenttype) | `self: *State, function_name: []const u8, index: u16, expected: []const u8, actual: Value` | `RuntimeError` |  |
+| [failArgument](#fn-state-failargument) | `self: *State, function_name: []const u8, index: u32, detail: errors.ArgumentErrorDetail` | `RuntimeError` | Raises &#96;bad argument #index to 'name' (detail)&#96; like &#96;luaL_argerror&#96;. &#96;index&#96; is the 1-based position among the native call's arguments; method calls renumber it and report a bad &#96;self&#96; as Lua does. The function is named from the calling instruction when Lua code made the call, else by a search of the loaded libraries, else &#96;function_name&#96;. |
+| [failArgumentMessage](#fn-state-failargumentmessage) | `self: *State, function_name: []const u8, index: u32, message: []const u8` | `RuntimeError` |  |
+| [failArgumentType](#fn-state-failargumenttype) | `self: *State, function_name: []const u8, index: u32, expected: []const u8, actual: Value` | `RuntimeError` |  |
 | [failLibrary](#fn-state-faillibrary) | `self: *State, message: []const u8` | `RuntimeError` | Raises &#96;message&#96; like &#96;luaL_error&#96;: prefixed with the position of the Lua code that called the running library function, if any. |
 | [withLibraryWhere](#fn-state-withlibrarywhere) | `self: *State, value: Value` | `!Value` | Prefixes a string error with &#96;luaL_where(L, 1)&#96;, as &#96;coroutine.wrap&#96; does for errors raised inside the coroutine. |
 | [failLibraryFmt](#fn-state-faillibraryfmt) | `self: *State, comptime fmt: []const u8, args: anytype` | `RuntimeError` | &#96;failLibrary&#96; with a formatted message. |
 | [appendGlobalFunctionName](#fn-state-appendglobalfunctionname) | `self: *State, out: *std.ArrayList(u8), callee: Value` | `!bool` | Mirrors &#96;pushglobalfuncname&#96;: finds &#96;callee&#96; as a global or as a field of a loaded module. |
-| [expectArgumentString](#fn-state-expectargumentstring) | `self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16` | `![]const u8` | &#96;luaL_checklstring&#96;: accepts strings and numbers. A number argument is converted in place, as Lua does, which also keeps the new string reachable for the rest of the call. |
-| [optionalArgumentString](#fn-state-optionalargumentstring) | `self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16` | `!?[]const u8` | &#96;luaL_optlstring&#96;: nil or an absent argument gives &#96;null&#96;. |
-| [expectArgumentTable](#fn-state-expectargumenttable) | `self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16` | `!*Table` |  |
-| [argumentNumber](#fn-state-argumentnumber) | `self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16` | `!f64` | &#96;luaL_checknumber&#96;. |
-| [optionalArgumentInteger](#fn-state-optionalargumentinteger) | `self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16, default: i64` | `!i64` | &#96;luaL_optinteger&#96;: nil or an absent argument gives &#96;default&#96;. |
-| [argumentInteger](#fn-state-argumentinteger) | `self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16` | `!i64` | &#96;luaL_checkinteger&#96;. |
+| [expectArgumentString](#fn-state-expectargumentstring) | `self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32` | `![]const u8` | &#96;luaL_checklstring&#96;: accepts strings and numbers. A number argument is converted in place, as Lua does, which also keeps the new string reachable for the rest of the call. |
+| [optionalArgumentString](#fn-state-optionalargumentstring) | `self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32` | `!?[]const u8` | &#96;luaL_optlstring&#96;: nil or an absent argument gives &#96;null&#96;. |
+| [expectArgumentTable](#fn-state-expectargumenttable) | `self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32` | `!*Table` |  |
+| [argumentNumber](#fn-state-argumentnumber) | `self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32` | `!f64` | &#96;luaL_checknumber&#96;. |
+| [optionalArgumentInteger](#fn-state-optionalargumentinteger) | `self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32, default: i64` | `!i64` | &#96;luaL_optinteger&#96;: nil or an absent argument gives &#96;default&#96;. |
+| [argumentInteger](#fn-state-argumentinteger) | `self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32` | `!i64` | &#96;luaL_checkinteger&#96;. |
 | [failValue](#fn-state-failvalue) | `self: *State, value: Value` | `RuntimeError` |  |
 | [throwValue](#fn-state-throwvalue) | `self: *State, value: Value` | `RuntimeError` |  |
 | [rethrowValue](#fn-state-rethrowvalue) | `self: *State, value: Value` | `RuntimeError` | Raises &#96;value&#96; again after closing variables for an error that already went through any message handler at its error point. |
@@ -1559,6 +1567,26 @@ pub fn unrootValue(self: *State, index: usize) void
 
 References: [`State`](#type-state)
 
+<a id="fn-state-pushvalueroots"></a>
+
+### State.pushValueRoots
+
+```zig
+pub fn pushValueRoots(self: *State, roots: *types.ValueRoots, values: []const Value) void
+```
+
+References: [`State`](#type-state), [`Value`](#alias-value)
+
+<a id="fn-state-popvalueroots"></a>
+
+### State.popValueRoots
+
+```zig
+pub fn popValueRoots(self: *State, roots: *types.ValueRoots) void
+```
+
+References: [`State`](#type-state)
+
 <a id="fn-state-rootedvalue"></a>
 
 ### State.rootedValue
@@ -1797,6 +1825,34 @@ write; callers then rewrite the whole file with `fsWriteFile`.
 
 ```zig
 pub fn fsWriteFileAt(self: *State, path: []const u8, offset: usize, data: []const u8) anyerror!void
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-fsappendfile"></a>
+
+### State.fsAppendFile
+
+Writes `data` at the current end of an existing file, as a stream
+opened for appending does. Custom filesystems have no positional
+write, so the file is read and written back with `data` added.
+
+```zig
+pub fn fsAppendFile(self: *State, path: []const u8, data: []const u8) anyerror!void
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-fscheckwritable"></a>
+
+### State.fsCheckWritable
+
+Checks that an existing file can be opened for writing, as `fopen`
+does for append modes, without changing its bytes. Custom filesystems
+only report whether they accept writes.
+
+```zig
+pub fn fsCheckWritable(self: *State, path: []const u8) anyerror!void
 ```
 
 References: [`State`](#type-state)
@@ -2219,6 +2275,30 @@ pub fn lengthOf(self: *State, thread: *Thread, value: Value) !Value
 
 References: [`State`](#type-state), [`Thread`](#alias-thread), [`Value`](#alias-value)
 
+<a id="fn-state-lengthinteger"></a>
+
+### State.lengthInteger
+
+`luaL_len`: the length of `value`, honoring `__len`, as an integer.
+
+```zig
+pub fn lengthInteger(self: *State, thread: *Thread, value: Value) !i64
+```
+
+References: [`State`](#type-state), [`Thread`](#alias-thread), [`Value`](#alias-value)
+
+<a id="fn-state-lengthtointeger"></a>
+
+### State.lengthToInteger
+
+Converts a length result to an integer as `luaL_len` does.
+
+```zig
+pub fn lengthToInteger(self: *State, length: Value) !i64
+```
+
+References: [`State`](#type-state), [`Value`](#alias-value)
+
 <a id="fn-state-finishconcatrange"></a>
 
 ### State.finishConcatRange
@@ -2392,7 +2472,7 @@ References: [`State`](#type-state), [`Thread`](#alias-thread), [`Value`](#alias-
 ### State.pushProtectedContinuation
 
 ```zig
-pub fn pushProtectedContinuation(self: *State, thread: *Thread, context: ProtectedCallContext, base: bytecode.Register, return_count: u16) !void
+pub fn pushProtectedContinuation(self: *State, thread: *Thread, context: ProtectedCallContext, base: u32, return_count: u16) !void
 ```
 
 References: [`State`](#type-state), [`Thread`](#alias-thread)
@@ -2595,6 +2675,19 @@ pub fn compareValues(self: *State, thread: *Thread, lhs: Value, rhs: Value, op: 
 
 References: [`State`](#type-state), [`Thread`](#alias-thread), [`Value`](#alias-value), [`CompareOp`](#type-compareop)
 
+<a id="fn-state-nativestackfits"></a>
+
+### State.nativeStackFits
+
+Whether `count` values fit on the stack above the arguments of the
+native call `op`, like `lua_checkstack`.
+
+```zig
+pub fn nativeStackFits(self: *const State, thread: *const Thread, op: bytecode.Call, count: usize) bool
+```
+
+References: [`State`](#type-state), [`Thread`](#alias-thread)
+
 <a id="fn-state-callstackvaluelimit"></a>
 
 ### State.callStackValueLimit
@@ -2610,7 +2703,7 @@ References: [`State`](#type-state), [`Thread`](#alias-thread)
 ### State.returnValues
 
 ```zig
-pub fn returnValues(self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, values: []const Value) !void
+pub fn returnValues(self: *State, thread: *Thread, base: u32, return_count: u16, values: []const Value) !void
 ```
 
 References: [`State`](#type-state), [`Thread`](#alias-thread), [`Value`](#alias-value)
@@ -2787,7 +2880,7 @@ References: [`State`](#type-state), [`Thread`](#alias-thread)
 ### State.callCoroutineWrapperWithArgs
 
 ```zig
-pub fn callCoroutineWrapperWithArgs(self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, target: *Thread, args: []const Value) !void
+pub fn callCoroutineWrapperWithArgs(self: *State, thread: *Thread, base: u32, return_count: u16, target: *Thread, args: []const Value) !void
 ```
 
 References: [`State`](#type-state), [`Thread`](#alias-thread), [`Value`](#alias-value)
@@ -2857,7 +2950,7 @@ References: [`State`](#type-state), [`Thread`](#alias-thread), [`Value`](#alias-
 ### State.returnCoroutineResumeResult
 
 ```zig
-pub fn returnCoroutineResumeResult(self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, result: CoroutineResumeResult) !void
+pub fn returnCoroutineResumeResult(self: *State, thread: *Thread, base: u32, return_count: u16, result: CoroutineResumeResult) !void
 ```
 
 References: [`State`](#type-state), [`Thread`](#alias-thread)
@@ -2887,7 +2980,7 @@ References: [`State`](#type-state), [`Thread`](#alias-thread), [`Value`](#alias-
 ### State.collectArgs
 
 ```zig
-pub fn collectArgs(self: *State, thread: *Thread, op: bytecode.Call, first: u16) ![]Value
+pub fn collectArgs(self: *State, thread: *Thread, op: bytecode.Call, first: u32) ![]Value
 ```
 
 References: [`State`](#type-state), [`Thread`](#alias-thread), [`Value`](#alias-value)
@@ -2897,7 +2990,7 @@ References: [`State`](#type-state), [`Thread`](#alias-thread), [`Value`](#alias-
 ### State.returnProtectedResult
 
 ```zig
-pub fn returnProtectedResult(self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, result: ProtectedCallResult) !void
+pub fn returnProtectedResult(self: *State, thread: *Thread, base: u32, return_count: u16, result: ProtectedCallResult) !void
 ```
 
 References: [`State`](#type-state), [`Thread`](#alias-thread), [`ProtectedCallResult`](#alias-protectedcallresult)
@@ -2929,7 +3022,7 @@ References: [`State`](#type-state), [`Value`](#alias-value)
 `getco` in lcorolib: the coroutine argument of a `coroutine` function.
 
 ```zig
-pub fn expectArgumentThread(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16) !*Thread
+pub fn expectArgumentThread(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) !*Thread
 ```
 
 References: [`State`](#type-state), [`Thread`](#alias-thread)
@@ -3660,7 +3753,7 @@ function is named from the calling instruction when Lua code made the
 call, else by a search of the loaded libraries, else `function_name`.
 
 ```zig
-pub fn failArgument(self: *State, function_name: []const u8, index: u16, detail: errors.ArgumentErrorDetail) RuntimeError
+pub fn failArgument(self: *State, function_name: []const u8, index: u32, detail: errors.ArgumentErrorDetail) RuntimeError
 ```
 
 References: [`State`](#type-state), [`errors.ArgumentErrorDetail`](../errors.md#type-argumenterrordetail), [`RuntimeError`](#alias-runtimeerror)
@@ -3670,7 +3763,7 @@ References: [`State`](#type-state), [`errors.ArgumentErrorDetail`](../errors.md#
 ### State.failArgumentMessage
 
 ```zig
-pub fn failArgumentMessage(self: *State, function_name: []const u8, index: u16, message: []const u8) RuntimeError
+pub fn failArgumentMessage(self: *State, function_name: []const u8, index: u32, message: []const u8) RuntimeError
 ```
 
 References: [`State`](#type-state), [`RuntimeError`](#alias-runtimeerror)
@@ -3680,7 +3773,7 @@ References: [`State`](#type-state), [`RuntimeError`](#alias-runtimeerror)
 ### State.failArgumentType
 
 ```zig
-pub fn failArgumentType(self: *State, function_name: []const u8, index: u16, expected: []const u8, actual: Value) RuntimeError
+pub fn failArgumentType(self: *State, function_name: []const u8, index: u32, expected: []const u8, actual: Value) RuntimeError
 ```
 
 References: [`State`](#type-state), [`Value`](#alias-value), [`RuntimeError`](#alias-runtimeerror)
@@ -3745,7 +3838,7 @@ converted in place, as Lua does, which also keeps the new string
 reachable for the rest of the call.
 
 ```zig
-pub fn expectArgumentString(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16) ![]const u8
+pub fn expectArgumentString(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) ![]const u8
 ```
 
 References: [`State`](#type-state), [`Thread`](#alias-thread)
@@ -3757,7 +3850,7 @@ References: [`State`](#type-state), [`Thread`](#alias-thread)
 `luaL_optlstring`: nil or an absent argument gives `null`.
 
 ```zig
-pub fn optionalArgumentString(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16) !?[]const u8
+pub fn optionalArgumentString(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) !?[]const u8
 ```
 
 References: [`State`](#type-state), [`Thread`](#alias-thread)
@@ -3767,7 +3860,7 @@ References: [`State`](#type-state), [`Thread`](#alias-thread)
 ### State.expectArgumentTable
 
 ```zig
-pub fn expectArgumentTable(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16) !*Table
+pub fn expectArgumentTable(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) !*Table
 ```
 
 References: [`State`](#type-state), [`Thread`](#alias-thread), [`Table`](#alias-table)
@@ -3779,7 +3872,7 @@ References: [`State`](#type-state), [`Thread`](#alias-thread), [`Table`](#alias-
 `luaL_checknumber`.
 
 ```zig
-pub fn argumentNumber(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16) !f64
+pub fn argumentNumber(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) !f64
 ```
 
 References: [`State`](#type-state), [`Thread`](#alias-thread)
@@ -3791,7 +3884,7 @@ References: [`State`](#type-state), [`Thread`](#alias-thread)
 `luaL_optinteger`: nil or an absent argument gives `default`.
 
 ```zig
-pub fn optionalArgumentInteger(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16, default: i64) !i64
+pub fn optionalArgumentInteger(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32, default: i64) !i64
 ```
 
 References: [`State`](#type-state), [`Thread`](#alias-thread)
@@ -3803,7 +3896,7 @@ References: [`State`](#type-state), [`Thread`](#alias-thread)
 `luaL_checkinteger`.
 
 ```zig
-pub fn argumentInteger(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16) !i64
+pub fn argumentInteger(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) !i64
 ```
 
 References: [`State`](#type-state), [`Thread`](#alias-thread)
@@ -3967,7 +4060,7 @@ pub fn trimAscii(text: []const u8) []const u8
 ## runtimeArgValue
 
 ```zig
-pub fn runtimeArgValue(state: *State, thread: *Thread, op: bytecode.Call, index: u16) Value
+pub fn runtimeArgValue(state: *State, thread: *Thread, op: bytecode.Call, index: u32) Value
 ```
 
 References: [`State`](#type-state), [`Thread`](#alias-thread), [`Value`](#alias-value)
@@ -3977,7 +4070,7 @@ References: [`State`](#type-state), [`Thread`](#alias-thread), [`Value`](#alias-
 ## argValue
 
 ```zig
-pub fn argValue(state: *State, thread: *Thread, op: bytecode.Call, index: u16) Value
+pub fn argValue(state: *State, thread: *Thread, op: bytecode.Call, index: u32) Value
 ```
 
 References: [`State`](#type-state), [`Thread`](#alias-thread), [`Value`](#alias-value)

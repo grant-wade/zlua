@@ -126,6 +126,7 @@
 ## Constants
 
 - [multret_count](#const-multret_count)
+- [multret_arg_count](#const-multret_arg_count)
 
 ## Aliases
 
@@ -190,6 +191,14 @@ pub const JumpOffset = i32;
 
 ```zig
 pub const multret_count: u16 = std.math.maxInt(u16);
+```
+
+<a id="const-multret_arg_count"></a>
+
+## multret_arg_count
+
+```zig
+pub const multret_arg_count: u32 = std.math.maxInt(u32);
 ```
 
 <a id="type-constant"></a>
@@ -527,8 +536,10 @@ pub const TestSet = struct {
 
 ```zig
 pub const Call = struct {
-    base: Register,
-    arg_count: u16,
+    base: u32,
+    /// `multret_arg_count` in bytecode when the arguments end at the last
+    /// multiple results; runtime calls always carry the resolved count.
+    arg_count: u32,
     return_count: u16,
 };
 ```

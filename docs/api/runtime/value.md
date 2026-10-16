@@ -94,6 +94,7 @@
 - [hashValue](#fn-hashvalue)
 - [truthy](#fn-truthy)
 - [toInteger](#fn-tointeger)
+- [coerceToInteger](#fn-coercetointeger)
 - [toNumber](#fn-tonumber)
 - [toNumberMaybe](#fn-tonumbermaybe)
 - [luaStringLike](#fn-luastringlike)
@@ -192,6 +193,19 @@ References: [`Value`](#alias-value)
 
 ```zig
 pub fn toInteger(value: Value) ?i64
+```
+
+References: [`Value`](#alias-value)
+
+<a id="fn-coercetointeger"></a>
+
+## coerceToInteger
+
+Converts like `lua_tointegerx`: floats and numeric strings convert only
+when their value is an exact integer.
+
+```zig
+pub fn coerceToInteger(value: Value) ?i64
 ```
 
 References: [`Value`](#alias-value)
@@ -369,7 +383,7 @@ References: [`Value`](#alias-value)
 ## runtimeArgValue
 
 ```zig
-pub fn runtimeArgValue(state: anytype, thread: *Thread, op: bytecode.Call, index: u16) Value
+pub fn runtimeArgValue(state: anytype, thread: *Thread, op: bytecode.Call, index: u32) Value
 ```
 
 References: [`Thread`](#alias-thread), [`Value`](#alias-value)
@@ -379,7 +393,7 @@ References: [`Thread`](#alias-thread), [`Value`](#alias-value)
 ## argValue
 
 ```zig
-pub fn argValue(state: anytype, thread: *Thread, op: bytecode.Call, index: u16) Value
+pub fn argValue(state: anytype, thread: *Thread, op: bytecode.Call, index: u32) Value
 ```
 
 References: [`Thread`](#alias-thread), [`Value`](#alias-value)

@@ -236,7 +236,7 @@ pub fn callCoroutineWrapper(comptime State: type, self: *State, thread: *Thread,
 ## callCoroutineWrapperWithArgs
 
 ```zig
-pub fn callCoroutineWrapperWithArgs(comptime State: type, self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, target: *Thread, args: []const Value) !void
+pub fn callCoroutineWrapperWithArgs(comptime State: type, self: *State, thread: *Thread, base: u32, return_count: u16, target: *Thread, args: []const Value) !void
 ```
 
 <a id="fn-newcoroutinethread"></a>
@@ -294,7 +294,7 @@ pub fn setCoroutineResumeValues(comptime State: type, self: *State, target: *Thr
 ## returnCoroutineResumeResult
 
 ```zig
-pub fn returnCoroutineResumeResult(comptime State: type, self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, result: CoroutineResumeResult) !void
+pub fn returnCoroutineResumeResult(comptime State: type, self: *State, thread: *Thread, base: u32, return_count: u16, result: CoroutineResumeResult) !void
 ```
 
 <a id="fn-copyvalues"></a>

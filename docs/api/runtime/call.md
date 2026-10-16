@@ -234,7 +234,7 @@ pub fn runProtectedCall(comptime State: type, self: *State, thread: *Thread, con
 ## pushProtectedContinuation
 
 ```zig
-pub fn pushProtectedContinuation(comptime State: type, self: *State, thread: *Thread, context: ProtectedCallContext, base: bytecode.Register, return_count: u16) !void
+pub fn pushProtectedContinuation(comptime State: type, self: *State, thread: *Thread, context: ProtectedCallContext, base: u32, return_count: u16) !void
 ```
 
 <a id="fn-readyprotectedcontinuationindex"></a>
@@ -282,7 +282,7 @@ pub fn returnProtectedContinuationSuccess(comptime State: type, self: *State, th
 ## returnProtectedResult
 
 ```zig
-pub fn returnProtectedResult(comptime State: type, self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, result: ProtectedCallResult) !void
+pub fn returnProtectedResult(comptime State: type, self: *State, thread: *Thread, base: u32, return_count: u16, result: ProtectedCallResult) !void
 ```
 
 <a id="fn-collectargs"></a>
@@ -290,7 +290,7 @@ pub fn returnProtectedResult(comptime State: type, self: *State, thread: *Thread
 ## collectArgs
 
 ```zig
-pub fn collectArgs(comptime State: type, self: *State, thread: *Thread, op: bytecode.Call, first: u16) ![]Value
+pub fn collectArgs(comptime State: type, self: *State, thread: *Thread, op: bytecode.Call, first: u32) ![]Value
 ```
 
 <a id="fn-resolvereturncount"></a>

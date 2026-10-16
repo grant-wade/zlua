@@ -113,6 +113,7 @@
 - [Table](#alias-table)
 - [Userdata](#alias-userdata)
 - [Thread](#alias-thread)
+- [ValueRoots](#alias-valueroots)
 - [GcMode](#alias-gcmode)
 - [GcParam](#alias-gcparam)
 - [StdlibMode](#alias-stdlibmode)
@@ -143,6 +144,7 @@
 - [valuesEqual](#alias-valuesequal)
 - [truthy](#alias-truthy)
 - [toInteger](#alias-tointeger)
+- [coerceToInteger](#alias-coercetointeger)
 - [toNumber](#alias-tonumber)
 - [appendLuaString](#alias-appendluastring)
 - [localActiveAt](#alias-localactiveat)
@@ -387,6 +389,16 @@ pub const Thread = types.Thread;
 ```
 
 References: [`types.Thread`](runtime/types.md#type-thread)
+
+<a id="alias-valueroots"></a>
+
+## ValueRoots
+
+```zig
+pub const ValueRoots = types.ValueRoots;
+```
+
+References: [`types.ValueRoots`](runtime/types.md#type-valueroots)
 
 <a id="alias-gcmode"></a>
 
@@ -676,6 +688,14 @@ pub const truthy = state_mod.truthy;
 
 ```zig
 pub const toInteger = state_mod.toInteger;
+```
+
+<a id="alias-coercetointeger"></a>
+
+## coerceToInteger
+
+```zig
+pub const coerceToInteger = value_mod.coerceToInteger;
 ```
 
 <a id="alias-tonumber"></a>
