@@ -259,7 +259,11 @@ pub fn completeProtectedContinuationError(comptime State: type, self: *State, th
     }
     try self.applyMessageHandler(thread);
     const failure = try self.restoreProtectedCall(thread, continuation.context, self.currentErrorValue());
-    _ = thread.protected_continuations.orderedRemove(index);
+    for (thread.protected_continuations.items, 0..) |pending, pending_index| {
+        if (pending.order != continuation.order) continue;
+        _ = thread.protected_continuations.orderedRemove(pending_index);
+        break;
+    }
     thread.refreshContinuationFrameCount();
     try returnProtectedResult(State, self, thread, continuation.base, continuation.return_count, .{ .failure = failure });
     return true;

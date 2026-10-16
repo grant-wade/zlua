@@ -3598,7 +3598,7 @@ pub const State = struct {
     }
 
     pub fn closeFramesTo(self: *State, thread: *Thread, frame_count: usize, error_value: ?Value) !void {
-        if (thread.frames.items.len > frame_count) discardPairsContinuationsTo(thread, frame_count);
+        if (thread.frames.items.len > frame_count) abandonFramesAbove(thread, frame_count);
         var pending_error = error_value;
         var close_failed = false;
         while (thread.frames.items.len > frame_count) {
@@ -3616,7 +3616,7 @@ pub const State = struct {
     }
 
     fn discardFramesTo(self: *State, thread: *Thread, frame_count: usize) void {
-        if (thread.frames.items.len > frame_count) discardPairsContinuationsTo(thread, frame_count);
+        if (thread.frames.items.len > frame_count) abandonFramesAbove(thread, frame_count);
         while (thread.frames.items.len > frame_count) {
             const frame = thread.frames.items[thread.frames.items.len - 1];
             self.closeUpvalues(thread, frame.base);
@@ -3625,16 +3625,29 @@ pub const State = struct {
         }
     }
 
-    fn discardPairsContinuationsTo(thread: *Thread, frame_count: usize) void {
-        const len = thread.pairs_continuations.items.len;
-        var index = len;
-        while (index > 0) {
-            index -= 1;
-            if (thread.pairs_continuations.items[index].frame_count > frame_count) {
-                _ = thread.pairs_continuations.orderedRemove(index);
-            }
+    /// Drops the pending work of frames above `frame_count`, which unwinding
+    /// has abandoned: continuations of the native calls they made, and an
+    /// unwind paused by a yielding `__close`.
+    fn abandonFramesAbove(thread: *Thread, frame_count: usize) void {
+        if (thread.pending_unwind_resume_frame_count > frame_count) thread.pending_unwind_error = null;
+        if (thread.continuation_frame_count <= frame_count) return;
+        discardListAbove(&thread.pairs_continuations, frame_count);
+        discardListAbove(&thread.call_one_continuations, frame_count);
+        discardListAbove(&thread.protected_continuations, frame_count);
+        discardListAbove(&thread.tail_call_continuations, frame_count);
+        discardListAbove(&thread.generic_for_continuations, frame_count);
+        thread.refreshContinuationFrameCount();
+    }
+
+    fn discardListAbove(list: anytype, frame_count: usize) void {
+        var kept: usize = 0;
+        for (list.items) |continuation| {
+            const pending_frame_count = if (@hasField(@TypeOf(continuation), "context")) continuation.context.frame_count else continuation.frame_count;
+            if (pending_frame_count > frame_count) continue;
+            list.items[kept] = continuation;
+            kept += 1;
         }
-        if (thread.pairs_continuations.items.len != len) thread.refreshContinuationFrameCount();
+        list.items.len = kept;
     }
 
     fn getTable(self: *State, table_value: Value, key_value: Value) !Value {
