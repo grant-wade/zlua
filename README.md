@@ -11,7 +11,7 @@ Development is hosted on GitHub. Codeberg is a source mirror.
 1. Add zlua to your Zig package dependencies:
 
 ```sh
-zig fetch --save git+https://github.com/grant-wade/zlua#v0.6.1
+zig fetch --save git+https://github.com/grant-wade/zlua#v0.7.0
 ```
 
 2. Wire the dependency into your executable in `build.zig`:
@@ -125,6 +125,8 @@ The build downloads the Lua 5.5 sources and official tests, then builds a local 
 ## More Documentation
 
 The [documentation index](docs/README.md) covers embedding, the standard library, commands, testing, architecture, and development workflows.
+
+Release notes are in the [changelog](CHANGELOG.md).
 
 ## License
 
