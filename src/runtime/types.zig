@@ -1069,6 +1069,8 @@ pub const Thread = struct {
     pending_unwind_error: ?Value = null,
     pending_unwind_resume_frame_count: usize = 0,
     pending_unwind_target_frame_count: usize = 0,
+    /// Bytes of owned varargs and pending returns held by frames made for
+    /// this thread, kept current as frames gain and release them.
     frame_storage_bytes: usize = 0,
     resume_parent: ?*Thread = null,
     entry: Value = .nil,
@@ -1107,6 +1109,12 @@ pub const Thread = struct {
         self.frames.deinit(allocator);
         self.stack.deinit(allocator);
         self.* = undefined;
+    }
+
+    /// Frees a frame made for this thread.
+    pub fn releaseFrame(self: *Thread, frame: *CallFrame, allocator: std.mem.Allocator) void {
+        self.frame_storage_bytes -= frame.storageBytes();
+        frame.deinit(allocator);
     }
 
     pub fn noteContinuation(self: *Thread, frame_count: usize) void {
@@ -1187,6 +1195,12 @@ pub const CallFrame = struct {
     debug_namewhat_override: ?[]const u8 = null,
     is_tail_call: bool = false,
     pending_returns: ?[]Value = null,
+
+    pub fn storageBytes(self: CallFrame) usize {
+        const varargs = if (self.owns_varargs) self.varargs.len else 0;
+        const returns = if (self.pending_returns) |values| values.len else 0;
+        return (varargs + returns) * @sizeOf(Value);
+    }
 
     pub fn deinit(self: *CallFrame, allocator: std.mem.Allocator) void {
         if (self.owns_varargs) allocator.free(self.varargs);

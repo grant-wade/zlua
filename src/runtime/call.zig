@@ -315,6 +315,7 @@ pub fn prepareClosureFrame(comptime State: type, self: *State, thread: *Thread, 
     if (closure.proto.named_vararg and !readonly_vararg) {
         thread.stack.items[frame_base + param_count] = try self.namedVarargTable(varargs);
     }
+    thread.frame_storage_bytes += varargs.len * @sizeOf(Value);
 
     return .{
         .closure = closure,

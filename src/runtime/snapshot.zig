@@ -298,7 +298,7 @@ const Copier = struct {
             const items = @field(old, name).items;
             @field(new, name) = try self.list(std.meta.Elem(@TypeOf(items)), items);
         }
-        inline for (.{ "open_upvalues", "hook", "hook_call", "hook_line", "hook_return", "hook_count", "hook_count_remaining", "pending_yield_hook_return", "continuation_order", "continuation_frame_count", "last_result_base", "last_result_count", "last_transfer_base", "last_transfer_count", "yield_result_base", "yield_result_count", "close_error_value", "error_traceback", "pending_unwind_error", "pending_unwind_resume_frame_count", "pending_unwind_target_frame_count", "entry", "started", "is_main", "closing", "status", "exposed", "error_handler", "stack_error_space", "host_frame" }) |name| @field(new, name) = try self.remap(@field(old, name));
+        inline for (.{ "open_upvalues", "hook", "hook_call", "hook_line", "hook_return", "hook_count", "hook_count_remaining", "pending_yield_hook_return", "continuation_order", "continuation_frame_count", "last_result_base", "last_result_count", "last_transfer_base", "last_transfer_count", "yield_result_base", "yield_result_count", "close_error_value", "error_traceback", "pending_unwind_error", "pending_unwind_resume_frame_count", "pending_unwind_target_frame_count", "entry", "started", "is_main", "closing", "status", "exposed", "error_handler", "stack_error_space", "host_frame", "frame_storage_bytes" }) |name| @field(new, name) = try self.remap(@field(old, name));
         // Hook transfer/name pointers and native call depths belong to host call
         // scopes, not suspended bytecode. They must not retain obsolete storage.
     }

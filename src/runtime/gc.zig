@@ -269,14 +269,14 @@ fn syncStorage(comptime State: type, self: *State, meta: *types.GcMeta, bytes: u
 
 /// Managed backing capacities; allocator overhead and rollback copies are
 /// measured separately by the embedding allocator, never used to pace GC.
-pub fn threadCapacityBytes(thread: *Thread) usize {
-    var frame_bytes: usize = 0;
-    for (thread.frames.items) |frame| {
-        if (frame.owns_varargs) frame_bytes += frame.varargs.len * @sizeOf(Value);
-        if (frame.pending_returns) |values| frame_bytes += values.len * @sizeOf(Value);
-    }
-    thread.frame_storage_bytes = frame_bytes;
-    return threadListBytes(thread) + frame_bytes;
+pub fn threadCapacityBytes(thread: *const Thread) usize {
+    return threadListBytes(thread) + thread.frame_storage_bytes;
+}
+
+fn frameStorageBytes(thread: *const Thread) usize {
+    var bytes: usize = 0;
+    for (thread.frames.items) |frame| bytes += frame.storageBytes();
+    return bytes;
 }
 
 fn threadListBytes(thread: *const Thread) usize {
@@ -660,7 +660,7 @@ pub fn collectGarbageWithFinalizersMode(comptime State: type, self: *State, thre
 }
 
 pub fn shouldRunAutoGc(comptime State: type, self: *State) bool {
-    if (self.current_thread) |thread| syncStorage(State, self, &thread.gc, threadListBytes(thread) + thread.frame_storage_bytes);
+    if (self.current_thread) |thread| syncThreadStorage(State, self, thread);
     return !self.is_collecting and currentAllocationTotal(State, self) >= self.gc_next_total;
 }
 
@@ -882,6 +882,7 @@ pub fn markThread(comptime State: type, self: *State, thread: *Thread) void {
 }
 
 fn traceThread(comptime State: type, self: *State, thread: *Thread) void {
+    if (std.debug.runtime_safety) std.debug.assert(thread.frame_storage_bytes == frameStorageBytes(thread));
     syncThreadStorage(State, self, thread);
     markValue(State, self, thread.entry);
     if (thread.resume_parent) |parent| {

@@ -3001,6 +3001,7 @@ pub const State = struct {
         const owned_args = try self.allocator.dupe(Value, args[proto.param_count..]);
         thread.frames.items[0].varargs = owned_args;
         thread.frames.items[0].owns_varargs = true;
+        thread.frame_storage_bytes += owned_args.len * @sizeOf(Value);
     }
 
     pub fn callCollect(self: *State, thread: *Thread, callable: Value, args: []const Value) anyerror![]Value {
@@ -3615,7 +3616,7 @@ pub const State = struct {
             };
             const frame = thread.frames.items[thread.frames.items.len - 1];
             self.closeUpvalues(thread, frame.base);
-            thread.frames.items[thread.frames.items.len - 1].deinit(self.allocator);
+            thread.releaseFrame(&thread.frames.items[thread.frames.items.len - 1], self.allocator);
             thread.frames.items.len -= 1;
         }
         if (close_failed) return self.rethrowValue(pending_error.?);
@@ -3626,7 +3627,7 @@ pub const State = struct {
         while (thread.frames.items.len > frame_count) {
             const frame = thread.frames.items[thread.frames.items.len - 1];
             self.closeUpvalues(thread, frame.base);
-            thread.frames.items[thread.frames.items.len - 1].deinit(self.allocator);
+            thread.releaseFrame(&thread.frames.items[thread.frames.items.len - 1], self.allocator);
             thread.frames.items.len -= 1;
         }
     }
@@ -4654,7 +4655,7 @@ pub const State = struct {
         var frame = try self.prepareClosureFrame(thread, closure, base, base + 1, @intCast(op.arg_count), base, op.return_count);
         frame.debug_name_override = debug_name_override;
         frame.debug_namewhat_override = debug_namewhat_override;
-        errdefer frame.deinit(self.allocator);
+        errdefer thread.releaseFrame(&frame, self.allocator);
         try thread.frames.append(self.allocator, frame);
         if (thread.hook_call and !thread.hook_running) try self.callHook(thread, "call");
     }
@@ -4686,7 +4687,7 @@ pub const State = struct {
                 const new_frame = try self.prepareClosureFrame(thread, closure, frame.base + resolved.base, frame.base, @intCast(resolved.arg_count), frame.return_start, frame.return_count);
                 var tail_frame = new_frame;
                 tail_frame.is_tail_call = true;
-                thread.frames.items[thread.frames.items.len - 1].deinit(self.allocator);
+                thread.releaseFrame(&thread.frames.items[thread.frames.items.len - 1], self.allocator);
                 thread.frames.items[thread.frames.items.len - 1] = tail_frame;
                 if (thread.hook_call and !thread.hook_running) {
                     const previous_transfer_index_base = thread.hook_transfer_index_base;
@@ -4732,14 +4733,14 @@ pub const State = struct {
             if (thread.frames.items.len == 1) {
                 thread.last_result_base = source_start;
                 thread.last_result_count = source_count;
-                frame.deinit(self.allocator);
+                thread.releaseFrame(frame, self.allocator);
                 thread.frames.items.len = 0;
                 return;
             }
 
             const return_start = frame.return_start;
             const return_count = try self.resolveReturnCount(frame.return_count, source_count);
-            frame.deinit(self.allocator);
+            thread.releaseFrame(frame, self.allocator);
             thread.frames.items.len -= 1;
 
             try thread.ensureStack(self.allocator, return_start + return_count, self.callStackValueLimit(thread));
@@ -4757,6 +4758,7 @@ pub const State = struct {
             const values = try self.allocator.alloc(Value, source_count);
             for (values, 0..) |*value, index| value.* = thread.stack.items[source_start + index];
             frame.pending_returns = values;
+            thread.frame_storage_bytes += values.len * @sizeOf(Value);
             break :blk values;
         };
         try self.closeActiveToBeClosedInTopFrame(thread, null);
@@ -4780,6 +4782,7 @@ pub const State = struct {
         }
         frame = &thread.frames.items[frame_index];
         frame.pending_returns = null;
+        thread.frame_storage_bytes -= preserved.len * @sizeOf(Value);
         self.closeUpvalues(thread, frame.base);
         if (thread.frames.items.len == 1) {
             const result_start = frame.base + first;
@@ -4788,14 +4791,14 @@ pub const State = struct {
             thread.last_result_base = result_start;
             thread.last_result_count = preserved.len;
             self.allocator.free(preserved);
-            frame.deinit(self.allocator);
+            thread.releaseFrame(frame, self.allocator);
             thread.frames.items.len = 0;
             return;
         }
 
         const return_start = frame.return_start;
         const return_count = try self.resolveReturnCount(frame.return_count, preserved.len);
-        frame.deinit(self.allocator);
+        thread.releaseFrame(frame, self.allocator);
         thread.frames.items.len -= 1;
 
         try thread.ensureStack(self.allocator, return_start + return_count, self.callStackValueLimit(thread));

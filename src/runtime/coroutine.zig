@@ -351,7 +351,7 @@ pub fn startCoroutine(comptime State: type, self: *State, target: *Thread, args:
         },
     };
     var frame = try self.prepareClosureFrame(target, closure, 0, 0, arg_count, 0, bytecode.multret_count);
-    errdefer frame.deinit(self.allocator);
+    errdefer target.releaseFrame(&frame, self.allocator);
     try target.frames.append(self.allocator, frame);
     target.started = true;
     if (target.hook_call and !target.hook_running) try self.callHook(target, "call");

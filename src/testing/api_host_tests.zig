@@ -385,3 +385,35 @@ test "host callback arguments from multiple results survive a full collection" {
         \\assert(select(2, pcall(join, parts())) == "aaabbbccc")
     );
 }
+
+test "thread frame storage stays current while frames hold varargs and pending returns" {
+    const Host = struct {
+        var seen: [8]usize = undefined;
+        var count: usize = 0;
+
+        fn probe(ctx: *api.Context) !void {
+            seen[count] = ctx.raw.thread.frame_storage_bytes / @sizeOf(runtime.Value);
+            count += 1;
+        }
+    };
+    Host.count = 0;
+    var lua = try api.State.init(a, .{});
+    defer lua.deinit();
+    var function = try lua.register("probe", Host.probe);
+    defer function.deinit();
+    try lua.setGlobal("probe", function);
+    try runLua(&lua,
+        \\local function va(...) probe() return select("#", ...) end
+        \\local function nested(...) local n = va(...) probe() return n end
+        \\local function closing(...)
+        \\  local x <close> = setmetatable({}, {__close = function() probe() end})
+        \\  return ...
+        \\end
+        \\probe()
+        \\va(1, 2, 3)
+        \\nested(1, 2)
+        \\closing(1, 2)
+        \\probe()
+    );
+    try std.testing.expectEqualSlices(usize, &.{ 0, 3, 4, 2, 4, 0 }, Host.seen[0..Host.count]);
+}
