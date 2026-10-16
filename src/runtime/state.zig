@@ -4783,6 +4783,7 @@ pub const State = struct {
         frame = &thread.frames.items[frame_index];
         frame.pending_returns = null;
         thread.frame_storage_bytes -= preserved.len * @sizeOf(Value);
+        defer self.allocator.free(preserved);
         self.closeUpvalues(thread, frame.base);
         if (thread.frames.items.len == 1) {
             const result_start = frame.base + first;
@@ -4790,7 +4791,6 @@ pub const State = struct {
             for (preserved, 0..) |value, index| thread.stack.items[result_start + index] = value;
             thread.last_result_base = result_start;
             thread.last_result_count = preserved.len;
-            self.allocator.free(preserved);
             thread.releaseFrame(frame, self.allocator);
             thread.frames.items.len = 0;
             return;
@@ -4805,7 +4805,6 @@ pub const State = struct {
         const copied = @min(return_count, preserved.len);
         for (preserved[0..copied], 0..) |value, index| thread.stack.items[return_start + index] = value;
         for (copied..return_count) |index| thread.stack.items[return_start + index] = .nil;
-        self.allocator.free(preserved);
         thread.last_result_base = return_start;
         thread.last_result_count = return_count;
     }
