@@ -365,7 +365,7 @@ pub fn callableEntryClosure(comptime State: type, self: *State) !*Closure {
     proto.max_registers = 2;
     proto.param_count = 1;
     proto.is_vararg = true;
-    proto.source_name = "=(coroutine entry)";
+    proto.source_name = @import("debug.zig").coroutine_entry_source;
     _ = try proto.emit(.{ .vararg = .{ .dest = 1, .count = bytecode.multret_count } }, 0);
     _ = try proto.emit(.{ .call = .{ .base = 0, .arg_count = bytecode.multret_arg_count, .return_count = bytecode.multret_count } }, 0);
     _ = try proto.emit(.{ .ret = .{ .first = 0, .count = bytecode.multret_count } }, 0);

@@ -320,7 +320,7 @@ pub fn collectGarbageValue(comptime State: type, self: *State, thread: *Thread, 
         if (option == .string) inline for (.{ "collect", "step", "count", "isrunning", "stop", "restart", "incremental", "generational" }) |name| {
             if (std.mem.eql(u8, option.string, name)) return self.returnValues(thread, op.base, op.return_count, &.{.nil});
         };
-        return self.failArgumentMessage("collectgarbage", 1, "invalid option");
+        return failInvalidOption(State, self, thread, op);
     }
     if (option == .nil or (option == .string and std.mem.eql(u8, option.string, "collect"))) {
         if (self.conservative_gc_depth != 0) {
@@ -381,7 +381,14 @@ pub fn collectGarbageValue(comptime State: type, self: *State, thread: *Thread, 
         try self.returnValues(thread, op.base, op.return_count, &.{.{ .integer = old }});
         return;
     }
-    return self.failArgumentMessage("collectgarbage", 1, "invalid option");
+    return failInvalidOption(State, self, thread, op);
+}
+
+fn failInvalidOption(comptime State: type, self: *State, thread: *Thread, op: bytecode.Call) anyerror {
+    const name = try self.expectArgumentString(thread, op, "collectgarbage", 0);
+    const message = try std.fmt.allocPrint(self.allocator, "invalid option '{s}'", .{name});
+    defer self.allocator.free(message);
+    return self.failArgumentMessage("collectgarbage", 1, try self.intern(message));
 }
 
 // Lua's floating-byte parameter encoding, decoded back to a percentage.

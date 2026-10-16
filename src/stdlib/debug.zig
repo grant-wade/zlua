@@ -19,6 +19,9 @@ pub fn getinfo(state: *State, thread: *Thread, op: bytecode.Call) !void {
     }
     const options = if (op.arg_count > options_index) try state.expectArgumentString(thread, op, "debug.getinfo", options_index) else "flnSrtu";
     try validateGetinfoOptions(state, options, "debug.getinfo", options_index + 1);
+    if (target != .integer and !std.mem.eql(u8, runtime.typeName(target), "function")) {
+        target = .{ .integer = try state.argumentInteger(thread, op, "debug.getinfo", options_index - 1) };
+    }
 
     const target_closure: ?*runtime.Closure, const target_func: Value, const source_name, const what, const currentline, const level_name, const istailcall = switch (target) {
         .integer => blk: {
@@ -333,10 +336,9 @@ pub fn sethook(state: *State, thread: *Thread, op: bytecode.Call) !void {
     }
 
     const first = runtime.argValue(state, thread, op, 0);
-    const target, const hook_index: u16 = if (first == .thread) .{ first.thread, 1 } else .{ thread, 0 };
+    const target, const hook_index: u32 = if (first == .thread) .{ first.thread, 1 } else .{ thread, 0 };
     const hook = runtime.argValue(state, thread, op, hook_index);
-    const mask_value = runtime.argValue(state, thread, op, hook_index + 1);
-    const mask = if (hook == .nil) "" else try state.expectString(mask_value);
+    const mask = if (hook == .nil) "" else try state.expectArgumentString(thread, op, "debug.sethook", hook_index + 1);
     const count = if (op.arg_count > hook_index + 2) hookCount(runtime.argValue(state, thread, op, hook_index + 2)) else 0;
 
     state.setThreadHook(target, hook, mask, if (count > 0) @intCast(count) else 0);

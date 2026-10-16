@@ -769,6 +769,9 @@ pub const State = struct {
         thread.stack.items[context.absolute_base + 1] = error_value;
         thread.native_call_depth += 1;
         defer thread.native_call_depth -= 1;
+        const previous_native_call = thread.native_call;
+        defer thread.native_call = previous_native_call;
+        if (!debug_mod.errorRaisedByLuaCode(thread)) thread.native_call = runtimeNativeCall(thread);
         const name = debug_mod.messageHandlerCallName(thread);
         thread.next_call_name = if (name) |known| known.name else null;
         thread.next_call_namewhat = if (name) |known| known.namewhat else null;
@@ -3601,7 +3604,10 @@ pub const State = struct {
         if (thread.frames.items.len > frame_count) abandonFramesAbove(thread, frame_count);
         var pending_error = error_value;
         var close_failed = false;
+        const previous_native_call = thread.native_call;
+        defer thread.native_call = previous_native_call;
         while (thread.frames.items.len > frame_count) {
+            thread.native_call = runtimeNativeCall(thread);
             self.closeActiveToBeClosedInTopFrame(thread, pending_error) catch |err| {
                 pending_error = self.currentErrorValue();
                 close_failed = close_failed or isRuntimeError(err);
@@ -3922,11 +3928,19 @@ pub const State = struct {
         try self.invokeValue(thread, resolved, 0);
     }
 
-    fn nativeCallInfo(thread: *Thread, resolved: bytecode.Call, outer: ?types.NativeCall, name: ?[]const u8, namewhat: ?[]const u8) types.NativeCall {
+    /// Stands for the native code Lua runs on top of the current frame, such
+    /// as the error machinery: native functions it calls see a native caller
+    /// and get no position or call-site name in their errors.
+    fn runtimeNativeCall(thread: *Thread) types.NativeCall {
+        return .{ .base = thread.scratchRegister(), .arg_count = 0, .frame_count = thread.frames.items.len, .from_native = false };
+    }
+
+    fn nativeCallInfo(thread: *Thread, resolved: bytecode.Call, outer: ?types.NativeCall, name: ?[]const u8, namewhat: ?[]const u8, extra_args: usize) types.NativeCall {
         const frame_count = thread.frames.items.len;
         return .{
             .base = resolved.base,
             .arg_count = resolved.arg_count,
+            .extra_args = @intCast(extra_args),
             .frame_count = frame_count,
             .from_native = if (outer) |active| active.frame_count == frame_count else false,
             .outer_frame_count = if (outer) |active| active.frame_count else null,
@@ -3941,7 +3955,7 @@ pub const State = struct {
         if (callee == .coroutine_wrapper) {
             const previous_native_call = thread.native_call;
             defer thread.native_call = previous_native_call;
-            thread.native_call = nativeCallInfo(thread, resolved, previous_native_call, null, null);
+            thread.native_call = nativeCallInfo(thread, resolved, previous_native_call, null, null, depth);
             try self.callCoroutineWrapper(thread, resolved, callee.coroutine_wrapper);
             return;
         }
@@ -3958,7 +3972,7 @@ pub const State = struct {
         const previous_native_call = thread.native_call;
         defer thread.native_call = previous_native_call;
         if (isNativeCallable(callee) or callee == .gmatch_iterator) {
-            thread.native_call = nativeCallInfo(thread, resolved, previous_native_call, call_name, call_namewhat);
+            thread.native_call = nativeCallInfo(thread, resolved, previous_native_call, call_name, call_namewhat, depth);
         }
         const hook_native = isNativeCallable(callee) and !thread.hook_running;
         if (hook_native and thread.hook_call) {
@@ -4096,6 +4110,8 @@ pub const State = struct {
             else => {
                 const metamethod = try self.getMetaEvent(callee, .__call) orelse return self.failCallTypeError(thread, callee, call_name, call_namewhat);
                 try self.prependCallArgument(thread, resolved, metamethod, callee);
+                thread.next_call_name = call_name;
+                thread.next_call_namewhat = call_namewhat;
                 try self.invokeValue(thread, .{ .base = resolved.base, .arg_count = resolved.arg_count + 1, .return_count = resolved.return_count }, depth + 1);
             },
         }
@@ -4693,7 +4709,7 @@ pub const State = struct {
             else => {
                 const frame = thread.frames.items[thread.frames.items.len - 1];
                 const frame_count = thread.frames.items.len;
-                self.callValue(thread, .{ .base = resolved.base, .arg_count = resolved.arg_count, .return_count = frame.return_count }) catch |err| switch (err) {
+                self.invokeValue(thread, .{ .base = resolved.base, .arg_count = resolved.arg_count, .return_count = frame.return_count }, depth) catch |err| switch (err) {
                     error.CoroutineYield => {
                         try self.pushTailCallContinuation(thread, frame_count, resolved.base, frame.return_count);
                         return err;
@@ -5334,6 +5350,10 @@ pub const State = struct {
         return .{ .{ .integer = next_index }, value };
     }
 
+    fn iteratorNativeCall(thread: *Thread, op: bytecode.GenericFor) types.NativeCall {
+        return nativeCallInfo(thread, .{ .base = op.base, .arg_count = 2, .return_count = 0 }, null, "for iterator", "for iterator", 0);
+    }
+
     fn advanceGenericFor(self: *State, thread: *Thread, op: bytecode.GenericFor, jump_on_nil: bool) !bool {
         const iterator = self.get(thread, op.base);
         const state = self.get(thread, op.base + 1);
@@ -5347,7 +5367,7 @@ pub const State = struct {
                 if (state != .table) {
                     const previous_native_call = thread.native_call;
                     defer thread.native_call = previous_native_call;
-                    thread.native_call = nativeCallInfo(thread, .{ .base = op.base, .arg_count = 2, .return_count = 0 }, null, "for iterator", "for iterator");
+                    thread.native_call = iteratorNativeCall(thread, op);
                     return self.failArgumentType("next", 1, "table", state);
                 }
                 fixed = try self.nextValues(state, control);
@@ -5366,6 +5386,9 @@ pub const State = struct {
                     break :blk gmatch_values.slice();
                 },
                 .utf8_codes_iter => blk: {
+                    const previous_native_call = thread.native_call;
+                    defer thread.native_call = previous_native_call;
+                    thread.native_call = iteratorNativeCall(thread, op);
                     fixed = try stdlib.utf8.codesNext(self, state, control);
                     break :blk fixed[0..2];
                 },
@@ -6115,17 +6138,31 @@ pub const State = struct {
     fn appendLibraryWhere(self: *State, out: *std.ArrayList(u8)) !void {
         const thread = self.current_thread orelse return;
         const call = activeNativeCall(thread) orelse return;
-        if (call.from_native) return;
+        if (calledFromNative(thread, call)) return;
         const frame = thread.frames.items[thread.frames.items.len - 1];
-        if (frame.closure.stripped_debug) return;
+        if (frame.closure.stripped_debug or debug_mod.isCoroutineEntryFrame(frame)) return;
         const site = self.instructionErrorSite(thread) orelse return;
         try appendFmt(self.allocator, out, "{s}:{d}: ", .{ runtimeSourceName(frame.proto.source_name), site.line });
     }
 
     const CallName = struct { name: []const u8, namewhat: []const u8 };
 
+    /// Like `call.from_native`, and also true for a metamethod that the
+    /// `ipairs` iterator called during a generic-for step.
+    fn calledFromNative(thread: *Thread, call: types.NativeCall) bool {
+        if (call.from_native) return true;
+        const namewhat = call.namewhat orelse return false;
+        if (!std.mem.eql(u8, namewhat, "metamethod")) return false;
+        const frame = thread.frames.items[thread.frames.items.len - 1];
+        if (frame.pc == 0 or frame.pc > frame.proto.instructions.items.len) return false;
+        return switch (frame.proto.instructions.items[frame.pc - 1]) {
+            .tfor_prep, .tfor_call => true,
+            else => false,
+        };
+    }
+
     fn nativeCallName(self: *State, thread: *Thread, call: types.NativeCall) ?CallName {
-        if (call.from_native) return null;
+        if (calledFromNative(thread, call)) return null;
         if (call.name) |name| {
             if (call.namewhat) |namewhat| return .{ .name = name, .namewhat = namewhat };
             if (std.mem.eql(u8, name, "for iterator")) return .{ .name = name, .namewhat = name };
@@ -6192,16 +6229,21 @@ pub const State = struct {
         try self.appendLibraryWhere(&out);
         var index = raw_index;
         const name: ?CallName = if (call) |native| self.nativeCallName(thread.?, native) else null;
-        if (name) |known| if (std.mem.eql(u8, known.namewhat, "method")) {
-            index -|= 1;
-            if (index == 0) {
-                try appendFmt(self.allocator, &out, "calling '{s}' on bad self (", .{known.name});
-                try appendArgumentDetail(self.allocator, &out, actual_detail);
-                try out.append(self.allocator, ')');
-                return self.intern(out.items);
-            }
-        };
-        try appendFmt(self.allocator, &out, "bad argument #{d} to '", .{index});
+        const extra_args: u32 = if (call) |native| native.extra_args else 0;
+        const argword = if (index <= extra_args) "extra argument" else "argument";
+        if (index > extra_args) {
+            index -= extra_args;
+            if (name) |known| if (std.mem.eql(u8, known.namewhat, "method")) {
+                index -|= 1;
+                if (index == 0) {
+                    try appendFmt(self.allocator, &out, "calling '{s}' on bad self (", .{known.name});
+                    try appendArgumentDetail(self.allocator, &out, actual_detail);
+                    try out.append(self.allocator, ')');
+                    return self.intern(out.items);
+                }
+            };
+        }
+        try appendFmt(self.allocator, &out, "bad {s} #{d} to '", .{ argword, index });
         if (name) |known| {
             try out.appendSlice(self.allocator, known.name);
         } else {

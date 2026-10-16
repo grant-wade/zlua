@@ -215,7 +215,7 @@ pub fn formatTracebackWith(comptime State: type, self: *State, thread: *Thread, 
     var index = frames.len;
     while (index > 0) {
         index -= 1;
-        try entries.append(self.allocator, .{ .lua = index });
+        if (!isCoroutineEntryFrame(frames[index])) try entries.append(self.allocator, .{ .lua = index });
         if (index > 0 and !isDirectCallee(frames, index)) {
             try appendNativeMarks(self.allocator, &entries, thread, index);
             if (nativeCallee(thread, index - 1)) |entry| try entries.append(self.allocator, entry);
@@ -328,7 +328,7 @@ pub fn errorRaisedByLuaCode(thread: *Thread) bool {
     const frames = thread.frames.items;
     if (frames.len == 0) return false;
     const top = frames[frames.len - 1];
-    if (isNativeEntryFrame(top) or top.closure.stripped_debug) return false;
+    if (isNativeEntryFrame(top) or isCoroutineEntryFrame(top) or top.closure.stripped_debug) return false;
     for (thread.native_marks[0..thread.native_mark_count]) |mark| {
         if (mark.frame_count == frames.len) return false;
     }
@@ -413,6 +413,14 @@ fn callOrigin(frame: CallFrame) ?proto_mod.OperandOrigin {
 
 fn isNativeEntryFrame(frame: CallFrame) bool {
     return frame.proto.instructions.items.len == 0 and std.mem.eql(u8, frame.proto.source_name, "=[C]");
+}
+
+pub const coroutine_entry_source = "=(coroutine entry)";
+
+/// True for the frame that calls a coroutine's non-Lua body, which Lua
+/// does not have: the body runs as the coroutine's first function.
+pub fn isCoroutineEntryFrame(frame: CallFrame) bool {
+    return std.mem.eql(u8, frame.proto.source_name, coroutine_entry_source);
 }
 
 fn originNamewhat(origin: proto_mod.OperandOrigin) ?[]const u8 {

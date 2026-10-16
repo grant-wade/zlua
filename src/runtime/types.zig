@@ -1157,6 +1157,8 @@ pub const NativeCall = struct {
     /// Callee register, relative to the frame on top when it was called.
     base: u32,
     arg_count: u32,
+    /// Arguments prepended by `__call` metamethods, like `lua_Debug.extraargs`.
+    extra_args: u8 = 0,
     frame_count: usize,
     /// True when another native function made the call (like `pcall(f)`),
     /// so no Lua code is the immediate caller.
