@@ -24,22 +24,33 @@
 - [runtime](runtime.md)
 - [runtime.chunk](runtime/chunk.md)
 - [reflection](reflection.md)
-- [runtime.value](runtime/value.md)
-- [runtime.number_format](runtime/number_format.md)
-- [runtime.execute](runtime/execute.md)
-- [testing.process](testing/process.md)
 - [runtime.state](runtime/state.md)
-- [runtime.rollback](runtime/rollback.md)
+- [stdlib](stdlib.md)
+- [stdlib.base](stdlib/base.md)
 - [runtime.call](runtime/call.md)
 - [runtime.coroutine](runtime/coroutine.md)
 - [runtime.debug](runtime/debug.md)
-- [runtime.gc](runtime/gc.md)
+- [runtime.metatable](runtime/metatable.md)
+- [runtime.rollback](runtime/rollback.md)
+- [runtime.value](runtime/value.md)
+- [runtime.number_format](runtime/number_format.md)
 - [runtime.host](runtime/host.md)
+- [runtime.upvalue](runtime/upvalue.md)
+- [runtime.failure](runtime/failure.md)
+- [runtime.io](runtime/io.md)
+- [runtime.load](runtime/load.md)
+- [runtime.vm](runtime/vm.md)
+- [runtime.gc](runtime/gc.md)
+- [runtime.entry](runtime/entry.md)
+- [runtime.system](runtime/system.md)
 - [runtime.timezone](runtime/timezone.md)
-- [stdlib](stdlib.md)
-- [stdlib.base](stdlib/base.md)
+- [runtime.index](runtime/index.md)
+- [runtime.operators](runtime/operators.md)
 - [stdlib.table](stdlib/table.md)
 - [stdlib.string](stdlib/string.md)
+- [stdlib.string.format](stdlib/string/format.md)
+- [stdlib.string.pack](stdlib/string/pack.md)
+- [stdlib.string.pattern](stdlib/string/pattern.md)
 - [stdlib.math](stdlib/math.md)
 - [stdlib.utf8](stdlib/utf8.md)
 - [stdlib.coroutine](stdlib/coroutine.md)
@@ -54,14 +65,33 @@
 - [stdlib.msgpack](stdlib/msgpack.md)
 - [stdlib.csv](stdlib/csv.md)
 - [stdlib.fs](stdlib/fs.md)
-- [runtime.vm](runtime/vm.md)
+- [runtime.budget](runtime/budget.md)
+- [runtime.strings](runtime/strings.md)
+- [runtime.execute](runtime/execute.md)
+- [testing.process](testing/process.md)
 - [runtime.tests](runtime/tests.md)
 - [runtime.internal](runtime/internal.md)
+- [runtime.native_fn](runtime/native_fn.md)
 - [compile.compiler](compile/compiler.md)
 - [compile.fold](compile/fold.md)
 - [compile.disasm](compile/disasm.md)
 - [api](api.md)
+- [api.callbacks](api/callbacks.md)
+- [api.convert](api/convert.md)
+- [api.errors](api/errors.md)
+- [api.handle](api/handle.md)
+- [api.state](api/state.md)
 - [runtime.snapshot](runtime/snapshot.md)
+- [api.capabilities](api/capabilities.md)
+- [api.options](api/options.md)
+- [api.function](api/function.md)
+- [api.table](api/table.md)
+- [api.value](api/value.md)
+- [api.userdata](api/userdata.md)
+- [api.context](api/context.md)
+- [api.coroutine](api/coroutine.md)
+- [api.snapshot](api/snapshot.md)
+- [api.memory_limit](api/memory_limit.md)
 - [testing](testing.md)
 - [testing.clua](testing/clua.md)
 - [testing.bench_runner](testing/bench_runner.md)
@@ -234,7 +264,7 @@ pub const testing = @import("testing.zig");
 pub const State = api.State;
 ```
 
-References: [`api.State`](api.md#type-state)
+References: [`api.State`](api.md#alias-state)
 
 <a id="alias-snapshot"></a>
 
@@ -244,7 +274,7 @@ References: [`api.State`](api.md#type-state)
 pub const Snapshot = api.Snapshot;
 ```
 
-References: [`api.Snapshot`](api.md#type-snapshot)
+References: [`api.Snapshot`](api.md#alias-snapshot)
 
 <a id="alias-userdatasnapshothooks"></a>
 
@@ -254,7 +284,7 @@ References: [`api.Snapshot`](api.md#type-snapshot)
 pub const UserdataSnapshotHooks = api.UserdataSnapshotHooks;
 ```
 
-References: [`api.UserdataSnapshotHooks`](api.md#fn-userdatasnapshothooks)
+References: [`api.UserdataSnapshotHooks`](api.md#alias-userdatasnapshothooks)
 
 <a id="alias-options"></a>
 
@@ -264,7 +294,7 @@ References: [`api.UserdataSnapshotHooks`](api.md#fn-userdatasnapshothooks)
 pub const Options = api.Options;
 ```
 
-References: [`api.Options`](api.md#type-options)
+References: [`api.Options`](api.md#alias-options)
 
 <a id="alias-gcmode"></a>
 
@@ -304,7 +334,7 @@ References: [`api.GcParams`](api.md#alias-gcparams)
 pub const GcOptions = api.GcOptions;
 ```
 
-References: [`api.GcOptions`](api.md#type-gcoptions)
+References: [`api.GcOptions`](api.md#alias-gcoptions)
 
 <a id="alias-gcbudget"></a>
 
@@ -314,7 +344,7 @@ References: [`api.GcOptions`](api.md#type-gcoptions)
 pub const GcBudget = api.GcBudget;
 ```
 
-References: [`api.GcBudget`](api.md#type-gcbudget)
+References: [`api.GcBudget`](api.md#alias-gcbudget)
 
 <a id="alias-gcstepresult"></a>
 
@@ -324,7 +354,7 @@ References: [`api.GcBudget`](api.md#type-gcbudget)
 pub const GcStepResult = api.GcStepResult;
 ```
 
-References: [`api.GcStepResult`](api.md#type-gcstepresult)
+References: [`api.GcStepResult`](api.md#alias-gcstepresult)
 
 <a id="alias-stdlib"></a>
 
@@ -334,7 +364,7 @@ References: [`api.GcStepResult`](api.md#type-gcstepresult)
 pub const Stdlib = api.Stdlib;
 ```
 
-References: [`api.Stdlib`](api.md#type-stdlib)
+References: [`api.Stdlib`](api.md#alias-stdlib)
 
 <a id="alias-libraryset"></a>
 
@@ -354,7 +384,7 @@ References: [`api.LibrarySet`](api.md#alias-libraryset)
 pub const Value = api.Value;
 ```
 
-References: [`api.Value`](api.md#type-value)
+References: [`api.Value`](api.md#alias-value)
 
 <a id="alias-ref"></a>
 
@@ -364,7 +394,7 @@ References: [`api.Value`](api.md#type-value)
 pub const Ref = api.Ref;
 ```
 
-References: [`api.Ref`](api.md#type-ref)
+References: [`api.Ref`](api.md#alias-ref)
 
 <a id="alias-table"></a>
 
@@ -374,7 +404,7 @@ References: [`api.Ref`](api.md#type-ref)
 pub const Table = api.Table;
 ```
 
-References: [`api.Table`](api.md#type-table)
+References: [`api.Table`](api.md#alias-table)
 
 <a id="alias-function"></a>
 
@@ -384,7 +414,7 @@ References: [`api.Table`](api.md#type-table)
 pub const Function = api.Function;
 ```
 
-References: [`api.Function`](api.md#type-function)
+References: [`api.Function`](api.md#alias-function)
 
 <a id="alias-coroutine"></a>
 
@@ -394,7 +424,7 @@ References: [`api.Function`](api.md#type-function)
 pub const Coroutine = api.Coroutine;
 ```
 
-References: [`api.Coroutine`](api.md#type-coroutine)
+References: [`api.Coroutine`](api.md#alias-coroutine)
 
 <a id="alias-coroutinestatus"></a>
 
@@ -414,7 +444,7 @@ References: [`api.CoroutineStatus`](api.md#alias-coroutinestatus)
 pub const ResumeResult = api.ResumeResult;
 ```
 
-References: [`api.ResumeResult`](api.md#fn-resumeresult)
+References: [`api.ResumeResult`](api.md#alias-resumeresult)
 
 <a id="alias-callresult"></a>
 
@@ -424,7 +454,7 @@ References: [`api.ResumeResult`](api.md#fn-resumeresult)
 pub const CallResult = api.CallResult;
 ```
 
-References: [`api.CallResult`](api.md#fn-callresult)
+References: [`api.CallResult`](api.md#alias-callresult)
 
 <a id="alias-errorref"></a>
 
@@ -434,7 +464,7 @@ References: [`api.CallResult`](api.md#fn-callresult)
 pub const ErrorRef = api.ErrorRef;
 ```
 
-References: [`api.ErrorRef`](api.md#type-errorref)
+References: [`api.ErrorRef`](api.md#alias-errorref)
 
 <a id="alias-calloptions"></a>
 
@@ -444,7 +474,7 @@ References: [`api.ErrorRef`](api.md#type-errorref)
 pub const CallOptions = api.CallOptions;
 ```
 
-References: [`api.CallOptions`](api.md#type-calloptions)
+References: [`api.CallOptions`](api.md#alias-calloptions)
 
 <a id="alias-interrupthandle"></a>
 
@@ -454,7 +484,7 @@ References: [`api.CallOptions`](api.md#type-calloptions)
 pub const InterruptHandle = api.InterruptHandle;
 ```
 
-References: [`api.InterruptHandle`](api.md#type-interrupthandle)
+References: [`api.InterruptHandle`](api.md#alias-interrupthandle)
 
 <a id="alias-context"></a>
 
@@ -464,7 +494,7 @@ References: [`api.InterruptHandle`](api.md#type-interrupthandle)
 pub const Context = api.Context;
 ```
 
-References: [`api.Context`](api.md#type-context)
+References: [`api.Context`](api.md#alias-context)
 
 <a id="alias-error"></a>
 
@@ -474,7 +504,7 @@ References: [`api.Context`](api.md#type-context)
 pub const Error = api.Error;
 ```
 
-References: [`api.Error`](api.md#type-error)
+References: [`api.Error`](api.md#alias-error)
 
 <a id="alias-bytecodeloadoptions"></a>
 
@@ -484,7 +514,7 @@ References: [`api.Error`](api.md#type-error)
 pub const BytecodeLoadOptions = api.BytecodeLoadOptions;
 ```
 
-References: [`api.BytecodeLoadOptions`](api.md#type-bytecodeloadoptions)
+References: [`api.BytecodeLoadOptions`](api.md#alias-bytecodeloadoptions)
 
 <a id="alias-bytecodedumpoptions"></a>
 
@@ -494,7 +524,7 @@ References: [`api.BytecodeLoadOptions`](api.md#type-bytecodeloadoptions)
 pub const BytecodeDumpOptions = api.BytecodeDumpOptions;
 ```
 
-References: [`api.BytecodeDumpOptions`](api.md#type-bytecodedumpoptions)
+References: [`api.BytecodeDumpOptions`](api.md#alias-bytecodedumpoptions)
 
 <a id="alias-tuple"></a>
 
@@ -504,7 +534,7 @@ References: [`api.BytecodeDumpOptions`](api.md#type-bytecodedumpoptions)
 pub const Tuple = api.Tuple;
 ```
 
-References: [`api.Tuple`](api.md#fn-tuple)
+References: [`api.Tuple`](api.md#alias-tuple)
 
 <a id="alias-hostfn"></a>
 
@@ -514,7 +544,7 @@ References: [`api.Tuple`](api.md#fn-tuple)
 pub const HostFn = api.HostFn;
 ```
 
-References: [`api.HostFn`](api.md#const-hostfn)
+References: [`api.HostFn`](api.md#alias-hostfn)
 
 <a id="alias-userdata"></a>
 
@@ -524,7 +554,7 @@ References: [`api.HostFn`](api.md#const-hostfn)
 pub const Userdata = api.Userdata;
 ```
 
-References: [`api.Userdata`](api.md#fn-userdata)
+References: [`api.Userdata`](api.md#alias-userdata)
 
 <a id="alias-anyuserdata"></a>
 
@@ -534,7 +564,7 @@ References: [`api.Userdata`](api.md#fn-userdata)
 pub const AnyUserdata = api.AnyUserdata;
 ```
 
-References: [`api.AnyUserdata`](api.md#type-anyuserdata)
+References: [`api.AnyUserdata`](api.md#alias-anyuserdata)
 
 <a id="alias-memoryfile"></a>
 

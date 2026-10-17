@@ -3,7 +3,7 @@
 ## Navigation
 
 - [API Index](README.md)
-- Submodules: [runtime.types](runtime/types.md), [runtime.chunk](runtime/chunk.md), [runtime.value](runtime/value.md), [runtime.number_format](runtime/number_format.md), [runtime.execute](runtime/execute.md), [runtime.state](runtime/state.md), [runtime.rollback](runtime/rollback.md), [runtime.call](runtime/call.md), [runtime.coroutine](runtime/coroutine.md), [runtime.debug](runtime/debug.md), [runtime.gc](runtime/gc.md), [runtime.host](runtime/host.md), [runtime.timezone](runtime/timezone.md), [runtime.vm](runtime/vm.md), [runtime.tests](runtime/tests.md), [runtime.internal](runtime/internal.md), [runtime.snapshot](runtime/snapshot.md)
+- Submodules: [runtime.types](runtime/types.md), [runtime.chunk](runtime/chunk.md), [runtime.state](runtime/state.md), [runtime.call](runtime/call.md), [runtime.coroutine](runtime/coroutine.md), [runtime.debug](runtime/debug.md), [runtime.metatable](runtime/metatable.md), [runtime.rollback](runtime/rollback.md), [runtime.value](runtime/value.md), [runtime.number_format](runtime/number_format.md), [runtime.host](runtime/host.md), [runtime.upvalue](runtime/upvalue.md), [runtime.failure](runtime/failure.md), [runtime.io](runtime/io.md), [runtime.load](runtime/load.md), [runtime.vm](runtime/vm.md), [runtime.gc](runtime/gc.md), [runtime.entry](runtime/entry.md), [runtime.system](runtime/system.md), [runtime.timezone](runtime/timezone.md), [runtime.index](runtime/index.md), [runtime.operators](runtime/operators.md), [runtime.budget](runtime/budget.md), [runtime.strings](runtime/strings.md), [runtime.execute](runtime/execute.md), [runtime.tests](runtime/tests.md), [runtime.internal](runtime/internal.md), [runtime.native_fn](runtime/native_fn.md), [runtime.snapshot](runtime/snapshot.md)
 
 <details>
 <summary>All documents</summary>
@@ -25,22 +25,33 @@
 - [runtime](runtime.md)
 - [runtime.chunk](runtime/chunk.md)
 - [reflection](reflection.md)
-- [runtime.value](runtime/value.md)
-- [runtime.number_format](runtime/number_format.md)
-- [runtime.execute](runtime/execute.md)
-- [testing.process](testing/process.md)
 - [runtime.state](runtime/state.md)
-- [runtime.rollback](runtime/rollback.md)
+- [stdlib](stdlib.md)
+- [stdlib.base](stdlib/base.md)
 - [runtime.call](runtime/call.md)
 - [runtime.coroutine](runtime/coroutine.md)
 - [runtime.debug](runtime/debug.md)
-- [runtime.gc](runtime/gc.md)
+- [runtime.metatable](runtime/metatable.md)
+- [runtime.rollback](runtime/rollback.md)
+- [runtime.value](runtime/value.md)
+- [runtime.number_format](runtime/number_format.md)
 - [runtime.host](runtime/host.md)
+- [runtime.upvalue](runtime/upvalue.md)
+- [runtime.failure](runtime/failure.md)
+- [runtime.io](runtime/io.md)
+- [runtime.load](runtime/load.md)
+- [runtime.vm](runtime/vm.md)
+- [runtime.gc](runtime/gc.md)
+- [runtime.entry](runtime/entry.md)
+- [runtime.system](runtime/system.md)
 - [runtime.timezone](runtime/timezone.md)
-- [stdlib](stdlib.md)
-- [stdlib.base](stdlib/base.md)
+- [runtime.index](runtime/index.md)
+- [runtime.operators](runtime/operators.md)
 - [stdlib.table](stdlib/table.md)
 - [stdlib.string](stdlib/string.md)
+- [stdlib.string.format](stdlib/string/format.md)
+- [stdlib.string.pack](stdlib/string/pack.md)
+- [stdlib.string.pattern](stdlib/string/pattern.md)
 - [stdlib.math](stdlib/math.md)
 - [stdlib.utf8](stdlib/utf8.md)
 - [stdlib.coroutine](stdlib/coroutine.md)
@@ -55,14 +66,33 @@
 - [stdlib.msgpack](stdlib/msgpack.md)
 - [stdlib.csv](stdlib/csv.md)
 - [stdlib.fs](stdlib/fs.md)
-- [runtime.vm](runtime/vm.md)
+- [runtime.budget](runtime/budget.md)
+- [runtime.strings](runtime/strings.md)
+- [runtime.execute](runtime/execute.md)
+- [testing.process](testing/process.md)
 - [runtime.tests](runtime/tests.md)
 - [runtime.internal](runtime/internal.md)
+- [runtime.native_fn](runtime/native_fn.md)
 - [compile.compiler](compile/compiler.md)
 - [compile.fold](compile/fold.md)
 - [compile.disasm](compile/disasm.md)
 - [api](api.md)
+- [api.callbacks](api/callbacks.md)
+- [api.convert](api/convert.md)
+- [api.errors](api/errors.md)
+- [api.handle](api/handle.md)
+- [api.state](api/state.md)
 - [runtime.snapshot](runtime/snapshot.md)
+- [api.capabilities](api/capabilities.md)
+- [api.options](api/options.md)
+- [api.function](api/function.md)
+- [api.table](api/table.md)
+- [api.value](api/value.md)
+- [api.userdata](api/userdata.md)
+- [api.context](api/context.md)
+- [api.coroutine](api/coroutine.md)
+- [api.snapshot](api/snapshot.md)
+- [api.memory_limit](api/memory_limit.md)
 - [testing](testing.md)
 - [testing.clua](testing/clua.md)
 - [testing.bench_runner](testing/bench_runner.md)
@@ -167,8 +197,11 @@
 
 ## Imports
 
-- [InterruptControl](#import-interruptcontrol) `@import("runtime/vm.zig")`
+- [InterruptControl](#import-interruptcontrol) `@import("runtime/budget.zig")`
 - [number_format](#import-number_format) `@import("runtime/number_format.zig")`
+- [entry](#import-entry) `@import("runtime/entry.zig")`
+- [failure](#import-failure) `@import("runtime/failure.zig")`
+- [gc](#import-gc) `@import("runtime/gc.zig")`
 
 <a id="alias-runtimeerror"></a>
 
@@ -241,7 +274,7 @@ pub const HostErrorHandler = state_mod.HostErrorHandler;
 ## InterruptControl
 
 ```zig
-pub const InterruptControl = @import("runtime/vm.zig").InterruptControl;
+pub const InterruptControl = @import("runtime/budget.zig").InterruptControl;
 ```
 
 <a id="alias-value"></a>
@@ -262,7 +295,7 @@ References: [`types.Value`](runtime/types.md#type-value)
 pub const NativeFn = types.NativeFn;
 ```
 
-References: [`types.NativeFn`](runtime/types.md#type-nativefn)
+References: [`types.NativeFn`](runtime/types.md#import-nativefn)
 
 <a id="alias-userdatafinalizer"></a>
 
@@ -663,7 +696,7 @@ References: [`host.default_max_file_bytes`](runtime/host.md#const-default_max_fi
 ## CompareOp
 
 ```zig
-pub const CompareOp = state_mod.CompareOp;
+pub const CompareOp = operators_mod.CompareOp;
 ```
 
 <a id="alias-valuesequal"></a>
@@ -671,7 +704,7 @@ pub const CompareOp = state_mod.CompareOp;
 ## valuesEqual
 
 ```zig
-pub const valuesEqual = state_mod.valuesEqual;
+pub const valuesEqual = value_mod.valuesEqual;
 ```
 
 <a id="alias-truthy"></a>
@@ -679,7 +712,7 @@ pub const valuesEqual = state_mod.valuesEqual;
 ## truthy
 
 ```zig
-pub const truthy = state_mod.truthy;
+pub const truthy = value_mod.truthy;
 ```
 
 <a id="alias-tointeger"></a>
@@ -687,7 +720,7 @@ pub const truthy = state_mod.truthy;
 ## toInteger
 
 ```zig
-pub const toInteger = state_mod.toInteger;
+pub const toInteger = value_mod.toInteger;
 ```
 
 <a id="alias-coercetointeger"></a>
@@ -703,7 +736,7 @@ pub const coerceToInteger = value_mod.coerceToInteger;
 ## toNumber
 
 ```zig
-pub const toNumber = state_mod.toNumber;
+pub const toNumber = value_mod.toNumber;
 ```
 
 <a id="alias-appendluastring"></a>
@@ -711,7 +744,7 @@ pub const toNumber = state_mod.toNumber;
 ## appendLuaString
 
 ```zig
-pub const appendLuaString = state_mod.appendLuaString;
+pub const appendLuaString = value_mod.appendLuaString;
 ```
 
 <a id="alias-localactiveat"></a>
@@ -719,7 +752,7 @@ pub const appendLuaString = state_mod.appendLuaString;
 ## localActiveAt
 
 ```zig
-pub const localActiveAt = state_mod.localActiveAt;
+pub const localActiveAt = value_mod.localActiveAt;
 ```
 
 <a id="alias-parseintegerstrict"></a>
@@ -727,7 +760,7 @@ pub const localActiveAt = state_mod.localActiveAt;
 ## parseIntegerStrict
 
 ```zig
-pub const parseIntegerStrict = state_mod.parseIntegerStrict;
+pub const parseIntegerStrict = value_mod.parseIntegerStrict;
 ```
 
 <a id="alias-parseluanumber"></a>
@@ -735,7 +768,7 @@ pub const parseIntegerStrict = state_mod.parseIntegerStrict;
 ## parseLuaNumber
 
 ```zig
-pub const parseLuaNumber = state_mod.parseLuaNumber;
+pub const parseLuaNumber = value_mod.parseLuaNumber;
 ```
 
 <a id="alias-floattointeger"></a>
@@ -743,7 +776,7 @@ pub const parseLuaNumber = state_mod.parseLuaNumber;
 ## floatToInteger
 
 ```zig
-pub const floatToInteger = state_mod.floatToInteger;
+pub const floatToInteger = value_mod.floatToInteger;
 ```
 
 <a id="alias-trimascii"></a>
@@ -751,7 +784,7 @@ pub const floatToInteger = state_mod.floatToInteger;
 ## trimAscii
 
 ```zig
-pub const trimAscii = state_mod.trimAscii;
+pub const trimAscii = value_mod.trimAscii;
 ```
 
 <a id="alias-runtimeargvalue"></a>
@@ -759,7 +792,7 @@ pub const trimAscii = state_mod.trimAscii;
 ## runtimeArgValue
 
 ```zig
-pub const runtimeArgValue = state_mod.runtimeArgValue;
+pub const runtimeArgValue = value_mod.runtimeArgValue;
 ```
 
 <a id="alias-argvalue"></a>
@@ -767,7 +800,7 @@ pub const runtimeArgValue = state_mod.runtimeArgValue;
 ## argValue
 
 ```zig
-pub const argValue = state_mod.argValue;
+pub const argValue = value_mod.argValue;
 ```
 
 <a id="alias-appendvalue"></a>
@@ -775,7 +808,7 @@ pub const argValue = state_mod.argValue;
 ## appendValue
 
 ```zig
-pub const appendValue = state_mod.appendValue;
+pub const appendValue = io_mod.appendValue;
 ```
 
 <a id="alias-appenderrorvalue"></a>
@@ -783,7 +816,7 @@ pub const appendValue = state_mod.appendValue;
 ## appendErrorValue
 
 ```zig
-pub const appendErrorValue = state_mod.appendErrorValue;
+pub const appendErrorValue = io_mod.appendErrorValue;
 ```
 
 <a id="alias-isfilevalue"></a>
@@ -791,7 +824,7 @@ pub const appendErrorValue = state_mod.appendErrorValue;
 ## isFileValue
 
 ```zig
-pub const isFileValue = state_mod.isFileValue;
+pub const isFileValue = io_mod.isFileValue;
 ```
 
 <a id="alias-isclosedfilevalue"></a>
@@ -799,7 +832,7 @@ pub const isFileValue = state_mod.isFileValue;
 ## isClosedFileValue
 
 ```zig
-pub const isClosedFileValue = state_mod.isClosedFileValue;
+pub const isClosedFileValue = io_mod.isClosedFileValue;
 ```
 
 <a id="alias-appendnumber"></a>
@@ -807,7 +840,7 @@ pub const isClosedFileValue = state_mod.isClosedFileValue;
 ## appendNumber
 
 ```zig
-pub const appendNumber = state_mod.appendNumber;
+pub const appendNumber = value_mod.appendNumber;
 ```
 
 <a id="alias-appendfmt"></a>
@@ -815,7 +848,7 @@ pub const appendNumber = state_mod.appendNumber;
 ## appendFmt
 
 ```zig
-pub const appendFmt = state_mod.appendFmt;
+pub const appendFmt = value_mod.appendFmt;
 ```
 
 <a id="alias-typename"></a>
@@ -823,7 +856,7 @@ pub const appendFmt = state_mod.appendFmt;
 ## typeName
 
 ```zig
-pub const typeName = state_mod.luaTypeName;
+pub const typeName = value_mod.luaTypeName;
 ```
 
 <a id="import-number_format"></a>
@@ -832,6 +865,30 @@ pub const typeName = state_mod.luaTypeName;
 
 ```zig
 pub const number_format = @import("runtime/number_format.zig");
+```
+
+<a id="import-entry"></a>
+
+## entry
+
+```zig
+pub const entry = @import("runtime/entry.zig");
+```
+
+<a id="import-failure"></a>
+
+## failure
+
+```zig
+pub const failure = @import("runtime/failure.zig");
+```
+
+<a id="import-gc"></a>
+
+## gc
+
+```zig
+pub const gc = @import("runtime/gc.zig");
 ```
 
 <a id="alias-executeoptions"></a>

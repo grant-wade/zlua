@@ -25,22 +25,33 @@
 - [runtime](../runtime.md)
 - [runtime.chunk](../runtime/chunk.md)
 - [reflection](../reflection.md)
-- [runtime.value](../runtime/value.md)
-- [runtime.number_format](../runtime/number_format.md)
-- [runtime.execute](../runtime/execute.md)
-- [testing.process](../testing/process.md)
 - [runtime.state](../runtime/state.md)
-- [runtime.rollback](../runtime/rollback.md)
+- [stdlib](../stdlib.md)
+- [stdlib.base](../stdlib/base.md)
 - [runtime.call](../runtime/call.md)
 - [runtime.coroutine](../runtime/coroutine.md)
 - [runtime.debug](../runtime/debug.md)
-- [runtime.gc](../runtime/gc.md)
+- [runtime.metatable](../runtime/metatable.md)
+- [runtime.rollback](../runtime/rollback.md)
+- [runtime.value](../runtime/value.md)
+- [runtime.number_format](../runtime/number_format.md)
 - [runtime.host](../runtime/host.md)
+- [runtime.upvalue](../runtime/upvalue.md)
+- [runtime.failure](../runtime/failure.md)
+- [runtime.io](../runtime/io.md)
+- [runtime.load](../runtime/load.md)
+- [runtime.vm](../runtime/vm.md)
+- [runtime.gc](../runtime/gc.md)
+- [runtime.entry](../runtime/entry.md)
+- [runtime.system](../runtime/system.md)
 - [runtime.timezone](../runtime/timezone.md)
-- [stdlib](../stdlib.md)
-- [stdlib.base](../stdlib/base.md)
+- [runtime.index](../runtime/index.md)
+- [runtime.operators](../runtime/operators.md)
 - [stdlib.table](../stdlib/table.md)
 - [stdlib.string](../stdlib/string.md)
+- [stdlib.string.format](../stdlib/string/format.md)
+- [stdlib.string.pack](../stdlib/string/pack.md)
+- [stdlib.string.pattern](../stdlib/string/pattern.md)
 - [stdlib.math](../stdlib/math.md)
 - [stdlib.utf8](../stdlib/utf8.md)
 - [stdlib.coroutine](../stdlib/coroutine.md)
@@ -55,14 +66,33 @@
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
-- [runtime.vm](../runtime/vm.md)
+- [runtime.budget](../runtime/budget.md)
+- [runtime.strings](../runtime/strings.md)
+- [runtime.execute](../runtime/execute.md)
+- [testing.process](../testing/process.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
+- [runtime.native_fn](../runtime/native_fn.md)
 - [compile.compiler](../compile/compiler.md)
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
 - [api](../api.md)
+- [api.callbacks](../api/callbacks.md)
+- [api.convert](../api/convert.md)
+- [api.errors](../api/errors.md)
+- [api.handle](../api/handle.md)
+- [api.state](../api/state.md)
 - [runtime.snapshot](../runtime/snapshot.md)
+- [api.capabilities](../api/capabilities.md)
+- [api.options](../api/options.md)
+- [api.function](../api/function.md)
+- [api.table](../api/table.md)
+- [api.value](../api/value.md)
+- [api.userdata](../api/userdata.md)
+- [api.context](../api/context.md)
+- [api.coroutine](../api/coroutine.md)
+- [api.snapshot](../api/snapshot.md)
+- [api.memory_limit](../api/memory_limit.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
 - [testing.bench_runner](../testing/bench_runner.md)
@@ -90,116 +120,94 @@
 
 ## Functions
 
-- [checkExecutionLimits](#fn-checkexecutionlimits)
-- [executionCheckpoint](#fn-executioncheckpoint)
-- [checkInterrupt](#fn-checkinterrupt)
-- [instructionBudgetExhausted](#fn-instructionbudgetexhausted)
+- [runThreadUntil](#fn-runthreaduntil)
+- [get](#fn-get)
+- [set](#fn-set)
+- [absoluteRegister](#fn-absoluteregister)
+- [jumpThread](#fn-jumpthread)
+- [jumpThreadMaybeFast](#fn-jumpthreadmaybefast)
+- [forValueName](#fn-forvaluename)
+- [assertProtoPrepared](#fn-assertprotoprepared)
 
 ## Types
 
-- [InterruptControl](#type-interruptcontrol)
+- [ForValueKind](#type-forvaluekind)
 
-## Constants
+<a id="fn-runthreaduntil"></a>
 
-- [interrupt_poll_interval](#const-interrupt_poll_interval)
-
-<a id="const-interrupt_poll_interval"></a>
-
-## interrupt_poll_interval
-
-Instructions between interrupt polls; the fast loop also polls at backward jumps and calls.
+## runThreadUntil
 
 ```zig
-pub const interrupt_poll_interval: u64 = 1024;
+pub fn runThreadUntil(self: *State, thread: *Thread, target_frame_count: usize) anyerror!void
 ```
 
-<a id="type-interruptcontrol"></a>
+<a id="fn-get"></a>
 
-## InterruptControl
-
-Interrupt request shared with host threads. Heap-allocated so its address
-survives moves of the owning state.
+## get
 
 ```zig
-pub const InterruptControl = struct {
-    requested: std.atomic.Value(bool) = .init(false),
+pub fn get(_: *State, thread: *Thread, register: usize) Value
+```
+
+<a id="fn-set"></a>
+
+## set
+
+```zig
+pub fn set(_: *State, thread: *Thread, register: usize, value: Value) void
+```
+
+<a id="fn-absoluteregister"></a>
+
+## absoluteRegister
+
+```zig
+pub fn absoluteRegister(_: *State, thread: *Thread, register: usize) usize
+```
+
+<a id="fn-jumpthread"></a>
+
+## jumpThread
+
+```zig
+pub fn jumpThread(self: *State, thread: *Thread, offset: bytecode.JumpOffset, auto_gc: bool) !void
+```
+
+<a id="fn-jumpthreadmaybefast"></a>
+
+## jumpThreadMaybeFast
+
+```zig
+pub fn jumpThreadMaybeFast(self: *State, thread: *Thread, offset: bytecode.JumpOffset, auto_gc: bool) !void
+```
+
+<a id="type-forvaluekind"></a>
+
+## ForValueKind
+
+```zig
+pub const ForValueKind = enum {
+    initial,
+    limit,
+    step,
 };
 ```
 
-### Nested Declarations
+<a id="fn-forvaluename"></a>
 
-| Name | Parameters | Return Type | Description |
-| --- | --- | --- | --- |
-| [request](#fn-interruptcontrol-request) | `self: *InterruptControl` | `void` |  |
-| [clear](#fn-interruptcontrol-clear) | `self: *InterruptControl` | `void` |  |
-| [isRequested](#fn-interruptcontrol-isrequested) | `self: *const InterruptControl` | `bool` |  |
-
-<a id="fn-interruptcontrol-request"></a>
-
-### InterruptControl.request
+## forValueName
 
 ```zig
-pub fn request(self: *InterruptControl) void
+pub fn forValueName(kind: ForValueKind) []const u8
 ```
 
-References: [`InterruptControl`](#type-interruptcontrol)
+References: [`ForValueKind`](#type-forvaluekind)
 
-<a id="fn-interruptcontrol-clear"></a>
+<a id="fn-assertprotoprepared"></a>
 
-### InterruptControl.clear
-
-```zig
-pub fn clear(self: *InterruptControl) void
-```
-
-References: [`InterruptControl`](#type-interruptcontrol)
-
-<a id="fn-interruptcontrol-isrequested"></a>
-
-### InterruptControl.isRequested
+## assertProtoPrepared
 
 ```zig
-pub fn isRequested(self: *const InterruptControl) bool
-```
-
-References: [`InterruptControl`](#type-interruptcontrol)
-
-<a id="fn-checkexecutionlimits"></a>
-
-## checkExecutionLimits
-
-Per-instruction safepoint; the hot path is one comparison against `instruction_checkpoint`.
-
-```zig
-pub inline fn checkExecutionLimits(comptime State: type, self: *State, thread: *Thread) !void
-```
-
-<a id="fn-executioncheckpoint"></a>
-
-## executionCheckpoint
-
-Interrupts and exhausted budgets leave the checkpoint in place so every later
-safepoint raises again; Lua code cannot catch them and keep running.
-
-```zig
-pub noinline fn executionCheckpoint(comptime State: type, self: *State, thread: *Thread) !void
-```
-
-<a id="fn-checkinterrupt"></a>
-
-## checkInterrupt
-
-Polled periodically by long-running native functions.
-
-```zig
-pub fn checkInterrupt(comptime State: type, self: *State) !void
-```
-
-<a id="fn-instructionbudgetexhausted"></a>
-
-## instructionBudgetExhausted
-
-```zig
-pub fn instructionBudgetExhausted(comptime State: type, self: *const State) bool
+pub fn assertProtoPrepared(proto: *const proto_mod.Proto) void
 ```
 

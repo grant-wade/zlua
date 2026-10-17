@@ -1,5 +1,7 @@
 const std = @import("std");
 const zlua = @import("zlua");
+const entry_mod = zlua.runtime.entry;
+const failure_mod = zlua.runtime.failure;
 
 const ast = zlua.frontend.ast;
 const Dir = std.Io.Dir;
@@ -183,7 +185,7 @@ fn closeState(state: *zlua.runtime.State) ?u8 {
         return null;
     }
     state.exit_request = null;
-    state.runCloseFinalizers();
+    state.gc.runCloseFinalizers();
     const finalizer_exit: ?u8 = if (state.exit_request != null) exitCode(state) else null;
     state.deinitWithoutFinalizers();
     return finalizer_exit;
@@ -584,7 +586,7 @@ fn diagnosticNearEof(diagnostic: ?zlua.errors.Diagnostic) bool {
 }
 
 fn executeChunkNamed(allocator: std.mem.Allocator, io: std.Io, state: *zlua.runtime.State, source: []const u8, source_name: []const u8) !?u8 {
-    state.executeSourceChunkNamedHandled(source, source_name, cli_error_handler) catch |err| {
+    entry_mod.executeSourceChunkNamedHandled(state, source, source_name, cli_error_handler) catch |err| {
         if (err == error.LuaExit) return exitCode(state);
         const message = try errorReportAlloc(allocator, state, err);
         defer allocator.free(message);
@@ -601,7 +603,7 @@ const cli_error_handler: zlua.runtime.HostErrorHandler = .{
 
 fn executeReplChunk(allocator: std.mem.Allocator, cli: *Cli, state: *zlua.runtime.State, source: []const u8) !?u8 {
     defer cli.flushStdout();
-    state.executeSourceChunkNamedHandled(source, "=stdin", cli_error_handler) catch |err| {
+    entry_mod.executeSourceChunkNamedHandled(state, source, "=stdin", cli_error_handler) catch |err| {
         if (err == error.LuaExit) return exitCode(state);
         const message = try errorReportAlloc(allocator, state, err);
         defer allocator.free(message);
@@ -617,7 +619,7 @@ fn errorReportAlloc(allocator: std.mem.Allocator, state: *zlua.runtime.State, er
         const value = state.currentErrorValue();
         if (value == .string) return std.fmt.allocPrint(allocator, "zlua: {s}\n", .{value.string});
     }
-    const detail = try state.errorDetailAlloc(allocator, err);
+    const detail = try failure_mod.errorDetailAlloc(state, allocator, err);
     defer allocator.free(detail);
     return std.fmt.allocPrint(allocator, "zlua: {s}\n", .{detail});
 }
@@ -638,7 +640,7 @@ fn installArgTable(
     const table = arg_value.table;
     for (args, 0..) |arg, index| {
         const key: i64 = @as(i64, @intCast(index)) - @as(i64, @intCast(zero_index));
-        try state.setTableRaw(table, .{ .integer = key }, .{ .string = try state.intern(arg) });
+        try state.setTableRaw(table, .{ .integer = key }, .{ .string = try state.strings.intern(arg) });
     }
     try state.putGlobal("arg", arg_value);
 }
@@ -769,7 +771,7 @@ test "CLI arg table indexing matches Lua script position" {
 fn cliErrorReport(source: []const u8) ![]u8 {
     var state = try zlua.runtime.State.initWithOptions(std.testing.allocator, .{ .stdlib = .full });
     defer state.deinit();
-    state.executeSourceChunkNamedHandled(source, "=(command line)", cli_error_handler) catch |err| {
+    entry_mod.executeSourceChunkNamedHandled(&state, source, "=(command line)", cli_error_handler) catch |err| {
         return errorReportAlloc(std.testing.allocator, &state, err);
     };
     return error.TestExpectedError;
@@ -811,7 +813,7 @@ test "closing the CLI state runs finalizers unless os.exit skips lua_close" {
         var buffer: [64]u8 = undefined;
         var stdout: std.Io.Writer = .fixed(&buffer);
         var state = try zlua.runtime.State.initWithOptions(std.testing.allocator, .{ .stdlib = .full, .process = .enabled, .stdout = &stdout, .capture_output = false });
-        state.executeSourceChunkNamed(case[0], "=(command line)") catch {};
+        entry_mod.executeSourceChunkNamed(&state, case[0], "=(command line)") catch {};
         _ = closeState(&state);
         try std.testing.expectEqualStrings(case[1], stdout.buffered());
     }
@@ -833,7 +835,7 @@ test "the CLI message handler runs at the error point" {
         var stdout: std.Io.Writer = .fixed(&buffer);
         var state = try zlua.runtime.State.initWithOptions(std.testing.allocator, .{ .stdlib = .full, .stdout = &stdout, .capture_output = false });
         defer state.deinit();
-        state.executeSourceChunkNamedHandled(case[0], "=(command line)", cli_error_handler) catch {};
+        entry_mod.executeSourceChunkNamedHandled(&state, case[0], "=(command line)", cli_error_handler) catch {};
         try std.testing.expectEqualStrings(case[1], stdout.buffered());
     }
 }
@@ -854,7 +856,7 @@ test "os.exit in a finalizer while closing sets the CLI status" {
         var buffer: [64]u8 = undefined;
         var stdout: std.Io.Writer = .fixed(&buffer);
         var state = try zlua.runtime.State.initWithOptions(std.testing.allocator, .{ .stdlib = .full, .process = .enabled, .stdout = &stdout, .capture_output = false });
-        state.executeSourceChunkNamed(case.source, "=(command line)") catch {};
+        entry_mod.executeSourceChunkNamed(&state, case.source, "=(command line)") catch {};
         try std.testing.expectEqual(case.code, closeState(&state));
         try std.testing.expectEqualStrings(case.output, stdout.buffered());
     }

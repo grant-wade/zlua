@@ -53,7 +53,7 @@ The top Process table runs every selected Lua fixture three ways: in an ordinary
 
 All three columns time complete processes. The snapshot column includes baseline initialization, capture, restoration, compilation, execution, and teardown, so it does not show the amortized startup savings you would get from reusing a snapshot. When you are comparing general execution performance, use the `sustained` fixtures to reduce the influence of those setup costs. The snapshot capture and reset microbenchmarks have their own section, described below.
 
-`zig build bench` supplies a ReleaseFast snapshot worker automatically. If you run `zlua-test-bench` directly, it defaults to the installed sibling `zlua-bench-snapshot`, and `--zlua-snapshot PATH` overrides that. JSON and CSV reports identify this third engine as `zlua_snapshot` and include its samples and comparisons.
+`zig build bench` supplies a ReleaseFast snapshot worker automatically. If you run `zlua-test-bench` directly, it defaults to the installed sibling `zlua-test-bench-snapshot`, and `--zlua-snapshot PATH` overrides that. JSON and CSV reports identify this third engine as `zlua_snapshot` and include its samples and comparisons.
 
 ## Snapshot reset measurements
 

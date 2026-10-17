@@ -4,6 +4,9 @@ const compile = @import("../compile.zig");
 const runtime = @import("../runtime.zig");
 const host = @import("../runtime/host.zig");
 const timezone = @import("../runtime/timezone.zig");
+const entry_mod = @import("../runtime/entry.zig");
+const io_mod = @import("../runtime/io.zig");
+const system_mod = @import("../runtime/system.zig");
 
 const bytecode = compile.bytecode;
 const State = runtime.State;
@@ -14,12 +17,12 @@ pub fn time(state: *State, thread: *Thread, op: bytecode.Call) !void {
     if (op.arg_count >= 1 and runtime.argValue(state, thread, op, 0) != .nil) {
         try state.returnValues(thread, op.base, op.return_count, &.{.{ .integer = try tableToTime(state, runtime.argValue(state, thread, op, 0)) }});
     } else {
-        try state.returnValues(thread, op.base, op.return_count, &.{.{ .integer = try state.currentTime() }});
+        try state.returnValues(thread, op.base, op.return_count, &.{.{ .integer = try system_mod.currentTime(state) }});
     }
 }
 
 pub fn clock(state: *State, thread: *Thread, op: bytecode.Call) !void {
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .number = try state.cpuTime() }});
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .number = try system_mod.cpuTime(state) }});
 }
 
 pub fn date(state: *State, thread: *Thread, op: bytecode.Call) !void {
@@ -30,11 +33,11 @@ pub fn date(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const when = if (op.arg_count >= 2 and runtime.argValue(state, thread, op, 1) != .nil)
         try state.argumentInteger(thread, op, "os.date", 1)
     else
-        try state.currentTime();
+        try system_mod.currentTime(state);
 
     const utc = format.len != 0 and format[0] == '!';
     if (utc) format = format[1..];
-    const offset: timezone.LocalOffset = if (utc) .{ .name = "UTC" } else try state.localOffset(when);
+    const offset: timezone.LocalOffset = if (utc) .{ .name = "UTC" } else try system_mod.localOffset(state, when);
     const parts = brokenDownTime(when, offset) orelse return state.failLibrary("date result cannot be represented in this installation");
     if (std.mem.eql(u8, format, "*t")) {
         const value = try state.newTableWithHints(0, 9);
@@ -46,7 +49,7 @@ pub fn date(state: *State, thread: *Thread, op: bytecode.Call) !void {
     var out = std.ArrayList(u8).empty;
     defer out.deinit(state.allocator);
     try formatDate(state, &out, format, parts);
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(out.items) }});
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(out.items) }});
 }
 
 pub fn exit(state: *State, thread: *Thread, op: bytecode.Call) !void {
@@ -57,20 +60,20 @@ pub fn exit(state: *State, thread: *Thread, op: bytecode.Call) !void {
         else => @truncate(try state.argumentInteger(thread, op, "os.exit", 0)),
     };
     const close = op.arg_count >= 2 and runtime.truthy(runtime.argValue(state, thread, op, 1));
-    try state.requestExit(code, close);
+    try system_mod.requestExit(state, code, close);
     return error.LuaExit;
 }
 
 pub fn remove(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const path = try state.expectArgumentString(thread, op, "os.remove", 0);
-    state.fsRemovePath(path, false) catch |err| return fileFailure(state, thread, op, path, err);
+    io_mod.fsRemovePath(state, path, false) catch |err| return fileFailure(state, thread, op, path, err);
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = true }});
 }
 
 pub fn rename(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const old_path = try state.expectArgumentString(thread, op, "os.rename", 0);
     const new_path = try state.expectArgumentString(thread, op, "os.rename", 1);
-    state.fsRenamePath(old_path, new_path) catch |err| return fileFailure(state, thread, op, null, err);
+    io_mod.fsRenamePath(state, old_path, new_path) catch |err| return fileFailure(state, thread, op, null, err);
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = true }});
 }
 
@@ -83,14 +86,14 @@ pub fn fileFailure(state: *State, thread: *Thread, op: bytecode.Call, path: ?[]c
     else
         try state.allocator.dupe(u8, info.message);
     defer state.allocator.free(message);
-    try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.intern(message) }, .{ .integer = info.errno } });
+    try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.strings.intern(message) }, .{ .integer = info.errno } });
 }
 
 /// Like PUC's `mkstemp`-based `os.tmpname`: creates the file; the caller removes it.
 pub fn tmpname(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const name = try createTempFile(state) orelse return state.fail("unable to generate a unique filename");
     defer state.allocator.free(name);
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(name) }});
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(name) }});
 }
 
 const temp_name_prefix = "lua_";
@@ -110,7 +113,7 @@ fn createTempFile(state: *State) !?[]u8 {
             try std.fmt.allocPrint(state.allocator, "{s}{c}" ++ temp_name_prefix ++ "{s}", .{ std.mem.trimEnd(u8, dir, "/\\"), std.fs.path.sep, &random })
         else
             try std.fmt.allocPrint(state.allocator, temp_name_prefix ++ "{s}", .{&random});
-        state.fsCreateFileExclusive(name) catch |err| {
+        io_mod.fsCreateFileExclusive(state, name) catch |err| {
             state.allocator.free(name);
             switch (err) {
                 error.OutOfMemory => return err,
@@ -126,7 +129,7 @@ fn createTempFile(state: *State) !?[]u8 {
 fn tempDirectory(state: *State) []const u8 {
     const variables: []const []const u8 = if (builtin.os.tag == .windows) &.{ "TMP", "TEMP", "USERPROFILE" } else &.{"TMPDIR"};
     for (variables) |name| {
-        if (state.getenv(name)) |value| if (value.len != 0) return value;
+        if (system_mod.getenv(state, name)) |value| if (value.len != 0) return value;
     }
     return if (builtin.os.tag == .windows) "C:\\Windows\\Temp" else "/tmp";
 }
@@ -143,7 +146,7 @@ fn randomNameBytes(state: *State, out: []u8) void {
         var hasher = std.hash.Wyhash.init(count);
         const identity = @intFromPtr(state);
         hasher.update(std.mem.asBytes(&identity));
-        hasher.update(std.mem.asBytes(&state.instruction_count));
+        hasher.update(std.mem.asBytes(&state.budget.instructions));
         hasher.update(std.mem.asBytes(&state.file_generation));
         const first = hasher.final();
         const second = std.hash.Wyhash.hash(first, std.mem.asBytes(&count));
@@ -161,7 +164,7 @@ pub fn difftime(state: *State, thread: *Thread, op: bytecode.Call) !void {
 
 pub fn getenv(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const name = try state.expectArgumentString(thread, op, "os.getenv", 0);
-    const value = if (state.getenv(name)) |env| Value{ .string = try state.intern(env) } else Value.nil;
+    const value = if (system_mod.getenv(state, name)) |env| Value{ .string = try state.strings.intern(env) } else Value.nil;
     try state.returnValues(thread, op.base, op.return_count, &.{value});
 }
 
@@ -170,22 +173,22 @@ pub fn setlocale(state: *State, thread: *Thread, op: bytecode.Call) !void {
         try state.expectArgumentString(thread, op, "os.setlocale", 0)
     else
         "C";
-    const value = if (std.mem.eql(u8, locale, "C")) Value{ .string = try state.intern("C") } else Value.nil;
+    const value = if (std.mem.eql(u8, locale, "C")) Value{ .string = try state.strings.intern("C") } else Value.nil;
     try state.returnValues(thread, op.base, op.return_count, &.{value});
 }
 
 pub fn execute(state: *State, thread: *Thread, op: bytecode.Call) !void {
     if (op.arg_count == 0 or runtime.argValue(state, thread, op, 0) == .nil) {
-        try state.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = state.processEnabled() }});
+        try state.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = system_mod.processEnabled(state) }});
         return;
     }
     const command = try state.expectArgumentString(thread, op, "os.execute", 0);
-    try returnProcessResult(state, thread, op, try state.executeProcess(command));
+    try returnProcessResult(state, thread, op, try system_mod.executeProcess(state, command));
 }
 
 /// Returns `true|nil, "exit"|"signal", code` like `luaL_execresult`.
 pub fn returnProcessResult(state: *State, thread: *Thread, op: bytecode.Call, result: host.ProcessResult) !void {
-    const status = try state.intern(switch (result.status) {
+    const status = try state.strings.intern(switch (result.status) {
         .exit => "exit",
         .signal => "signal",
     });
@@ -244,7 +247,7 @@ fn setDateFields(state: *State, table: *runtime.Table, parts: DateParts) !void {
 }
 
 fn setField(state: *State, table: *runtime.Table, name: []const u8, value: Value) !void {
-    try state.setTableRaw(table, .{ .string = try state.intern(name) }, value);
+    try state.setTableRaw(table, .{ .string = try state.strings.intern(name) }, value);
 }
 
 fn tableToTime(state: *State, value: Value) !i64 {
@@ -264,8 +267,8 @@ fn tableToTime(state: *State, value: Value) !i64 {
     const months = year * 12 + (month - 1);
     const days = timezone.daysFromCivil(@divFloor(months, 12), @mod(months, 12) + 1, 1) + (day - 1);
     const local = days * timezone.seconds_per_day + hour * 3600 + min * 60 + sec;
-    const timestamp = try state.localToUtc(local, is_dst);
-    const parts = brokenDownTime(timestamp, try state.localOffset(timestamp)) orelse
+    const timestamp = try system_mod.localToUtc(state, local, is_dst);
+    const parts = brokenDownTime(timestamp, try system_mod.localOffset(state, timestamp)) orelse
         return state.failLibrary("time result cannot be represented in this installation");
     try setDateFields(state, table, parts);
     if (timestamp == -1) return state.failLibrary("time result cannot be represented in this installation");
@@ -321,7 +324,7 @@ fn formatDate(state: *State, out: *std.ArrayList(u8), format: []const u8, parts:
 fn invalidConversion(state: *State, conversion: []const u8) anyerror {
     const message = try std.fmt.allocPrint(state.allocator, "invalid conversion specifier '%{s}'", .{conversion});
     defer state.allocator.free(message);
-    return state.failArgumentMessage("os.date", 1, try state.intern(message));
+    return state.failArgumentMessage("os.date", 1, try state.strings.intern(message));
 }
 
 fn appendConversion(state: *State, out: *std.ArrayList(u8), conversion: u8, parts: DateParts) anyerror!void {
@@ -441,7 +444,7 @@ test "os.date supports the C99 conversions in the C locale" {
         .clock = .{ .fixed = 0 },
     });
     defer state.deinit();
-    try state.executeSourceChunk(
+    try entry_mod.executeSourceChunk(&state,
         \\local fmt = "!%a %A %b %B %c %C %d %D %e %F %g %G %h %H %I %j %m %M %n %p %r %R %S %t %T %u %U %V %w %W %x %X %y %Y %z %%"
         \\assert(os.date(fmt, 1609632000) == "Sun Sunday Jan January Sun Jan  3 00:00:00 2021 20 03 01/03/21  3 2021-01-03 20 2020 Jan 00 12 003 01 00 \n AM 12:00:00 AM 00:00 00 \t 00:00:00 7 01 53 0 00 01/03/21 00:00:00 21 2021 +0000 %")
         \\assert(os.date(fmt, -31622400) == "Tue Tuesday Dec December Tue Dec 31 00:00:00 1968 19 31 12/31/68 31 1968-12-31 69 1969 Dec 00 12 366 12 00 \n AM 12:00:00 AM 00:00 00 \t 00:00:00 2 52 01 2 53 12/31/68 00:00:00 68 1968 +0000 %")
@@ -459,7 +462,7 @@ test "fixed local offsets shift os.date and os.time" {
         .clock = .{ .fixed_local = .{ .now = 0, .utc_offset = -5 * 3600 + -30 * 60, .is_dst = true, .cpu_seconds = 1.5 } },
     });
     defer state.deinit();
-    try state.executeSourceChunk(
+    try entry_mod.executeSourceChunk(&state,
         \\assert(os.date("%Y-%m-%d %H:%M:%S %z", 0) == "1969-12-31 18:30:00 -0530")
         \\assert(os.date("!%Y-%m-%d %H:%M:%S %z", 0) == "1970-01-01 00:00:00 +0000")
         \\local t = os.date("*t", 0)

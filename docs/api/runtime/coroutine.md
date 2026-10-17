@@ -25,22 +25,33 @@
 - [runtime](../runtime.md)
 - [runtime.chunk](../runtime/chunk.md)
 - [reflection](../reflection.md)
-- [runtime.value](../runtime/value.md)
-- [runtime.number_format](../runtime/number_format.md)
-- [runtime.execute](../runtime/execute.md)
-- [testing.process](../testing/process.md)
 - [runtime.state](../runtime/state.md)
-- [runtime.rollback](../runtime/rollback.md)
+- [stdlib](../stdlib.md)
+- [stdlib.base](../stdlib/base.md)
 - [runtime.call](../runtime/call.md)
 - [runtime.coroutine](../runtime/coroutine.md)
 - [runtime.debug](../runtime/debug.md)
-- [runtime.gc](../runtime/gc.md)
+- [runtime.metatable](../runtime/metatable.md)
+- [runtime.rollback](../runtime/rollback.md)
+- [runtime.value](../runtime/value.md)
+- [runtime.number_format](../runtime/number_format.md)
 - [runtime.host](../runtime/host.md)
+- [runtime.upvalue](../runtime/upvalue.md)
+- [runtime.failure](../runtime/failure.md)
+- [runtime.io](../runtime/io.md)
+- [runtime.load](../runtime/load.md)
+- [runtime.vm](../runtime/vm.md)
+- [runtime.gc](../runtime/gc.md)
+- [runtime.entry](../runtime/entry.md)
+- [runtime.system](../runtime/system.md)
 - [runtime.timezone](../runtime/timezone.md)
-- [stdlib](../stdlib.md)
-- [stdlib.base](../stdlib/base.md)
+- [runtime.index](../runtime/index.md)
+- [runtime.operators](../runtime/operators.md)
 - [stdlib.table](../stdlib/table.md)
 - [stdlib.string](../stdlib/string.md)
+- [stdlib.string.format](../stdlib/string/format.md)
+- [stdlib.string.pack](../stdlib/string/pack.md)
+- [stdlib.string.pattern](../stdlib/string/pattern.md)
 - [stdlib.math](../stdlib/math.md)
 - [stdlib.utf8](../stdlib/utf8.md)
 - [stdlib.coroutine](../stdlib/coroutine.md)
@@ -55,14 +66,33 @@
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
-- [runtime.vm](../runtime/vm.md)
+- [runtime.budget](../runtime/budget.md)
+- [runtime.strings](../runtime/strings.md)
+- [runtime.execute](../runtime/execute.md)
+- [testing.process](../testing/process.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
+- [runtime.native_fn](../runtime/native_fn.md)
 - [compile.compiler](../compile/compiler.md)
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
 - [api](../api.md)
+- [api.callbacks](../api/callbacks.md)
+- [api.convert](../api/convert.md)
+- [api.errors](../api/errors.md)
+- [api.handle](../api/handle.md)
+- [api.state](../api/state.md)
 - [runtime.snapshot](../runtime/snapshot.md)
+- [api.capabilities](../api/capabilities.md)
+- [api.options](../api/options.md)
+- [api.function](../api/function.md)
+- [api.table](../api/table.md)
+- [api.value](../api/value.md)
+- [api.userdata](../api/userdata.md)
+- [api.context](../api/context.md)
+- [api.coroutine](../api/coroutine.md)
+- [api.snapshot](../api/snapshot.md)
+- [api.memory_limit](../api/memory_limit.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
 - [testing.bench_runner](../testing/bench_runner.md)
@@ -94,7 +124,6 @@
 - [coroutineResume](#fn-coroutineresume)
 - [isYieldable](#fn-isyieldable)
 - [yieldRejection](#fn-yieldrejection)
-- [checkYieldable](#fn-checkyieldable)
 - [exposeThread](#fn-exposethread)
 - [suspendCoroutine](#fn-suspendcoroutine)
 - [coroutineYield](#fn-coroutineyield)
@@ -104,23 +133,17 @@
 - [coroutineClose](#fn-coroutineclose)
 - [coroutineWrap](#fn-coroutinewrap)
 - [callCoroutineWrapper](#fn-callcoroutinewrapper)
-- [callCoroutineWrapperWithArgs](#fn-callcoroutinewrapperwithargs)
 - [newCoroutineThread](#fn-newcoroutinethread)
-- [closeCoroutine](#fn-closecoroutine)
 - [resumeCoroutine](#fn-resumecoroutine)
-- [startCoroutine](#fn-startcoroutine)
-- [callableEntryClosure](#fn-callableentryclosure)
-- [setCoroutineResumeValues](#fn-setcoroutineresumevalues)
-- [returnCoroutineResumeResult](#fn-returncoroutineresumeresult)
-- [copyValues](#fn-copyvalues)
 - [copyStackSlice](#fn-copystackslice)
+- [closeCoroutineFromHost](#fn-closecoroutinefromhost)
 
 <a id="fn-coroutinecreate"></a>
 
 ## coroutineCreate
 
 ```zig
-pub fn coroutineCreate(comptime State: type, self: *State, thread: *Thread, op: bytecode.Call) !void
+pub fn coroutineCreate(self: *State, thread: *Thread, op: bytecode.Call) !void
 ```
 
 <a id="fn-coroutineresume"></a>
@@ -128,7 +151,7 @@ pub fn coroutineCreate(comptime State: type, self: *State, thread: *Thread, op: 
 ## coroutineResume
 
 ```zig
-pub fn coroutineResume(comptime State: type, self: *State, thread: *Thread, op: bytecode.Call) !void
+pub fn coroutineResume(self: *State, thread: *Thread, op: bytecode.Call) !void
 ```
 
 <a id="fn-isyieldable"></a>
@@ -149,14 +172,6 @@ Returns the Lua error message for a yield from `thread`, or null when it can yie
 pub fn yieldRejection(thread: *const Thread) ?[]const u8
 ```
 
-<a id="fn-checkyieldable"></a>
-
-## checkYieldable
-
-```zig
-pub fn checkYieldable(comptime State: type, self: *State, thread: *const Thread) !void
-```
-
 <a id="fn-exposethread"></a>
 
 ## exposeThread
@@ -172,7 +187,7 @@ pub fn exposeThread(thread: *Thread) !void
 ## suspendCoroutine
 
 ```zig
-pub fn suspendCoroutine(comptime State: type, self: *State, thread: *Thread, op: bytecode.Call, values: []const Value) !void
+pub fn suspendCoroutine(self: *State, thread: *Thread, op: bytecode.Call, values: []const Value) !void
 ```
 
 <a id="fn-coroutineyield"></a>
@@ -180,7 +195,7 @@ pub fn suspendCoroutine(comptime State: type, self: *State, thread: *Thread, op:
 ## coroutineYield
 
 ```zig
-pub fn coroutineYield(comptime State: type, self: *State, thread: *Thread, op: bytecode.Call) !void
+pub fn coroutineYield(self: *State, thread: *Thread, op: bytecode.Call) !void
 ```
 
 <a id="fn-coroutinestatus"></a>
@@ -188,7 +203,7 @@ pub fn coroutineYield(comptime State: type, self: *State, thread: *Thread, op: b
 ## coroutineStatus
 
 ```zig
-pub fn coroutineStatus(comptime State: type, self: *State, thread: *Thread, op: bytecode.Call) !void
+pub fn coroutineStatus(self: *State, thread: *Thread, op: bytecode.Call) !void
 ```
 
 <a id="fn-coroutinerunning"></a>
@@ -196,7 +211,7 @@ pub fn coroutineStatus(comptime State: type, self: *State, thread: *Thread, op: 
 ## coroutineRunning
 
 ```zig
-pub fn coroutineRunning(comptime State: type, self: *State, thread: *Thread, op: bytecode.Call) !void
+pub fn coroutineRunning(self: *State, thread: *Thread, op: bytecode.Call) !void
 ```
 
 <a id="fn-coroutineisyieldable"></a>
@@ -204,7 +219,7 @@ pub fn coroutineRunning(comptime State: type, self: *State, thread: *Thread, op:
 ## coroutineIsYieldable
 
 ```zig
-pub fn coroutineIsYieldable(comptime State: type, self: *State, thread: *Thread, op: bytecode.Call) !void
+pub fn coroutineIsYieldable(self: *State, thread: *Thread, op: bytecode.Call) !void
 ```
 
 <a id="fn-coroutineclose"></a>
@@ -212,7 +227,7 @@ pub fn coroutineIsYieldable(comptime State: type, self: *State, thread: *Thread,
 ## coroutineClose
 
 ```zig
-pub fn coroutineClose(comptime State: type, self: *State, thread: *Thread, op: bytecode.Call) !void
+pub fn coroutineClose(self: *State, thread: *Thread, op: bytecode.Call) !void
 ```
 
 <a id="fn-coroutinewrap"></a>
@@ -220,7 +235,7 @@ pub fn coroutineClose(comptime State: type, self: *State, thread: *Thread, op: b
 ## coroutineWrap
 
 ```zig
-pub fn coroutineWrap(comptime State: type, self: *State, thread: *Thread, op: bytecode.Call) !void
+pub fn coroutineWrap(self: *State, thread: *Thread, op: bytecode.Call) !void
 ```
 
 <a id="fn-callcoroutinewrapper"></a>
@@ -228,15 +243,7 @@ pub fn coroutineWrap(comptime State: type, self: *State, thread: *Thread, op: by
 ## callCoroutineWrapper
 
 ```zig
-pub fn callCoroutineWrapper(comptime State: type, self: *State, thread: *Thread, op: bytecode.Call, target: *Thread) !void
-```
-
-<a id="fn-callcoroutinewrapperwithargs"></a>
-
-## callCoroutineWrapperWithArgs
-
-```zig
-pub fn callCoroutineWrapperWithArgs(comptime State: type, self: *State, thread: *Thread, base: u32, return_count: u16, target: *Thread, args: []const Value) !void
+pub fn callCoroutineWrapper(self: *State, thread: *Thread, op: bytecode.Call, target: *Thread) !void
 ```
 
 <a id="fn-newcoroutinethread"></a>
@@ -244,17 +251,7 @@ pub fn callCoroutineWrapperWithArgs(comptime State: type, self: *State, thread: 
 ## newCoroutineThread
 
 ```zig
-pub fn newCoroutineThread(comptime State: type, self: *State, entry: Value) !*Thread
-```
-
-<a id="fn-closecoroutine"></a>
-
-## closeCoroutine
-
-The running thread may close itself; hosts are rejected earlier by `State.closeCoroutine`.
-
-```zig
-pub fn closeCoroutine(comptime State: type, self: *State, target: *Thread, error_value: ?Value) !?Value
+pub fn newCoroutineThread(self: *State, entry: Value) !*Thread
 ```
 
 <a id="fn-resumecoroutine"></a>
@@ -262,47 +259,7 @@ pub fn closeCoroutine(comptime State: type, self: *State, target: *Thread, error
 ## resumeCoroutine
 
 ```zig
-pub fn resumeCoroutine(comptime State: type, self: *State, target: *Thread, args: []const Value) !CoroutineResumeResult
-```
-
-<a id="fn-startcoroutine"></a>
-
-## startCoroutine
-
-```zig
-pub fn startCoroutine(comptime State: type, self: *State, target: *Thread, args: []const Value) !void
-```
-
-<a id="fn-callableentryclosure"></a>
-
-## callableEntryClosure
-
-```zig
-pub fn callableEntryClosure(comptime State: type, self: *State) !*Closure
-```
-
-<a id="fn-setcoroutineresumevalues"></a>
-
-## setCoroutineResumeValues
-
-```zig
-pub fn setCoroutineResumeValues(comptime State: type, self: *State, target: *Thread, args: []const Value) !void
-```
-
-<a id="fn-returncoroutineresumeresult"></a>
-
-## returnCoroutineResumeResult
-
-```zig
-pub fn returnCoroutineResumeResult(comptime State: type, self: *State, thread: *Thread, base: u32, return_count: u16, result: CoroutineResumeResult) !void
-```
-
-<a id="fn-copyvalues"></a>
-
-## copyValues
-
-```zig
-pub fn copyValues(comptime State: type, self: *State, values: []const Value) ![]Value
+pub fn resumeCoroutine(self: *State, target: *Thread, args: []const Value) !CoroutineResumeResult
 ```
 
 <a id="fn-copystackslice"></a>
@@ -310,6 +267,14 @@ pub fn copyValues(comptime State: type, self: *State, values: []const Value) ![]
 ## copyStackSlice
 
 ```zig
-pub fn copyStackSlice(comptime State: type, self: *State, thread: *Thread, base: usize, count: usize) ![]Value
+pub fn copyStackSlice(self: *State, thread: *Thread, base: usize, count: usize) ![]Value
+```
+
+<a id="fn-closecoroutinefromhost"></a>
+
+## closeCoroutineFromHost
+
+```zig
+pub fn closeCoroutineFromHost(self: *State, target: *Thread, error_value: ?Value) !?Value
 ```
 

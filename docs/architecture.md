@@ -9,7 +9,7 @@ The source tree splits into a handful of areas, each with a clear job:
 | Area | Source | Role |
 | --- | --- | --- |
 | Package facade | `src/root.zig` | Exports the supported Zig API and lower-level subsystems. |
-| Zig embedding API | `src/api.zig` | Typed states, handles, callbacks, userdata, capabilities, and limits. |
+| Zig embedding API | `src/api.zig`, `src/api/` | Typed states, handles, callbacks, userdata, capabilities, and limits. |
 | CLI | `src/main.zig` | REPL, scripts, `-e`, dump modes, and test commands. |
 | Frontend and compiler | `src/frontend/`, `src/compile/` | Lexes, parses, resolves, and compiles Lua source. |
 | Runtime | `src/runtime.zig`, `src/runtime/` | Values, VM execution, calls, coroutines, GC, errors, and host services. |
@@ -99,6 +99,27 @@ Library setup avoids repeating object layouts in the same spirit. For example, f
 
 For measurement, `State.initWithOptionsObserved` exposes the startup phases (state containers, globals, libraries, and GC baseline) to the in-process startup benchmark. Normally you won't call it: high-level callers use `zlua.State.init`, and internal runtime callers use `initWithOptions`.
 
+### Runtime Modules
+
+`runtime.State` holds the VM's data and keeps a small set of methods that the standard libraries and the Zig API use everywhere: lifecycle, roots, object allocation, globals, and argument and library errors. Subsystems that own their own fields are facets on the state (`state.gc`, `state.budget`, `state.strings`), and everything else lives in modules that take `*State` explicitly. Libraries that need private per-state tables, such as the zerde null sentinel, get rooted, snapshot-safe slots in `state.library_tables`, keyed by `stdlib.LibraryTable`, rather than `State` fields:
+
+| Module | Contents |
+| --- | --- |
+| `vm.zig` | Instruction dispatch, jumps and numeric `for`, constants, fast table paths, interrupts, and instruction budgets. |
+| `call.zig` | Calls, returns, tail calls, varargs, protected calls, `pcall`/`xpcall`, and message handlers. |
+| `entry.zig` | Host entry points: running chunks and calling functions from Zig on host threads. |
+| `load.zig` | Loading source and binary chunks, string literal decoding, and root closures. |
+| `index.zig` | Table reads and writes through `__index`/`__newindex`, raw access, `next`/`pairs`/`ipairs`, and generic `for`. |
+| `metatable.zig` | Metatable lookup and assignment, metamethod resolution, and `__gc` registration. |
+| `operators.zig` | Arithmetic, bitwise, comparison, length, and concatenation, with their metamethods. |
+| `upvalue.zig` | Upvalues, to-be-closed variables, and frame unwinding. |
+| `io.zig`, `system.zig` | Capability-gated files, output, and filesystem operations; environment, clocks, processes, and exit. |
+| `failure.zig` | Runtime error messages with source locations. |
+| `gc.zig` | The collector as `State.gc` (`state.gc.collect()`, barriers, allocation accounting), with its own fields. |
+| `budget.zig` | Instruction counting, `max_instructions` and per-call budgets, and host interrupts as `State.budget`. |
+| `strings.zig` | String interning as `State.strings` (`state.strings.intern(...)`). |
+| `debug.zig`, `coroutine.zig` | Debug info, hooks, and tracebacks; coroutines. |
+
 ### Values and Heap Objects
 
 `runtime.types.Value` is a tagged union that holds Lua scalars, object pointers, native functions, and a few internal callable values. The heap objects it can point to are:
@@ -115,7 +136,7 @@ Tables store positive integer keys in an array part and all other keys in hash e
 
 ### Calls and Coroutines
 
-Each thread owns a value stack and a stack of `CallFrame`s. Calls go through helpers in `runtime/state.zig` and `runtime/call.zig`:
+Each thread owns a value stack and a stack of `CallFrame`s. Calls go through `runtime/call.zig`, and host code enters Lua through `runtime/entry.zig`:
 
 ```text
 value + arguments
@@ -133,7 +154,7 @@ Yielding is built on continuations. A thread keeps continuation records for prot
 
 ### VM and Limits
 
-The instruction dispatcher lives in `runtime/state.zig`, while `runtime/vm.zig` handles the limit checks that cut across it. The VM is responsible for Lua-specific result adjustment, varargs, tail calls, metamethods, to-be-closed unwinding, primitive metatables, debug hooks, and stack overflow guards.
+The instruction dispatcher and the limit checks that cut across it live in `runtime/vm.zig`. The VM is responsible for Lua-specific result adjustment, varargs, tail calls, metamethods, to-be-closed unwinding, primitive metatables, debug hooks, and stack overflow guards.
 
 Several limits keep running code in check:
 
@@ -176,7 +197,19 @@ The memory filesystem normalizes sandbox-relative paths and rejects absolute pat
 
 ### Zig API
 
-`src/api.zig` wraps runtime values in typed, rooted handles such as `Table`, `Function`, `Ref`, `Userdata(T)`, `AnyUserdata`, `Value`, and `ErrorRef`. When a handle owns a root, you are responsible for deinitializing it.
+`src/api.zig` is a facade that re-exports the public API from the modules in `src/api/`. The API wraps runtime values in typed, rooted handles such as `Table`, `Function`, `Ref`, `Userdata(T)`, `AnyUserdata`, `Value`, and `ErrorRef`. When a handle owns a root, you are responsible for deinitializing it.
+
+| Module | Contents |
+| --- | --- |
+| `state.zig` | `State`, `InterruptHandle`, memory-file bookkeeping, and the GC boundary. |
+| `snapshot.zig` | `Snapshot`, snapshot capture, `reset`, and rollback metadata. |
+| `options.zig`, `capabilities.zig` | State, load, call, and GC options, and host capability types. |
+| `handle.zig` | `Ref` and the validation and rooting shared by every handle. |
+| `value.zig`, `table.zig`, `function.zig`, `coroutine.zig`, `userdata.zig` | `Value`, `Tuple`, and the handle types. |
+| `errors.zig` | Error sets, `ErrorRef`, `CallResult`, and last-error capture. |
+| `convert.zig` | Conversion between Zig values, API handles, and runtime values. |
+| `callbacks.zig`, `context.zig` | Host callback registration and dispatch, typed adapters, and `Context`. |
+| `memory_limit.zig` | The allocator wrapper that enforces `Limits.max_memory`. |
 
 Beyond handles, the API maps its options onto runtime options, converts values in both directions, binds host callbacks and userdata, provides module and memory-filesystem helpers, and captures Lua errors. A registered host function is a native value carrying a state-local callback ID. While a callback is active, its context roots the arguments and pending returns, so they survive reentrant calls and collection. Installing a handle into Lua gives Lua its own reference; your host handle stays valid and still needs its own cleanup.
 

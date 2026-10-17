@@ -2,6 +2,7 @@ const std = @import("std");
 const zerde = @import("zerde");
 const runtime = @import("../runtime.zig");
 const io = @import("io.zig");
+const metatable_mod = @import("../runtime/metatable.zig");
 
 const State = runtime.State;
 const Value = runtime.Value;
@@ -10,19 +11,20 @@ const Table = runtime.Table;
 const max_zerde_table_len: usize = @min(std.math.maxInt(usize), std.math.maxInt(i64));
 
 pub fn ensureSupportTables(state: *State) !void {
-    if (state.zerde_null == null) {
+    const tables = &state.library_tables;
+    if (tables.get(.zerde_null) == null) {
         const null_value = try state.newTableWithHints(0, 0);
         const null_metatable = try zerdeMetatable(state, "zerde null");
-        state.setTableMetatableRaw(null_value.table, null_metatable);
-        state.zerde_null = null_value.table;
+        metatable_mod.setTableMetatableRaw(state, null_value.table, null_metatable);
+        tables.set(.zerde_null, null_value.table);
     }
-    if (state.zerde_array_metatable == null) state.zerde_array_metatable = try zerdeMetatable(state, "zerde array");
-    if (state.zerde_object_metatable == null) state.zerde_object_metatable = try zerdeMetatable(state, "zerde object");
+    if (tables.get(.zerde_array_metatable) == null) tables.set(.zerde_array_metatable, try zerdeMetatable(state, "zerde array"));
+    if (tables.get(.zerde_object_metatable) == null) tables.set(.zerde_object_metatable, try zerdeMetatable(state, "zerde object"));
 }
 
 pub fn nullValue(state: *State) !Value {
     try ensureSupportTables(state);
-    return .{ .table = state.zerde_null.? };
+    return .{ .table = state.library_tables.get(.zerde_null).? };
 }
 
 pub fn inputBytes(state: *State, value: Value, function_name: []const u8) ![]const u8 {
@@ -40,8 +42,8 @@ pub fn inputBytes(state: *State, value: Value, function_name: []const u8) ![]con
 fn zerdeMetatable(state: *State, name: []const u8) !*Table {
     const value = try state.newTableWithHints(0, 2);
     const table = value.table;
-    try state.setTableRaw(table, .{ .string = try state.intern("__metatable") }, .{ .boolean = false });
-    try state.setTableRaw(table, .{ .string = try state.intern("__name") }, .{ .string = try state.intern(name) });
+    try state.setTableRaw(table, .{ .string = try state.strings.intern("__metatable") }, .{ .boolean = false });
+    try state.setTableRaw(table, .{ .string = try state.strings.intern("__name") }, .{ .string = try state.strings.intern(name) });
     return table;
 }
 
@@ -84,11 +86,11 @@ pub const LuaSink = struct {
     }
 
     pub fn emitString(self: *LuaSink, value: []const u8) !void {
-        try self.appendValue(.{ .string = try self.state.intern(value) });
+        try self.appendValue(.{ .string = try self.state.strings.intern(value) });
     }
 
     pub fn emitBytes(self: *LuaSink, value: []const u8) !void {
-        try self.appendValue(.{ .string = try self.state.intern(value) });
+        try self.appendValue(.{ .string = try self.state.strings.intern(value) });
     }
 
     pub fn emitDateTimeRaw(self: *LuaSink, value: []const u8) !void {
@@ -99,7 +101,7 @@ pub const LuaSink = struct {
         try ensureSupportTables(self.state);
         const hint = if (len) |count| std.math.cast(u32, count) orelse std.math.maxInt(u32) else 0;
         const value = try self.state.newTableWithHints(hint, 0);
-        self.state.setTableMetatableRaw(value.table, self.state.zerde_array_metatable.?);
+        metatable_mod.setTableMetatableRaw(self.state, value.table, self.state.library_tables.get(.zerde_array_metatable).?);
         try self.stack.append(self.state.allocator, .{ .kind = .seq, .table = value.table });
     }
 
@@ -113,7 +115,7 @@ pub const LuaSink = struct {
         try ensureSupportTables(self.state);
         const hint = if (len) |count| std.math.cast(u32, count) orelse std.math.maxInt(u32) else 0;
         const value = try self.state.newTableWithHints(0, hint);
-        self.state.setTableMetatableRaw(value.table, self.state.zerde_object_metatable.?);
+        metatable_mod.setTableMetatableRaw(self.state, value.table, self.state.library_tables.get(.zerde_object_metatable).?);
         try self.stack.append(self.state.allocator, .{ .kind = .object, .table = value.table });
     }
 
@@ -121,7 +123,7 @@ pub const LuaSink = struct {
         if (self.stack.items.len == 0) return error.InvalidZerdeSinkState;
         const frame = &self.stack.items[self.stack.items.len - 1];
         if (frame.kind != .object or frame.field_name != null) return error.InvalidZerdeSinkState;
-        frame.field_name = try self.state.intern(name);
+        frame.field_name = try self.state.strings.intern(name);
     }
 
     pub fn endStruct(self: *LuaSink) !void {
@@ -234,11 +236,11 @@ pub fn LuaSource(comptime Encoder: type) type {
         }
 
         fn tableKind(self: *Self, table: *Table) !Kind {
-            if (self.state.zerde_null == table) return .null;
+            if (self.state.library_tables.get(.zerde_null) == table) return .null;
 
             const shape = tableShape(table);
-            if (table.metatable == self.state.zerde_array_metatable) return .{ .array = try self.arrayLen(shape) };
-            if (table.metatable == self.state.zerde_object_metatable) return .{ .object = try self.objectFieldCount(shape) };
+            if (table.metatable == self.state.library_tables.get(.zerde_array_metatable)) return .{ .array = try self.arrayLen(shape) };
+            if (table.metatable == self.state.library_tables.get(.zerde_object_metatable)) return .{ .object = try self.objectFieldCount(shape) };
 
             if (shape.other_count != 0) return self.fail("unsupported table keys");
             if (shape.integer_count != 0 and shape.string_count != 0) return self.fail("cannot encode mixed array/object table");
@@ -262,7 +264,7 @@ pub fn LuaSource(comptime Encoder: type) type {
             var out: std.ArrayList(u8) = .empty;
             defer out.deinit(self.state.allocator);
             runtime.appendFmt(self.state.allocator, &out, "{s}: {s}", .{ self.operation, message }) catch return self.state.fail(message);
-            return self.state.fail(self.state.intern(out.items) catch message);
+            return self.state.fail(self.state.strings.intern(out.items) catch message);
         }
     };
 }

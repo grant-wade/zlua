@@ -1,6 +1,7 @@
 const std = @import("std");
 const compile = @import("../compile.zig");
 const runtime = @import("../runtime.zig");
+const operators_mod = @import("../runtime/operators.zig");
 
 const bytecode = compile.bytecode;
 const State = runtime.State;
@@ -189,8 +190,8 @@ pub fn tointeger(state: *State, thread: *Thread, op: bytecode.Call) !void {
 
 pub fn typeValue(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const result: Value = switch (runtime.argValue(state, thread, op, 0)) {
-        .integer => .{ .string = try state.intern("integer") },
-        .number => .{ .string = try state.intern("float") },
+        .integer => .{ .string = try state.strings.intern("integer") },
+        .number => .{ .string = try state.strings.intern("float") },
         else => .nil,
     };
     try state.returnValues(thread, op.base, op.return_count, &.{result});
@@ -260,7 +261,7 @@ fn minMax(state: *State, thread: *Thread, op: bytecode.Call, choose_min: bool) !
     var index: u32 = 1;
     while (index < op.arg_count) : (index += 1) {
         const value = runtime.argValue(state, thread, op, index);
-        const choose = if (choose_min) try state.compareValues(thread, value, best, .lt) else try state.compareValues(thread, best, value, .lt);
+        const choose = if (choose_min) try operators_mod.compareValues(state, thread, value, best, .lt) else try operators_mod.compareValues(state, thread, best, value, .lt);
         if (choose) best = value;
     }
     try state.returnValues(thread, op.base, op.return_count, &.{best});

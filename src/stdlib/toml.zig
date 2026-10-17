@@ -41,7 +41,7 @@ pub fn write(state: *State, thread: *Thread, op: bytecode.Call) !void {
 
     const bytes = try out.toOwnedSlice();
     defer state.allocator.free(bytes);
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(bytes) }});
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(bytes) }});
 }
 
 fn writeOptions(state: *State, thread: *Thread, op: bytecode.Call) !zerde.toml.WriteOptions {
@@ -54,7 +54,7 @@ fn writeOptions(state: *State, thread: *Thread, op: bytecode.Call) !zerde.toml.W
         else => return state.failArgumentType("toml.write", 2, "table", value),
     };
 
-    const layout = table.get(.{ .string = try state.intern("layout") });
+    const layout = table.get(.{ .string = try state.strings.intern("layout") });
     if (layout != .nil) {
         const string = switch (layout) {
             .string => |string| string,
@@ -79,5 +79,5 @@ fn failTomlError(state: *State, operation: []const u8, err: anyerror) !void {
     var message: std.ArrayList(u8) = .empty;
     defer message.deinit(state.allocator);
     try runtime.appendFmt(state.allocator, &message, "{s}: {s}", .{ operation, @errorName(err) });
-    return state.fail(try state.intern(message.items));
+    return state.fail(try state.strings.intern(message.items));
 }

@@ -1,12 +1,12 @@
 const std = @import("std");
-const reflection = @import("../reflection.zig");
 const compile = @import("../compile.zig");
+const reflection = @import("../reflection.zig");
+const State = @import("state.zig").State;
 const types = @import("types.zig");
 const value_mod = @import("value.zig");
 
 const bytecode = compile.bytecode;
 const proto_mod = compile.proto;
-
 pub const binary_chunk_signature = "\x1bLua";
 pub const binary_chunk_payload_magic = "zlua\x00bc1";
 
@@ -399,289 +399,287 @@ fn validLongBracket(lexeme: []const u8) bool {
     return true;
 }
 
-pub fn BinaryChunkReader(comptime State: type) type {
-    return struct {
-        state: *State,
-        source: []const u8,
-        pos: usize,
-        depth: usize = 0,
+pub const BinaryChunkReader = struct {
+    state: *State,
+    source: []const u8,
+    pos: usize,
+    depth: usize = 0,
 
-        const Self = @This();
+    const Self = @This();
 
-        /// Verifies each proto once its children are read, so a returned tree is safe to execute.
-        pub fn readProto(self: *Self, parent_source_name: ?[]const u8) anyerror!*proto_mod.Proto {
-            if (self.depth >= max_proto_depth) return self.state.fail("bad binary chunk");
-            self.depth += 1;
-            defer self.depth -= 1;
-            const proto = try self.state.allocator.create(proto_mod.Proto);
-            errdefer self.state.allocator.destroy(proto);
-            proto.* = proto_mod.Proto.init(self.state.allocator);
-            errdefer proto.deinit();
-            try self.readProtoBody(proto, parent_source_name);
-            if (!verifyProto(proto)) return self.state.fail("bad binary chunk");
-            return proto;
+    /// Verifies each proto once its children are read, so a returned tree is safe to execute.
+    pub fn readProto(self: *Self, parent_source_name: ?[]const u8) anyerror!*proto_mod.Proto {
+        if (self.depth >= max_proto_depth) return self.state.fail("bad binary chunk");
+        self.depth += 1;
+        defer self.depth -= 1;
+        const proto = try self.state.allocator.create(proto_mod.Proto);
+        errdefer self.state.allocator.destroy(proto);
+        proto.* = proto_mod.Proto.init(self.state.allocator);
+        errdefer proto.deinit();
+        try self.readProtoBody(proto, parent_source_name);
+        if (!verifyProto(proto)) return self.state.fail("bad binary chunk");
+        return proto;
+    }
+
+    fn readProtoBody(self: *Self, proto: *proto_mod.Proto, parent_source_name: ?[]const u8) anyerror!void {
+        proto.source_name = if (try self.readBool())
+            try self.readProtoString(proto)
+        else if (parent_source_name) |source_name|
+            try proto.arena.allocator().dupe(u8, source_name)
+        else
+            return self.state.fail("bad binary chunk");
+        if (try self.readBool()) proto.debug_name = try self.readProtoString(proto);
+        proto.defined_line = try self.readUsize();
+        proto.last_defined_line = try self.readUsize();
+        proto.max_registers = try self.readU16();
+        proto.param_count = try self.readU16();
+        proto.is_vararg = try self.readBool();
+        proto.named_vararg = try self.readBool();
+
+        const constant_count = try self.readRecordCount(min_constant_bytes);
+        try proto.constants.ensureTotalCapacity(proto.allocator, constant_count);
+        for (0..constant_count) |_| try proto.constants.append(proto.allocator, try self.readConstant(proto));
+
+        const instruction_count = try self.readRecordCount(min_instruction_bytes);
+        try proto.instructions.ensureTotalCapacity(proto.allocator, instruction_count);
+        try proto.line_info.ensureTotalCapacity(proto.allocator, instruction_count);
+        for (0..instruction_count) |_| {
+            try proto.instructions.append(proto.allocator, try self.readInstruction());
+            try proto.line_info.append(proto.allocator, .{ .line = try self.readUsize() });
         }
 
-        fn readProtoBody(self: *Self, proto: *proto_mod.Proto, parent_source_name: ?[]const u8) anyerror!void {
-            proto.source_name = if (try self.readBool())
-                try self.readProtoString(proto)
-            else if (parent_source_name) |source_name|
-                try proto.arena.allocator().dupe(u8, source_name)
-            else
-                return self.state.fail("bad binary chunk");
-            if (try self.readBool()) proto.debug_name = try self.readProtoString(proto);
-            proto.defined_line = try self.readUsize();
-            proto.last_defined_line = try self.readUsize();
-            proto.max_registers = try self.readU16();
-            proto.param_count = try self.readU16();
-            proto.is_vararg = try self.readBool();
-            proto.named_vararg = try self.readBool();
+        const local_count = try self.readRecordCount(min_local_bytes);
+        try proto.locals.ensureTotalCapacity(proto.allocator, local_count);
+        for (0..local_count) |_| {
+            const name = try self.readProtoString(proto);
+            const register = try self.readU16();
+            const start_pc = try self.readUsize();
+            const end_pc = try self.readUsize();
+            const to_close = try self.readBool();
+            try proto.locals.append(proto.allocator, .{
+                .name = name,
+                .register = register,
+                .start_pc = start_pc,
+                .end_pc = end_pc,
+                .to_close = to_close,
+            });
+            if (to_close) proto.has_to_close_locals = true;
+        }
 
-            const constant_count = try self.readRecordCount(min_constant_bytes);
-            try proto.constants.ensureTotalCapacity(proto.allocator, constant_count);
-            for (0..constant_count) |_| try proto.constants.append(proto.allocator, try self.readConstant(proto));
+        const upvalue_count = try self.readRecordCount(min_upvalue_bytes);
+        try proto.upvalues.ensureTotalCapacity(proto.allocator, upvalue_count);
+        for (0..upvalue_count) |_| {
+            try proto.upvalues.append(proto.allocator, .{
+                .name = try self.readProtoString(proto),
+                .in_stack = try self.readBool(),
+                .index = try self.readU16(),
+            });
+        }
 
-            const instruction_count = try self.readRecordCount(min_instruction_bytes);
-            try proto.instructions.ensureTotalCapacity(proto.allocator, instruction_count);
-            try proto.line_info.ensureTotalCapacity(proto.allocator, instruction_count);
-            for (0..instruction_count) |_| {
-                try proto.instructions.append(proto.allocator, try self.readInstruction());
-                try proto.line_info.append(proto.allocator, .{ .line = try self.readUsize() });
+        const error_site_count = try self.readRecordCount(min_error_site_bytes);
+        try proto.error_sites.ensureTotalCapacity(proto.allocator, error_site_count);
+        for (0..error_site_count) |_| {
+            const pc = try self.readUsize();
+            const site = try self.readErrorSite(proto);
+            try proto.error_sites.append(proto.allocator, .{ .pc = pc, .site = site });
+        }
+
+        const child_count = try self.readRecordCount(min_proto_bytes);
+        try proto.children.ensureTotalCapacity(proto.allocator, child_count);
+        for (0..child_count) |_| {
+            const child = try self.readProto(proto.source_name);
+            errdefer {
+                child.deinit();
+                self.state.allocator.destroy(child);
             }
-
-            const local_count = try self.readRecordCount(min_local_bytes);
-            try proto.locals.ensureTotalCapacity(proto.allocator, local_count);
-            for (0..local_count) |_| {
-                const name = try self.readProtoString(proto);
-                const register = try self.readU16();
-                const start_pc = try self.readUsize();
-                const end_pc = try self.readUsize();
-                const to_close = try self.readBool();
-                try proto.locals.append(proto.allocator, .{
-                    .name = name,
-                    .register = register,
-                    .start_pc = start_pc,
-                    .end_pc = end_pc,
-                    .to_close = to_close,
-                });
-                if (to_close) proto.has_to_close_locals = true;
-            }
-
-            const upvalue_count = try self.readRecordCount(min_upvalue_bytes);
-            try proto.upvalues.ensureTotalCapacity(proto.allocator, upvalue_count);
-            for (0..upvalue_count) |_| {
-                try proto.upvalues.append(proto.allocator, .{
-                    .name = try self.readProtoString(proto),
-                    .in_stack = try self.readBool(),
-                    .index = try self.readU16(),
-                });
-            }
-
-            const error_site_count = try self.readRecordCount(min_error_site_bytes);
-            try proto.error_sites.ensureTotalCapacity(proto.allocator, error_site_count);
-            for (0..error_site_count) |_| {
-                const pc = try self.readUsize();
-                const site = try self.readErrorSite(proto);
-                try proto.error_sites.append(proto.allocator, .{ .pc = pc, .site = site });
-            }
-
-            const child_count = try self.readRecordCount(min_proto_bytes);
-            try proto.children.ensureTotalCapacity(proto.allocator, child_count);
-            for (0..child_count) |_| {
-                const child = try self.readProto(proto.source_name);
-                errdefer {
-                    child.deinit();
-                    self.state.allocator.destroy(child);
-                }
-                try proto.children.append(proto.allocator, child);
-            }
+            try proto.children.append(proto.allocator, child);
         }
+    }
 
-        fn readConstant(self: *Self, proto: *proto_mod.Proto) !bytecode.Constant {
-            const ConstantTag = std.meta.Tag(bytecode.Constant);
-            const tag = try self.readEnum(ConstantTag);
-            return switch (tag) {
-                .nil => .nil,
-                .boolean => .{ .boolean = try self.readBool() },
-                .integer => .{ .integer = try self.readProtoString(proto) },
-                .number => .{ .number = try self.readProtoString(proto) },
-                .string => .{ .string = try self.readProtoString(proto) },
-            };
-        }
+    fn readConstant(self: *Self, proto: *proto_mod.Proto) !bytecode.Constant {
+        const ConstantTag = std.meta.Tag(bytecode.Constant);
+        const tag = try self.readEnum(ConstantTag);
+        return switch (tag) {
+            .nil => .nil,
+            .boolean => .{ .boolean = try self.readBool() },
+            .integer => .{ .integer = try self.readProtoString(proto) },
+            .number => .{ .number = try self.readProtoString(proto) },
+            .string => .{ .string = try self.readProtoString(proto) },
+        };
+    }
 
-        fn readInstruction(self: *Self) !bytecode.Instruction {
-            const InstructionTag = std.meta.Tag(bytecode.Instruction);
-            const tag = try self.readEnum(InstructionTag);
-            return switch (tag) {
-                .load_nil => .{ .load_nil = try self.readU16() },
-                .load_bool => .{ .load_bool = .{ .dest = try self.readU16(), .value = try self.readBool() } },
-                .load_const => .{ .load_const = .{ .dest = try self.readU16(), .constant = try self.readU32() } },
-                .move => .{ .move = .{ .dest = try self.readU16(), .source = try self.readU16() } },
-                .get_global => .{ .get_global = .{ .register = try self.readU16(), .name = try self.readU32() } },
-                .set_global => .{ .set_global = .{ .register = try self.readU16(), .name = try self.readU32() } },
-                .declare_global => .{ .declare_global = .{ .table = try self.readU16(), .value = try self.readU16(), .name = try self.readU32() } },
-                .get_upvalue => .{ .get_upvalue = .{ .register = try self.readU16(), .upvalue = try self.readU16() } },
-                .set_upvalue => .{ .set_upvalue = .{ .register = try self.readU16(), .upvalue = try self.readU16() } },
-                .get_table => .{ .get_table = .{ .dest = try self.readU16(), .table = try self.readU16(), .key = try self.readU16() } },
-                .set_table => .{ .set_table = .{ .table = try self.readU16(), .key = try self.readU16(), .value = try self.readU16() } },
-                .set_array => .{ .set_array = .{ .table = try self.readU16(), .index = try self.readU32(), .value = try self.readU16() } },
-                .get_field => .{ .get_field = .{ .dest = try self.readU16(), .table = try self.readU16(), .name = try self.readU32() } },
-                .set_field => .{ .set_field = .{ .table = try self.readU16(), .name = try self.readU32(), .value = try self.readU16() } },
-                .new_table => .{ .new_table = .{ .dest = try self.readU16(), .array_hint = try self.readU32(), .hash_hint = try self.readU32() } },
-                .set_list => .{ .set_list = .{ .table = try self.readU16(), .first = try self.readU16(), .count = try self.readU32(), .start_index = try self.readU32() } },
-                .add => .{ .add = try self.readBinary() },
-                .sub => .{ .sub = try self.readBinary() },
-                .mul => .{ .mul = try self.readBinary() },
-                .div => .{ .div = try self.readBinary() },
-                .idiv => .{ .idiv = try self.readBinary() },
-                .mod => .{ .mod = try self.readBinary() },
-                .pow => .{ .pow = try self.readBinary() },
-                .unm => .{ .unm = try self.readUnary() },
-                .band => .{ .band = try self.readBinary() },
-                .bor => .{ .bor = try self.readBinary() },
-                .bxor => .{ .bxor = try self.readBinary() },
-                .bnot => .{ .bnot = try self.readUnary() },
-                .shl => .{ .shl = try self.readBinary() },
-                .shr => .{ .shr = try self.readBinary() },
-                .eq => .{ .eq = try self.readBinary() },
-                .lt => .{ .lt = try self.readBinary() },
-                .le => .{ .le = try self.readBinary() },
-                .not => .{ .not = try self.readUnary() },
-                .len => .{ .len = try self.readUnary() },
-                .concat => .{ .concat = try self.readBinary() },
-                .jmp => .{ .jmp = try self.readI32() },
-                .compare_branch => .{ .compare_branch = .{ .left = try self.readU16(), .right = try self.readU16(), .op = try self.readEnum(bytecode.CompareBranchOp), .jump_if_truthy = try self.readBool(), .offset = try self.readI32() } },
-                .test_op => .{ .test_op = .{ .register = try self.readU16(), .jump_if_truthy = try self.readBool(), .offset = try self.readI32() } },
-                .test_set => .{ .test_set = .{ .dest = try self.readU16(), .source = try self.readU16(), .jump_if_truthy = try self.readBool(), .offset = try self.readI32() } },
-                .call => .{ .call = .{ .base = try self.readU16(), .arg_count = try self.readArgCount(), .return_count = try self.readU16() } },
-                .tail_call => .{ .tail_call = .{ .base = try self.readU16(), .arg_count = try self.readArgCount(), .return_count = try self.readU16() } },
-                .ret => .{ .ret = .{ .first = try self.readU16(), .count = try self.readU16() } },
-                .vararg => .{ .vararg = .{ .dest = try self.readU16(), .count = try self.readU16() } },
-                .closure => .{ .closure = .{ .dest = try self.readU16(), .proto = try self.readU32() } },
-                .close => .{ .close = try self.readU16() },
-                .check_close => .{ .check_close = try self.readU16() },
-                .close_tbc => .{ .close_tbc = try self.readU16() },
-                .for_prep => .{ .for_prep = .{ .base = try self.readU16(), .offset = try self.readI32() } },
-                .for_loop => .{ .for_loop = .{ .base = try self.readU16(), .offset = try self.readI32() } },
-                .tfor_prep => .{ .tfor_prep = .{ .base = try self.readU16(), .variable_count = try self.readU16(), .offset = try self.readI32() } },
-                .tfor_call => .{ .tfor_call = .{ .base = try self.readU16(), .variable_count = try self.readU16(), .offset = try self.readI32() } },
-                .tfor_loop => .{ .tfor_loop = .{ .base = try self.readU16(), .variable_count = try self.readU16(), .offset = try self.readI32() } },
-                .concat_range => .{ .concat_range = try self.readConcatRange() },
-            };
-        }
+    fn readInstruction(self: *Self) !bytecode.Instruction {
+        const InstructionTag = std.meta.Tag(bytecode.Instruction);
+        const tag = try self.readEnum(InstructionTag);
+        return switch (tag) {
+            .load_nil => .{ .load_nil = try self.readU16() },
+            .load_bool => .{ .load_bool = .{ .dest = try self.readU16(), .value = try self.readBool() } },
+            .load_const => .{ .load_const = .{ .dest = try self.readU16(), .constant = try self.readU32() } },
+            .move => .{ .move = .{ .dest = try self.readU16(), .source = try self.readU16() } },
+            .get_global => .{ .get_global = .{ .register = try self.readU16(), .name = try self.readU32() } },
+            .set_global => .{ .set_global = .{ .register = try self.readU16(), .name = try self.readU32() } },
+            .declare_global => .{ .declare_global = .{ .table = try self.readU16(), .value = try self.readU16(), .name = try self.readU32() } },
+            .get_upvalue => .{ .get_upvalue = .{ .register = try self.readU16(), .upvalue = try self.readU16() } },
+            .set_upvalue => .{ .set_upvalue = .{ .register = try self.readU16(), .upvalue = try self.readU16() } },
+            .get_table => .{ .get_table = .{ .dest = try self.readU16(), .table = try self.readU16(), .key = try self.readU16() } },
+            .set_table => .{ .set_table = .{ .table = try self.readU16(), .key = try self.readU16(), .value = try self.readU16() } },
+            .set_array => .{ .set_array = .{ .table = try self.readU16(), .index = try self.readU32(), .value = try self.readU16() } },
+            .get_field => .{ .get_field = .{ .dest = try self.readU16(), .table = try self.readU16(), .name = try self.readU32() } },
+            .set_field => .{ .set_field = .{ .table = try self.readU16(), .name = try self.readU32(), .value = try self.readU16() } },
+            .new_table => .{ .new_table = .{ .dest = try self.readU16(), .array_hint = try self.readU32(), .hash_hint = try self.readU32() } },
+            .set_list => .{ .set_list = .{ .table = try self.readU16(), .first = try self.readU16(), .count = try self.readU32(), .start_index = try self.readU32() } },
+            .add => .{ .add = try self.readBinary() },
+            .sub => .{ .sub = try self.readBinary() },
+            .mul => .{ .mul = try self.readBinary() },
+            .div => .{ .div = try self.readBinary() },
+            .idiv => .{ .idiv = try self.readBinary() },
+            .mod => .{ .mod = try self.readBinary() },
+            .pow => .{ .pow = try self.readBinary() },
+            .unm => .{ .unm = try self.readUnary() },
+            .band => .{ .band = try self.readBinary() },
+            .bor => .{ .bor = try self.readBinary() },
+            .bxor => .{ .bxor = try self.readBinary() },
+            .bnot => .{ .bnot = try self.readUnary() },
+            .shl => .{ .shl = try self.readBinary() },
+            .shr => .{ .shr = try self.readBinary() },
+            .eq => .{ .eq = try self.readBinary() },
+            .lt => .{ .lt = try self.readBinary() },
+            .le => .{ .le = try self.readBinary() },
+            .not => .{ .not = try self.readUnary() },
+            .len => .{ .len = try self.readUnary() },
+            .concat => .{ .concat = try self.readBinary() },
+            .jmp => .{ .jmp = try self.readI32() },
+            .compare_branch => .{ .compare_branch = .{ .left = try self.readU16(), .right = try self.readU16(), .op = try self.readEnum(bytecode.CompareBranchOp), .jump_if_truthy = try self.readBool(), .offset = try self.readI32() } },
+            .test_op => .{ .test_op = .{ .register = try self.readU16(), .jump_if_truthy = try self.readBool(), .offset = try self.readI32() } },
+            .test_set => .{ .test_set = .{ .dest = try self.readU16(), .source = try self.readU16(), .jump_if_truthy = try self.readBool(), .offset = try self.readI32() } },
+            .call => .{ .call = .{ .base = try self.readU16(), .arg_count = try self.readArgCount(), .return_count = try self.readU16() } },
+            .tail_call => .{ .tail_call = .{ .base = try self.readU16(), .arg_count = try self.readArgCount(), .return_count = try self.readU16() } },
+            .ret => .{ .ret = .{ .first = try self.readU16(), .count = try self.readU16() } },
+            .vararg => .{ .vararg = .{ .dest = try self.readU16(), .count = try self.readU16() } },
+            .closure => .{ .closure = .{ .dest = try self.readU16(), .proto = try self.readU32() } },
+            .close => .{ .close = try self.readU16() },
+            .check_close => .{ .check_close = try self.readU16() },
+            .close_tbc => .{ .close_tbc = try self.readU16() },
+            .for_prep => .{ .for_prep = .{ .base = try self.readU16(), .offset = try self.readI32() } },
+            .for_loop => .{ .for_loop = .{ .base = try self.readU16(), .offset = try self.readI32() } },
+            .tfor_prep => .{ .tfor_prep = .{ .base = try self.readU16(), .variable_count = try self.readU16(), .offset = try self.readI32() } },
+            .tfor_call => .{ .tfor_call = .{ .base = try self.readU16(), .variable_count = try self.readU16(), .offset = try self.readI32() } },
+            .tfor_loop => .{ .tfor_loop = .{ .base = try self.readU16(), .variable_count = try self.readU16(), .offset = try self.readI32() } },
+            .concat_range => .{ .concat_range = try self.readConcatRange() },
+        };
+    }
 
-        fn readConcatRange(self: *Self) !bytecode.ConcatRange {
-            const op: bytecode.ConcatRange = .{ .dest = try self.readU16(), .first = try self.readU16(), .count = try self.readU16() };
-            if (op.count < 2) return self.state.fail("bad binary chunk");
-            return op;
-        }
+    fn readConcatRange(self: *Self) !bytecode.ConcatRange {
+        const op: bytecode.ConcatRange = .{ .dest = try self.readU16(), .first = try self.readU16(), .count = try self.readU16() };
+        if (op.count < 2) return self.state.fail("bad binary chunk");
+        return op;
+    }
 
-        fn readUnary(self: *Self) !bytecode.Unary {
-            return .{ .dest = try self.readU16(), .source = try self.readU16() };
-        }
+    fn readUnary(self: *Self) !bytecode.Unary {
+        return .{ .dest = try self.readU16(), .source = try self.readU16() };
+    }
 
-        fn readBinary(self: *Self) !bytecode.Binary {
-            return .{ .dest = try self.readU16(), .left = try self.readU16(), .right = try self.readU16() };
-        }
+    fn readBinary(self: *Self) !bytecode.Binary {
+        return .{ .dest = try self.readU16(), .left = try self.readU16(), .right = try self.readU16() };
+    }
 
-        fn readErrorSite(self: *Self, proto: *proto_mod.Proto) !proto_mod.ErrorSite {
-            const line = try self.readUsize();
-            const op = try self.readEnum(proto_mod.ErrorOp);
-            const operand_count = try self.readRecordCount(min_origin_bytes);
-            const operands = try proto.arena.allocator().alloc(proto_mod.OperandOrigin, operand_count);
-            for (operands) |*operand| operand.* = try self.readOrigin(proto);
-            const call_name = if (try self.readBool()) try self.readOrigin(proto) else null;
-            return .{ .line = line, .op = op, .operands = operands, .call_name = call_name };
-        }
+    fn readErrorSite(self: *Self, proto: *proto_mod.Proto) !proto_mod.ErrorSite {
+        const line = try self.readUsize();
+        const op = try self.readEnum(proto_mod.ErrorOp);
+        const operand_count = try self.readRecordCount(min_origin_bytes);
+        const operands = try proto.arena.allocator().alloc(proto_mod.OperandOrigin, operand_count);
+        for (operands) |*operand| operand.* = try self.readOrigin(proto);
+        const call_name = if (try self.readBool()) try self.readOrigin(proto) else null;
+        return .{ .line = line, .op = op, .operands = operands, .call_name = call_name };
+    }
 
-        fn readOrigin(self: *Self, proto: *proto_mod.Proto) !proto_mod.OperandOrigin {
-            const OriginTag = std.meta.Tag(proto_mod.OperandOrigin);
-            const tag = try self.readEnum(OriginTag);
-            return switch (tag) {
-                .temporary => .temporary,
-                .local => .{ .local = try self.readProtoString(proto) },
-                .upvalue => .{ .upvalue = try self.readProtoString(proto) },
-                .global => .{ .global = try self.readProtoString(proto) },
-                .field => .{ .field = try self.readProtoString(proto) },
-                .method => .{ .method = try self.readProtoString(proto) },
-                .metamethod => .{ .metamethod = try self.readProtoString(proto) },
-                .constant => .{ .constant = try self.readProtoString(proto) },
-            };
-        }
+    fn readOrigin(self: *Self, proto: *proto_mod.Proto) !proto_mod.OperandOrigin {
+        const OriginTag = std.meta.Tag(proto_mod.OperandOrigin);
+        const tag = try self.readEnum(OriginTag);
+        return switch (tag) {
+            .temporary => .temporary,
+            .local => .{ .local = try self.readProtoString(proto) },
+            .upvalue => .{ .upvalue = try self.readProtoString(proto) },
+            .global => .{ .global = try self.readProtoString(proto) },
+            .field => .{ .field = try self.readProtoString(proto) },
+            .method => .{ .method = try self.readProtoString(proto) },
+            .metamethod => .{ .metamethod = try self.readProtoString(proto) },
+            .constant => .{ .constant = try self.readProtoString(proto) },
+        };
+    }
 
-        fn readProtoString(self: *Self, proto: *proto_mod.Proto) ![]const u8 {
-            const bytes = try self.readStringBytes();
-            return proto.arena.allocator().dupe(u8, bytes);
-        }
+    fn readProtoString(self: *Self, proto: *proto_mod.Proto) ![]const u8 {
+        const bytes = try self.readStringBytes();
+        return proto.arena.allocator().dupe(u8, bytes);
+    }
 
-        fn readStringBytes(self: *Self) ![]const u8 {
-            return self.readBytes(try self.readCount());
-        }
+    fn readStringBytes(self: *Self) ![]const u8 {
+        return self.readBytes(try self.readCount());
+    }
 
-        pub fn readBool(self: *Self) !bool {
-            return switch (try self.readByte()) {
-                0 => false,
-                1 => true,
-                else => self.state.fail("bad binary chunk"),
-            };
-        }
+    pub fn readBool(self: *Self) !bool {
+        return switch (try self.readByte()) {
+            0 => false,
+            1 => true,
+            else => self.state.fail("bad binary chunk"),
+        };
+    }
 
-        fn readEnum(self: *Self, comptime T: type) !T {
-            const tag = try self.readByte();
-            if (tag >= reflection.fieldsOf(T).len) return self.state.fail("bad binary chunk");
-            return @enumFromInt(tag);
-        }
+    fn readEnum(self: *Self, comptime T: type) !T {
+        const tag = try self.readByte();
+        if (tag >= reflection.fieldsOf(T).len) return self.state.fail("bad binary chunk");
+        return @enumFromInt(tag);
+    }
 
-        fn readCount(self: *Self) !usize {
-            return std.math.cast(usize, try self.readU32()) orelse self.state.fail("bad binary chunk");
-        }
+    fn readCount(self: *Self) !usize {
+        return std.math.cast(usize, try self.readU32()) orelse self.state.fail("bad binary chunk");
+    }
 
-        fn readRecordCount(self: *Self, min_record_bytes: usize) !usize {
-            const count = try self.readCount();
-            if (count > (self.source.len - self.pos) / min_record_bytes) return self.state.fail("truncated binary chunk");
-            return count;
-        }
+    fn readRecordCount(self: *Self, min_record_bytes: usize) !usize {
+        const count = try self.readCount();
+        if (count > (self.source.len - self.pos) / min_record_bytes) return self.state.fail("truncated binary chunk");
+        return count;
+    }
 
-        fn readUsize(self: *Self) !usize {
-            return std.math.cast(usize, try self.readU64()) orelse self.state.fail("bad binary chunk");
-        }
+    fn readUsize(self: *Self) !usize {
+        return std.math.cast(usize, try self.readU64()) orelse self.state.fail("bad binary chunk");
+    }
 
-        fn readByte(self: *Self) !u8 {
-            if (self.pos >= self.source.len) return self.state.fail("truncated binary chunk");
-            const byte = self.source[self.pos];
-            self.pos += 1;
-            return byte;
-        }
+    fn readByte(self: *Self) !u8 {
+        if (self.pos >= self.source.len) return self.state.fail("truncated binary chunk");
+        const byte = self.source[self.pos];
+        self.pos += 1;
+        return byte;
+    }
 
-        fn readBytes(self: *Self, len: usize) ![]const u8 {
-            if (self.source.len - self.pos < len) return self.state.fail("truncated binary chunk");
-            const bytes = self.source[self.pos .. self.pos + len];
-            self.pos += len;
-            return bytes;
-        }
+    fn readBytes(self: *Self, len: usize) ![]const u8 {
+        if (self.source.len - self.pos < len) return self.state.fail("truncated binary chunk");
+        const bytes = self.source[self.pos .. self.pos + len];
+        self.pos += len;
+        return bytes;
+    }
 
-        fn readU16(self: *Self) !u16 {
-            return std.mem.readInt(u16, (try self.readBytes(2))[0..2], .little);
-        }
+    fn readU16(self: *Self) !u16 {
+        return std.mem.readInt(u16, (try self.readBytes(2))[0..2], .little);
+    }
 
-        fn readArgCount(self: *Self) !u32 {
-            const count = try self.readU16();
-            return if (count == bytecode.multret_count) bytecode.multret_arg_count else count;
-        }
+    fn readArgCount(self: *Self) !u32 {
+        const count = try self.readU16();
+        return if (count == bytecode.multret_count) bytecode.multret_arg_count else count;
+    }
 
-        fn readU32(self: *Self) !u32 {
-            return std.mem.readInt(u32, (try self.readBytes(4))[0..4], .little);
-        }
+    fn readU32(self: *Self) !u32 {
+        return std.mem.readInt(u32, (try self.readBytes(4))[0..4], .little);
+    }
 
-        fn readI32(self: *Self) !i32 {
-            return std.mem.readInt(i32, (try self.readBytes(4))[0..4], .little);
-        }
+    fn readI32(self: *Self) !i32 {
+        return std.mem.readInt(i32, (try self.readBytes(4))[0..4], .little);
+    }
 
-        fn readU64(self: *Self) !u64 {
-            return std.mem.readInt(u64, (try self.readBytes(8))[0..8], .little);
-        }
-    };
-}
+    fn readU64(self: *Self) !u64 {
+        return std.mem.readInt(u64, (try self.readBytes(8))[0..8], .little);
+    }
+};
 
 fn appendHeaderInt(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: i64, size: usize) !void {
     var bytes: [8]u8 = undefined;

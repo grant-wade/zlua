@@ -5,6 +5,7 @@ const zlua = @import("../../root.zig");
 const results = @import("results.zig");
 const Options = @import("options.zig").Options;
 const allocation = @import("allocation.zig");
+const index_mod = @import("../../runtime/index.zig");
 const Timestamp = std.Io.Timestamp;
 const Workload = enum { transient, stable_small, stable_large, old_container, weak_tables, finalizers, incremental };
 
@@ -31,7 +32,7 @@ pub fn collect(allocator: std.mem.Allocator, io: std.Io, options: Options, suite
             else => 32,
         };
         const data = lua.raw_state.getGlobal("data");
-        for (0..count) |i| try lua.raw_state.setTableValue(data, .{ .integer = @intCast(i + 1) }, try lua.raw_state.newTableWithHints(0, 1));
+        for (0..count) |i| try index_mod.setTableValue(&lua.raw_state, data, .{ .integer = @intCast(i + 1) }, try lua.raw_state.newTableWithHints(0, 1));
         if (workload == .incremental) _ = lua.setGcMode(.incremental);
         var snapshot = try lua.snapshot(allocator);
         defer snapshot.deinit();
@@ -49,7 +50,7 @@ pub fn collect(allocator: std.mem.Allocator, io: std.Io, options: Options, suite
             const start = Timestamp.now(io, .awake);
             if (workload == .finalizers) try tick.call(.{}, void) else _ = try lua.stepGc(.{});
             const elapsed = allocation.elapsedSince(io, start);
-            if (i >= warmup) samples[i - warmup] = allocation.phaseMetric(&counter, before, elapsed, lua.raw_state.currentAllocationTotal());
+            if (i >= warmup) samples[i - warmup] = allocation.phaseMetric(&counter, before, elapsed, lua.raw_state.gc.currentAllocationTotal());
         }
         try suite.add(.{
             .group = "gc",
@@ -76,14 +77,14 @@ fn prepare(lua: *zlua.State, workload: Workload) !void {
         },
         .old_container => {
             const leaf = lua.raw_state.getGlobal("data").table.get(.{ .integer = 5000 });
-            try lua.raw_state.setTableValue(leaf, .{ .string = "new" }, try lua.raw_state.newTableWithHints(0, 0));
+            try index_mod.setTableValue(&lua.raw_state, leaf, .{ .string = "new" }, try lua.raw_state.newTableWithHints(0, 0));
         },
         .weak_tables => {
             const weak = lua.raw_state.getGlobal("weak");
             for (0..64) |_| {
                 const key = try lua.raw_state.newTableWithHints(0, 0);
                 const value = try lua.raw_state.newTableWithHints(0, 0);
-                try lua.raw_state.setTableValue(weak, key, value);
+                try index_mod.setTableValue(&lua.raw_state, weak, key, value);
             }
         },
         .finalizers => try lua.doString("for i=1,32 do setmetatable({}, mt) end", .{}),

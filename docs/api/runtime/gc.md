@@ -25,22 +25,33 @@
 - [runtime](../runtime.md)
 - [runtime.chunk](../runtime/chunk.md)
 - [reflection](../reflection.md)
-- [runtime.value](../runtime/value.md)
-- [runtime.number_format](../runtime/number_format.md)
-- [runtime.execute](../runtime/execute.md)
-- [testing.process](../testing/process.md)
 - [runtime.state](../runtime/state.md)
-- [runtime.rollback](../runtime/rollback.md)
+- [stdlib](../stdlib.md)
+- [stdlib.base](../stdlib/base.md)
 - [runtime.call](../runtime/call.md)
 - [runtime.coroutine](../runtime/coroutine.md)
 - [runtime.debug](../runtime/debug.md)
-- [runtime.gc](../runtime/gc.md)
+- [runtime.metatable](../runtime/metatable.md)
+- [runtime.rollback](../runtime/rollback.md)
+- [runtime.value](../runtime/value.md)
+- [runtime.number_format](../runtime/number_format.md)
 - [runtime.host](../runtime/host.md)
+- [runtime.upvalue](../runtime/upvalue.md)
+- [runtime.failure](../runtime/failure.md)
+- [runtime.io](../runtime/io.md)
+- [runtime.load](../runtime/load.md)
+- [runtime.vm](../runtime/vm.md)
+- [runtime.gc](../runtime/gc.md)
+- [runtime.entry](../runtime/entry.md)
+- [runtime.system](../runtime/system.md)
 - [runtime.timezone](../runtime/timezone.md)
-- [stdlib](../stdlib.md)
-- [stdlib.base](../stdlib/base.md)
+- [runtime.index](../runtime/index.md)
+- [runtime.operators](../runtime/operators.md)
 - [stdlib.table](../stdlib/table.md)
 - [stdlib.string](../stdlib/string.md)
+- [stdlib.string.format](../stdlib/string/format.md)
+- [stdlib.string.pack](../stdlib/string/pack.md)
+- [stdlib.string.pattern](../stdlib/string/pattern.md)
 - [stdlib.math](../stdlib/math.md)
 - [stdlib.utf8](../stdlib/utf8.md)
 - [stdlib.coroutine](../stdlib/coroutine.md)
@@ -55,14 +66,33 @@
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
-- [runtime.vm](../runtime/vm.md)
+- [runtime.budget](../runtime/budget.md)
+- [runtime.strings](../runtime/strings.md)
+- [runtime.execute](../runtime/execute.md)
+- [testing.process](../testing/process.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
+- [runtime.native_fn](../runtime/native_fn.md)
 - [compile.compiler](../compile/compiler.md)
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
 - [api](../api.md)
+- [api.callbacks](../api/callbacks.md)
+- [api.convert](../api/convert.md)
+- [api.errors](../api/errors.md)
+- [api.handle](../api/handle.md)
+- [api.state](../api/state.md)
 - [runtime.snapshot](../runtime/snapshot.md)
+- [api.capabilities](../api/capabilities.md)
+- [api.options](../api/options.md)
+- [api.function](../api/function.md)
+- [api.table](../api/table.md)
+- [api.value](../api/value.md)
+- [api.userdata](../api/userdata.md)
+- [api.context](../api/context.md)
+- [api.coroutine](../api/coroutine.md)
+- [api.snapshot](../api/snapshot.md)
+- [api.memory_limit](../api/memory_limit.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
 - [testing.bench_runner](../testing/bench_runner.md)
@@ -90,183 +120,526 @@
 
 ## Functions
 
-- [reserveQueues](#fn-reservequeues)
-- [prepareRegistration](#fn-prepareregistration)
-- [registeredAllocation](#fn-registeredallocation)
-- [forgetThread](#fn-forgetthread)
-- [isOld](#fn-isold)
-- [rememberObject](#fn-rememberobject)
-- [propagate](#fn-propagate)
-- [noteAllocation](#fn-noteallocation)
-- [noteAllocationFreed](#fn-noteallocationfreed)
-- [refreshAllocationTotal](#fn-refreshallocationtotal)
-- [currentAllocationTotal](#fn-currentallocationtotal)
 - [tableCapacityBytes](#fn-tablecapacitybytes)
 - [tableGcBytes](#fn-tablegcbytes)
-- [noteTableCapacityDelta](#fn-notetablecapacitydelta)
-- [threadCapacityBytes](#fn-threadcapacitybytes)
-- [syncThreadStorage](#fn-syncthreadstorage)
 - [userdataBytes](#fn-userdatabytes)
-- [closureBytes](#fn-closurebytes)
-- [collectGarbageValue](#fn-collectgarbagevalue)
-- [collectGarbageParam](#fn-collectgarbageparam)
-- [collectGarbageStep](#fn-collectgarbagestep)
-- [stepCount](#fn-stepcount)
-- [autoStep](#fn-autostep)
-- [step](#fn-step)
-- [collectGarbage](#fn-collectgarbage)
-- [gcParam](#fn-gcparam)
-- [setGcParam](#fn-setgcparam)
-- [collectGarbageConservatively](#fn-collectgarbageconservatively)
-- [collectGarbageWithFinalizers](#fn-collectgarbagewithfinalizers)
-- [collectGarbageWithFinalizersMode](#fn-collectgarbagewithfinalizersmode)
-- [shouldRunAutoGc](#fn-shouldrunautogc)
-- [resetAutoGcThreshold](#fn-resetautogcthreshold)
-- [normalizeBaseline](#fn-normalizebaseline)
-- [resetMarks](#fn-resetmarks)
-- [markRoots](#fn-markroots)
-- [markValue](#fn-markvalue)
-- [markRuntimeErrorPayload](#fn-markruntimeerrorpayload)
-- [markString](#fn-markstring)
-- [markTable](#fn-marktable)
-- [markUserdata](#fn-markuserdata)
-- [markWeakTableStrings](#fn-markweaktablestrings)
-- [markWeakString](#fn-markweakstring)
-- [markClosure](#fn-markclosure)
-- [markUpvalue](#fn-markupvalue)
-- [markThread](#fn-markthread)
-- [markThreadStack](#fn-markthreadstack)
-- [markStackRange](#fn-markstackrange)
-- [weakMode](#fn-weakmode)
-- [hasWeakTables](#fn-hasweaktables)
-- [markEphemeronValues](#fn-markephemeronvalues)
-- [convergeEphemerons](#fn-convergeephemerons)
-- [markValueChanged](#fn-markvaluechanged)
-- [valueIsMarked](#fn-valueismarked)
-- [valueIsWeaklyCleared](#fn-valueisweaklycleared)
-- [valueIsCollectableUnmarked](#fn-valueiscollectableunmarked)
-- [clearWeakValues](#fn-clearweakvalues)
-- [clearWeakTables](#fn-clearweaktables)
-- [clearDeadHashKeys](#fn-cleardeadhashkeys)
-- [clearWeakTableValues](#fn-clearweaktablevalues)
-- [clearWeakTableKeys](#fn-clearweaktablekeys)
-- [writeTableBarrier](#fn-writetablebarrier)
-- [writeBarrier](#fn-writebarrier)
-- [runPendingFinalizers](#fn-runpendingfinalizers)
-- [runFinalizerBatch](#fn-runfinalizerbatch)
-- [checkUserdataFinalizer](#fn-checkuserdatafinalizer)
-- [hasUserdataLuaFinalizers](#fn-hasuserdataluafinalizers)
-- [runCloseFinalizers](#fn-runclosefinalizers)
-- [runPendingUserdataFinalizers](#fn-runpendinguserdatafinalizers)
-- [callableValue](#fn-callablevalue)
-- [removeRegistryItem](#fn-removeregistryitem)
-- [sweepStrings](#fn-sweepstrings)
-- [sweepTables](#fn-sweeptables)
-- [sweepUserdata](#fn-sweepuserdata)
-- [sweepClosures](#fn-sweepclosures)
-- [sweepUpvalues](#fn-sweepupvalues)
-- [sweepThreads](#fn-sweepthreads)
-- [findStringAllocation](#fn-findstringallocation)
-- [isTrackedThread](#fn-istrackedthread)
-- [isTrackedTable](#fn-istrackedtable)
-- [isTrackedUserdata](#fn-istrackeduserdata)
-- [isTrackedClosure](#fn-istrackedclosure)
-- [isTrackedUpvalue](#fn-istrackedupvalue)
-- [destroyTable](#fn-destroytable)
-- [destroyUserdata](#fn-destroyuserdata)
-- [destroyClosure](#fn-destroyclosure)
-- [destroyThread](#fn-destroythread)
-- [allocationStats](#fn-allocationstats)
-- [noteTableMetatableChanged](#fn-notetablemetatablechanged)
-- [unlinkTableMetatable](#fn-unlinktablemetatable)
 
-<a id="fn-reservequeues"></a>
+## Types
 
-## reserveQueues
+- [Gc](#type-gc)
+
+<a id="type-gc"></a>
+
+## Gc
 
 ```zig
-pub fn reserveQueues(comptime State: type, self: *State, extra: usize) !void
+pub const Gc = struct {
+    collecting: bool = false,
+    stress_collect: bool = false,
+    stress_step: bool = false,
+    stress_mark: usize = 0,
+    running: bool = true,
+    mode: GcMode = .generational,
+    params: GcParams = .{},
+    next_total: usize = 0,
+    known_total: usize = 0,
+    epoch: u64 = 1,
+    generation: u64 = 1,
+    phase: types.GcPhase = .pause,
+    cycle: types.GcCycle = .major,
+    work: std.ArrayList(types.GcObject) = .empty,
+    remembered: std.ArrayList(types.GcObject) = .empty,
+    weak: std.ArrayList(*Table) = .empty,
+    tables: std.ArrayList(*Table) = .empty,
+    finalizers: std.ArrayList(types.FinalizerObject) = .empty,
+    major_pending: bool = false,
+    cycle_start_total: usize = 0,
+    found_young: bool = false,
+    old: types.GcGenerations = .{},
+    sweep_cursor: usize = 0,
+    major_base: usize = 0,
+    work_done: usize = 0,
+    minor_count: usize = 0,
+    mark_all_stack_registers: bool = false,
+    conservative_depth: usize = 0,
+};
 ```
 
-<a id="fn-prepareregistration"></a>
+### Nested Declarations
 
-## prepareRegistration
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [reserveQueues](#fn-gc-reservequeues) | `gc: *Gc, extra: usize` | `!void` |  |
+| [prepareRegistration](#fn-gc-prepareregistration) | `gc: *Gc, comptime field: []const u8` | `!void` |  |
+| [registeredAllocation](#fn-gc-registeredallocation) | `gc: *Gc, comptime field: []const u8, item: anytype` | `void` |  |
+| [forgetThread](#fn-gc-forgetthread) | `gc: *Gc, thread: *Thread` | `void` |  |
+| [isOld](#fn-gc-isold) | `gc: *Gc, object: anytype` | `bool` |  |
+| [rememberObject](#fn-gc-rememberobject) | `gc: *Gc, object: types.GcObject` | `void` |  |
+| [propagate](#fn-gc-propagate) | `gc: *Gc, budget: usize` | `usize` |  |
+| [noteAllocation](#fn-gc-noteallocation) | `gc: *Gc, bytes: usize` | `void` |  |
+| [noteAllocationFreed](#fn-gc-noteallocationfreed) | `gc: *Gc, bytes: usize` | `void` |  |
+| [refreshAllocationTotal](#fn-gc-refreshallocationtotal) | `gc: *Gc` | `usize` |  |
+| [currentAllocationTotal](#fn-gc-currentallocationtotal) | `gc: *Gc` | `usize` |  |
+| [noteTableCapacityDelta](#fn-gc-notetablecapacitydelta) | `gc: *Gc, table: *Table, old_capacity_bytes: usize` | `void` |  |
+| [syncThreadStorage](#fn-gc-syncthreadstorage) | `gc: *Gc, thread: *Thread` | `void` |  |
+| [collectGarbageValue](#fn-gc-collectgarbagevalue) | `gc: *Gc, thread: *Thread, op: bytecode.Call` | `!void` |  |
+| [autoStep](#fn-gc-autostep) | `gc: *Gc, thread: ?*Thread` | `!void` |  |
+| [step](#fn-gc-step) | `gc: *Gc, thread: ?*Thread, conservative: bool` | `!bool` | A basic step bounds propagation by references and sweeping by objects. Atomic weak processing, large objects, and one finalizer can exceed the target. |
+| [collect](#fn-gc-collect) | `gc: *Gc` | `!void` |  |
+| [getParam](#fn-gc-getparam) | `gc: *const Gc, param: GcParam` | `i64` |  |
+| [setParam](#fn-gc-setparam) | `gc: *Gc, param: GcParam, value: i64` | `void` |  |
+| [collectWithFinalizers](#fn-gc-collectwithfinalizers) | `gc: *Gc, thread: ?*Thread` | `!void` |  |
+| [shouldRunAuto](#fn-gc-shouldrunauto) | `gc: *Gc` | `bool` |  |
+| [resetAutoThreshold](#fn-gc-resetautothreshold) | `gc: *Gc` | `void` |  |
+| [normalizeBaseline](#fn-gc-normalizebaseline) | `gc: *Gc` | `void` |  |
+| [markValue](#fn-gc-markvalue) | `gc: *Gc, value: Value` | `void` |  |
+| [markString](#fn-gc-markstring) | `gc: *Gc, bytes: []const u8` | `void` |  |
+| [writeTableBarrier](#fn-gc-writetablebarrier) | `gc: *Gc, table: *Table, key: Value, value: Value` | `void` |  |
+| [writeBarrier](#fn-gc-writebarrier) | `gc: *Gc, parent: anytype, child: Value` | `void` |  |
+| [checkUserdataFinalizer](#fn-gc-checkuserdatafinalizer) | `gc: *Gc, userdata: *Userdata` | `void` | Registers &#96;userdata&#96; for its metatable's &#96;__gc&#96; if needed, like &#96;luaC_checkfinalizer&#96;. File handles are registered at creation, so they finalize in creation order. |
+| [removeRegistryItem](#fn-gc-removeregistryitem) | `gc: *Gc, comptime field: []const u8, index: usize` | `void` |  |
+| [findStringAllocation](#fn-gc-findstringallocation) | `gc: *Gc, bytes: []const u8` | `?usize` |  |
+| [isTrackedTable](#fn-gc-istrackedtable) | `gc: *Gc, table: *Table` | `bool` |  |
+| [destroyTable](#fn-gc-destroytable) | `gc: *Gc, table: *Table` | `void` |  |
+| [destroyUserdata](#fn-gc-destroyuserdata) | `gc: *Gc, userdata: *Userdata` | `void` |  |
+| [destroyClosure](#fn-gc-destroyclosure) | `gc: *Gc, closure: *Closure` | `void` |  |
+| [destroyThread](#fn-gc-destroythread) | `gc: *Gc, thread: *Thread` | `void` |  |
+| [allocationStats](#fn-gc-allocationstats) | `gc: *const Gc` | `RuntimeAllocationStats` |  |
+| [noteTableMetatableChanged](#fn-gc-notetablemetatablechanged) | `gc: *Gc, table: *Table, old_has_metatable: bool` | `void` |  |
+| [setMode](#fn-gc-setmode) | `gc: *Gc, mode: GcMode` | `GcMode` |  |
+| [runSteps](#fn-gc-runsteps) | `gc: *Gc, steps: usize` | `!bool` |  |
+| [upvalueBarrier](#fn-gc-upvaluebarrier) | `gc: *Gc, closure: *Closure, upvalue: *Upvalue` | `void` |  |
+| [threadBarrier](#fn-gc-threadbarrier) | `gc: *Gc, thread: *Thread, value: Value` | `void` |  |
+| [runCloseFinalizers](#fn-gc-runclosefinalizers) | `gc: *Gc` | `void` | Runs pending finalizers as &#96;deinit&#96; does, keeping the state. Only for an idle host; later registrations are left for &#96;deinit&#96;. |
+
+<a id="fn-gc-reservequeues"></a>
+
+### Gc.reserveQueues
 
 ```zig
-pub fn prepareRegistration(comptime State: type, self: *State, comptime field: []const u8) !void
+pub fn reserveQueues(gc: *Gc, extra: usize) !void
 ```
 
-<a id="fn-registeredallocation"></a>
+References: [`Gc`](#type-gc)
 
-## registeredAllocation
+<a id="fn-gc-prepareregistration"></a>
+
+### Gc.prepareRegistration
 
 ```zig
-pub fn registeredAllocation(comptime State: type, self: *State, comptime field: []const u8, item: anytype) void
+pub fn prepareRegistration(gc: *Gc, comptime field: []const u8) !void
 ```
 
-<a id="fn-forgetthread"></a>
+References: [`Gc`](#type-gc)
 
-## forgetThread
+<a id="fn-gc-registeredallocation"></a>
+
+### Gc.registeredAllocation
 
 ```zig
-pub fn forgetThread(comptime State: type, self: *State, thread: *Thread) void
+pub fn registeredAllocation(gc: *Gc, comptime field: []const u8, item: anytype) void
 ```
 
-<a id="fn-isold"></a>
+References: [`Gc`](#type-gc)
 
-## isOld
+<a id="fn-gc-forgetthread"></a>
+
+### Gc.forgetThread
 
 ```zig
-pub fn isOld(comptime State: type, self: *State, object: anytype) bool
+pub fn forgetThread(gc: *Gc, thread: *Thread) void
 ```
 
-<a id="fn-rememberobject"></a>
+References: [`Gc`](#type-gc)
 
-## rememberObject
+<a id="fn-gc-isold"></a>
+
+### Gc.isOld
 
 ```zig
-pub fn rememberObject(comptime State: type, self: *State, object: types.GcObject) void
+pub fn isOld(gc: *Gc, object: anytype) bool
 ```
 
-<a id="fn-propagate"></a>
+References: [`Gc`](#type-gc)
 
-## propagate
+<a id="fn-gc-rememberobject"></a>
+
+### Gc.rememberObject
 
 ```zig
-pub fn propagate(comptime State: type, self: *State, budget: usize) usize
+pub fn rememberObject(gc: *Gc, object: types.GcObject) void
 ```
 
-<a id="fn-noteallocation"></a>
+References: [`Gc`](#type-gc)
 
-## noteAllocation
+<a id="fn-gc-propagate"></a>
+
+### Gc.propagate
 
 ```zig
-pub fn noteAllocation(comptime State: type, self: *State, bytes: usize) void
+pub fn propagate(gc: *Gc, budget: usize) usize
 ```
 
-<a id="fn-noteallocationfreed"></a>
+References: [`Gc`](#type-gc)
 
-## noteAllocationFreed
+<a id="fn-gc-noteallocation"></a>
+
+### Gc.noteAllocation
 
 ```zig
-pub fn noteAllocationFreed(comptime State: type, self: *State, bytes: usize) void
+pub fn noteAllocation(gc: *Gc, bytes: usize) void
 ```
 
-<a id="fn-refreshallocationtotal"></a>
+References: [`Gc`](#type-gc)
 
-## refreshAllocationTotal
+<a id="fn-gc-noteallocationfreed"></a>
+
+### Gc.noteAllocationFreed
 
 ```zig
-pub fn refreshAllocationTotal(comptime State: type, self: *State) usize
+pub fn noteAllocationFreed(gc: *Gc, bytes: usize) void
 ```
 
-<a id="fn-currentallocationtotal"></a>
+References: [`Gc`](#type-gc)
 
-## currentAllocationTotal
+<a id="fn-gc-refreshallocationtotal"></a>
+
+### Gc.refreshAllocationTotal
 
 ```zig
-pub fn currentAllocationTotal(comptime State: type, self: *State) usize
+pub fn refreshAllocationTotal(gc: *Gc) usize
 ```
+
+References: [`Gc`](#type-gc)
+
+<a id="fn-gc-currentallocationtotal"></a>
+
+### Gc.currentAllocationTotal
+
+```zig
+pub fn currentAllocationTotal(gc: *Gc) usize
+```
+
+References: [`Gc`](#type-gc)
+
+<a id="fn-gc-notetablecapacitydelta"></a>
+
+### Gc.noteTableCapacityDelta
+
+```zig
+pub fn noteTableCapacityDelta(gc: *Gc, table: *Table, old_capacity_bytes: usize) void
+```
+
+References: [`Gc`](#type-gc)
+
+<a id="fn-gc-syncthreadstorage"></a>
+
+### Gc.syncThreadStorage
+
+```zig
+pub fn syncThreadStorage(gc: *Gc, thread: *Thread) void
+```
+
+References: [`Gc`](#type-gc)
+
+<a id="fn-gc-collectgarbagevalue"></a>
+
+### Gc.collectGarbageValue
+
+```zig
+pub fn collectGarbageValue(gc: *Gc, thread: *Thread, op: bytecode.Call) !void
+```
+
+References: [`Gc`](#type-gc)
+
+<a id="fn-gc-autostep"></a>
+
+### Gc.autoStep
+
+```zig
+pub fn autoStep(gc: *Gc, thread: ?*Thread) !void
+```
+
+References: [`Gc`](#type-gc)
+
+<a id="fn-gc-step"></a>
+
+### Gc.step
+
+A basic step bounds propagation by references and sweeping by objects.
+Atomic weak processing, large objects, and one finalizer can exceed the target.
+
+```zig
+pub fn step(gc: *Gc, thread: ?*Thread, conservative: bool) !bool
+```
+
+References: [`Gc`](#type-gc)
+
+<a id="fn-gc-collect"></a>
+
+### Gc.collect
+
+```zig
+pub fn collect(gc: *Gc) !void
+```
+
+References: [`Gc`](#type-gc)
+
+<a id="fn-gc-getparam"></a>
+
+### Gc.getParam
+
+```zig
+pub fn getParam(gc: *const Gc, param: GcParam) i64
+```
+
+References: [`Gc`](#type-gc)
+
+<a id="fn-gc-setparam"></a>
+
+### Gc.setParam
+
+```zig
+pub fn setParam(gc: *Gc, param: GcParam, value: i64) void
+```
+
+References: [`Gc`](#type-gc)
+
+<a id="fn-gc-collectwithfinalizers"></a>
+
+### Gc.collectWithFinalizers
+
+```zig
+pub fn collectWithFinalizers(gc: *Gc, thread: ?*Thread) !void
+```
+
+References: [`Gc`](#type-gc)
+
+<a id="fn-gc-shouldrunauto"></a>
+
+### Gc.shouldRunAuto
+
+```zig
+pub fn shouldRunAuto(gc: *Gc) bool
+```
+
+References: [`Gc`](#type-gc)
+
+<a id="fn-gc-resetautothreshold"></a>
+
+### Gc.resetAutoThreshold
+
+```zig
+pub fn resetAutoThreshold(gc: *Gc) void
+```
+
+References: [`Gc`](#type-gc)
+
+<a id="fn-gc-normalizebaseline"></a>
+
+### Gc.normalizeBaseline
+
+```zig
+pub fn normalizeBaseline(gc: *Gc) void
+```
+
+References: [`Gc`](#type-gc)
+
+<a id="fn-gc-markvalue"></a>
+
+### Gc.markValue
+
+```zig
+pub fn markValue(gc: *Gc, value: Value) void
+```
+
+References: [`Gc`](#type-gc)
+
+<a id="fn-gc-markstring"></a>
+
+### Gc.markString
+
+```zig
+pub fn markString(gc: *Gc, bytes: []const u8) void
+```
+
+References: [`Gc`](#type-gc)
+
+<a id="fn-gc-writetablebarrier"></a>
+
+### Gc.writeTableBarrier
+
+```zig
+pub fn writeTableBarrier(gc: *Gc, table: *Table, key: Value, value: Value) void
+```
+
+References: [`Gc`](#type-gc)
+
+<a id="fn-gc-writebarrier"></a>
+
+### Gc.writeBarrier
+
+```zig
+pub fn writeBarrier(gc: *Gc, parent: anytype, child: Value) void
+```
+
+References: [`Gc`](#type-gc)
+
+<a id="fn-gc-checkuserdatafinalizer"></a>
+
+### Gc.checkUserdataFinalizer
+
+Registers `userdata` for its metatable's `__gc` if needed, like `luaC_checkfinalizer`.
+[File](../stdlib/io.md#type-file) handles are registered at creation, so they finalize in creation order.
+
+```zig
+pub fn checkUserdataFinalizer(gc: *Gc, userdata: *Userdata) void
+```
+
+References: [`Gc`](#type-gc)
+
+<a id="fn-gc-removeregistryitem"></a>
+
+### Gc.removeRegistryItem
+
+```zig
+pub fn removeRegistryItem(gc: *Gc, comptime field: []const u8, index: usize) void
+```
+
+References: [`Gc`](#type-gc)
+
+<a id="fn-gc-findstringallocation"></a>
+
+### Gc.findStringAllocation
+
+```zig
+pub fn findStringAllocation(gc: *Gc, bytes: []const u8) ?usize
+```
+
+References: [`Gc`](#type-gc)
+
+<a id="fn-gc-istrackedtable"></a>
+
+### Gc.isTrackedTable
+
+```zig
+pub fn isTrackedTable(gc: *Gc, table: *Table) bool
+```
+
+References: [`Gc`](#type-gc)
+
+<a id="fn-gc-destroytable"></a>
+
+### Gc.destroyTable
+
+```zig
+pub fn destroyTable(gc: *Gc, table: *Table) void
+```
+
+References: [`Gc`](#type-gc)
+
+<a id="fn-gc-destroyuserdata"></a>
+
+### Gc.destroyUserdata
+
+```zig
+pub fn destroyUserdata(gc: *Gc, userdata: *Userdata) void
+```
+
+References: [`Gc`](#type-gc)
+
+<a id="fn-gc-destroyclosure"></a>
+
+### Gc.destroyClosure
+
+```zig
+pub fn destroyClosure(gc: *Gc, closure: *Closure) void
+```
+
+References: [`Gc`](#type-gc)
+
+<a id="fn-gc-destroythread"></a>
+
+### Gc.destroyThread
+
+```zig
+pub fn destroyThread(gc: *Gc, thread: *Thread) void
+```
+
+References: [`Gc`](#type-gc)
+
+<a id="fn-gc-allocationstats"></a>
+
+### Gc.allocationStats
+
+```zig
+pub fn allocationStats(gc: *const Gc) RuntimeAllocationStats
+```
+
+References: [`Gc`](#type-gc)
+
+<a id="fn-gc-notetablemetatablechanged"></a>
+
+### Gc.noteTableMetatableChanged
+
+```zig
+pub fn noteTableMetatableChanged(gc: *Gc, table: *Table, old_has_metatable: bool) void
+```
+
+References: [`Gc`](#type-gc)
+
+<a id="fn-gc-setmode"></a>
+
+### Gc.setMode
+
+```zig
+pub fn setMode(gc: *Gc, mode: GcMode) GcMode
+```
+
+References: [`Gc`](#type-gc)
+
+<a id="fn-gc-runsteps"></a>
+
+### Gc.runSteps
+
+```zig
+pub fn runSteps(gc: *Gc, steps: usize) !bool
+```
+
+References: [`Gc`](#type-gc)
+
+<a id="fn-gc-upvaluebarrier"></a>
+
+### Gc.upvalueBarrier
+
+```zig
+pub fn upvalueBarrier(gc: *Gc, closure: *Closure, upvalue: *Upvalue) void
+```
+
+References: [`Gc`](#type-gc)
+
+<a id="fn-gc-threadbarrier"></a>
+
+### Gc.threadBarrier
+
+```zig
+pub fn threadBarrier(gc: *Gc, thread: *Thread, value: Value) void
+```
+
+References: [`Gc`](#type-gc)
+
+<a id="fn-gc-runclosefinalizers"></a>
+
+### Gc.runCloseFinalizers
+
+Runs pending finalizers as `deinit` does, keeping the state. Only for an idle host;
+later registrations are left for `deinit`.
+
+```zig
+pub fn runCloseFinalizers(gc: *Gc) void
+```
+
+References: [`Gc`](#type-gc)
 
 <a id="fn-tablecapacitybytes"></a>
 
@@ -284,624 +657,11 @@ pub fn tableCapacityBytes(table: *const Table) usize
 pub fn tableGcBytes(table: *const Table) usize
 ```
 
-<a id="fn-notetablecapacitydelta"></a>
-
-## noteTableCapacityDelta
-
-```zig
-pub fn noteTableCapacityDelta(comptime State: type, self: *State, table: *Table, old_capacity_bytes: usize) void
-```
-
-<a id="fn-threadcapacitybytes"></a>
-
-## threadCapacityBytes
-
-Managed backing capacity; excludes allocator overhead and rollback copies.
-
-```zig
-pub fn threadCapacityBytes(thread: *const Thread) usize
-```
-
-<a id="fn-syncthreadstorage"></a>
-
-## syncThreadStorage
-
-```zig
-pub fn syncThreadStorage(comptime State: type, self: *State, thread: *Thread) void
-```
-
 <a id="fn-userdatabytes"></a>
 
 ## userdataBytes
 
 ```zig
 pub fn userdataBytes(userdata: *const Userdata) usize
-```
-
-<a id="fn-closurebytes"></a>
-
-## closureBytes
-
-```zig
-pub fn closureBytes(closure: *const Closure) usize
-```
-
-<a id="fn-collectgarbagevalue"></a>
-
-## collectGarbageValue
-
-```zig
-pub fn collectGarbageValue(comptime State: type, self: *State, thread: *Thread, op: bytecode.Call) !void
-```
-
-<a id="fn-collectgarbageparam"></a>
-
-## collectGarbageParam
-
-```zig
-pub fn collectGarbageParam(comptime State: type, self: *State, value: Value) !GcParam
-```
-
-<a id="fn-collectgarbagestep"></a>
-
-## collectGarbageStep
-
-Lua 5.5 expresses explicit step budgets in bytes; zero forces a basic step.
-
-```zig
-pub fn collectGarbageStep(comptime State: type, self: *State, thread: ?*Thread, budget: i64) !bool
-```
-
-<a id="fn-stepcount"></a>
-
-## stepCount
-
-```zig
-pub fn stepCount(comptime State: type, self: *State, thread: ?*Thread, steps: usize) !bool
-```
-
-<a id="fn-autostep"></a>
-
-## autoStep
-
-```zig
-pub fn autoStep(comptime State: type, self: *State, thread: ?*Thread) !void
-```
-
-<a id="fn-step"></a>
-
-## step
-
-A basic step bounds propagation by references and sweeping by objects.
-Atomic weak processing, large objects, and one finalizer can exceed the target.
-
-```zig
-pub fn step(comptime State: type, self: *State, thread: ?*Thread, conservative: bool) !bool
-```
-
-<a id="fn-collectgarbage"></a>
-
-## collectGarbage
-
-```zig
-pub fn collectGarbage(comptime State: type, self: *State) !void
-```
-
-<a id="fn-gcparam"></a>
-
-## gcParam
-
-```zig
-pub fn gcParam(comptime State: type, self: State, param: GcParam) i64
-```
-
-<a id="fn-setgcparam"></a>
-
-## setGcParam
-
-```zig
-pub fn setGcParam(comptime State: type, self: *State, param: GcParam, value: i64) void
-```
-
-<a id="fn-collectgarbageconservatively"></a>
-
-## collectGarbageConservatively
-
-```zig
-pub fn collectGarbageConservatively(comptime State: type, self: *State, thread: ?*Thread) !void
-```
-
-<a id="fn-collectgarbagewithfinalizers"></a>
-
-## collectGarbageWithFinalizers
-
-```zig
-pub fn collectGarbageWithFinalizers(comptime State: type, self: *State, thread: ?*Thread) !void
-```
-
-<a id="fn-collectgarbagewithfinalizersmode"></a>
-
-## collectGarbageWithFinalizersMode
-
-```zig
-pub fn collectGarbageWithFinalizersMode(comptime State: type, self: *State, thread: ?*Thread, mark_all_stack_registers: bool) !void
-```
-
-<a id="fn-shouldrunautogc"></a>
-
-## shouldRunAutoGc
-
-```zig
-pub fn shouldRunAutoGc(comptime State: type, self: *State) bool
-```
-
-<a id="fn-resetautogcthreshold"></a>
-
-## resetAutoGcThreshold
-
-```zig
-pub fn resetAutoGcThreshold(comptime State: type, self: *State) void
-```
-
-<a id="fn-normalizebaseline"></a>
-
-## normalizeBaseline
-
-```zig
-pub fn normalizeBaseline(comptime State: type, self: *State) void
-```
-
-<a id="fn-resetmarks"></a>
-
-## resetMarks
-
-```zig
-pub fn resetMarks(comptime State: type, self: *State) void
-```
-
-<a id="fn-markroots"></a>
-
-## markRoots
-
-```zig
-pub fn markRoots(comptime State: type, self: *State) void
-```
-
-<a id="fn-markvalue"></a>
-
-## markValue
-
-```zig
-pub fn markValue(comptime State: type, self: *State, value: Value) void
-```
-
-<a id="fn-markruntimeerrorpayload"></a>
-
-## markRuntimeErrorPayload
-
-```zig
-pub fn markRuntimeErrorPayload(comptime State: type, self: *State, payload: ?RuntimeErrorPayload) void
-```
-
-<a id="fn-markstring"></a>
-
-## markString
-
-```zig
-pub fn markString(comptime State: type, self: *State, bytes: []const u8) void
-```
-
-<a id="fn-marktable"></a>
-
-## markTable
-
-```zig
-pub fn markTable(comptime State: type, self: *State, table: *Table) void
-```
-
-<a id="fn-markuserdata"></a>
-
-## markUserdata
-
-```zig
-pub fn markUserdata(comptime State: type, self: *State, userdata: *Userdata) void
-```
-
-<a id="fn-markweaktablestrings"></a>
-
-## markWeakTableStrings
-
-```zig
-pub fn markWeakTableStrings(comptime State: type, self: *State, table: *Table, keys: bool, values: bool) void
-```
-
-<a id="fn-markweakstring"></a>
-
-## markWeakString
-
-```zig
-pub fn markWeakString(comptime State: type, self: *State, value: Value) void
-```
-
-<a id="fn-markclosure"></a>
-
-## markClosure
-
-```zig
-pub fn markClosure(comptime State: type, self: *State, closure: *Closure) void
-```
-
-<a id="fn-markupvalue"></a>
-
-## markUpvalue
-
-```zig
-pub fn markUpvalue(comptime State: type, self: *State, upvalue: *Upvalue) void
-```
-
-<a id="fn-markthread"></a>
-
-## markThread
-
-```zig
-pub fn markThread(comptime State: type, self: *State, thread: *Thread) void
-```
-
-<a id="fn-markthreadstack"></a>
-
-## markThreadStack
-
-```zig
-pub fn markThreadStack(comptime State: type, self: *State, thread: *Thread) void
-```
-
-<a id="fn-markstackrange"></a>
-
-## markStackRange
-
-```zig
-pub fn markStackRange(comptime State: type, self: *State, thread: *Thread, base: usize, count: usize) void
-```
-
-<a id="fn-weakmode"></a>
-
-## weakMode
-
-```zig
-pub fn weakMode(comptime State: type, self: *State, table: *Table) WeakMode
-```
-
-<a id="fn-hasweaktables"></a>
-
-## hasWeakTables
-
-```zig
-pub fn hasWeakTables(comptime State: type, self: *State) bool
-```
-
-<a id="fn-markephemeronvalues"></a>
-
-## markEphemeronValues
-
-```zig
-pub fn markEphemeronValues(comptime State: type, self: *State, table: *Table) bool
-```
-
-<a id="fn-convergeephemerons"></a>
-
-## convergeEphemerons
-
-```zig
-pub fn convergeEphemerons(comptime State: type, self: *State) void
-```
-
-<a id="fn-markvaluechanged"></a>
-
-## markValueChanged
-
-```zig
-pub fn markValueChanged(comptime State: type, self: *State, value: Value) bool
-```
-
-<a id="fn-valueismarked"></a>
-
-## valueIsMarked
-
-```zig
-pub fn valueIsMarked(comptime State: type, self: *State, value: Value) bool
-```
-
-<a id="fn-valueisweaklycleared"></a>
-
-## valueIsWeaklyCleared
-
-```zig
-pub fn valueIsWeaklyCleared(comptime State: type, self: *State, value: Value) bool
-```
-
-<a id="fn-valueiscollectableunmarked"></a>
-
-## valueIsCollectableUnmarked
-
-```zig
-pub fn valueIsCollectableUnmarked(comptime State: type, self: *State, value: Value) bool
-```
-
-<a id="fn-clearweakvalues"></a>
-
-## clearWeakValues
-
-```zig
-pub fn clearWeakValues(comptime State: type, self: *State) void
-```
-
-<a id="fn-clearweaktables"></a>
-
-## clearWeakTables
-
-```zig
-pub fn clearWeakTables(comptime State: type, self: *State) void
-```
-
-<a id="fn-cleardeadhashkeys"></a>
-
-## clearDeadHashKeys
-
-```zig
-pub fn clearDeadHashKeys(comptime State: type, self: *State) void
-```
-
-<a id="fn-clearweaktablevalues"></a>
-
-## clearWeakTableValues
-
-```zig
-pub fn clearWeakTableValues(comptime State: type, self: *State, table: *Table) void
-```
-
-<a id="fn-clearweaktablekeys"></a>
-
-## clearWeakTableKeys
-
-```zig
-pub fn clearWeakTableKeys(comptime State: type, self: *State, table: *Table) void
-```
-
-<a id="fn-writetablebarrier"></a>
-
-## writeTableBarrier
-
-```zig
-pub fn writeTableBarrier(comptime State: type, self: *State, table: *Table, key: Value, value: Value) void
-```
-
-<a id="fn-writebarrier"></a>
-
-## writeBarrier
-
-```zig
-pub fn writeBarrier(comptime State: type, self: *State, parent: anytype, child: Value) void
-```
-
-<a id="fn-runpendingfinalizers"></a>
-
-## runPendingFinalizers
-
-```zig
-pub fn runPendingFinalizers(comptime State: type, self: *State, thread: ?*Thread) !void
-```
-
-<a id="fn-runfinalizerbatch"></a>
-
-## runFinalizerBatch
-
-```zig
-pub fn runFinalizerBatch(comptime State: type, self: *State, thread: ?*Thread, limit: usize) !bool
-```
-
-<a id="fn-checkuserdatafinalizer"></a>
-
-## checkUserdataFinalizer
-
-Registers `userdata` for its metatable's `__gc` if needed, like `luaC_checkfinalizer`.
-[File](../stdlib/io.md#type-file) handles are registered at creation, so they finalize in creation order.
-
-```zig
-pub fn checkUserdataFinalizer(comptime State: type, self: *State, userdata: *Userdata) void
-```
-
-<a id="fn-hasuserdataluafinalizers"></a>
-
-## hasUserdataLuaFinalizers
-
-```zig
-pub fn hasUserdataLuaFinalizers(comptime State: type, self: *State) bool
-```
-
-<a id="fn-runclosefinalizers"></a>
-
-## runCloseFinalizers
-
-Calls all pending finalizers like `luaC_freeallobjects`, ignoring errors.
-An interrupt, `os.exit`, or a host failure stops the calls.
-
-```zig
-pub fn runCloseFinalizers(comptime State: type, self: *State, thread: *Thread) void
-```
-
-<a id="fn-runpendinguserdatafinalizers"></a>
-
-## runPendingUserdataFinalizers
-
-```zig
-pub fn runPendingUserdataFinalizers(comptime State: type, self: *State) !void
-```
-
-<a id="fn-callablevalue"></a>
-
-## callableValue
-
-```zig
-pub fn callableValue(comptime State: type, self: *State, value: Value) bool
-```
-
-<a id="fn-removeregistryitem"></a>
-
-## removeRegistryItem
-
-```zig
-pub fn removeRegistryItem(comptime State: type, self: *State, comptime field: []const u8, index: usize) void
-```
-
-<a id="fn-sweepstrings"></a>
-
-## sweepStrings
-
-```zig
-pub fn sweepStrings(comptime State: type, self: *State) void
-```
-
-<a id="fn-sweeptables"></a>
-
-## sweepTables
-
-```zig
-pub fn sweepTables(comptime State: type, self: *State) void
-```
-
-<a id="fn-sweepuserdata"></a>
-
-## sweepUserdata
-
-```zig
-pub fn sweepUserdata(comptime State: type, self: *State) void
-```
-
-<a id="fn-sweepclosures"></a>
-
-## sweepClosures
-
-```zig
-pub fn sweepClosures(comptime State: type, self: *State) void
-```
-
-<a id="fn-sweepupvalues"></a>
-
-## sweepUpvalues
-
-```zig
-pub fn sweepUpvalues(comptime State: type, self: *State) void
-```
-
-<a id="fn-sweepthreads"></a>
-
-## sweepThreads
-
-```zig
-pub fn sweepThreads(comptime State: type, self: *State) void
-```
-
-<a id="fn-findstringallocation"></a>
-
-## findStringAllocation
-
-```zig
-pub fn findStringAllocation(comptime State: type, self: *State, bytes: []const u8) ?usize
-```
-
-<a id="fn-istrackedthread"></a>
-
-## isTrackedThread
-
-```zig
-pub fn isTrackedThread(comptime State: type, self: *State, thread: *Thread) bool
-```
-
-<a id="fn-istrackedtable"></a>
-
-## isTrackedTable
-
-```zig
-pub fn isTrackedTable(comptime State: type, self: *State, table: *Table) bool
-```
-
-<a id="fn-istrackeduserdata"></a>
-
-## isTrackedUserdata
-
-```zig
-pub fn isTrackedUserdata(comptime State: type, self: *State, userdata: *Userdata) bool
-```
-
-<a id="fn-istrackedclosure"></a>
-
-## isTrackedClosure
-
-```zig
-pub fn isTrackedClosure(comptime State: type, self: *State, closure: *Closure) bool
-```
-
-<a id="fn-istrackedupvalue"></a>
-
-## isTrackedUpvalue
-
-```zig
-pub fn isTrackedUpvalue(comptime State: type, self: *State, upvalue: *Upvalue) bool
-```
-
-<a id="fn-destroytable"></a>
-
-## destroyTable
-
-```zig
-pub fn destroyTable(comptime State: type, self: *State, table: *Table) void
-```
-
-<a id="fn-destroyuserdata"></a>
-
-## destroyUserdata
-
-```zig
-pub fn destroyUserdata(comptime State: type, self: *State, userdata: *Userdata) void
-```
-
-<a id="fn-destroyclosure"></a>
-
-## destroyClosure
-
-```zig
-pub fn destroyClosure(comptime State: type, self: *State, closure: *Closure) void
-```
-
-<a id="fn-destroythread"></a>
-
-## destroyThread
-
-```zig
-pub fn destroyThread(comptime State: type, self: *State, thread: *Thread) void
-```
-
-<a id="fn-allocationstats"></a>
-
-## allocationStats
-
-```zig
-pub fn allocationStats(comptime State: type, self: State) RuntimeAllocationStats
-```
-
-<a id="fn-notetablemetatablechanged"></a>
-
-## noteTableMetatableChanged
-
-```zig
-pub fn noteTableMetatableChanged(comptime State: type, self: *State, table: *Table, old_has_metatable: bool) void
-```
-
-<a id="fn-unlinktablemetatable"></a>
-
-## unlinkTableMetatable
-
-```zig
-pub fn unlinkTableMetatable(comptime State: type, self: *State, table: *Table) void
 ```
 

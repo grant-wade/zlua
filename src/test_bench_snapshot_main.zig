@@ -1,6 +1,8 @@
 //! Complete-program worker using a snapshot-restored state.
 const std = @import("std");
 const zlua = @import("zlua");
+const entry_mod = zlua.runtime.entry;
+const failure_mod = zlua.runtime.failure;
 
 pub fn main(init: std.process.Init) !void {
     std.process.exit(try run(init));
@@ -29,7 +31,7 @@ fn run(init: std.process.Init) !u8 {
     const arg_value = try baseline.raw_state.newTableWithHints(@intCast(args.len), 0);
     for (args, 0..) |arg, index| {
         const key = @as(i64, @intCast(index)) - @as(i64, @intCast(script_index));
-        try baseline.raw_state.setTableRaw(arg_value.table, .{ .integer = key }, .{ .string = try baseline.raw_state.intern(arg) });
+        try baseline.raw_state.setTableRaw(arg_value.table, .{ .integer = key }, .{ .string = try baseline.raw_state.strings.intern(arg) });
     }
     try baseline.raw_state.putGlobal("arg", arg_value);
 
@@ -47,8 +49,8 @@ fn run(init: std.process.Init) !u8 {
     else
         source;
     var exit_code: u8 = 0;
-    worker.raw_state.executeSourceChunkNamed(chunk, source_name) catch |err| {
-        const detail = try worker.raw_state.errorDetailAlloc(allocator, err);
+    entry_mod.executeSourceChunkNamed(&worker.raw_state, chunk, source_name) catch |err| {
+        const detail = try failure_mod.errorDetailAlloc(&worker.raw_state, allocator, err);
         defer allocator.free(detail);
         try worker.raw_state.stderr.appendSlice(worker.raw_state.allocator, detail);
         try worker.raw_state.stderr.append(worker.raw_state.allocator, '\n');

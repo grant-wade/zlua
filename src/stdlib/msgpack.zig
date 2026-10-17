@@ -44,7 +44,7 @@ pub fn write(state: *State, thread: *Thread, op: bytecode.Call) !void {
 
     const bytes = try out.toOwnedSlice();
     defer state.allocator.free(bytes);
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(bytes) }});
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(bytes) }});
 }
 
 const LuaMsgpackEncoder = struct {
@@ -106,5 +106,5 @@ fn failMsgpackError(state: *State, operation: []const u8, err: anyerror) !void {
     var message: std.ArrayList(u8) = .empty;
     defer message.deinit(state.allocator);
     try runtime.appendFmt(state.allocator, &message, "{s}: {s}", .{ operation, @errorName(err) });
-    return state.fail(try state.intern(message.items));
+    return state.fail(try state.strings.intern(message.items));
 }

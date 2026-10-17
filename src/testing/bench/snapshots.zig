@@ -111,7 +111,7 @@ fn measureNewState(io: std.Io, snapshot: *const zlua.Snapshot, counter: *Countin
     var new_state = try snapshot.newState(counter.allocator());
     const elapsed = elapsedSince(io, start);
     defer new_state.deinit();
-    var metric = phaseMetric(counter, before, elapsed, new_state.raw_state.allocationStats().bytes);
+    var metric = phaseMetric(counter, before, elapsed, new_state.raw_state.gc.allocationStats().bytes);
     metric.live_bytes = metric.live_bytes.? - before.live_bytes;
     metric.peak_bytes = metric.peak_bytes.? - before.live_bytes;
     return metric;
@@ -123,7 +123,7 @@ fn measureOperation(io: std.Io, lua: *zlua.State, counter: *CountingAllocator, c
     if (mutate) try snapshotWork(lua, "work");
     if (reset) try lua.reset();
     const elapsed = elapsedSince(io, start);
-    return phaseMetric(counter, before, elapsed, lua.raw_state.allocationStats().bytes);
+    return phaseMetric(counter, before, elapsed, lua.raw_state.gc.allocationStats().bytes);
 }
 
 fn measureCapture(io: std.Io, lua: *zlua.State, counter: *CountingAllocator) !Metric {
@@ -148,7 +148,7 @@ fn measureResetCycle(io: std.Io, lua: *zlua.State, counter: *CountingAllocator) 
     try lua.reset();
     const elapsed = elapsedSince(io, start);
     // VM peak includes retained rollback storage; snapshot storage is separate.
-    return phaseMetric(counter, before, elapsed, lua.raw_state.allocationStats().bytes);
+    return phaseMetric(counter, before, elapsed, lua.raw_state.gc.allocationStats().bytes);
 }
 
 fn measureRebuildCycle(io: std.Io, lua: *?zlua.State, workload: SnapshotWorkload, counter: *CountingAllocator) !Metric {
@@ -160,7 +160,7 @@ fn measureRebuildCycle(io: std.Io, lua: *?zlua.State, workload: SnapshotWorkload
     lua.* = null;
     lua.* = try initializeSnapshotWorkload(counter.allocator(), workload);
     const elapsed = elapsedSince(io, start);
-    return phaseMetric(counter, before, elapsed, lua.*.?.raw_state.allocationStats().bytes);
+    return phaseMetric(counter, before, elapsed, lua.*.?.raw_state.gc.allocationStats().bytes);
 }
 
 fn measureBareInit(io: std.Io) !Metric {
@@ -170,7 +170,7 @@ fn measureBareInit(io: std.Io) !Metric {
     var lua = try zlua.State.init(counter.allocator(), .{});
     const elapsed = elapsedSince(io, start);
     defer lua.deinit();
-    return phaseMetric(&counter, before, elapsed, lua.raw_state.allocationStats().bytes);
+    return phaseMetric(&counter, before, elapsed, lua.raw_state.gc.allocationStats().bytes);
 }
 
 pub fn collect(allocator: std.mem.Allocator, io: std.Io, options: Options, suite: *results.Suite) !void {

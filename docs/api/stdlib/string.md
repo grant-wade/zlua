@@ -4,6 +4,7 @@
 
 - [API Index](../README.md)
 - Parent: [stdlib](../stdlib.md)
+- Submodules: [stdlib.string.format](../stdlib/string/format.md), [stdlib.string.pack](../stdlib/string/pack.md), [stdlib.string.pattern](../stdlib/string/pattern.md)
 
 <details>
 <summary>All documents</summary>
@@ -25,22 +26,33 @@
 - [runtime](../runtime.md)
 - [runtime.chunk](../runtime/chunk.md)
 - [reflection](../reflection.md)
-- [runtime.value](../runtime/value.md)
-- [runtime.number_format](../runtime/number_format.md)
-- [runtime.execute](../runtime/execute.md)
-- [testing.process](../testing/process.md)
 - [runtime.state](../runtime/state.md)
-- [runtime.rollback](../runtime/rollback.md)
+- [stdlib](../stdlib.md)
+- [stdlib.base](../stdlib/base.md)
 - [runtime.call](../runtime/call.md)
 - [runtime.coroutine](../runtime/coroutine.md)
 - [runtime.debug](../runtime/debug.md)
-- [runtime.gc](../runtime/gc.md)
+- [runtime.metatable](../runtime/metatable.md)
+- [runtime.rollback](../runtime/rollback.md)
+- [runtime.value](../runtime/value.md)
+- [runtime.number_format](../runtime/number_format.md)
 - [runtime.host](../runtime/host.md)
+- [runtime.upvalue](../runtime/upvalue.md)
+- [runtime.failure](../runtime/failure.md)
+- [runtime.io](../runtime/io.md)
+- [runtime.load](../runtime/load.md)
+- [runtime.vm](../runtime/vm.md)
+- [runtime.gc](../runtime/gc.md)
+- [runtime.entry](../runtime/entry.md)
+- [runtime.system](../runtime/system.md)
 - [runtime.timezone](../runtime/timezone.md)
-- [stdlib](../stdlib.md)
-- [stdlib.base](../stdlib/base.md)
+- [runtime.index](../runtime/index.md)
+- [runtime.operators](../runtime/operators.md)
 - [stdlib.table](../stdlib/table.md)
 - [stdlib.string](../stdlib/string.md)
+- [stdlib.string.format](../stdlib/string/format.md)
+- [stdlib.string.pack](../stdlib/string/pack.md)
+- [stdlib.string.pattern](../stdlib/string/pattern.md)
 - [stdlib.math](../stdlib/math.md)
 - [stdlib.utf8](../stdlib/utf8.md)
 - [stdlib.coroutine](../stdlib/coroutine.md)
@@ -55,14 +67,33 @@
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
-- [runtime.vm](../runtime/vm.md)
+- [runtime.budget](../runtime/budget.md)
+- [runtime.strings](../runtime/strings.md)
+- [runtime.execute](../runtime/execute.md)
+- [testing.process](../testing/process.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
+- [runtime.native_fn](../runtime/native_fn.md)
 - [compile.compiler](../compile/compiler.md)
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
 - [api](../api.md)
+- [api.callbacks](../api/callbacks.md)
+- [api.convert](../api/convert.md)
+- [api.errors](../api/errors.md)
+- [api.handle](../api/handle.md)
+- [api.state](../api/state.md)
 - [runtime.snapshot](../runtime/snapshot.md)
+- [api.capabilities](../api/capabilities.md)
+- [api.options](../api/options.md)
+- [api.function](../api/function.md)
+- [api.table](../api/table.md)
+- [api.value](../api/value.md)
+- [api.userdata](../api/userdata.md)
+- [api.context](../api/context.md)
+- [api.coroutine](../api/coroutine.md)
+- [api.snapshot](../api/snapshot.md)
+- [api.memory_limit](../api/memory_limit.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
 - [testing.bench_runner](../testing/bench_runner.md)
@@ -94,7 +125,6 @@
 - [char](#fn-char)
 - [dump](#fn-dump)
 - [find](#fn-find)
-- [format](#fn-format)
 - [gmatch](#fn-gmatch)
 - [gmatchIter](#fn-gmatchiter)
 - [gmatchNext](#fn-gmatchnext)
@@ -102,20 +132,56 @@
 - [len](#fn-len)
 - [lower](#fn-lower)
 - [match](#fn-match)
-- [pack](#fn-pack)
-- [packsize](#fn-packsize)
 - [rep](#fn-rep)
 - [reverse](#fn-reverse)
 - [rsplit](#fn-rsplit)
 - [split](#fn-split)
 - [strip](#fn-strip)
 - [sub](#fn-sub)
-- [unpack](#fn-unpack)
 - [upper](#fn-upper)
 
 ## Types
 
 - [GmatchValues](#type-gmatchvalues)
+
+## Aliases
+
+- [format](#alias-format)
+- [pack](#alias-pack)
+- [packsize](#alias-packsize)
+- [unpack](#alias-unpack)
+
+<a id="alias-format"></a>
+
+## format
+
+```zig
+pub const format = format_mod.format;
+```
+
+<a id="alias-pack"></a>
+
+## pack
+
+```zig
+pub const pack = pack_mod.pack;
+```
+
+<a id="alias-packsize"></a>
+
+## packsize
+
+```zig
+pub const packsize = pack_mod.packsize;
+```
+
+<a id="alias-unpack"></a>
+
+## unpack
+
+```zig
+pub const unpack = pack_mod.unpack;
+```
 
 <a id="fn-byte"></a>
 
@@ -149,14 +215,6 @@ pub fn dump(state: *State, thread: *Thread, op: bytecode.Call) !void
 pub fn find(state: *State, thread: *Thread, op: bytecode.Call) !void
 ```
 
-<a id="fn-format"></a>
-
-## format
-
-```zig
-pub fn format(state: *State, thread: *Thread, op: bytecode.Call) !void
-```
-
 <a id="fn-gmatch"></a>
 
 ## gmatch
@@ -181,7 +239,7 @@ Captures (or the whole match) of one `string.gmatch` step; empty when exhausted.
 
 ```zig
 pub const GmatchValues = struct {
-    buffer: [max_captures]Value = undefined,
+    buffer: [pattern_mod.max_captures]Value = undefined,
     len: usize = 0,
 };
 ```
@@ -244,22 +302,6 @@ pub fn lower(state: *State, thread: *Thread, op: bytecode.Call) !void
 pub fn match(state: *State, thread: *Thread, op: bytecode.Call) !void
 ```
 
-<a id="fn-pack"></a>
-
-## pack
-
-```zig
-pub fn pack(state: *State, thread: *Thread, op: bytecode.Call) !void
-```
-
-<a id="fn-packsize"></a>
-
-## packsize
-
-```zig
-pub fn packsize(state: *State, thread: *Thread, op: bytecode.Call) !void
-```
-
 <a id="fn-rep"></a>
 
 ## rep
@@ -312,14 +354,6 @@ pub fn strip(state: *State, thread: *Thread, op: bytecode.Call) !void
 
 ```zig
 pub fn sub(state: *State, thread: *Thread, op: bytecode.Call) !void
-```
-
-<a id="fn-unpack"></a>
-
-## unpack
-
-```zig
-pub fn unpack(state: *State, thread: *Thread, op: bytecode.Call) !void
 ```
 
 <a id="fn-upper"></a>

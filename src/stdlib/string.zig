@@ -1,11 +1,22 @@
 const std = @import("std");
 const compile = @import("../compile.zig");
 const runtime = @import("../runtime.zig");
+const call_mod = @import("../runtime/call.zig");
+const index_mod = @import("../runtime/index.zig");
+const format_mod = @import("string/format.zig");
+const pack_mod = @import("string/pack.zig");
+const pattern_mod = @import("string/pattern.zig");
 
 const bytecode = compile.bytecode;
 const State = runtime.State;
 const Thread = runtime.Thread;
 const Value = runtime.Value;
+const Match = pattern_mod.Match;
+
+pub const format = format_mod.format;
+pub const pack = pack_mod.pack;
+pub const packsize = pack_mod.packsize;
+pub const unpack = pack_mod.unpack;
 
 pub fn byte(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const source = try state.expectArgumentString(thread, op, "string.byte", 0);
@@ -16,7 +27,7 @@ pub fn byte(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const first = @max(start, 1);
     const last = @min(stop, source.len);
     if (first <= last) {
-        if (!state.nativeStackFits(thread, op, last - first + 1)) return state.failLibrary("stack overflow (string slice too long)");
+        if (!call_mod.nativeStackFits(state, thread, op, last - first + 1)) return state.failLibrary("stack overflow (string slice too long)");
         var index = first;
         while (index <= last) : (index += 1) try values.append(state.allocator, .{ .integer = source[index - 1] });
     }
@@ -31,7 +42,7 @@ pub fn char(state: *State, thread: *Thread, op: bytecode.Call) !void {
         if (value < 0 or value > 255) return state.failArgumentMessage("string.char", @intCast(index + 1), "value out of range");
         try out.append(state.allocator, @intCast(value));
     }
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(out.items) }});
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(out.items) }});
 }
 
 pub fn dump(state: *State, thread: *Thread, op: bytecode.Call) !void {
@@ -43,200 +54,11 @@ pub fn dump(state: *State, thread: *Thread, op: bytecode.Call) !void {
     defer out.deinit(state.allocator);
     try runtime.dumpClosureBinary(state.allocator, &out, target.closure, strip_debug);
 
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(out.items) }});
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(out.items) }});
 }
 
 pub fn find(state: *State, thread: *Thread, op: bytecode.Call) !void {
     try findImpl(state, thread, op, true);
-}
-
-pub fn format(state: *State, thread: *Thread, op: bytecode.Call) !void {
-    const function_name = "string.format";
-    const fmt = try state.expectArgumentString(thread, op, function_name, 0);
-    var out = std.ArrayList(u8).empty;
-    defer out.deinit(state.allocator);
-    var arg: u32 = 0;
-    var index: usize = 0;
-    while (index < fmt.len) {
-        if (fmt[index] != '%') {
-            try out.append(state.allocator, fmt[index]);
-            index += 1;
-            continue;
-        }
-        index += 1;
-        if (index < fmt.len and fmt[index] == '%') {
-            try out.append(state.allocator, '%');
-            index += 1;
-            continue;
-        }
-        arg += 1;
-        if (arg >= op.arg_count) return state.failArgumentMessage(function_name, arg + 1, "no value");
-
-        var span: usize = 0;
-        while (index + span < fmt.len and std.mem.indexOfScalar(u8, "-+#0 123456789.", fmt[index + span]) != null) span += 1;
-        if (span + 1 >= max_format - 10) return state.failLibrary("invalid format (too long)");
-        const conversion: u8 = if (index + span < fmt.len) fmt[index + span] else 0;
-        const end = if (conversion == 0) index + span else index + span + 1;
-        const form = fmt[index - 1 .. end];
-        index = end;
-
-        const value = runtime.argValue(state, thread, op, arg);
-        switch (conversion) {
-            'c' => {
-                try checkFormat(state, form, "-", false);
-                const integer = try state.argumentInteger(thread, op, function_name, arg);
-                const byte_value: [1]u8 = .{@truncate(@as(u64, @bitCast(integer)))};
-                try appendPadded(state.allocator, &out, &byte_value, parseFormatSpec(form), ' ');
-            },
-            'd', 'i', 'u', 'o', 'x', 'X' => {
-                const integer = try state.argumentInteger(thread, op, function_name, arg);
-                const flags = switch (conversion) {
-                    'd', 'i' => "-+0 ",
-                    'u' => "-0",
-                    else => "-#0",
-                };
-                try checkFormat(state, form, flags, true);
-                try appendIntegerFormat(state, &out, integer, parseFormatSpec(form));
-            },
-            'a', 'A' => {
-                try checkFormat(state, form, "-+#0 ", true);
-                const number = try state.argumentNumber(thread, op, function_name, arg);
-                try appendFloatFormat(state, &out, number, parseFormatSpec(form));
-            },
-            'e', 'E', 'f', 'g', 'G' => {
-                const number = try state.argumentNumber(thread, op, function_name, arg);
-                try checkFormat(state, form, "-+#0 ", true);
-                try appendFloatFormat(state, &out, number, parseFormatSpec(form));
-            },
-            'p' => {
-                try checkFormat(state, form, "-", false);
-                try appendPointer(state, &out, value, parseFormatSpec(form));
-            },
-            'q' => {
-                if (form.len > 2) return state.failLibrary("specifier '%q' cannot have modifiers");
-                try appendLiteral(state, &out, value, arg);
-            },
-            's' => {
-                const text = try state.valueToString(thread, value);
-                if (form.len == 2) {
-                    try out.appendSlice(state.allocator, text);
-                } else {
-                    if (std.mem.indexOfScalar(u8, text, 0) != null) return state.failArgumentMessage(function_name, arg + 1, "string contains zeros");
-                    try checkFormat(state, form, "-", true);
-                    const spec = parseFormatSpec(form);
-                    if (spec.precision == null and text.len >= 100) {
-                        try out.appendSlice(state.allocator, text);
-                    } else {
-                        const precision = spec.precision orelse text.len;
-                        try appendPadded(state.allocator, &out, text[0..@min(precision, text.len)], spec, ' ');
-                    }
-                }
-            },
-            else => return state.failLibraryFmt("invalid conversion '{s}' to 'format'", .{form}),
-        }
-    }
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(out.items) }});
-}
-
-const max_format = 32;
-
-fn checkFormat(state: *State, form: []const u8, flags: []const u8, allow_precision: bool) !void {
-    var index: usize = 1;
-    while (index < form.len and std.mem.indexOfScalar(u8, flags, form[index]) != null) index += 1;
-    if (index < form.len and form[index] != '0') {
-        index = skipTwoDigits(form, index);
-        if (index < form.len and form[index] == '.' and allow_precision) index = skipTwoDigits(form, index + 1);
-    }
-    if (index >= form.len or !std.ascii.isAlphabetic(form[index])) {
-        return state.failLibraryFmt("invalid conversion specification: '{s}'", .{form});
-    }
-}
-
-fn skipTwoDigits(form: []const u8, start: usize) usize {
-    var index = start;
-    if (index < form.len and std.ascii.isDigit(form[index])) {
-        index += 1;
-        if (index < form.len and std.ascii.isDigit(form[index])) index += 1;
-    }
-    return index;
-}
-
-const FormatSpec = runtime.number_format.Spec;
-
-fn parseFormatSpec(form: []const u8) FormatSpec {
-    var spec: FormatSpec = .{ .conversion = form[form.len - 1] };
-    var index: usize = 1;
-    while (index < form.len) : (index += 1) switch (form[index]) {
-        '-' => spec.left_align = true,
-        '+' => spec.force_sign = true,
-        ' ' => spec.space_sign = true,
-        '#' => spec.alternate = true,
-        '0' => spec.zero_pad = true,
-        else => break,
-    };
-    while (index < form.len and std.ascii.isDigit(form[index])) : (index += 1) spec.width = spec.width * 10 + form[index] - '0';
-    if (index < form.len and form[index] == '.') {
-        index += 1;
-        var precision: usize = 0;
-        while (index < form.len and std.ascii.isDigit(form[index])) : (index += 1) precision = precision * 10 + form[index] - '0';
-        spec.precision = precision;
-    }
-    return spec;
-}
-
-fn appendFloatFormat(state: *State, out: *std.ArrayList(u8), number: f64, spec: FormatSpec) !void {
-    var buffer: [runtime.number_format.max_formatted_len]u8 = undefined;
-    try out.appendSlice(state.allocator, runtime.number_format.formatFloat(&buffer, spec, number));
-}
-
-fn appendIntegerFormat(state: *State, out: *std.ArrayList(u8), integer: i64, spec: FormatSpec) !void {
-    var digits = std.ArrayList(u8).empty;
-    defer digits.deinit(state.allocator);
-
-    const signed = spec.conversion == 'd' or spec.conversion == 'i';
-    const negative = signed and integer < 0;
-    const unsigned: u64 = if (signed)
-        if (negative) 0 -% @as(u64, @bitCast(integer)) else @intCast(integer)
-    else
-        @bitCast(integer);
-
-    if (!(spec.precision == 0 and unsigned == 0)) switch (spec.conversion) {
-        'd', 'i', 'u' => try runtime.appendFmt(state.allocator, &digits, "{d}", .{unsigned}),
-        'x' => try runtime.appendFmt(state.allocator, &digits, "{x}", .{unsigned}),
-        'X' => try runtime.appendFmt(state.allocator, &digits, "{X}", .{unsigned}),
-        'o' => try runtime.appendFmt(state.allocator, &digits, "{o}", .{unsigned}),
-        else => unreachable,
-    };
-
-    var prefix = std.ArrayList(u8).empty;
-    defer prefix.deinit(state.allocator);
-    if (negative) {
-        try prefix.append(state.allocator, '-');
-    } else if (signed and spec.force_sign) {
-        try prefix.append(state.allocator, '+');
-    } else if (signed and spec.space_sign) {
-        try prefix.append(state.allocator, ' ');
-    }
-    if (spec.alternate) switch (spec.conversion) {
-        'x' => if (unsigned != 0) try prefix.appendSlice(state.allocator, "0x"),
-        'X' => if (unsigned != 0) try prefix.appendSlice(state.allocator, "0X"),
-        'o' => if (digits.items.len == 0 or digits.items[0] != '0') {
-            if (spec.precision == null or spec.precision.? <= digits.items.len) try prefix.append(state.allocator, '0');
-        },
-        else => {},
-    };
-
-    const precision_zeroes = if (spec.precision) |precision| if (precision > digits.items.len) precision - digits.items.len else 0 else 0;
-    const unpadded_len = prefix.items.len + precision_zeroes + digits.items.len;
-    const width_padding = if (spec.width > unpadded_len) spec.width - unpadded_len else 0;
-    const zero_width_padding = spec.zero_pad and spec.precision == null and !spec.left_align;
-
-    if (!spec.left_align and !zero_width_padding) try out.appendNTimes(state.allocator, ' ', width_padding);
-    try out.appendSlice(state.allocator, prefix.items);
-    if (zero_width_padding) try out.appendNTimes(state.allocator, '0', width_padding);
-    try out.appendNTimes(state.allocator, '0', precision_zeroes);
-    try out.appendSlice(state.allocator, digits.items);
-    if (spec.left_align) try out.appendNTimes(state.allocator, ' ', width_padding);
 }
 
 pub fn gmatch(state: *State, thread: *Thread, op: bytecode.Call) !void {
@@ -245,9 +67,9 @@ pub fn gmatch(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const start = if (initial <= 1) 0 else @min(initial - 1, source.len + 1);
     const state_value = try state.newTableWithHints(0, 3);
     const state_table = state_value.table;
-    try state.setTableRaw(state_table, .{ .string = try state.intern("s") }, .{ .string = source });
-    try state.setTableRaw(state_table, .{ .string = try state.intern("p") }, .{ .string = try state.expectArgumentString(thread, op, "string.gmatch", 1) });
-    try state.setTableRaw(state_table, .{ .string = try state.intern("i") }, .{ .integer = @intCast(start) });
+    try state.setTableRaw(state_table, .{ .string = try state.strings.intern("s") }, .{ .string = source });
+    try state.setTableRaw(state_table, .{ .string = try state.strings.intern("p") }, .{ .string = try state.expectArgumentString(thread, op, "string.gmatch", 1) });
+    try state.setTableRaw(state_table, .{ .string = try state.strings.intern("i") }, .{ .integer = @intCast(start) });
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .gmatch_iterator = state_value.table }});
 }
 
@@ -258,7 +80,7 @@ pub fn gmatchIter(state: *State, thread: *Thread, op: bytecode.Call) !void {
 
 /// Captures (or the whole match) of one `string.gmatch` step; empty when exhausted.
 pub const GmatchValues = struct {
-    buffer: [max_captures]Value = undefined,
+    buffer: [pattern_mod.max_captures]Value = undefined,
     len: usize = 0,
 
     pub fn slice(self: *const GmatchValues) []const Value {
@@ -275,7 +97,7 @@ pub fn gmatchNext(state: *State, state_value: Value) !GmatchValues {
     const capture_pattern = positionAndWholeCapturePattern(pattern);
     const search_pattern = capture_pattern orelse pattern;
     const found = while (true) {
-        const current = (try simplePatternFind(state, source, search_pattern, @intCast(@max(pos, 0)))) orelse return .{};
+        const current = (try pattern_mod.simplePatternFind(state, source, search_pattern, @intCast(@max(pos, 0)))) orelse return .{};
         if (current.range.start == current.range.end and previous_match_end != null and previous_match_end.? == current.range.start) {
             if (current.range.end >= source.len) return .{};
             pos = @intCast(current.range.end + 1);
@@ -283,22 +105,22 @@ pub fn gmatchNext(state: *State, state_value: Value) !GmatchValues {
         }
         break current;
     };
-    try state.setTableRaw(state_table, .{ .string = try state.intern("i") }, .{ .integer = @intCast(if (found.range.end > found.range.start) found.range.end else found.range.end + 1) });
-    try state.setTableRaw(state_table, .{ .string = try state.intern("last") }, .{ .integer = @intCast(found.range.end) });
+    try state.setTableRaw(state_table, .{ .string = try state.strings.intern("i") }, .{ .integer = @intCast(if (found.range.end > found.range.start) found.range.end else found.range.end + 1) });
+    try state.setTableRaw(state_table, .{ .string = try state.strings.intern("last") }, .{ .integer = @intCast(found.range.end) });
     var result = GmatchValues{};
     if (capture_pattern != null) {
         result.buffer[0] = .{ .integer = @intCast(found.range.start + 1) };
-        result.buffer[1] = .{ .string = try state.intern(source[found.range.start..found.range.end]) };
+        result.buffer[1] = .{ .string = try state.strings.intern(source[found.range.start..found.range.end]) };
         result.len = 2;
         return result;
     }
     if (found.captures.count == 0) {
-        result.buffer[0] = .{ .string = try state.intern(source[found.range.start..found.range.end]) };
+        result.buffer[0] = .{ .string = try state.strings.intern(source[found.range.start..found.range.end]) };
         result.len = 1;
         return result;
     }
     for (found.captures.slots[0..found.captures.count], 0..) |slot, index| {
-        result.buffer[index] = try captureValue(state, source, slot);
+        result.buffer[index] = try pattern_mod.captureValue(state, source, slot);
     }
     result.len = found.captures.count;
     return result;
@@ -330,8 +152,8 @@ pub fn gsub(state: *State, thread: *Thread, op: bytecode.Call) !void {
     var changed = false;
     var previous_match_end: ?usize = null;
     while (pos <= source.len and count < max_count) {
-        try state.checkInterrupt();
-        const found = (try simplePatternFind(state, source, pattern, pos)) orelse break;
+        try state.budget.checkInterrupt();
+        const found = (try pattern_mod.simplePatternFind(state, source, pattern, pos)) orelse break;
         try out.appendSlice(state.allocator, source[pos..found.range.start]);
         if (found.range.start == found.range.end and previous_match_end != null and previous_match_end.? == found.range.start) {
             if (found.range.end < source.len) {
@@ -356,7 +178,7 @@ pub fn gsub(state: *State, thread: *Thread, op: bytecode.Call) !void {
         count += 1;
     }
     try out.appendSlice(state.allocator, source[@min(pos, source.len)..]);
-    const result = if (!changed) source else try state.intern(out.items);
+    const result = if (!changed) source else try state.strings.intern(out.items);
     try state.returnValues(thread, op.base, op.return_count, &.{ .{ .string = result }, .{ .integer = count } });
 }
 
@@ -372,7 +194,7 @@ fn trimReasonableNumeral(state: *State, source: []const u8) ![]const u8 {
     try out.appendSlice(state.allocator, source[int_start..dot]);
     try out.append(state.allocator, '.');
     try out.appendSlice(state.allocator, source[dot + 1 .. frac_end]);
-    return state.intern(out.items);
+    return state.strings.intern(out.items);
 }
 
 const GsubReplacement = struct { text: []const u8, changed: bool };
@@ -381,7 +203,7 @@ fn gsubReplacement(state: *State, thread: *Thread, replacement: Value, source: [
     const matched_text = source[matched.range.start..matched.range.end];
     return switch (replacement) {
         .string => |bytes| .{ .text = try gsubStringReplacement(state, bytes, source, matched), .changed = true },
-        .table => |table| switch (try state.getTableFromThread(thread, .{ .table = table }, try firstMatchValue(state, source, matched))) {
+        .table => |table| switch (try index_mod.getTableFromThread(state, thread, .{ .table = table }, try pattern_mod.firstMatchValue(state, source, matched))) {
             .nil => .{ .text = matched_text, .changed = false },
             .boolean => |value| if (value) {
                 _ = try invalidReplacementValue(state, .{ .boolean = true });
@@ -392,13 +214,13 @@ fn gsubReplacement(state: *State, thread: *Thread, replacement: Value, source: [
                 var out = std.ArrayList(u8).empty;
                 defer out.deinit(state.allocator);
                 try runtime.appendLuaString(state.allocator, &out, .{ .integer = integer });
-                break :blk .{ .text = try state.intern(out.items), .changed = true };
+                break :blk .{ .text = try state.strings.intern(out.items), .changed = true };
             },
             .number => |number| blk: {
                 var out = std.ArrayList(u8).empty;
                 defer out.deinit(state.allocator);
                 try runtime.appendLuaString(state.allocator, &out, .{ .number = number });
-                break :blk .{ .text = try state.intern(out.items), .changed = true };
+                break :blk .{ .text = try state.strings.intern(out.items), .changed = true };
             },
             else => |value| {
                 _ = try invalidReplacementValue(state, value);
@@ -408,8 +230,8 @@ fn gsubReplacement(state: *State, thread: *Thread, replacement: Value, source: [
         .closure, .api_callback, .coroutine_wrapper, .gmatch_iterator, .native_print, .native_tostring, .native_getmetatable, .native_setmetatable, .native_rawequal, .native_rawget, .native_rawset, .native_rawlen, .native_next, .native_pairs, .native_ipairs, .native_ipairs_iter, .native_table_create, .native_select, .native_assert, .native_error, .native_pcall, .native_xpcall, .native_collectgarbage, .native_debug_traceback, .native_coroutine_create, .native_coroutine_resume, .native_coroutine_yield, .native_coroutine_status, .native_coroutine_running, .native_coroutine_isyieldable, .native_coroutine_close, .native_coroutine_wrap, .native => blk: {
             var args = std.ArrayList(Value).empty;
             defer args.deinit(state.allocator);
-            try appendMatchValues(state, &args, source, matched);
-            const result = try state.callOneResult(thread, replacement, args.items);
+            try pattern_mod.appendMatchValues(state, &args, source, matched);
+            const result = try call_mod.callOneResult(state, thread, replacement, args.items);
             switch (result) {
                 .nil => break :blk .{ .text = matched_text, .changed = false },
                 .boolean => |value| if (value) {
@@ -421,7 +243,7 @@ fn gsubReplacement(state: *State, thread: *Thread, replacement: Value, source: [
                     var out = std.ArrayList(u8).empty;
                     defer out.deinit(state.allocator);
                     try runtime.appendLuaString(state.allocator, &out, result);
-                    break :blk .{ .text = try state.intern(out.items), .changed = true };
+                    break :blk .{ .text = try state.strings.intern(out.items), .changed = true };
                 },
                 else => |value| {
                     _ = try invalidReplacementValue(state, value);
@@ -441,14 +263,7 @@ fn invalidReplacementValue(state: *State, value: Value) ![]const u8 {
     var message = std.ArrayList(u8).empty;
     defer message.deinit(state.allocator);
     try runtime.appendFmt(state.allocator, &message, "invalid replacement value (a {s})", .{luaTypeName(value)});
-    return state.failLibrary(try state.intern(message.items));
-}
-
-fn invalidCaptureIndex(state: *State, one_based: u8) !void {
-    var message = std.ArrayList(u8).empty;
-    defer message.deinit(state.allocator);
-    try runtime.appendFmt(state.allocator, &message, "invalid capture index %{d}", .{one_based});
-    return state.failLibrary(try state.intern(message.items));
+    return state.failLibrary(try state.strings.intern(message.items));
 }
 
 fn luaTypeName(value: Value) []const u8 {
@@ -487,7 +302,7 @@ fn gsubStringReplacement(state: *State, replacement: []const u8, source: []const
             else => return state.failLibrary("invalid use of '%' in replacement string"),
         }
     }
-    return state.intern(out.items);
+    return state.strings.intern(out.items);
 }
 
 fn appendReplacementCapture(state: *State, out: *std.ArrayList(u8), source: []const u8, matched: Match, one_based: u8) !void {
@@ -497,42 +312,17 @@ fn appendReplacementCapture(state: *State, out: *std.ArrayList(u8), source: []co
     }
     const index: usize = one_based - 1;
     if (index >= matched.captures.count) {
-        try invalidCaptureIndex(state, one_based);
+        try pattern_mod.invalidCaptureIndex(state, one_based);
         unreachable;
     }
     switch (matched.captures.slots[index]) {
         .range => |range| try out.appendSlice(state.allocator, source[range.start..range.end]),
         .position => |position| try runtime.appendFmt(state.allocator, out, "{d}", .{position + 1}),
         .unfinished => {
-            try invalidCaptureIndex(state, one_based);
+            try pattern_mod.invalidCaptureIndex(state, one_based);
             unreachable;
         },
     }
-}
-
-fn firstMatchValue(state: *State, source: []const u8, matched: Match) !Value {
-    if (matched.captures.count == 0) return .{ .string = try state.intern(source[matched.range.start..matched.range.end]) };
-    return captureValue(state, source, matched.captures.slots[0]);
-}
-
-fn appendMatchValues(state: *State, values: *std.ArrayList(Value), source: []const u8, matched: Match) !void {
-    if (matched.captures.count == 0) {
-        try values.append(state.allocator, .{ .string = try state.intern(source[matched.range.start..matched.range.end]) });
-        return;
-    }
-    try appendCaptureValues(state, values, source, matched.captures);
-}
-
-fn appendCaptureValues(state: *State, values: *std.ArrayList(Value), source: []const u8, captures: CaptureState) !void {
-    for (captures.slots[0..captures.count]) |slot| try values.append(state.allocator, try captureValue(state, source, slot));
-}
-
-fn captureValue(state: *State, source: []const u8, slot: CaptureSlot) !Value {
-    return switch (slot) {
-        .range => |range| .{ .string = try state.intern(source[range.start..range.end]) },
-        .position => |position| .{ .integer = @intCast(position + 1) },
-        .unfinished => state.failLibrary("unfinished capture"),
-    };
 }
 
 pub fn len(state: *State, thread: *Thread, op: bytecode.Call) !void {
@@ -548,105 +338,6 @@ pub fn match(state: *State, thread: *Thread, op: bytecode.Call) !void {
     try findImpl(state, thread, op, false);
 }
 
-pub fn pack(state: *State, thread: *Thread, op: bytecode.Call) !void {
-    const pack_format = try state.expectArgumentString(thread, op, "string.pack", 0);
-    var out = std.ArrayList(u8).empty;
-    defer out.deinit(state.allocator);
-    var arg: u32 = 1;
-    var config = PackConfig{};
-    var index: usize = 0;
-    while (index < pack_format.len) {
-        const code = pack_format[index];
-        if (std.ascii.isWhitespace(code)) {
-            index += 1;
-            continue;
-        }
-        if (code == '<') {
-            config.endian = .little;
-            index += 1;
-            continue;
-        }
-        if (code == '>') {
-            config.endian = .big;
-            index += 1;
-            continue;
-        }
-        if (code == '=') {
-            config.endian = nativeEndian();
-            index += 1;
-            continue;
-        }
-        if (code == '!') {
-            try parsePackMaxAlign(state, pack_format, &index, &config);
-            index += 1;
-            continue;
-        }
-        if (code == 'X') {
-            index += 1;
-            const next = try parsePackNextOption(state, pack_format, &index);
-            const padding = try packAlignmentPadding(state, out.items.len, next, config.max_align);
-            try ensurePackLength(state, out.items.len, padding);
-            try out.appendNTimes(state.allocator, 0, padding);
-            index += 1;
-            continue;
-        }
-
-        const item = try parsePackOption(state, pack_format, &index, false);
-        if (item.kind != .fixed_string and item.kind != .zero_string and item.kind != .padding) {
-            const padding = try packAlignmentPadding(state, out.items.len, item, config.max_align);
-            try ensurePackLength(state, out.items.len, padding);
-            try out.appendNTimes(state.allocator, 0, padding);
-        }
-        switch (item.kind) {
-            .padding => {
-                try ensurePackLength(state, out.items.len, 1);
-                try out.append(state.allocator, 0);
-            },
-            .fixed_string => {
-                try ensurePackLength(state, out.items.len, item.size);
-                const value = try state.expectArgumentString(thread, op, "string.pack", arg);
-                arg += 1;
-                if (value.len > item.size) return state.fail("string longer than given size");
-                try out.appendSlice(state.allocator, value);
-                try out.appendNTimes(state.allocator, 0, item.size - value.len);
-            },
-            .zero_string => {
-                const value = try state.expectArgumentString(thread, op, "string.pack", arg);
-                arg += 1;
-                if (std.mem.indexOfScalar(u8, value, 0) != null) return state.fail("string contains zeros");
-                try ensurePackLength(state, out.items.len, value.len + 1);
-                try out.appendSlice(state.allocator, value);
-                try out.append(state.allocator, 0);
-            },
-            .size_string => {
-                const value = try state.expectArgumentString(thread, op, "string.pack", arg);
-                arg += 1;
-                if (!packUnsignedFits(@intCast(value.len), item.size)) return state.fail("string length does not fit in given size");
-                try ensurePackLength(state, out.items.len, item.size + value.len);
-                try appendPackedUnsigned(state, &out, @intCast(value.len), item.size, config.endian);
-                try out.appendSlice(state.allocator, value);
-            },
-            .integer => {
-                const value = runtime.argValue(state, thread, op, arg);
-                arg += 1;
-                try appendPackedInteger(state, &out, value, item, config.endian);
-            },
-            .float => {
-                const value = runtime.argValue(state, thread, op, arg);
-                arg += 1;
-                try appendPackedFloat(state, &out, value, item, config.endian);
-            },
-        }
-        index += 1;
-    }
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(out.items) }});
-}
-
-pub fn packsize(state: *State, thread: *Thread, op: bytecode.Call) !void {
-    const pack_format = try state.expectArgumentString(thread, op, "string.packsize", 0);
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .integer = @intCast(try packFormatSize(state, pack_format)) }});
-}
-
 pub fn rep(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const source = try state.expectArgumentString(thread, op, "string.rep", 0);
     const count = try integerArgument(state, thread, op, "string.rep", 1);
@@ -657,7 +348,7 @@ pub fn rep(state: *State, thread: *Thread, op: bytecode.Call) !void {
     if (count > 0) {
         var index: i64 = 0;
         while (index < count) : (index += 1) {
-            if (index & 0xfff == 0) try state.checkInterrupt();
+            if (index & 0xfff == 0) try state.budget.checkInterrupt();
             if (index != 0) try out.appendSlice(state.allocator, sep);
             try out.appendSlice(state.allocator, source);
         }
@@ -666,7 +357,7 @@ pub fn rep(state: *State, thread: *Thread, op: bytecode.Call) !void {
 }
 
 fn internShortString(state: *State, bytes: []const u8) ![]const u8 {
-    return if (bytes.len <= 40) try state.intern(bytes) else try state.allocateString(bytes);
+    return if (bytes.len <= 40) try state.strings.intern(bytes) else try state.strings.allocate(bytes);
 }
 
 fn repeatedLengthTooLarge(source_len: usize, sep_len: usize, count: usize) bool {
@@ -681,7 +372,7 @@ pub fn reverse(state: *State, thread: *Thread, op: bytecode.Call) !void {
     var out = try state.allocator.alloc(u8, source.len);
     defer state.allocator.free(out);
     for (source, 0..) |source_byte, index| out[source.len - 1 - index] = source_byte;
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(out) }});
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(out) }});
 }
 
 /// Like `split`, but splits from the right.
@@ -715,7 +406,7 @@ fn splitImpl(state: *State, thread: *Thread, op: bytecode.Call, from_right: bool
     const result = try state.newTableWithHints(@intCast(pieces.items.len), 0);
     for (pieces.items, 0..) |piece, index| {
         const output_index = if (from_right) pieces.items.len - index else index + 1;
-        try state.setTableRaw(result.table, .{ .integer = @intCast(output_index) }, .{ .string = try state.intern(piece) });
+        try state.setTableRaw(result.table, .{ .integer = @intCast(output_index) }, .{ .string = try state.strings.intern(piece) });
     }
     try state.returnValues(thread, op.base, op.return_count, &.{result});
 }
@@ -800,7 +491,7 @@ pub fn strip(state: *State, thread: *Thread, op: bytecode.Call) !void {
     var end = source.len;
     while (end > start and stripByte(chars, source[end - 1])) : (end -= 1) {}
 
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(source[start..end]) }});
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(source[start..end]) }});
 }
 
 fn stripByte(chars: ?[]const u8, byte_value: u8) bool {
@@ -815,98 +506,10 @@ pub fn sub(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const start = normalizeIndex(start_arg, source.len);
     const stop = normalizeIndex(stop_arg, source.len);
     if (start > stop or start > source.len) {
-        try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern("") }});
+        try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern("") }});
         return;
     }
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(source[@max(start, 1) - 1 .. @min(stop, source.len)]) }});
-}
-
-pub fn unpack(state: *State, thread: *Thread, op: bytecode.Call) !void {
-    const pack_format = try state.expectArgumentString(thread, op, "string.unpack", 0);
-    const data = try state.expectArgumentString(thread, op, "string.unpack", 1);
-    var pos = try unpackInitialPosition(state, data.len, try state.optionalArgumentInteger(thread, op, "string.unpack", 2, 1));
-    var config = PackConfig{};
-    var values = std.ArrayList(Value).empty;
-    defer values.deinit(state.allocator);
-    var index: usize = 0;
-    while (index < pack_format.len) {
-        const code = pack_format[index];
-        if (std.ascii.isWhitespace(code)) {
-            index += 1;
-            continue;
-        }
-        if (code == '<') {
-            config.endian = .little;
-            index += 1;
-            continue;
-        }
-        if (code == '>') {
-            config.endian = .big;
-            index += 1;
-            continue;
-        }
-        if (code == '=') {
-            config.endian = nativeEndian();
-            index += 1;
-            continue;
-        }
-        if (code == '!') {
-            try parsePackMaxAlign(state, pack_format, &index, &config);
-            index += 1;
-            continue;
-        }
-        if (code == 'X') {
-            index += 1;
-            const next = try parsePackNextOption(state, pack_format, &index);
-            pos += try packAlignmentPadding(state, pos, next, config.max_align);
-            if (pos > data.len) return state.failArgumentMessage("string.unpack", 2, "data string too short");
-            index += 1;
-            continue;
-        }
-
-        const item = try parsePackOption(state, pack_format, &index, false);
-        if (item.kind != .fixed_string and item.kind != .zero_string and item.kind != .padding) {
-            pos += try packAlignmentPadding(state, pos, item, config.max_align);
-        }
-        if (!state.nativeStackFits(thread, op, values.items.len + 2)) return state.failLibrary("stack overflow (too many results)");
-        switch (item.kind) {
-            .padding => {
-                if (pos + 1 > data.len) return state.failArgumentMessage("string.unpack", 2, "data string too short");
-                pos += 1;
-            },
-            .fixed_string => {
-                if (pos + item.size > data.len) return state.failArgumentMessage("string.unpack", 2, "data string too short");
-                try values.append(state.allocator, .{ .string = try state.intern(data[pos .. pos + item.size]) });
-                pos += item.size;
-            },
-            .zero_string => {
-                const relative_end = std.mem.indexOfScalar(u8, data[pos..], 0) orelse return state.failArgumentMessage("string.unpack", 2, "unfinished string for format 'z'");
-                try values.append(state.allocator, .{ .string = try state.intern(data[pos .. pos + relative_end]) });
-                pos += relative_end + 1;
-            },
-            .size_string => {
-                if (pos + item.size > data.len) return state.failArgumentMessage("string.unpack", 2, "data string too short");
-                const string_len = try unpackUnsignedLength(state, data[pos .. pos + item.size], config.endian);
-                pos += item.size;
-                if (pos + string_len > data.len) return state.failArgumentMessage("string.unpack", 2, "data string too short");
-                try values.append(state.allocator, .{ .string = try state.intern(data[pos .. pos + string_len]) });
-                pos += string_len;
-            },
-            .integer => {
-                if (pos + item.size > data.len) return state.failArgumentMessage("string.unpack", 2, "data string too short");
-                try values.append(state.allocator, try unpackIntegerValue(state, data[pos .. pos + item.size], item, config.endian));
-                pos += item.size;
-            },
-            .float => {
-                if (pos + item.size > data.len) return state.failArgumentMessage("string.unpack", 2, "data string too short");
-                try values.append(state.allocator, unpackFloatValue(data[pos .. pos + item.size], item, config.endian));
-                pos += item.size;
-            },
-        }
-        index += 1;
-    }
-    try values.append(state.allocator, .{ .integer = @intCast(pos + 1) });
-    try state.returnValues(thread, op.base, op.return_count, values.items);
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(source[@max(start, 1) - 1 .. @min(stop, source.len)]) }});
 }
 
 pub fn upper(state: *State, thread: *Thread, op: bytecode.Call) !void {
@@ -918,7 +521,7 @@ fn asciiMap(state: *State, thread: *Thread, op: bytecode.Call, to_lower: bool) !
     var out = try state.allocator.alloc(u8, source.len);
     defer state.allocator.free(out);
     for (source, 0..) |source_byte, index| out[index] = if (to_lower) std.ascii.toLower(source_byte) else std.ascii.toUpper(source_byte);
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(out) }});
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(out) }});
 }
 
 fn findImpl(state: *State, thread: *Thread, op: bytecode.Call, positions: bool) !void {
@@ -927,15 +530,15 @@ fn findImpl(state: *State, thread: *Thread, op: bytecode.Call, positions: bool) 
     const pattern = try state.expectArgumentString(thread, op, function_name, 1);
     const initial = normalizeIndex(try state.optionalArgumentInteger(thread, op, function_name, 2, 1), source.len);
     const plain = if (positions)
-        runtime.truthy(runtime.argValue(state, thread, op, 3)) or !patternHasSpecials(pattern)
+        runtime.truthy(runtime.argValue(state, thread, op, 3)) or !pattern_mod.patternHasSpecials(pattern)
     else
-        !patternHasMagic(pattern);
+        !pattern_mod.patternHasMagic(pattern);
     if (pattern.len == 0 and initial > source.len + 1) {
         try state.returnValues(thread, op.base, op.return_count, &.{.nil});
         return;
     }
     const start = if (initial <= 1) 0 else @min(initial - 1, source.len);
-    const found = if (plain) plainFind(source, pattern, start) else try simplePatternFind(state, source, pattern, start);
+    const found = if (plain) pattern_mod.plainFind(source, pattern, start) else try pattern_mod.simplePatternFind(state, source, pattern, start);
     if (found) |range| {
         if (positions) {
             if (range.captures.count == 0) {
@@ -950,16 +553,16 @@ fn findImpl(state: *State, thread: *Thread, op: bytecode.Call, positions: bool) 
             defer values.deinit(state.allocator);
             try values.append(state.allocator, .{ .integer = @intCast(range.range.start + 1) });
             try values.append(state.allocator, .{ .integer = @intCast(range.range.end) });
-            try appendCaptureValues(state, &values, source, range.captures);
+            try pattern_mod.appendCaptureValues(state, &values, source, range.captures);
             try state.returnValues(thread, op.base, op.return_count, values.items);
         } else {
             if (range.captures.count == 0) {
-                try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(source[range.range.start..range.range.end]) }});
+                try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(source[range.range.start..range.range.end]) }});
                 return;
             }
             var values = std.ArrayList(Value).empty;
             defer values.deinit(state.allocator);
-            try appendMatchValues(state, &values, source, range);
+            try pattern_mod.appendMatchValues(state, &values, source, range);
             try state.returnValues(thread, op.base, op.return_count, values.items);
         }
     } else {
@@ -972,922 +575,4 @@ fn normalizeIndex(index: i64, source_len: usize) usize {
     const normalized = if (index < 0) length + index + 1 else index;
     if (normalized <= 0) return 0;
     return @intCast(normalized);
-}
-
-const MatchRange = struct { start: usize, end: usize };
-const max_captures = 32;
-const CaptureSlot = union(enum) {
-    unfinished: usize,
-    range: MatchRange,
-    position: usize,
-};
-const CaptureState = struct {
-    slots: [max_captures]CaptureSlot = undefined,
-    count: usize = 0,
-};
-const Match = struct { range: MatchRange, captures: CaptureState };
-const MatchResult = struct { end: usize, captures: CaptureState };
-const pattern_match_max_depth: usize = 100;
-
-fn patternHasSpecials(pattern: []const u8) bool {
-    for (pattern) |ch| {
-        if (std.mem.indexOfScalar(u8, "^$*+?.([%-", ch) != null) return true;
-    }
-    return false;
-}
-
-fn patternHasMagic(pattern: []const u8) bool {
-    for (pattern) |ch| {
-        if (std.mem.indexOfScalar(u8, "^$()%.[]*+-?", ch) != null) return true;
-    }
-    return false;
-}
-
-fn plainFind(source: []const u8, pattern: []const u8, start: usize) ?Match {
-    if (pattern.len == 0) return .{ .range = .{ .start = @min(start, source.len), .end = @min(start, source.len) }, .captures = .{} };
-    if (start > source.len) return null;
-    if (pattern.len > source.len - start) return null;
-    if (pattern.len == 1) {
-        const index = std.mem.indexOfScalarPos(u8, source, start, pattern[0]) orelse return null;
-        return .{ .range = .{ .start = index, .end = index + 1 }, .captures = .{} };
-    }
-
-    const last_start = source.len - pattern.len;
-    var candidate = start;
-    while (candidate <= last_start) {
-        const haystack = source[candidate .. last_start + 1];
-        const relative = std.mem.indexOfScalar(u8, haystack, pattern[0]) orelse return null;
-        candidate += relative;
-        if (std.mem.eql(u8, source[candidate .. candidate + pattern.len], pattern)) return .{ .range = .{ .start = candidate, .end = candidate + pattern.len }, .captures = .{} };
-        candidate += 1;
-    }
-    return null;
-}
-
-fn simplePatternFind(state: *State, source: []const u8, pattern: []const u8, start: usize) !?Match {
-    if (pattern.len == 0) return .{ .range = .{ .start = @min(start, source.len), .end = @min(start, source.len) }, .captures = .{} };
-    if (repeatedEscapePattern(pattern)) |repeated| return findRepeatedEscape(source, repeated, start);
-    if (simpleOneOrMoreEscape(pattern)) |code| return findOneOrMoreEscape(source, code, start);
-    switch (findFixedWidthPattern(source, pattern, start)) {
-        .found => |matched| return matched,
-        .not_found => return null,
-        .unsupported => {},
-    }
-    if (pattern[0] == '^') {
-        const anchored_start = @min(start, source.len);
-        const matched = (try matchSimplePatternAt(state, source, pattern[1..], anchored_start)) orelse return null;
-        return .{ .range = .{ .start = anchored_start, .end = matched.end }, .captures = matched.captures };
-    }
-    var candidate = start;
-    while (candidate <= source.len) : (candidate += 1) {
-        try state.checkInterrupt();
-        if (try matchSimplePatternAt(state, source, pattern, candidate)) |matched| return .{ .range = .{ .start = candidate, .end = matched.end }, .captures = matched.captures };
-    }
-    return null;
-}
-
-const FixedPatternFind = union(enum) {
-    unsupported,
-    not_found,
-    found: Match,
-};
-
-fn findFixedWidthPattern(source: []const u8, pattern: []const u8, start: usize) FixedPatternFind {
-    const width = fixedWidthPatternLength(pattern) orelse return .unsupported;
-    if (width == 0) return .unsupported;
-    const first_atom_end = fixedPatternAtomEnd(pattern, 0).?;
-    const first_atom = pattern[0..first_atom_end];
-    const bounded_start = @min(start, source.len);
-    if (width > source.len - bounded_start) return .not_found;
-
-    const last_start = source.len - width;
-    var candidate = bounded_start;
-    while (candidate <= last_start) {
-        candidate = findFixedAtom(source, first_atom, candidate, last_start) orelse return .not_found;
-        const end = matchFixedWidthPatternAt(source, pattern, candidate).?;
-        if (end != 0) return .{ .found = .{ .range = .{ .start = candidate, .end = end }, .captures = .{} } };
-        candidate += 1;
-    }
-    return .not_found;
-}
-
-const RepeatedEscapePattern = struct {
-    code: u8,
-    count: usize,
-};
-
-fn repeatedEscapePattern(pattern: []const u8) ?RepeatedEscapePattern {
-    if (pattern.len < 2 or pattern.len % 2 != 0) return null;
-    var index: usize = 0;
-    var code: ?u8 = null;
-    var count: usize = 0;
-    while (index < pattern.len) : (index += 2) {
-        if (pattern[index] != '%') return null;
-        const current = pattern[index + 1];
-        switch (current) {
-            'b', 'f', '0'...'9' => return null,
-            else => {},
-        }
-        if (code) |expected| {
-            if (current != expected) return null;
-        } else {
-            code = current;
-        }
-        count += 1;
-    }
-    return .{ .code = code.?, .count = count };
-}
-
-fn findRepeatedEscape(source: []const u8, repeated: RepeatedEscapePattern, start: usize) ?Match {
-    const bounded_start = @min(start, source.len);
-    if (repeated.count > source.len - bounded_start) return null;
-    const last_start = source.len - repeated.count;
-    var candidate = bounded_start;
-    while (candidate <= last_start) {
-        candidate = findEscapeMatch(source, repeated.code, candidate, last_start) orelse return null;
-        var offset: usize = 1;
-        while (offset < repeated.count and patternEscapeMatches(repeated.code, source[candidate + offset])) : (offset += 1) {}
-        if (offset == repeated.count) return .{ .range = .{ .start = candidate, .end = candidate + repeated.count }, .captures = .{} };
-        candidate += 1;
-    }
-    return null;
-}
-
-fn fixedWidthPatternLength(pattern: []const u8) ?usize {
-    var index: usize = 0;
-    var width: usize = 0;
-    while (index < pattern.len) {
-        const atom_end = fixedPatternAtomEnd(pattern, index) orelse return null;
-        if (atom_end < pattern.len and isPatternQuantifier(pattern[atom_end])) return null;
-        width += 1;
-        index = atom_end;
-    }
-    return width;
-}
-
-fn fixedPatternAtomEnd(pattern: []const u8, index: usize) ?usize {
-    return switch (pattern[index]) {
-        '.' => index + 1,
-        '%' => blk: {
-            if (index + 1 >= pattern.len) break :blk null;
-            break :blk switch (pattern[index + 1]) {
-                'b', 'f', '0'...'9' => null,
-                else => index + 2,
-            };
-        },
-        '[' => blk: {
-            const end = classAtomEnd(pattern, index);
-            break :blk if (end > index) end else null;
-        },
-        '^', '$', '(', ')', ']', '*', '+', '-', '?' => null,
-        else => index + 1,
-    };
-}
-
-fn isPatternQuantifier(code: u8) bool {
-    return code == '*' or code == '+' or code == '-' or code == '?';
-}
-
-fn findFixedAtom(source: []const u8, atom: []const u8, start: usize, last_start: usize) ?usize {
-    if (atom.len == 1 and atom[0] != '.') {
-        const relative = std.mem.indexOfScalar(u8, source[start .. last_start + 1], atom[0]) orelse return null;
-        return start + relative;
-    }
-    if (atom.len == 2 and atom[0] == '%' and atom[1] == 'd') return findAsciiDigit(source, start, last_start);
-    var candidate = start;
-    while (candidate <= last_start) : (candidate += 1) {
-        if (patternAtomMatches(atom, source[candidate])) return candidate;
-    }
-    return null;
-}
-
-fn findEscapeMatch(source: []const u8, code: u8, start: usize, last_start: usize) ?usize {
-    if (code == 'd') return findAsciiDigit(source, start, last_start);
-    var candidate = start;
-    while (candidate <= last_start) : (candidate += 1) {
-        if (patternEscapeMatches(code, source[candidate])) return candidate;
-    }
-    return null;
-}
-
-fn findAsciiDigit(source: []const u8, start: usize, last_start: usize) ?usize {
-    var index = start;
-    const end = last_start + 1;
-    const vector_len = std.simd.suggestVectorLength(u8) orelse 16;
-    const Block = @Vector(vector_len, u8);
-    const zero: Block = @splat('0');
-    const nine: Block = @splat('9');
-    while (index + vector_len <= end) : (index += vector_len) {
-        const block: Block = source[index..][0..vector_len].*;
-        const matches = (block >= zero) & (block <= nine);
-        if (@reduce(.Or, matches)) return index + std.simd.firstTrue(matches).?;
-    }
-    while (index <= last_start) : (index += 1) {
-        if (std.ascii.isDigit(source[index])) return index;
-    }
-    return null;
-}
-
-fn matchFixedWidthPatternAt(source: []const u8, pattern: []const u8, start: usize) ?usize {
-    var source_index = start;
-    var pattern_index: usize = 0;
-    while (pattern_index < pattern.len) {
-        if (source_index >= source.len) return 0;
-        const atom_end = fixedPatternAtomEnd(pattern, pattern_index) orelse return null;
-        if (!patternAtomMatches(pattern[pattern_index..atom_end], source[source_index])) return 0;
-        source_index += 1;
-        pattern_index = atom_end;
-    }
-    return source_index;
-}
-
-fn simpleOneOrMoreEscape(pattern: []const u8) ?u8 {
-    if (pattern.len != 3 or pattern[0] != '%' or pattern[2] != '+') return null;
-    return switch (pattern[1]) {
-        'b', 'f', '0'...'9' => null,
-        else => pattern[1],
-    };
-}
-
-fn findOneOrMoreEscape(source: []const u8, code: u8, start: usize) ?Match {
-    var candidate = @min(start, source.len);
-    while (candidate < source.len and !patternEscapeMatches(code, source[candidate])) : (candidate += 1) {}
-    if (candidate >= source.len) return null;
-
-    var end = candidate + 1;
-    while (end < source.len and patternEscapeMatches(code, source[end])) : (end += 1) {}
-    return .{ .range = .{ .start = candidate, .end = end }, .captures = .{} };
-}
-
-fn matchSimplePatternAt(state: *State, source: []const u8, pattern: []const u8, start: usize) !?MatchResult {
-    return matchPatternFrom(state, source, pattern, start, 0, 0, .{});
-}
-
-fn matchPatternFrom(state: *State, source: []const u8, pattern: []const u8, source_index: usize, pattern_index: usize, depth: usize, captures: CaptureState) !?MatchResult {
-    if (depth > pattern_match_max_depth) return state.failLibrary("pattern too complex");
-    if (pattern_index >= pattern.len) {
-        if (capturesHaveUnfinished(captures)) return state.failLibrary("unfinished capture");
-        return .{ .end = source_index, .captures = captures };
-    }
-    if (pattern[pattern_index] == '$' and pattern_index + 1 == pattern.len) return if (source_index == source.len) .{ .end = source_index, .captures = captures } else null;
-    if (pattern[pattern_index] == '(') {
-        const updated = if (pattern_index + 1 < pattern.len and pattern[pattern_index + 1] == ')')
-            try appendCapture(state, captures, .{ .position = source_index })
-        else
-            try appendCapture(state, captures, .{ .unfinished = source_index });
-        const next_index = pattern_index + @as(usize, if (pattern_index + 1 < pattern.len and pattern[pattern_index + 1] == ')') 2 else 1);
-        return matchPatternFrom(state, source, pattern, source_index, next_index, depth + 1, updated);
-    }
-    if (pattern[pattern_index] == ')') return matchPatternFrom(state, source, pattern, source_index, pattern_index + 1, depth + 1, try closeCapture(state, captures, source_index));
-
-    const atom_start = pattern_index;
-    const atom_end = nextPatternAtom(pattern, atom_start);
-    try validatePatternAtom(state, pattern, atom_start, atom_end);
-    const quantifier = if (atom_end < pattern.len and std.mem.indexOfScalar(u8, "*+-?", pattern[atom_end]) != null) pattern[atom_end] else 0;
-    const next_index = atom_end + @as(usize, if (quantifier != 0) 1 else 0);
-    const atom = pattern[atom_start..atom_end];
-
-    switch (quantifier) {
-        0 => {
-            const item_end = (try matchPatternItem(state, source, atom, source_index, captures)) orelse return null;
-            return matchPatternFrom(state, source, pattern, item_end, next_index, depth + 1, captures);
-        },
-        '?' => {
-            if (try matchPatternItem(state, source, atom, source_index, captures)) |item_end| {
-                if (item_end > source_index) {
-                    if (try matchPatternFrom(state, source, pattern, item_end, next_index, depth + 1, captures)) |end| return end;
-                }
-            }
-            return matchPatternFrom(state, source, pattern, source_index, next_index, depth + 1, captures);
-        },
-        '*', '+' => {
-            var ends = std.ArrayList(usize).empty;
-            defer ends.deinit(state.allocator);
-            var end = source_index;
-            while (ends.items.len < 4096) {
-                const item_end = (try matchPatternItem(state, source, atom, end, captures)) orelse break;
-                if (item_end == end) break;
-                end = item_end;
-                try ends.append(state.allocator, end);
-            }
-            if (quantifier == '+' and end == source_index) return null;
-            var index = ends.items.len;
-            while (index > 0) {
-                index -= 1;
-                try state.checkInterrupt();
-                if (try matchPatternFrom(state, source, pattern, ends.items[index], next_index, depth + 1, captures)) |matched_end| return matched_end;
-            }
-            if (quantifier == '*') return matchPatternFrom(state, source, pattern, source_index, next_index, depth + 1, captures);
-            return null;
-        },
-        '-' => {
-            var candidate = source_index;
-            while (true) {
-                try state.checkInterrupt();
-                if (try matchPatternFrom(state, source, pattern, candidate, next_index, depth + 1, captures)) |matched_end| return matched_end;
-                const item_end = (try matchPatternItem(state, source, atom, candidate, captures)) orelse return null;
-                if (item_end == candidate) return null;
-                candidate = item_end;
-            }
-        },
-        else => unreachable,
-    }
-}
-
-fn validatePatternAtom(state: *State, pattern: []const u8, atom_start: usize, atom_end: usize) !void {
-    if (pattern[atom_start] == '[' and atom_end == atom_start + 1) return state.failLibrary("malformed pattern (missing ']')");
-    if (pattern[atom_start] != '%') return;
-    if (atom_start + 1 >= pattern.len) return state.failLibrary("malformed pattern (ends with '%')");
-    switch (pattern[atom_start + 1]) {
-        'b' => if (atom_start + 3 >= pattern.len) return state.failLibrary("malformed pattern (missing arguments to '%b')"),
-        'f' => if (atom_start + 2 >= pattern.len or pattern[atom_start + 2] != '[' or atom_end == atom_start + 1) return state.failLibrary("missing '[' after '%f' in pattern"),
-        else => {},
-    }
-}
-
-fn appendCapture(state: *State, captures: CaptureState, slot: CaptureSlot) !CaptureState {
-    if (captures.count >= max_captures) return state.failLibrary("too many captures");
-    var updated = captures;
-    updated.slots[updated.count] = slot;
-    updated.count += 1;
-    return updated;
-}
-
-fn closeCapture(state: *State, captures: CaptureState, end: usize) !CaptureState {
-    var updated = captures;
-    var index = updated.count;
-    while (index > 0) {
-        index -= 1;
-        switch (updated.slots[index]) {
-            .unfinished => |start| {
-                updated.slots[index] = .{ .range = .{ .start = start, .end = end } };
-                return updated;
-            },
-            else => {},
-        }
-    }
-    return state.failLibrary("invalid pattern capture");
-}
-
-fn capturesHaveUnfinished(captures: CaptureState) bool {
-    for (captures.slots[0..captures.count]) |slot| switch (slot) {
-        .unfinished => return true,
-        else => {},
-    };
-    return false;
-}
-
-fn matchPatternItem(state: *State, source: []const u8, atom: []const u8, source_index: usize, captures: CaptureState) !?usize {
-    if (atom.len == 0) return null;
-    if (atom.len == 1) {
-        if (source_index >= source.len) return null;
-        return if (atom[0] == '.' or atom[0] == source[source_index]) source_index + 1 else null;
-    }
-    if (atom[0] == '%') {
-        if (atom.len >= 4 and atom[1] == 'b') return matchBalanced(source, source_index, atom[2], atom[3]);
-        if (atom.len >= 4 and atom[1] == 'f' and atom[2] == '[') {
-            const previous = if (source_index == 0) 0 else source[source_index - 1];
-            const current = if (source_index < source.len) source[source_index] else 0;
-            return if (!patternAtomMatches(atom[2..], previous) and patternAtomMatches(atom[2..], current)) source_index else null;
-        }
-        if (atom[1] == '0') {
-            try invalidCaptureIndex(state, 0);
-            unreachable;
-        }
-        if (atom[1] >= '1' and atom[1] <= '9') return matchCaptureReference(state, source, source_index, captures, atom[1] - '0');
-        if (source_index >= source.len) return null;
-        return if (patternEscapeMatches(atom[1], source[source_index])) source_index + 1 else null;
-    }
-    if (atom[0] == '[' and atom[atom.len - 1] == ']') {
-        if (source_index >= source.len) return null;
-        return if (patternAtomMatches(atom, source[source_index])) source_index + 1 else null;
-    }
-    return null;
-}
-
-fn matchBalanced(source: []const u8, source_index: usize, open: u8, close: u8) ?usize {
-    if (source_index >= source.len or source[source_index] != open) return null;
-    var depth: usize = 1;
-    var index = source_index + 1;
-    while (index < source.len) : (index += 1) {
-        if (source[index] == close) {
-            depth -= 1;
-            if (depth == 0) return index + 1;
-        } else if (source[index] == open) {
-            depth += 1;
-        }
-    }
-    return null;
-}
-
-fn matchCaptureReference(state: *State, source: []const u8, source_index: usize, captures: CaptureState, one_based: u8) !?usize {
-    const index: usize = one_based - 1;
-    if (index >= captures.count) {
-        try invalidCaptureIndex(state, one_based);
-        unreachable;
-    }
-    const range = switch (captures.slots[index]) {
-        .range => |range| range,
-        else => {
-            try invalidCaptureIndex(state, one_based);
-            unreachable;
-        },
-    };
-    const captured = source[range.start..range.end];
-    if (source_index + captured.len > source.len) return null;
-    return if (std.mem.eql(u8, source[source_index .. source_index + captured.len], captured)) source_index + captured.len else null;
-}
-
-fn nextPatternAtom(pattern: []const u8, index: usize) usize {
-    if (pattern[index] == '%' and index + 1 < pattern.len) {
-        if (pattern[index + 1] == 'b' and index + 3 < pattern.len) return index + 4;
-        if (pattern[index + 1] == 'f' and index + 2 < pattern.len and pattern[index + 2] == '[') return classAtomEnd(pattern, index + 2);
-        return index + 2;
-    }
-    if (pattern[index] == '[') {
-        const end = classAtomEnd(pattern, index);
-        if (end > index) return end;
-    }
-    return index + 1;
-}
-
-fn classAtomEnd(pattern: []const u8, index: usize) usize {
-    var end = index + 1;
-    if (end < pattern.len and pattern[end] == '^') end += 1;
-    if (end < pattern.len and pattern[end] == ']') end += 1;
-    while (end < pattern.len) {
-        if (pattern[end] == '%' and end + 1 < pattern.len) {
-            end += 2;
-            continue;
-        }
-        if (pattern[end] == ']') return end + 1;
-        end += 1;
-    }
-    return index;
-}
-
-fn patternAtomMatches(atom: []const u8, source_byte: u8) bool {
-    if (atom.len == 1) return atom[0] == '.' or atom[0] == source_byte;
-    if (atom[0] == '%') return patternEscapeMatches(atom[1], source_byte);
-    if (atom[0] == '[' and atom[atom.len - 1] == ']') {
-        const negated = atom.len > 2 and atom[1] == '^';
-        const body = atom[if (negated) 2 else 1 .. atom.len - 1];
-        var matched = false;
-        var index: usize = 0;
-        while (index < body.len) {
-            if (body[index] == '%' and index + 1 < body.len) {
-                matched = matched or patternEscapeMatches(body[index + 1], source_byte);
-                index += 2;
-            } else if (index + 2 < body.len and body[index + 1] == '-') {
-                matched = matched or (body[index] <= source_byte and source_byte <= body[index + 2]);
-                index += 3;
-            } else {
-                matched = matched or body[index] == source_byte;
-                index += 1;
-            }
-        }
-        return if (negated) !matched else matched;
-    }
-    return false;
-}
-
-fn patternEscapeMatches(code: u8, source_byte: u8) bool {
-    return switch (code) {
-        'a' => std.ascii.isAlphabetic(source_byte),
-        'A' => !std.ascii.isAlphabetic(source_byte),
-        'c' => isControl(source_byte),
-        'C' => !isControl(source_byte),
-        'd' => std.ascii.isDigit(source_byte),
-        'D' => !std.ascii.isDigit(source_byte),
-        'g' => source_byte > ' ' and source_byte < 0x7f,
-        'G' => !(source_byte > ' ' and source_byte < 0x7f),
-        'l' => std.ascii.isLower(source_byte),
-        'L' => !std.ascii.isLower(source_byte),
-        'p' => isPunctuation(source_byte),
-        'P' => !isPunctuation(source_byte),
-        's' => std.ascii.isWhitespace(source_byte),
-        'S' => !std.ascii.isWhitespace(source_byte),
-        'u' => std.ascii.isUpper(source_byte),
-        'U' => !std.ascii.isUpper(source_byte),
-        'w' => std.ascii.isAlphanumeric(source_byte),
-        'W' => !std.ascii.isAlphanumeric(source_byte),
-        'x' => std.ascii.isHex(source_byte),
-        'X' => !std.ascii.isHex(source_byte),
-        'z' => source_byte == 0,
-        'Z' => source_byte != 0,
-        else => code == source_byte,
-    };
-}
-
-fn isControl(code: u8) bool {
-    return code < 0x20 or code == 0x7f;
-}
-
-fn isPunctuation(code: u8) bool {
-    return (code >= '!' and code <= '/') or (code >= ':' and code <= '@') or (code >= '[' and code <= '`') or (code >= '{' and code <= '~');
-}
-
-fn appendLiteral(state: *State, out: *std.ArrayList(u8), value: Value, arg: u32) !void {
-    switch (value) {
-        .string => |string| try appendQuoted(state.allocator, out, string),
-        .integer => |integer| if (integer == std.math.minInt(i64))
-            try runtime.appendFmt(state.allocator, out, "0x{x}", .{@as(u64, @bitCast(integer))})
-        else
-            try runtime.appendFmt(state.allocator, out, "{d}", .{integer}),
-        .number => |number| {
-            if (std.math.isNan(number)) {
-                try out.appendSlice(state.allocator, "(0/0)");
-            } else if (number == std.math.inf(f64)) {
-                try out.appendSlice(state.allocator, "1e9999");
-            } else if (number == -std.math.inf(f64)) {
-                try out.appendSlice(state.allocator, "-1e9999");
-            } else {
-                try appendFloatFormat(state, out, number, .{ .conversion = 'a' });
-            }
-        },
-        .nil, .boolean => try runtime.appendValue(state.allocator, out, value),
-        else => return state.failArgumentMessage("string.format", arg + 1, "value has no literal form"),
-    }
-}
-
-fn appendQuoted(allocator: std.mem.Allocator, out: *std.ArrayList(u8), source: []const u8) !void {
-    try out.append(allocator, '"');
-    for (source, 0..) |source_byte, index| {
-        if (source_byte == '"' or source_byte == '\\' or source_byte == '\n') {
-            try out.append(allocator, '\\');
-            try out.append(allocator, source_byte);
-        } else if (std.ascii.isControl(source_byte)) {
-            const next_is_digit = index + 1 < source.len and std.ascii.isDigit(source[index + 1]);
-            if (next_is_digit) {
-                try runtime.appendFmt(allocator, out, "\\{d:0>3}", .{source_byte});
-            } else {
-                try runtime.appendFmt(allocator, out, "\\{d}", .{source_byte});
-            }
-        } else {
-            try out.append(allocator, source_byte);
-        }
-    }
-    try out.append(allocator, '"');
-}
-
-fn appendPointer(state: *State, out: *std.ArrayList(u8), value: Value, spec: FormatSpec) !void {
-    var raw = std.ArrayList(u8).empty;
-    defer raw.deinit(state.allocator);
-    if (pointerAddress(value)) |address| {
-        try runtime.appendFmt(state.allocator, &raw, "0x{x}", .{address});
-    } else {
-        try raw.appendSlice(state.allocator, "(null)");
-    }
-    try appendPadded(state.allocator, out, raw.items, spec, ' ');
-}
-
-fn pointerAddress(value: Value) ?usize {
-    return switch (value) {
-        .string => |string| @intFromPtr(string.ptr),
-        .table => |table| @intFromPtr(table),
-        .userdata => |userdata| @intFromPtr(userdata),
-        .closure => |closure| @intFromPtr(closure),
-        .thread => |thread| @intFromPtr(thread),
-        .coroutine_wrapper => |thread| @intFromPtr(thread),
-        .gmatch_iterator => |table| @intFromPtr(table),
-        .native_print, .native_tostring, .native_getmetatable, .native_setmetatable, .native_rawequal, .native_rawget, .native_rawset, .native_rawlen, .native_next, .native_pairs, .native_ipairs, .native_ipairs_iter, .native_table_create, .native_select, .native_assert, .native_error, .native_pcall, .native_xpcall, .native_collectgarbage, .native_debug_traceback, .native_coroutine_create, .native_coroutine_resume, .native_coroutine_yield, .native_coroutine_status, .native_coroutine_running, .native_coroutine_isyieldable, .native_coroutine_close, .native_coroutine_wrap => @as(usize, 0x1000) + @as(usize, @intFromEnum(std.meta.activeTag(value))),
-        .native => |native| @as(usize, 0x2000) + @as(usize, @intFromEnum(native)),
-        .api_callback => |id| @as(usize, 0x3000) + id,
-        else => null,
-    };
-}
-
-fn appendPadded(allocator: std.mem.Allocator, out: *std.ArrayList(u8), text: []const u8, spec: FormatSpec, pad: u8) !void {
-    const padding = if (spec.width > text.len) spec.width - text.len else 0;
-    if (!spec.left_align) try out.appendNTimes(allocator, pad, padding);
-    try out.appendSlice(allocator, text);
-    if (spec.left_align) try out.appendNTimes(allocator, pad, padding);
-}
-
-const Endian = enum { little, big };
-
-const PackConfig = struct {
-    endian: Endian = nativeEndian(),
-    max_align: usize = 1,
-};
-
-const PackItemKind = enum {
-    integer,
-    float,
-    fixed_string,
-    zero_string,
-    size_string,
-    padding,
-};
-
-const PackItem = struct {
-    code: u8,
-    kind: PackItemKind,
-    size: usize,
-    signed: bool = false,
-    align_size: usize = 1,
-};
-
-const pack_max_size: usize = 16;
-const native_max_align: usize = 8;
-const pack_max_result_len: usize = @min(std.math.maxInt(usize), std.math.maxInt(i64));
-
-fn nativeEndian() Endian {
-    return switch (@import("builtin").target.cpu.arch.endian()) {
-        .little => .little,
-        .big => .big,
-    };
-}
-
-fn packFormatSize(state: *State, pack_format: []const u8) !usize {
-    var total: usize = 0;
-    var config = PackConfig{};
-    var index: usize = 0;
-    while (index < pack_format.len) {
-        const code = pack_format[index];
-        if (std.ascii.isWhitespace(code)) {
-            index += 1;
-            continue;
-        }
-        if (code == '<' or code == '>' or code == '=') {
-            index += 1;
-            continue;
-        }
-        if (code == '!') {
-            try parsePackMaxAlign(state, pack_format, &index, &config);
-            index += 1;
-            continue;
-        }
-        if (code == 'X') {
-            index += 1;
-            const next = try parsePackNextOption(state, pack_format, &index);
-            total = try addPackSize(state, total, try packAlignmentPadding(state, total, next, config.max_align));
-            index += 1;
-            continue;
-        }
-
-        const item = try parsePackOption(state, pack_format, &index, false);
-        if (item.kind == .zero_string or item.kind == .size_string) return state.fail("variable-length format");
-        if (item.kind != .fixed_string and item.kind != .padding) total = try addPackSize(state, total, try packAlignmentPadding(state, total, item, config.max_align));
-        total = try addPackSize(state, total, item.size);
-        index += 1;
-    }
-    return total;
-}
-
-fn parsePackMaxAlign(state: *State, pack_format: []const u8, index: *usize, config: *PackConfig) !void {
-    const parsed = try parsePackDecimal(state, pack_format, index);
-    const max_align = parsed orelse native_max_align;
-    if (max_align < 1 or max_align > pack_max_size) return state.fail("out of limits");
-    if (!isPowerOfTwo(max_align)) return state.fail("not power of 2");
-    config.max_align = max_align;
-}
-
-fn parsePackNextOption(state: *State, pack_format: []const u8, index: *usize) !PackItem {
-    if (index.* >= pack_format.len or std.ascii.isWhitespace(pack_format[index.*])) return state.fail("invalid next option");
-    if (pack_format[index.*] == 'X' or pack_format[index.*] == '<' or pack_format[index.*] == '>' or pack_format[index.*] == '=' or pack_format[index.*] == '!') return state.fail("invalid next option");
-    const item = try parsePackOption(state, pack_format, index, true);
-    return switch (item.kind) {
-        .integer, .float => item,
-        else => state.fail("invalid next option"),
-    };
-}
-
-fn parsePackOption(state: *State, pack_format: []const u8, index: *usize, next_option: bool) !PackItem {
-    const code = pack_format[index.*];
-    return switch (code) {
-        'b', 'B' => .{ .code = code, .kind = .integer, .size = 1, .signed = code == 'b', .align_size = 1 },
-        'h', 'H' => .{ .code = code, .kind = .integer, .size = @sizeOf(c_short), .signed = code == 'h', .align_size = @sizeOf(c_short) },
-        'l', 'L' => .{ .code = code, .kind = .integer, .size = @sizeOf(c_long), .signed = code == 'l', .align_size = @sizeOf(c_long) },
-        'j', 'J' => .{ .code = code, .kind = .integer, .size = @sizeOf(i64), .signed = code == 'j', .align_size = @sizeOf(i64) },
-        'T' => .{ .code = code, .kind = .integer, .size = @sizeOf(usize), .signed = false, .align_size = @sizeOf(usize) },
-        'i', 'I' => blk: {
-            const size = try parsePackIntegerSize(state, pack_format, index, next_option);
-            break :blk .{ .code = code, .kind = .integer, .size = size, .signed = code == 'i', .align_size = size };
-        },
-        'f' => .{ .code = code, .kind = .float, .size = 4, .align_size = 4 },
-        'd', 'n' => .{ .code = code, .kind = .float, .size = 8, .align_size = 8 },
-        'c' => .{ .code = code, .kind = .fixed_string, .size = try parsePackFixedStringSize(state, pack_format, index), .align_size = 1 },
-        's' => blk: {
-            const size = (try parsePackDecimal(state, pack_format, index)) orelse @sizeOf(usize);
-            if (size < 1 or size > pack_max_size) return state.fail("out of limits");
-            break :blk .{ .code = code, .kind = .size_string, .size = size, .align_size = size };
-        },
-        'z' => .{ .code = code, .kind = .zero_string, .size = 0, .align_size = 1 },
-        'x' => .{ .code = code, .kind = .padding, .size = 1, .align_size = 1 },
-        else => invalidPackOption(state, code),
-    };
-}
-
-fn parsePackIntegerSize(state: *State, pack_format: []const u8, index: *usize, next_option: bool) !usize {
-    const size = (try parsePackDecimal(state, pack_format, index)) orelse @sizeOf(c_int);
-    if (size < 1 or size > pack_max_size) {
-        if (next_option) return packNextSizeOutOfLimits(state, size);
-        return state.fail("out of limits");
-    }
-    return size;
-}
-
-fn parsePackFixedStringSize(state: *State, pack_format: []const u8, index: *usize) !usize {
-    const size = (try parsePackDecimal(state, pack_format, index)) orelse return state.fail("missing size");
-    if (size > pack_max_result_len) return state.fail("invalid format");
-    return size;
-}
-
-fn parsePackDecimal(state: *State, pack_format: []const u8, index: *usize) !?usize {
-    var value: usize = 0;
-    var saw_digit = false;
-    while (index.* + 1 < pack_format.len and std.ascii.isDigit(pack_format[index.* + 1])) {
-        index.* += 1;
-        saw_digit = true;
-        value = std.math.mul(usize, value, 10) catch return state.fail("invalid format");
-        value = std.math.add(usize, value, pack_format[index.*] - '0') catch return state.fail("invalid format");
-    }
-    return if (saw_digit) value else null;
-}
-
-fn invalidPackOption(state: *State, code: u8) runtime.RuntimeError {
-    var message = std.ArrayList(u8).empty;
-    defer message.deinit(state.allocator);
-    runtime.appendFmt(state.allocator, &message, "invalid format option '{c}'", .{code}) catch return state.fail("invalid format option");
-    return state.fail(state.intern(message.items) catch return state.fail("invalid format option"));
-}
-
-fn packNextSizeOutOfLimits(state: *State, size: usize) runtime.RuntimeError {
-    var message = std.ArrayList(u8).empty;
-    defer message.deinit(state.allocator);
-    runtime.appendFmt(state.allocator, &message, "({d}) out of limits [1,16]", .{size}) catch return state.fail("out of limits");
-    return state.fail(state.intern(message.items) catch return state.fail("out of limits"));
-}
-
-fn packIntegerDoesNotFit(state: *State, size: usize) runtime.RuntimeError {
-    var message = std.ArrayList(u8).empty;
-    defer message.deinit(state.allocator);
-    runtime.appendFmt(state.allocator, &message, "{d}-byte integer does not fit", .{size}) catch return state.fail("integer does not fit");
-    return state.fail(state.intern(message.items) catch return state.fail("integer does not fit"));
-}
-
-fn addPackSize(state: *State, current: usize, add: usize) !usize {
-    const total = std.math.add(usize, current, add) catch return state.fail("too large");
-    if (total > pack_max_result_len) return state.fail("too large");
-    return total;
-}
-
-fn ensurePackLength(state: *State, current: usize, add: usize) !void {
-    const total = std.math.add(usize, current, add) catch return state.fail("too long");
-    if (total > pack_max_result_len) return state.fail("too long");
-}
-
-fn packAlignmentPadding(state: *State, pos: usize, item: PackItem, max_align: usize) !usize {
-    const alignment = try packOptionAlignment(state, item, max_align);
-    if (alignment <= 1) return 0;
-    return (alignment - (pos % alignment)) % alignment;
-}
-
-fn packOptionAlignment(state: *State, item: PackItem, max_align: usize) !usize {
-    if (max_align <= 1 or item.align_size <= 1) return 1;
-    const alignment = @min(item.align_size, max_align);
-    if (!isPowerOfTwo(alignment)) return state.fail("not power of 2");
-    return alignment;
-}
-
-fn isPowerOfTwo(value: usize) bool {
-    return value != 0 and (value & (value - 1)) == 0;
-}
-
-fn appendPackedInteger(state: *State, out: *std.ArrayList(u8), value: Value, item: PackItem, endian: Endian) !void {
-    const integer = runtime.toInteger(value) orelse return state.fail("number has no integer representation");
-    if (item.signed) {
-        if (!packSignedFits(integer, item.size)) return state.fail("integer overflow");
-    } else if (!packUnsignedFits(integer, item.size)) {
-        return state.fail("unsigned overflow");
-    }
-    try appendPackedIntegerBits(state, out, @bitCast(integer), item.size, item.signed and integer < 0, endian);
-}
-
-fn appendPackedUnsigned(state: *State, out: *std.ArrayList(u8), value: u64, size: usize, endian: Endian) !void {
-    try appendPackedIntegerBits(state, out, value, size, false, endian);
-}
-
-fn appendPackedIntegerBits(state: *State, out: *std.ArrayList(u8), value: u64, size: usize, sign_fill: bool, endian: Endian) !void {
-    try ensurePackLength(state, out.items.len, size);
-    var bytes: [pack_max_size]u8 = undefined;
-    @memset(bytes[0..size], if (sign_fill) 0xff else 0);
-    const low_size = @min(size, @sizeOf(u64));
-    switch (endian) {
-        .little => {
-            var byte_index: usize = 0;
-            while (byte_index < low_size) : (byte_index += 1) bytes[byte_index] = @truncate(value >> @intCast(byte_index * 8));
-        },
-        .big => {
-            var byte_index: usize = 0;
-            while (byte_index < low_size) : (byte_index += 1) bytes[size - 1 - byte_index] = @truncate(value >> @intCast(byte_index * 8));
-        },
-    }
-    try out.appendSlice(state.allocator, bytes[0..size]);
-}
-
-fn appendPackedFloat(state: *State, out: *std.ArrayList(u8), value: Value, item: PackItem, endian: Endian) !void {
-    try ensurePackLength(state, out.items.len, item.size);
-    var bytes: [8]u8 = undefined;
-    if (item.code == 'f') {
-        std.mem.writeInt(u32, bytes[0..4], @bitCast(@as(f32, @floatCast(try runtime.toNumber(value)))), if (endian == .little) .little else .big);
-    } else {
-        std.mem.writeInt(u64, bytes[0..8], @bitCast(try runtime.toNumber(value)), if (endian == .little) .little else .big);
-    }
-    try out.appendSlice(state.allocator, bytes[0..item.size]);
-}
-
-fn packSignedFits(value: i64, size: usize) bool {
-    if (size >= @sizeOf(i64)) return true;
-    const bits: u7 = @intCast(size * 8);
-    const min = -(@as(i128, 1) << (bits - 1));
-    const max = (@as(i128, 1) << (bits - 1)) - 1;
-    const wide: i128 = value;
-    return min <= wide and wide <= max;
-}
-
-fn packUnsignedFits(value: i64, size: usize) bool {
-    if (size >= @sizeOf(i64)) return true;
-    if (value < 0) return false;
-    const bits: u7 = @intCast(size * 8);
-    const max = (@as(i128, 1) << bits) - 1;
-    const wide: i128 = value;
-    return wide <= max;
-}
-
-fn unpackInitialPosition(state: *State, data_len: usize, position: i64) !usize {
-    const data_len_i64: i64 = @intCast(data_len);
-    const zero_based = if (position > 0) position - 1 else data_len_i64 + position;
-    if (zero_based < 0 or zero_based > data_len_i64) return state.failArgumentMessage("string.unpack", 3, "initial position out of string");
-    return @intCast(zero_based);
-}
-
-fn unpackUnsignedLength(state: *State, bytes: []const u8, endian: Endian) !usize {
-    const value = try unpackUnsignedBits(state, bytes, endian);
-    if (value > std.math.maxInt(usize)) return state.failArgumentMessage("string.unpack", 2, "data string too short");
-    return @intCast(value);
-}
-
-fn unpackIntegerValue(state: *State, bytes: []const u8, item: PackItem, endian: Endian) !Value {
-    const unsigned = if (item.signed) try unpackSignedBits(state, bytes, endian) else try unpackUnsignedBits(state, bytes, endian);
-    return .{ .integer = @bitCast(unsigned) };
-}
-
-fn unpackFloatValue(bytes: []const u8, item: PackItem, endian: Endian) Value {
-    if (item.code == 'f') return .{ .number = @floatCast(@as(f32, @bitCast(std.mem.readInt(u32, bytes[0..4], if (endian == .little) .little else .big)))) };
-    return .{ .number = @bitCast(std.mem.readInt(u64, bytes[0..8], if (endian == .little) .little else .big)) };
-}
-
-fn unpackSignedBits(state: *State, bytes: []const u8, endian: Endian) !u64 {
-    if (bytes.len <= @sizeOf(u64)) {
-        const unsigned = unpackLowBits(bytes, endian);
-        return @bitCast(signExtend(unsigned, bytes.len));
-    }
-    const low = unpackExtendedLowBits(bytes, endian);
-    const expected: u8 = if ((low & (@as(u64, 1) << 63)) != 0) 0xff else 0;
-    if (!extendedBytesAll(bytes, endian, expected)) return packIntegerDoesNotFit(state, bytes.len);
-    return low;
-}
-
-fn unpackUnsignedBits(state: *State, bytes: []const u8, endian: Endian) !u64 {
-    if (bytes.len <= @sizeOf(u64)) return unpackLowBits(bytes, endian);
-    if (!extendedBytesAll(bytes, endian, 0)) return packIntegerDoesNotFit(state, bytes.len);
-    return unpackExtendedLowBits(bytes, endian);
-}
-
-fn unpackLowBits(bytes: []const u8, endian: Endian) u64 {
-    var value: u64 = 0;
-    switch (endian) {
-        .little => {
-            for (bytes, 0..) |source_byte, index| value |= @as(u64, source_byte) << @intCast(index * 8);
-        },
-        .big => {
-            for (bytes) |source_byte| value = (value << 8) | source_byte;
-        },
-    }
-    return value;
-}
-
-fn unpackExtendedLowBits(bytes: []const u8, endian: Endian) u64 {
-    return switch (endian) {
-        .little => unpackLowBits(bytes[0..8], endian),
-        .big => unpackLowBits(bytes[bytes.len - 8 ..], endian),
-    };
-}
-
-fn extendedBytesAll(bytes: []const u8, endian: Endian, expected: u8) bool {
-    const extra = switch (endian) {
-        .little => bytes[8..],
-        .big => bytes[0 .. bytes.len - 8],
-    };
-    for (extra) |source_byte| if (source_byte != expected) return false;
-    return true;
-}
-
-fn signExtend(value: u64, size: usize) i64 {
-    const bits = size * 8;
-    if (bits == 64) return @bitCast(value);
-    const shift: u6 = @intCast(64 - bits);
-    return @as(i64, @bitCast(value << shift)) >> shift;
 }
