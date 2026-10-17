@@ -559,10 +559,14 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
             },
             .get_table => {
                 const op = instructions[pc].get_table;
+                const table_value = stack[op.table];
+                const key = stack[op.key];
                 const value = if (frame.named_vararg_readonly and op.table == proto.param_count)
-                    call_mod.namedVarargRead(frame.varargs, stack[op.key])
+                    call_mod.namedVarargRead(frame.varargs, key)
+                else if (arrayValue(table_value, key)) |hit|
+                    hit
                 else
-                    fastTableRawGet(stack[op.table], stack[op.key]) orelse break :fast_loop;
+                    fastTableRawGet(table_value, key) orelse break :fast_loop;
                 stack[op.dest] = value;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
@@ -580,6 +584,13 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
             },
             .set_table => {
                 const op = instructions[pc].set_table;
+                if (arraySlot(stack[op.table], stack[op.key])) |slot| {
+                    const table = stack[op.table].table;
+                    slot.* = stack[op.value];
+                    writeTableBarrierFast(self, table, stack[op.key], stack[op.value]);
+                    pc += 1;
+                    continue :fast_loop std.meta.activeTag(instructions[pc]);
+                }
                 if (!fastTableArraySetExistingNoAlloc(self, stack[op.table], stack[op.key], stack[op.value]) and
                     !fastTableDynamicKeySetNoAlloc(self, stack[op.table], stack[op.key], stack[op.value])) break :fast_loop;
                 pc += 1;
@@ -615,7 +626,13 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
             },
             .compare_branch => {
                 const op = instructions[pc].compare_branch;
-                const result = operators_mod.rawCompareBranchResult(stack[op.left], stack[op.right], op.op) orelse break :fast_loop;
+                const lhs = stack[op.left];
+                const rhs = stack[op.right];
+                const result = if (lhs == .integer and rhs == .integer) switch (op.op) {
+                    .eq => lhs.integer == rhs.integer,
+                    .lt => lhs.integer < rhs.integer,
+                    .le => lhs.integer <= rhs.integer,
+                } else operators_mod.rawCompareBranchResult(lhs, rhs, op.op) orelse break :fast_loop;
                 pc += 1;
                 if (result == op.jump_if_truthy) {
                     const source_pc = pc;
@@ -824,6 +841,33 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
         thread.last_transfer_count = 0;
         return true;
     }
+}
+
+inline fn arrayValue(table_value: Value, key: Value) ?Value {
+    if (table_value != .table or key != .integer) return null;
+    const table = table_value.table;
+    const index: u64 = @bitCast(key.integer -% 1);
+    if (index >= table.array.items.len) return null;
+    const value = table.array.items[@intCast(index)];
+    return if (value != .nil) value else null;
+}
+
+/// Slot of an existing non-nil array element that a raw write may replace.
+inline fn arraySlot(table_value: Value, key: Value) ?*Value {
+    if (table_value != .table or key != .integer) return null;
+    const table = table_value.table;
+    const index: u64 = @bitCast(key.integer -% 1);
+    if (index >= table.array.items.len) return null;
+    if (table.rollback) |record| if (!record.header.detached) return null;
+    const slot = &table.array.items[@intCast(index)];
+    return if (slot.* != .nil) slot else null;
+}
+
+/// `Gc.writeTableBarrier` for non-string keys, skipping the call when it would do nothing.
+inline fn writeTableBarrierFast(self: *State, table: *Table, key: Value, value: Value) void {
+    const meta = &table.gc;
+    if (self.gc.phase == .pause and meta.generation == self.gc.generation and (meta.age != .old or meta.remembered)) return;
+    self.gc.writeTableBarrier(table, key, value);
 }
 
 fn fastTableArraySet(self: *State, table_value: Value, key_value: Value, value: Value) !bool {

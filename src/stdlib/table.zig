@@ -158,42 +158,96 @@ pub fn sort(state: *State, thread: *Thread, op: bytecode.Call) !void {
         state.pushValueRoots(&roots, values);
         defer state.popValueRoots(&roots);
         for (values, 0..) |*slot, index| slot.* = try index_mod.getTableFromThread(state, thread, table_value, .{ .integer = @intCast(index + 1) });
-        try sortValues(state, thread, comparator, values);
+        var sorter = Sorter{ .state = state, .thread = thread, .comparator = comparator, .values = values };
+        try sorter.auxsort(1, count, 0);
         for (values, 0..) |value, index| try index_mod.setTableFromThread(state, thread, table_value, .{ .integer = @intCast(index + 1) }, value);
     }
     try state.returnValues(thread, op.base, op.return_count, &.{});
 }
 
-fn sortValues(state: *State, thread: *Thread, comparator: Value, values: []Value) !void {
-    if (values.len < 2) return;
-    try state.budget.checkInterrupt();
-    var left: usize = 0;
-    var right: usize = values.len - 1;
-    const pivot = values[values.len / 2];
-    while (left <= right) {
-        while (try sortLess(state, thread, comparator, values[left], pivot)) left += 1;
-        while (try sortLess(state, thread, comparator, pivot, values[right])) {
-            if (right == 0) break;
-            right -= 1;
-        }
-        if (left > right) break;
-        std.mem.swap(Value, &values[left], &values[right]);
-        left += 1;
-        if (right == 0) break;
-        right -= 1;
-    }
-    if (right > 0) try sortValues(state, thread, comparator, values[0 .. right + 1]);
-    if (left < values.len) try sortValues(state, thread, comparator, values[left..]);
-}
+/// Port of Lua 5.5's `auxsort` over a 1-based view of `values`, so comparator calls
+/// and invalid-order detection match the reference implementation.
+const Sorter = struct {
+    state: *State,
+    thread: *Thread,
+    comparator: Value,
+    values: []Value,
 
-fn sortLess(state: *State, thread: *Thread, comparator: Value, lhs: Value, rhs: Value) !bool {
-    if (comparator != .nil) {
-        const result = runtime.truthy(try call_mod.callOneResult(state, thread, comparator, &.{ lhs, rhs }));
-        if (result and runtime.truthy(try call_mod.callOneResult(state, thread, comparator, &.{ rhs, lhs }))) return state.failLibrary("invalid order function for sorting");
-        return result;
+    fn at(self: *Sorter, index: usize) *Value {
+        return &self.values[index - 1];
     }
-    return operators_mod.compareValues(state, thread, lhs, rhs, .lt);
-}
+
+    fn swap(self: *Sorter, lhs: usize, rhs: usize) void {
+        std.mem.swap(Value, self.at(lhs), self.at(rhs));
+    }
+
+    fn less(self: *Sorter, lhs: Value, rhs: Value) !bool {
+        if (self.comparator == .nil) return operators_mod.compareValues(self.state, self.thread, lhs, rhs, .lt);
+        return runtime.truthy(try call_mod.callOneResult(self.state, self.thread, self.comparator, &.{ lhs, rhs }));
+    }
+
+    fn auxsort(self: *Sorter, lower: usize, upper: usize, seed: u32) !void {
+        var lo = lower;
+        var up = upper;
+        var rnd = seed;
+        while (lo < up) {
+            try self.state.budget.checkInterrupt();
+            if (try self.less(self.at(up).*, self.at(lo).*)) self.swap(lo, up);
+            if (up - lo == 1) break;
+            var p = if (up - lo < 100 or rnd == 0) (lo + up) / 2 else choosePivot(lo, up, rnd);
+            if (try self.less(self.at(p).*, self.at(lo).*)) {
+                self.swap(p, lo);
+            } else if (try self.less(self.at(up).*, self.at(p).*)) {
+                self.swap(p, up);
+            }
+            if (up - lo == 2) break;
+            const pivot = self.at(p).*;
+            self.swap(p, up - 1);
+            p = try self.partition(lo, up, pivot);
+            var smaller: usize = undefined;
+            if (p - lo < up - p) {
+                try self.auxsort(lo, p - 1, rnd);
+                smaller = p - lo;
+                lo = p + 1;
+            } else {
+                try self.auxsort(p + 1, up, rnd);
+                smaller = up - p;
+                up = p - 1;
+            }
+            if ((up -% lo) / 128 > smaller and up > lo) rnd = randomizePivot(lo, up, smaller);
+        }
+    }
+
+    fn partition(self: *Sorter, lo: usize, up: usize, pivot: Value) !usize {
+        var i = lo;
+        var j = up - 1;
+        while (true) {
+            i += 1;
+            while (try self.less(self.at(i).*, pivot)) : (i += 1) {
+                if (i == up - 1) return self.state.failLibrary("invalid order function for sorting");
+            }
+            j -= 1;
+            while (try self.less(pivot, self.at(j).*)) : (j -= 1) {
+                if (j < i) return self.state.failLibrary("invalid order function for sorting");
+            }
+            if (j < i) {
+                self.swap(up - 1, i);
+                return i;
+            }
+            self.swap(i, j);
+        }
+    }
+
+    fn choosePivot(lo: usize, up: usize, rnd: u32) usize {
+        const r4 = (up - lo) / 4;
+        return rnd % (r4 * 2) + (lo + r4);
+    }
+
+    fn randomizePivot(lo: usize, up: usize, smaller: usize) u32 {
+        const mixed = (@as(u64, lo) *% 0x9e3779b97f4a7c15) ^ (@as(u64, up) << 17) ^ smaller;
+        return @truncate(mixed ^ (mixed >> 32));
+    }
+};
 
 pub fn unpack(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const table_value = runtime.argValue(state, thread, op, 0);
