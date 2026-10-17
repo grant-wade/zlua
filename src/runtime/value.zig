@@ -296,9 +296,32 @@ pub fn prepareProtoTree(proto: *proto_mod.Proto) !void {
         .ret, .tail_call, .close => true,
         else => false,
     };
-    proto.fast_loop_entry = last_stops and !proto.has_to_close_locals;
+    if (proto.has_to_close_locals) proto.close_exit_jumps = try closeExitJumps(proto);
+    proto.fast_loop_entry = last_stops;
     proto.fast_loop_call = proto.fast_loop_entry and !proto.is_vararg and !proto.named_vararg;
     proto.runtime_prepared = true;
+}
+
+fn closeExitJumps(proto: *proto_mod.Proto) ![]const u64 {
+    const instructions = proto.instructions.items;
+    const bits = try proto.arena.allocator().alloc(u64, (instructions.len + 63) / 64);
+    @memset(bits, 0);
+    for (instructions, 0..) |instruction, index| {
+        const offset: bytecode.JumpOffset = switch (instruction) {
+            .jmp => |offset| offset,
+            inline .compare_branch, .test_op, .test_set, .for_loop, .for_prep, .tfor_prep, .tfor_loop => |op| op.offset,
+            else => continue,
+        };
+        const source = index + 1;
+        const target = if (offset >= 0) source + @as(usize, @intCast(offset)) else source -% @as(usize, @intCast(-offset));
+        for (proto.locals.items) |local| {
+            if (local.to_close and localActiveAt(local, source) and !localActiveAt(local, target)) {
+                bits[index / 64] |= @as(u64, 1) << @intCast(index % 64);
+                break;
+            }
+        }
+    }
+    return bits;
 }
 
 pub fn localActiveAt(local: proto_mod.LocalDebug, pc: usize) bool {

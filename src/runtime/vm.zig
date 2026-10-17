@@ -79,7 +79,7 @@ fn runThreadLoop(self: *State, thread: *Thread, target_frame_count: usize) anyer
         }
         const pc = frame.pc;
         const instruction = proto.instructions.items[pc];
-        if (proto.fast_loop_entry and plainFastLoopCanStart(instruction) and runPlainFastLoop(self, thread, target_frame_count)) continue;
+        if (proto.fast_loop_entry and plainFastLoopCanStart(instruction) and try runPlainFastLoop(self, thread, target_frame_count)) continue;
         frame.pc += 1;
         try self.budget.checkLimits(thread);
         if (self.options.trace_vm) try traceInstruction(self, frame.*, pc, instruction);
@@ -337,7 +337,7 @@ fn runThreadLoop(self: *State, thread: *Thread, target_frame_count: usize) anyer
     }
 }
 
-fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bool {
+fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) anyerror!bool {
     if (thread.frames.items.len <= target_frame_count) return false;
     if (self.budget.active() or self.options.trace_vm) return false;
     if (self.budget.fastLoopInterrupted()) return false;
@@ -345,14 +345,9 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
     if (thread.hook != .nil and (thread.hook_line or thread.hook_count != 0 or thread.hook_running)) return false;
     if (self.gc.running and self.gc.shouldRunAuto()) return false;
 
-    const stack_limit = @min(thread.stack.items.len, self.stackValueLimit());
-    const frame_limit = @min(thread.frames.capacity, self.callFrameLimit());
-    const return_floor: usize = if (thread.pending_unwind_error != null or thread.pending_yield_hook_return or thread.hook_return)
-        std.math.maxInt(usize)
-    else if (call_mod.hasPendingContinuations(thread))
-        @max(target_frame_count, thread.continuation_frame_count)
-    else
-        target_frame_count;
+    var stack_limit = @min(thread.stack.items.len, self.stackValueLimit());
+    var frame_limit = @min(thread.frames.capacity, self.callFrameLimit());
+    var return_floor = fastReturnFloor(thread, target_frame_count);
 
     var frame_index = thread.frames.items.len - 1;
     var frame = &thread.frames.items[frame_index];
@@ -362,7 +357,23 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
     var count_bias: u64 = 0 -% pc;
     defer self.budget.instructions = self.budget.instructions +| (pc +% count_bias);
     var segment_start: u64 = 0;
+    // Executed-instruction total after a general operation, which may have changed frames.
+    var resync: ?u64 = null;
     frames: while (true) {
+        if (resync) |executed| {
+            @branchHint(.unlikely);
+            resync = null;
+            if (!try fastLoopCanResume(self, thread, target_frame_count)) return true;
+            frame_index = thread.frames.items.len - 1;
+            frame = &thread.frames.items[frame_index];
+            proto = frame.proto;
+            pc = frame.pc;
+            count_bias = executed -% pc;
+            base = frame.base;
+            stack_limit = @min(thread.stack.items.len, self.stackValueLimit());
+            frame_limit = @min(thread.frames.capacity, self.callFrameLimit());
+            return_floor = fastReturnFloor(thread, target_frame_count);
+        }
         if (!proto.fast_loop_entry) return segment_start != 0;
         const instructions = proto.instructions.items;
         if (pc >= instructions.len) return segment_start != 0;
@@ -576,6 +587,8 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
                 const key = Value{ .string = constantString(proto, op.name) };
                 const value = if (frame.named_vararg_readonly and op.table == proto.param_count)
                     call_mod.namedVarargRead(frame.varargs, key)
+                else if (stack[op.table] == .string)
+                    stringMethod(self, key.string, proto.constant_hashes[op.name]) orelse break :fast_loop
                 else
                     fastTableFieldGet(stack[op.table], key.string, proto.constant_hashes[op.name]) orelse break :fast_loop;
                 stack[op.dest] = value;
@@ -625,6 +638,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .compare_branch => {
+                if (proto.jumpExitsToBeClosed(pc)) break :fast_loop;
                 const op = instructions[pc].compare_branch;
                 const lhs = stack[op.left];
                 const rhs = stack[op.right];
@@ -647,6 +661,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .jmp => {
+                if (proto.jumpExitsToBeClosed(pc)) break :fast_loop;
                 const offset = instructions[pc].jmp;
                 pc += 1;
                 const source_pc = pc;
@@ -660,6 +675,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .test_op => {
+                if (proto.jumpExitsToBeClosed(pc)) break :fast_loop;
                 const op = instructions[pc].test_op;
                 pc += 1;
                 if (truthy(stack[op.register]) == op.jump_if_truthy) {
@@ -675,6 +691,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .test_set => {
+                if (proto.jumpExitsToBeClosed(pc)) break :fast_loop;
                 const op = instructions[pc].test_set;
                 const value = stack[op.source];
                 stack[op.dest] = value;
@@ -692,6 +709,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .for_loop => {
+                if (proto.jumpExitsToBeClosed(pc)) break :fast_loop;
                 const op = instructions[pc].for_loop;
                 const absolute_base: usize = op.base;
                 const current = stack[absolute_base];
@@ -732,13 +750,12 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
                     op.arg_count = @intCast(result_end -| expected_base);
                 }
                 const callee = stack[op.base];
-                if (callee == .native and !thread.hook_return) {
-                    if (op.arg_count == 0 or @as(usize, op.base) + 1 >= stack.len) break :fast_loop;
-                    const result = stdlib.math.fastUnaryResult(callee.native, stack[op.base + 1]) orelse break :fast_loop;
+                if (callee == .native and !thread.hook_return and op.arg_count != 0 and @as(usize, op.base) + 1 < stack.len) math: {
+                    const result = stdlib.math.fastUnaryResult(callee.native, stack[op.base + 1]) orelse break :math;
                     const return_count: usize = if (op.return_count == bytecode.multret_count) 1 else op.return_count;
                     const absolute_base = base + op.base;
                     const stored_end = absolute_base + @max(return_count, 1);
-                    if (stored_end > stack_limit) break :fast_loop;
+                    if (stored_end > stack_limit) break :math;
                     stack[op.base] = result;
                     if (return_count > 1) @memset(thread.stack.items[absolute_base + 1 .. stored_end], .nil);
                     thread.last_result_base = absolute_base;
@@ -752,11 +769,23 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
                     segment_start = pc +% count_bias;
                     continue :frames;
                 }
-                if (callee != .closure) break :fast_loop;
+                if (callee != .closure or !callee.closure.proto.fast_loop_call) {
+                    // Natives and frames needing setup run through the general call path in place.
+                    @branchHint(.unlikely);
+                    if (thread.hook != .nil) break :fast_loop;
+                    if (pc +% count_bias != segment_start) {
+                        thread.last_result_count = 0;
+                        thread.last_transfer_count = 0;
+                    }
+                    pc += 1;
+                    frame.pc = pc;
+                    segment_start = pc +% count_bias;
+                    try call_mod.callValue(self, thread, op);
+                    resync = segment_start;
+                    continue :frames;
+                }
                 const closure = callee.closure;
                 const callee_proto = closure.proto;
-                // Growth, varargs, and hooks need the general path, which can allocate or reenter Lua.
-                if (!callee_proto.fast_loop_call) break :fast_loop;
                 const callee_index = frame_index + 1;
                 if (callee_index >= frame_limit) break :fast_loop;
                 const function_slot = base + op.base;
@@ -797,12 +826,60 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
                 if (self.budget.fastLoopInterrupted()) return true;
                 continue :frames;
             },
+            .new_table => {
+                const op = instructions[pc].new_table;
+                pc += 1;
+                frame.pc = pc;
+                stack[op.dest] = try self.newTableWithHints(op.array_hint, op.hash_hint);
+                if (self.gc.running and self.gc.shouldRunAuto()) {
+                    resync = pc +% count_bias;
+                    continue :frames;
+                }
+                continue :fast_loop std.meta.activeTag(instructions[pc]);
+            },
+            .set_list => {
+                const op = instructions[pc].set_list;
+                if (op.count == bytecode.multret_count and pc +% count_bias != segment_start) break :fast_loop;
+                pc += 1;
+                frame.pc = pc;
+                try setList(self, thread, op);
+                resync = pc +% count_bias;
+                continue :frames;
+            },
+            .tail_call => {
+                const op = instructions[pc].tail_call;
+                if (thread.hook != .nil or op.arg_count == bytecode.multret_arg_count) break :fast_loop;
+                if (pc +% count_bias != segment_start) {
+                    thread.last_result_count = 0;
+                    thread.last_transfer_count = 0;
+                }
+                pc += 1;
+                frame.pc = pc;
+                segment_start = pc +% count_bias;
+                try call_mod.tailCallValue(self, thread, op);
+                resync = segment_start;
+                continue :frames;
+            },
             .ret => {
                 const op = instructions[pc].ret;
                 if (frame_index <= return_floor) break :fast_loop;
-                if (op.count == bytecode.multret_count or frame.return_count == bytecode.multret_count or
-                    frame.owns_varargs or frame.pending_returns != null) break :fast_loop;
-                if (thread.open_upvalues) |upvalue| if (upvalue.stack_index >= base) break :fast_loop;
+                const open_here = if (thread.open_upvalues) |upvalue| upvalue.stack_index >= base else false;
+                if (proto.has_to_close_locals or op.count == bytecode.multret_count or frame.return_count == bytecode.multret_count or
+                    frame.owns_varargs or frame.pending_returns != null or open_here)
+                {
+                    @branchHint(.unlikely);
+                    if (thread.hook != .nil) break :fast_loop;
+                    if (pc +% count_bias != segment_start) {
+                        thread.last_result_count = 0;
+                        thread.last_transfer_count = 0;
+                    }
+                    pc += 1;
+                    frame.pc = pc;
+                    segment_start = pc +% count_bias;
+                    try call_mod.returnFromFrame(self, thread, op.first, op.count);
+                    resync = segment_start;
+                    continue :frames;
+                }
                 const return_start = frame.return_start;
                 const return_count = frame.return_count;
                 if (return_start + return_count > stack_limit) break :fast_loop;
@@ -868,6 +945,24 @@ inline fn writeTableBarrierFast(self: *State, table: *Table, key: Value, value: 
     const meta = &table.gc;
     if (self.gc.phase == .pause and meta.generation == self.gc.generation and (meta.age != .old or meta.remembered)) return;
     self.gc.writeTableBarrier(table, key, value);
+}
+
+fn fastReturnFloor(thread: *const Thread, target_frame_count: usize) usize {
+    if (thread.pending_unwind_error != null or thread.pending_yield_hook_return or thread.hook_return) return std.math.maxInt(usize);
+    if (call_mod.hasPendingContinuations(thread)) return @max(target_frame_count, thread.continuation_frame_count);
+    return target_frame_count;
+}
+
+/// After a general call from the fast loop: runs a due collector step, then reports
+/// whether the fast loop may continue with the thread's new top frame.
+noinline fn fastLoopCanResume(self: *State, thread: *Thread, target_frame_count: usize) !bool {
+    if (self.gc.running and (self.gc.shouldRunAuto() or self.stressPending())) try self.gc.autoStep(thread);
+    const frame_count = thread.frames.items.len;
+    if (frame_count <= target_frame_count) return false;
+    if (thread.pending_unwind_error != null or thread.pending_yield_hook_return) return false;
+    if (call_mod.hasPendingContinuations(thread) and frame_count <= thread.continuation_frame_count) return false;
+    if (thread.hook != .nil or self.budget.active() or self.options.trace_vm or self.budget.fastLoopInterrupted() or self.stressPending()) return false;
+    return thread.frames.items[frame_count - 1].pc < thread.frames.items[frame_count - 1].proto.instructions.items.len;
 }
 
 fn fastTableArraySet(self: *State, table_value: Value, key_value: Value, value: Value) !bool {
@@ -1273,7 +1368,10 @@ fn plainFastLoopCanStart(instruction: bytecode.Instruction) bool {
         .test_op,
         .test_set,
         .for_loop,
+        .new_table,
+        .set_list,
         .call,
+        .tail_call,
         .ret,
         .close,
         => true,
@@ -1340,6 +1438,16 @@ fn fastGlobalSetExisting(self: *State, proto: *const proto_mod.Proto, name: byte
     return true;
 }
 
+/// A string's method through its metatable's `__index` table, when that needs no metamethod call.
+fn stringMethod(self: *State, name: []const u8, hash: u32) ?Value {
+    const metatable = self.string_metatable orelse return null;
+    const handler = metatable.metaEvent(.__index);
+    if (handler != .table) return null;
+    const value = handler.table.getStringHashed(name, hash);
+    if (value != .nil or index_mod.noIndexMetamethod(handler.table)) return value;
+    return null;
+}
+
 fn fastTableFieldGet(table_value: Value, name: []const u8, hash: u32) ?Value {
     if (table_value != .table) return null;
     const table = table_value.table;
@@ -1357,7 +1465,8 @@ fn fastTableFieldGet(table_value: Value, name: []const u8, hash: u32) ?Value {
 
 fn fastTableRawGet(table_value: Value, key_value: Value) ?Value {
     if (fastTableArrayGet(table_value, key_value)) |value| return value;
-    if (table_value != .table or key_value != .string) return null;
+    // Float keys need normalization to integers first.
+    if (table_value != .table or key_value == .number) return null;
     const table = table_value.table;
     const value = table.get(key_value);
     if (value != .nil) return value;

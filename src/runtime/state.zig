@@ -229,7 +229,7 @@ pub const State = struct {
     ) !State {
         var state = State{
             .allocator = allocator,
-            .strings = .{ .map = std.StringHashMap([]const u8).init(allocator) },
+            .strings = .{ .map = strings_mod.InternMap.init(allocator) },
             .options = options,
             .warnings_on = options.warnings,
         };

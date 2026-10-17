@@ -217,7 +217,7 @@ pub const Journal = struct {
         if (self.registries_detached) return;
         var replacement = state.*;
         inline for (registries) |name| @field(replacement, name) = .empty;
-        replacement.strings.map = std.StringHashMap([]const u8).init(self.allocator);
+        replacement.strings.map = @import("strings.zig").InternMap.init(self.allocator);
         replacement.string_allocation_index = .empty;
         replacement.table_allocation_index = .empty;
         replacement.object_allocation_index = .empty;

@@ -189,7 +189,7 @@ fn decodeShortString(self: *State, lexeme: []const u8) ![]const u8 {
         }
     }
 
-    const bytes = try self.strings.intern(out.items);
+    const bytes = try self.strings.internConstant(out.items);
     out.deinit(self.allocator);
     return bytes;
 }
@@ -208,9 +208,9 @@ fn decodeLongString(self: *State, lexeme: []const u8) ![]const u8 {
     if (std.mem.indexOfScalar(u8, content, '\r')) |_| {
         const normalized = try normalizeLongStringLineEnds(self, content);
         defer self.allocator.free(normalized);
-        return self.strings.intern(normalized);
+        return self.strings.internConstant(normalized);
     }
-    return self.strings.intern(content);
+    return self.strings.internConstant(content);
 }
 
 fn normalizeLongStringLineEnds(self: *State, content: []const u8) ![]const u8 {

@@ -40,7 +40,7 @@ fn copyGraph(source: *const State, allocator: std.mem.Allocator, lifetime: ?*typ
     var destination = State{
         .allocator = allocator,
         .allocator_lifetime = lifetime,
-        .strings = .{ .map = std.StringHashMap([]const u8).init(allocator) },
+        .strings = .{ .map = @import("strings.zig").InternMap.init(allocator) },
         .options = source.options,
     };
     errdefer destination.discard();
@@ -156,6 +156,7 @@ const Copier = struct {
         inline for (.{ "max_registers", "param_count", "is_vararg", "named_vararg", "defined_line", "last_defined_line", "has_to_close_locals", "runtime_prepared", "named_vararg_readonly", "fast_loop_entry", "fast_loop_call" }) |name| @field(new, name) = @field(old, name);
         new.constant_values = try new.arena.allocator().dupe(types.Value, old.constant_values);
         new.constant_hashes = try new.arena.allocator().dupe(u32, old.constant_hashes);
+        new.close_exit_jumps = try new.arena.allocator().dupe(u64, old.close_exit_jumps);
         new.source_name = try self.text(old.source_name);
         new.debug_name = try self.remap(old.debug_name);
         new.instructions = try self.list(@import("../compile/bytecode.zig").Instruction, old.instructions.items);
@@ -430,7 +431,7 @@ comptime {
     });
     review(Proto, .{
         .rebuilt = "allocator arena",
-        .copied = "constants instructions line_info locals upvalues error_sites max_registers param_count is_vararg named_vararg source_name debug_name defined_line last_defined_line has_to_close_locals runtime_prepared named_vararg_readonly fast_loop_entry fast_loop_call constant_values constant_hashes",
+        .copied = "constants instructions line_info locals upvalues error_sites max_registers param_count is_vararg named_vararg source_name debug_name defined_line last_defined_line has_to_close_locals runtime_prepared named_vararg_readonly fast_loop_entry fast_loop_call constant_values constant_hashes close_exit_jumps",
         .remapped = "children",
     });
     review(types.Value, .{ .remapped = "string table userdata closure thread coroutine_wrapper gmatch_iterator", .external = "nil boolean integer number native_print native_tostring native_getmetatable native_setmetatable native_rawequal native_rawget native_rawset native_rawlen native_next native_pairs native_ipairs native_ipairs_iter native_table_create native_select native_assert native_error native_pcall native_xpcall native_collectgarbage native_debug_traceback native_coroutine_create native_coroutine_resume native_coroutine_yield native_coroutine_status native_coroutine_running native_coroutine_isyieldable native_coroutine_close native_coroutine_wrap native api_callback" });

@@ -86,6 +86,13 @@ pub const Proto = struct {
     constant_values: []const RuntimeValue = &.{},
     /// `table_index.hashStringKey` of each `.string` constant's bytes, for name operands.
     constant_hashes: []const u32 = &.{},
+    /// Bit per instruction: a jump that leaves a to-be-closed local's scope. Empty without such locals.
+    close_exit_jumps: []const u64 = &.{},
+
+    pub inline fn jumpExitsToBeClosed(self: *const Proto, pc_index: usize) bool {
+        if (self.close_exit_jumps.len == 0) return false;
+        return self.close_exit_jumps[pc_index / 64] & (@as(u64, 1) << @intCast(pc_index % 64)) != 0;
+    }
 
     pub fn init(allocator: std.mem.Allocator) Proto {
         return .{
