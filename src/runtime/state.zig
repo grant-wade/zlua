@@ -2432,10 +2432,13 @@ pub const State = struct {
                 };
                 const owned = if (self.options.filesystem == .host_dir) try host.MemoryFilesystem.normalizePathAlloc(self.allocator, path, host.MemoryFilesystem.default_max_path_len) else null;
                 defer if (owned) |normalized| self.allocator.free(normalized);
-                var file = try root.openFile(io, owned orelse path, .{ .mode = .write_only, .allow_directory = false });
+                const sub_path = owned orelse path;
+                // Zig 0.16 sizes a Windows handle with a query write-only handles may not make.
+                const position: u64 = offset orelse (try root.statFile(io, sub_path, .{})).size;
+                var file = try root.openFile(io, sub_path, .{ .mode = .write_only, .allow_directory = false });
                 defer file.close(io);
                 self.file_generation +%= 1;
-                try file.writePositionalAll(io, data, offset orelse try file.length(io));
+                try file.writePositionalAll(io, data, position);
             },
         }
     }
@@ -5078,16 +5081,11 @@ pub const State = struct {
             try out.appendSlice(self.allocator, "stack traceback:");
             if (has_yield_trace) try out.appendSlice(self.allocator, "\n\t'yield'");
             const skip = if (coroutine_level <= 1) @as(usize, 0) else @as(usize, @intCast(coroutine_level - 1));
-            var remaining = if (skip >= target.frames.items.len) @as(usize, 0) else target.frames.items.len - skip;
-            if (remaining == 0 and target.status != .dead and target.yield_values.items.len != 0 and !has_coroutine_level) {
+            const count = if (skip >= target.frames.items.len) @as(usize, 0) else target.frames.items.len - skip;
+            if (count == 0 and target.status != .dead and target.yield_values.items.len != 0 and !has_coroutine_level) {
                 try out.appendSlice(self.allocator, "\n\t@db.lua: in function <");
             }
-            while (remaining > 0) {
-                remaining -= 1;
-                const level = target.frames.items.len - remaining;
-                const frame = target.frames.items[remaining];
-                try self.appendCoroutineTracebackFrame(&out, target, frame, @intCast(level));
-            }
+            try self.appendCoroutineTracebackFrames(&out, target, count, @intFromBool(has_yield_trace));
             try self.returnValues(thread, op.base, op.return_count, &.{.{ .string = try self.intern(out.items) }});
             return;
         }
@@ -5159,16 +5157,37 @@ pub const State = struct {
         }
     }
 
+    /// Appends the innermost `count` frames of `target` after `leading` levels
+    /// already written, skipping middle levels like `luaL_traceback`.
+    fn appendCoroutineTracebackFrames(self: *State, out: *std.ArrayList(u8), target: *Thread, count: usize, leading: usize) !void {
+        if (count == 0) return;
+        const head = debug_mod.traceback_levels_head;
+        const tail = debug_mod.traceback_levels_tail;
+        const last = leading + count - 1;
+        var level: usize = 0;
+        var limit: isize = if (last > head + tail) head else -1;
+        while (level <= last) {
+            const current = level;
+            level += 1;
+            const show_skip = limit == 0;
+            limit -= 1;
+            if (show_skip) {
+                const skipped = last - level - tail + 1;
+                try appendFmt(self.allocator, out, "\n\t...\t(skipping {d} levels)", .{skipped});
+                level += skipped;
+                continue;
+            }
+            if (current < leading) continue;
+            const index = count - 1 - (current - leading);
+            try self.appendCoroutineTracebackFrame(out, target, target.frames.items[index], @intCast(target.frames.items.len - index));
+        }
+    }
+
     pub fn snapshotCoroutineErrorTraceback(self: *State, target: *Thread) ![]const u8 {
         var out = std.ArrayList(u8).empty;
         defer out.deinit(self.allocator);
         try out.appendSlice(self.allocator, "stack traceback:\n\t'error'");
-        var remaining = target.frames.items.len;
-        while (remaining > 0) {
-            remaining -= 1;
-            const level = target.frames.items.len - remaining;
-            try self.appendCoroutineTracebackFrame(&out, target, target.frames.items[remaining], @intCast(level));
-        }
+        try self.appendCoroutineTracebackFrames(&out, target, target.frames.items.len, 1);
         return self.intern(out.items);
     }
 

@@ -2,12 +2,10 @@
 -- stage: stdlib
 -- feature: io-files
 -- normalize: none
+-- skip-os: windows
+-- reason: Windows has no POSIX device files
 
 -- Device files behave like the host's: `/dev/full` exists only on Linux.
-if package.config:sub(1, 1) == "\\" then
-  print("no POSIX devices")
-  return
-end
 
 local null = assert(io.open("/dev/null", "w"))
 print(null:write("discarded") == null, null:flush(), null:close())
@@ -31,6 +29,10 @@ print(full:setvbuf("no"))
 print(full:write("abcd"))
 print(full:write("", "xy", "z"))
 print(full:write("") == full)
+print(full:close())
+
+-- A fresh handle: glibc keeps the one-byte buffer of an unbuffered stream.
+full = assert(io.open("/dev/full", "w"))
 print(full:setvbuf("line"))
 print(full:write("no newline") == full)
 print(full:write("line\n") == full)

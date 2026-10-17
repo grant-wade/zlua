@@ -29,7 +29,7 @@ end
 
 -- A missing file is created empty.
 os.remove(name)
-local f = assert(io.open(name, "a"))
+local f = assert(io.open(name, "ab"))
 print(io.type(f), slurp())
 f:write("first\n")
 f:close()
@@ -37,8 +37,8 @@ print(slurp())
 
 -- Writes from several append handles all land at the end of the file.
 save("start\n")
-local a = assert(io.open(name, "a"))
-local b = assert(io.open(name, "a"))
+local a = assert(io.open(name, "ab"))
+local b = assert(io.open(name, "ab"))
 b:write("B\n")
 b:close()
 print(slurp())
@@ -46,8 +46,8 @@ a:write("A\n")
 a:close()
 print(slurp())
 
-a = assert(io.open(name, "a"))
-local w = assert(io.open(name, "r+"))
+a = assert(io.open(name, "ab"))
+local w = assert(io.open(name, "r+b"))
 w:seek("end")
 w:write("W\n")
 w:flush()
@@ -59,9 +59,9 @@ a:close()
 print(slurp())
 
 -- An a+ handle reads what other handles appended and appends after it.
-a = assert(io.open(name, "a+"))
+a = assert(io.open(name, "a+b"))
 print(a:read("a"))
-b = assert(io.open(name, "a"))
+b = assert(io.open(name, "ab"))
 b:write("tail\n")
 b:close()
 a:seek("set")
@@ -74,8 +74,8 @@ print(slurp())
 
 -- Unbuffered append handles write through at the end each time.
 save("")
-a = assert(io.open(name, "a"))
-b = assert(io.open(name, "a"))
+a = assert(io.open(name, "ab"))
+b = assert(io.open(name, "ab"))
 a:setvbuf("no")
 b:setvbuf("no")
 for i = 1, 3 do

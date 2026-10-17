@@ -50,7 +50,7 @@ pub fn formatFloat(buffer: *[max_formatted_len]u8, spec: Spec, value: f64) []con
     if (std.math.isNan(value)) {
         body.pushSlice("nan");
         numeric = false;
-        if (darwin_printf) allow_sign = false;
+        if (darwin_printf or builtin.os.tag == .windows) allow_sign = false;
     } else if (std.math.isInf(value)) {
         body.pushSlice("inf");
         numeric = false;

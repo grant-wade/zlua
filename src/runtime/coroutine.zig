@@ -287,7 +287,7 @@ pub fn resumeCoroutine(comptime State: type, self: *State, target: *Thread, args
         execution catch |err| switch (err) {
             error.CoroutineYield => return .{ .success = try copyValues(State, self, target.yield_values.items) },
             error.CoroutineClose => return .{ .success = try copyValues(State, self, &.{}) },
-            error.RuntimeError, error.StackOverflow, error.UnsupportedOpcode => {
+            error.RuntimeError, error.StackOverflow, error.UnsupportedOpcode, error.OutOfMemory => {
                 self.noteCaughtError(err);
                 const completed = self.completeProtectedContinuationError(target) catch |continuation_err| switch (continuation_err) {
                     error.CoroutineYield => return .{ .success = try copyValues(State, self, target.yield_values.items) },

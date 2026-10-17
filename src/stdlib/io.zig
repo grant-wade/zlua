@@ -188,7 +188,7 @@ pub fn newFile(state: *State, options: FileOptions) !Value {
         .is_directory = options.is_directory,
         .content = content,
         .synced = content.items.len,
-        .pos = if (options.mode.append) content.items.len else 0,
+        .pos = if (options.mode.opensAtEnd()) content.items.len else 0,
         .generation = state.file_generation,
         .popen_result = options.popen_result,
         .finalizer_order = state.nextFinalizerOrder(),
@@ -956,7 +956,8 @@ fn writeToFile(state: *State, thread: *Thread, op: bytecode.Call, handle: Handle
         return;
     }
     const target = writeTarget(file);
-    const line_buffered = file.buffer_mode == .line;
+    // The Windows CRT treats `_IOLBF` as full buffering.
+    const line_buffered = file.buffer_mode == .line and builtin.os.tag != .windows;
     var wrote_newline = false;
     var total: usize = 0;
     var formatted: std.ArrayList(u8) = .empty;
@@ -1162,6 +1163,16 @@ pub const ParsedMode = struct {
 
     pub fn writable(self: ParsedMode) bool {
         return self.kind != 'r' or self.plus;
+    }
+
+    /// Whether the host's `fopen` positions the stream at the end of the
+    /// file. BSD libcs seek there for every append mode, glibc only for "a",
+    /// and musl and the Windows CRT start at zero until the first write.
+    pub fn opensAtEnd(self: ParsedMode) bool {
+        if (!self.append) return false;
+        if (builtin.os.tag == .windows) return false;
+        if (builtin.os.tag == .linux) return !self.plus and !builtin.abi.isMusl();
+        return true;
     }
 };
 

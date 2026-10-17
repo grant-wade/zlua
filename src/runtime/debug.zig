@@ -158,8 +158,8 @@ pub fn appendDebugValue(comptime State: type, self: *State, out: *std.ArrayList(
     try appendValue(self.allocator, out, value);
 }
 
-const traceback_levels_head = 10;
-const traceback_levels_tail = 11;
+pub const traceback_levels_head = 10;
+pub const traceback_levels_tail = 11;
 const chunk_id_size = 60;
 
 const TracebackEntry = union(enum) {

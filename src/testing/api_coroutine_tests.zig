@@ -597,3 +597,15 @@ test "interleaved host yields survive repeated collection without leaking roots"
     try lua.collect();
     try std.testing.expectEqual(roots, lua.raw_state.activeRootCount());
 }
+
+test "coroutine.resume reports memory errors like pcall" {
+    var lua = try api.State.init(a, .{ .stdlib = .safe, .limits = .{ .max_memory = 1024 * 1024 } });
+    defer lua.deinit();
+    try lua.doString(
+        \\local co = coroutine.create(string.rep)
+        \\local ok, message = coroutine.resume(co, 'x', 4 * 1024 * 1024)
+        \\assert(not ok and message == 'not enough memory', message)
+        \\assert(coroutine.status(co) == 'dead')
+        \\assert(select(2, pcall(string.rep, 'x', 4 * 1024 * 1024)) == message)
+    , .{});
+}

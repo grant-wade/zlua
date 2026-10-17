@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const fixtures = @import("fixtures.zig");
 const clua = @import("clua.zig");
 const compile = @import("../compile.zig");
@@ -149,6 +150,11 @@ fn runOne(
     if (meta.expect == .skip) {
         counts.skipped += 1;
         try out.print("skip {s} ({s})\n", .{ path, meta.reason });
+        return;
+    }
+    if (metadata.skipsOs(meta, builtin.os.tag)) {
+        counts.skipped += 1;
+        try out.print("skip {s} ({s}: {s})\n", .{ path, @tagName(builtin.os.tag), meta.reason });
         return;
     }
     if (meta.gc_stress == .skip and options.gc_stress) {

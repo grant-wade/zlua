@@ -9,7 +9,7 @@ local function norm(...)
   local out = {}
   for i = 1, select("#", ...) do
     local text = tostring((select(i, ...)))
-    text = text:gsub('%[string "zlua"%]', "F"):gsub("[%w_/%.%-]*xpcall_handlers%.lua", "F"):gsub("zlua:", "F:")
+    text = text:gsub('%[string "zlua"%]', "F"):gsub("[%w_/\\%.%-]*xpcall_handlers%.lua", "F"):gsub("zlua:", "F:")
     out[i] = text
   end
   print(table.concat(out, "\t"))

@@ -44,7 +44,7 @@ test "tmpfile is an anonymous memory file in every filesystem mode" {
         try std.testing.expectEqual(@as(usize, 0), filesystem.directories.items.len);
     }
     {
-        var temporary = std.testing.tmpDir(.{});
+        var temporary = std.testing.tmpDir(.{ .iterate = true });
         defer temporary.cleanup();
         var lua = try api.State.init(a, .{
             .stdlib = .full,
@@ -185,7 +185,7 @@ test "os.tmpname reserves unique names inside sandboxed filesystems" {
         try std.testing.expectEqual(@as(usize, 0), filesystem.files.items.len);
     }
     {
-        var temporary = std.testing.tmpDir(.{});
+        var temporary = std.testing.tmpDir(.{ .iterate = true });
         defer temporary.cleanup();
         var lua = try api.State.init(a, .{
             .stdlib = .full,

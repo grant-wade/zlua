@@ -68,9 +68,12 @@ print(({ 10, 20, 30 })[2])
 | `feature` | Free-form tag | `uncategorized` |
 | `normalize` | `none`, `paths` | `none` |
 | `gc-stress` | `run`, `skip` | `run` |
+| `skip-os` | Space- or comma-separated OS names (`linux`, `macos`, `windows`, ...) | empty |
 | `reason`, `issue` | Free-form text | empty |
 
 The first four stages compare load-time acceptance while stopping zlua at the named compiler stage. Runtime-style stages also compare stdout and stderr. Normalization is opt-in and should only remove unstable paths, never semantic differences.
+
+Use `skip-os` (with a `reason`) only when the host C Lua's behavior depends on something zlua cannot see, such as the host filesystem's limits.
 
 Useful focused runs:
 

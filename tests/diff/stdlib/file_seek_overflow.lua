@@ -2,6 +2,8 @@
 -- stage: stdlib
 -- feature: io-files
 -- normalize: none
+-- skip-os: linux windows
+-- reason: C seeks near 2^63 depend on the host filesystem (ext4 rejects them) and Windows C Lua seeks with a 32-bit long
 
 -- No writes at huge positions: C stdio reports that failure at a later flush.
 local name = os.tmpname()

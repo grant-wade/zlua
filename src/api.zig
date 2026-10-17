@@ -2476,6 +2476,7 @@ pub const Coroutine = struct {
         const state = self.ref.state;
         const raw_args = try convertArgs(state, args);
         defer state.allocator().free(raw_args);
+        _ = state.takeMemoryLimitExceeded();
         const result = state.raw_state.resumeCoroutine(raw, raw_args) catch |err| {
             if (err == error.OutOfMemory and state.takeMemoryLimitExceeded()) {
                 return .{ .lua_error = try state.memoryLimitErrorRef() };
@@ -2491,6 +2492,7 @@ pub const Coroutine = struct {
                     .{ .returned = try fromRuntimeResults(state, values, R) } };
             },
             .failure => |value| blk: {
+                if (state.takeMemoryLimitExceeded()) break :blk .{ .lua_error = try state.memoryLimitErrorRef() };
                 try state.setLastErrorValue(value);
                 break :blk .{ .lua_error = try ErrorRef.fromRuntime(state, value) };
             },
