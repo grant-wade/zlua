@@ -289,12 +289,13 @@ fn executeInstruction(self: *State, thread: *Thread, proto: *const proto_mod.Pro
             } else if (fastTableFieldGet(table_value, key.string, proto.constant_hashes[op.name])) |value| {
                 stack[base + op.dest] = value;
             } else {
-                try index_mod.getTableToRegister(self, thread, op.dest, table_value, key);
+                try index_mod.getTableToRegister(self, thread, op.dest, table_value, try closureConstant(self, frame.closure, op.name));
             }
         },
         .set_field => |op| {
             const table_value = stack[base + op.table];
-            const key = Value{ .string = constantString(proto, op.name) };
+            // Stored keys must be collectable strings; prototype bytes are only safe for lookups.
+            const key = try closureConstant(self, frame.closure, op.name);
             const value = stack[base + op.value];
             if (!fastTableKnownKeySetExistingNoAlloc(self, table_value, key, proto.constant_hashes[op.name], value) and
                 !try fastTableKnownKeySet(self, table_value, key, value))
@@ -635,7 +636,8 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             },
             .set_field => {
                 const op = instructions[pc].set_field;
-                const key = Value{ .string = constantString(proto, op.name) };
+                const cache = frame.closure.constants orelse break :fast_loop;
+                const key = cache[op.name] orelse break :fast_loop;
                 if (!fastTableKnownKeySetExistingNoAlloc(self, stack[op.table], key, proto.constant_hashes[op.name], stack[op.value])) break :fast_loop;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);

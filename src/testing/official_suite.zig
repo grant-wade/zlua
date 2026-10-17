@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const clua = @import("clua.zig");
+const parallel = @import("parallel.zig");
 const process = @import("process.zig");
 
 const Dir = std.Io.Dir;
@@ -17,6 +18,7 @@ const Options = struct {
     debug_errors: bool = false,
     timeout_ms: u64 = 0,
     memory_limit_mb: u64 = 0,
+    jobs: usize = 0,
 };
 
 const Mode = enum { basic, complete };
@@ -74,6 +76,39 @@ const Counts = struct {
 
     fn exitCode(self: Counts) u8 {
         return if (self.unexpected_failed == 0) 0 else 1;
+    }
+
+    fn add(self: *Counts, other: Counts) void {
+        inline for (comptime std.meta.fieldNames(Counts)) |name| @field(self, name) += @field(other, name);
+    }
+};
+
+const FileResult = struct {
+    output: std.Io.Writer.Allocating,
+    counts: Counts = .{},
+};
+
+const Run = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    out: *std.Io.Writer,
+    files: []const []u8,
+    results: []FileResult,
+    clua_exe: []const u8,
+    zlua_exe: []const u8,
+    options: Options,
+    counts: *Counts,
+
+    fn runFile(self: *Run, index: usize) anyerror!void {
+        const result = &self.results[index];
+        try runOne(self.allocator, self.io, &result.output.writer, self.files[index], self.clua_exe, self.zlua_exe, self.options, &result.counts);
+    }
+
+    fn reportFile(self: *Run, index: usize) anyerror!void {
+        const result = &self.results[index];
+        self.counts.add(result.counts);
+        try self.out.writeAll(result.output.written());
+        try self.out.flush();
     }
 };
 
@@ -193,6 +228,8 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const []const u8) !Options {
             options.timeout_ms = try std.fmt.parseInt(u64, arg[13..], 10);
         } else if (std.mem.startsWith(u8, arg, "--memory-limit-mb=")) {
             options.memory_limit_mb = try std.fmt.parseInt(u64, arg[18..], 10);
+        } else if (std.mem.startsWith(u8, arg, "--jobs=")) {
+            options.jobs = try std.fmt.parseInt(usize, arg[7..], 10);
         } else if (std.mem.startsWith(u8, arg, "--")) {
             return error.UnknownOption;
         } else {
@@ -230,42 +267,84 @@ fn runIndividualSuite(
 
     try collectOfficialFiles(allocator, io, options, &files);
     std.mem.sort([]u8, files.items, {}, lessThanString);
+    try out.flush();
 
-    for (files.items) |file| {
-        if (platformSkipReason(file)) |reason| {
-            counts.skipped += 1;
-            try out.print("skip {s} ({s})\n", .{ std.fs.path.basename(file), reason });
-            continue;
-        }
+    const results = try allocator.alloc(FileResult, files.items.len);
+    defer allocator.free(results);
+    for (results) |*result| result.* = .{ .output = .init(allocator) };
+    defer for (results) |*result| result.output.deinit();
 
-        try out.print("running {s}\n", .{std.fs.path.basename(file)});
-        try out.flush();
-        var clua_result = try runOfficialFile(allocator, io, clua_exe, file, options, .clua);
-        defer clua_result.deinit(allocator);
-        var zlua_result = try runOfficialFile(allocator, io, zlua_exe, file, options, .zlua);
-        defer zlua_result.deinit(allocator);
-
-        if (clua_result.timed_out or zlua_result.timed_out) counts.timed_out += 1;
-        const clua_passed = counts.recordResult(.clua, clua_result);
-        const zlua_passed = counts.recordResult(.zlua, zlua_result);
-        if (!clua_passed) {
-            try out.print("fail clua {s}\n", .{std.fs.path.basename(file)});
-            try printProcess(out, "clua", clua_result, true);
-        }
-
-        if (zlua_passed) {
-            try out.print("pass {s}\n", .{std.fs.path.basename(file)});
-            try printProcess(out, "zlua", zlua_result, options.show_zlua);
-        } else {
-            try out.print("fail zlua {s} feature={s}\n", .{ std.fs.path.basename(file), classifyFailure(zlua_result) });
-            try printProcess(out, "zlua", zlua_result, true);
-        }
-        if (clua_passed) try printProcess(out, "clua", clua_result, options.show_clua);
-    }
+    var run: Run = .{
+        .allocator = allocator,
+        .io = io,
+        .out = out,
+        .files = files.items,
+        .results = results,
+        .clua_exe = clua_exe,
+        .zlua_exe = zlua_exe,
+        .options = options,
+        .counts = counts,
+    };
+    try parallel.forEachOrdered(allocator, io, options.jobs, files.items.len, &run, Run.runFile, Run.reportFile);
 }
 
-fn platformSkipReason(file: []const u8) ?[]const u8 {
-    return skipReasonForOs(builtin.os.tag, std.fs.path.basename(file));
+fn runOne(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    out: *std.Io.Writer,
+    file: []const u8,
+    clua_exe: []const u8,
+    zlua_exe: []const u8,
+    options: Options,
+    counts: *Counts,
+) !void {
+    if (skipReason(file, options.mode)) |reason| {
+        counts.skipped += 1;
+        try out.print("skip {s} ({s})\n", .{ std.fs.path.basename(file), reason });
+        return;
+    }
+
+    try out.print("running {s}\n", .{std.fs.path.basename(file)});
+    var clua_result = try runOfficialFile(allocator, io, clua_exe, file, options, .clua);
+    defer clua_result.deinit(allocator);
+    var zlua_result = try runOfficialFile(allocator, io, zlua_exe, file, options, .zlua);
+    defer zlua_result.deinit(allocator);
+
+    if (clua_result.timed_out or zlua_result.timed_out) counts.timed_out += 1;
+    const clua_passed = counts.recordResult(.clua, clua_result);
+    const zlua_passed = counts.recordResult(.zlua, zlua_result);
+    if (!clua_passed) {
+        try out.print("fail clua {s}\n", .{std.fs.path.basename(file)});
+        try printProcess(out, "clua", clua_result, true);
+    }
+
+    if (zlua_passed) {
+        try out.print("pass {s}\n", .{std.fs.path.basename(file)});
+        try printProcess(out, "zlua", zlua_result, options.show_zlua);
+    } else {
+        try out.print("fail zlua {s} feature={s}\n", .{ std.fs.path.basename(file), classifyFailure(zlua_result) });
+        try printProcess(out, "zlua", zlua_result, true);
+    }
+    if (clua_passed) try printProcess(out, "clua", clua_result, options.show_clua);
+}
+
+fn skipReason(file: []const u8, mode: Mode) ?[]const u8 {
+    const filename = std.fs.path.basename(file);
+    return skipReasonForOs(builtin.os.tag, filename) orelse skipReasonForMode(mode, filename);
+}
+
+fn skipReasonForMode(mode: Mode, filename: []const u8) ?[]const u8 {
+    if (mode != .complete) return null;
+    const skips = [_]struct { []const u8, []const u8 }{
+        .{ "attrib.lua", "needs the C test libraries and module paths that all.lua sets up" },
+        .{ "main.lua", "needs the C test libraries and module paths that all.lua sets up" },
+        .{ "big.lua", "must run inside all.lua's coroutine driver" },
+        .{ "files.lua", "expects a non-seekable stdin, as when all.lua runs from a terminal" },
+    };
+    for (skips) |skip| {
+        if (std.mem.eql(u8, filename, skip[0])) return skip[1];
+    }
+    return null;
 }
 
 fn skipReasonForOs(os: std.Target.Os.Tag, filename: []const u8) ?[]const u8 {
@@ -280,6 +359,12 @@ test "allocator exhaustion requires a platform with a child memory cap" {
     try std.testing.expect(skipReasonForOs(.macos, "heavy.lua") != null);
     try std.testing.expect(skipReasonForOs(.linux, "heavy.lua") == null);
     try std.testing.expect(skipReasonForOs(.windows, "files.lua") == null);
+}
+
+test "complete mode skips files that need the all.lua driver" {
+    try std.testing.expect(skipReasonForMode(.complete, "big.lua") != null);
+    try std.testing.expect(skipReasonForMode(.basic, "big.lua") == null);
+    try std.testing.expect(skipReasonForMode(.complete, "db.lua") == null);
 }
 
 fn collectOfficialFiles(allocator: std.mem.Allocator, io: std.Io, options: Options, files: *std.ArrayList([]u8)) !void {
@@ -410,13 +495,14 @@ fn stderrPrint(io: std.Io, comptime fmt: []const u8, args: anytype) !void {
 }
 
 test "argument parser accepts complete mode and limits" {
-    const args = [_][]const u8{ "--mode=complete", "--debug-errors", "--timeout-ms=10", "--memory-limit-mb=256" };
+    const args = [_][]const u8{ "--mode=complete", "--debug-errors", "--timeout-ms=10", "--memory-limit-mb=256", "--jobs=2" };
     const options = try parseArgs(std.testing.allocator, &args);
     defer std.testing.allocator.free(options.file_args);
     try std.testing.expect(options.debug_errors);
     try std.testing.expectEqual(Mode.complete, options.mode);
     try std.testing.expectEqual(@as(u64, 10), options.timeout_ms);
     try std.testing.expectEqual(@as(u64, 256), options.memory_limit_mb);
+    try std.testing.expectEqual(@as(usize, 2), options.jobs);
 }
 
 test "argument parser rejects internal mode" {

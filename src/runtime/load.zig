@@ -55,7 +55,9 @@ pub fn loadSourceAsClosureNamedEnv(self: *State, source: []const u8, source_name
         const removed = self.proto_allocations.pop().?;
         if (self.rollback) |journal| journal.freed(@intFromPtr(removed));
     }
-    return .{ .closure = try newRootClosureWithEnv(self, proto, environment) };
+    const closure = try newRootClosureWithEnv(self, proto, environment);
+    self.gc.notePrototype(proto);
+    return .{ .closure = closure };
 }
 
 pub fn loadBinaryDump(self: *State, source: []const u8, environment: Value) !Value {
@@ -85,7 +87,9 @@ pub fn loadBinaryDump(self: *State, source: []const u8, environment: Value) !Val
         _ = self.proto_allocations.pop();
         if (self.rollback) |journal| journal.freed(@intFromPtr(proto));
     }
-    return newDumpedClosure(self, proto, environment, stripped_debug);
+    const closure = try newDumpedClosure(self, proto, environment, stripped_debug);
+    self.gc.notePrototype(proto);
+    return closure;
 }
 
 pub fn loadFileAsClosure(self: *State, path: []const u8) !Value {
@@ -115,10 +119,10 @@ pub fn setRootThreadArgs(self: *State, thread: *Thread, args: []const Value) !vo
 }
 
 pub fn decodeStringLiteral(self: *State, lexeme: []const u8) ![]const u8 {
-    if (lexeme.len < 2) return lexeme;
+    if (lexeme.len < 2) return self.strings.intern(lexeme);
     if (lexeme[0] == '\'' or lexeme[0] == '"') return decodeShortString(self, lexeme);
     if (lexeme[0] == '[') return decodeLongString(self, lexeme);
-    return lexeme;
+    return self.strings.intern(lexeme);
 }
 
 fn decodeShortString(self: *State, lexeme: []const u8) ![]const u8 {

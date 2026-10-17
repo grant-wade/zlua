@@ -13,6 +13,8 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
     const default_official_memory_limit_mb: u64 = if (b.graph.host.result.os.tag == .linux) 256 else 0;
     const official_memory_limit_mb = b.option(u64, "official-memory-limit-mb", "Memory cap per official-suite child process in MiB (0 disables; Linux only)") orelse default_official_memory_limit_mb;
+    const default_official_complete_memory_limit_mb: u64 = if (b.graph.host.result.os.tag == .linux) 2048 else 0;
+    const official_complete_memory_limit_mb = b.option(u64, "official-complete-memory-limit-mb", "Memory cap per complete-mode official-suite child process in MiB (0 disables; Linux only)") orelse default_official_complete_memory_limit_mb;
     const official_timeout_ms = b.option(u64, "official-timeout-ms", "Timeout per official-suite child process in milliseconds (0 disables)") orelse 120_000;
 
     const lua_deps_step = addFetchLuaStep(b);
@@ -313,6 +315,30 @@ pub fn build(b: *std.Build) void {
         official_cmd.addArg(b.fmt("--memory-limit-mb={d}", .{official_memory_limit_mb}));
     }
     official_step.dependOn(&official_cmd.step);
+
+    const official_complete_step = b.step("test-official-complete", "Run the official Lua 5.5 suite with its full-size and non-portable sections enabled");
+    const official_complete_cmd = b.addRunArtifact(official_exe);
+    official_complete_cmd.step.dependOn(b.getInstallStep());
+    official_complete_cmd.addArg("--clua");
+    official_complete_cmd.addArtifactArg(clua_exe);
+    official_complete_cmd.addArg("--zlua");
+    official_complete_cmd.addArtifactArg(exe);
+    official_complete_cmd.addArg("--mode=complete");
+    official_complete_cmd.addArg(b.fmt("--timeout-ms={d}", .{official_timeout_ms}));
+    if (official_complete_memory_limit_mb != 0) {
+        official_complete_cmd.addArg(b.fmt("--memory-limit-mb={d}", .{official_complete_memory_limit_mb}));
+    }
+    official_complete_step.dependOn(&official_complete_cmd.step);
+
+    const gc_stress_step = b.step("test-gc-stress", "Run CLua differential tests under both GC stress modes");
+    inline for (.{ "--gc-stress", "--gc-step-stress" }) |mode| {
+        const gc_stress_cmd = b.addRunArtifact(diff_exe);
+        gc_stress_cmd.step.dependOn(b.getInstallStep());
+        gc_stress_cmd.addArg("--clua");
+        gc_stress_cmd.addArtifactArg(clua_exe);
+        gc_stress_cmd.addArg(mode);
+        gc_stress_step.dependOn(&gc_stress_cmd.step);
+    }
 
     const ci_step = b.step("ci", "Run CI checks");
     ci_step.dependOn(test_step);

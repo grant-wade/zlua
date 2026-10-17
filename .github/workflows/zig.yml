@@ -31,7 +31,7 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v7.0.1
-      - uses: grant-wade/zig-setup@v1.0.0
+      - uses: grant-wade/zig-setup@v1.0.1
         with:
           version: ${{ matrix.zig }}
           cache-key: ${{ matrix.zig }}-${{ runner.arch }}-${{ hashFiles('build.zig.zon') }}
@@ -46,9 +46,31 @@ jobs:
         working-directory: examples/project
         run: zig build run test --summary all
 
+  extended:
+    name: Extended checks (Zig ${{ matrix.zig }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        zig: ["0.16.0", "0.17.0"]
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: grant-wade/zig-setup@v1.0.1
+        with:
+          version: ${{ matrix.zig }}
+          cache-key: ${{ matrix.zig }}-${{ runner.arch }}-${{ hashFiles('build.zig.zon') }}
+      - name: Cache Lua dependencies
+        uses: actions/cache@v6.1.0
+        with:
+          path: .zlua-deps
+          key: ${{ runner.os }}-lua-${{ hashFiles('tools/fetch-lua.sh') }}
+      - name: Complete official suite and GC stress
+        run: zig build test-official-complete test-gc-stress --summary all
+
   pr-check:
     name: PR checks
-    needs: test
+    needs: [test, extended]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -56,8 +78,13 @@ jobs:
       - name: Require every platform to pass
         env:
           TEST_RESULT: ${{ needs.test.result }}
+          EXTENDED_RESULT: ${{ needs.extended.result }}
         run: |
           if [ "$TEST_RESULT" != "success" ]; then
             echo "Full test matrix did not pass: $TEST_RESULT"
+            exit 1
+          fi
+          if [ "$EXTENDED_RESULT" != "success" ]; then
+            echo "Extended checks did not pass: $EXTENDED_RESULT"
             exit 1
           fi

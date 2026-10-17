@@ -575,3 +575,28 @@ test "api dumps and loads zlua bytecode" {
     try std.testing.expectEqual(@as(i64, 42), result.get(1));
     try std.testing.expectError(error.LuaError, target_state.loadBytecode("return 1", .{}));
 }
+
+test "collections free chunk prototypes once their closures are unreachable" {
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+
+    try lua.doString(
+        \\keep = {}
+        \\for i = 1, 200 do
+        \\  local chunk = load("local t = { ['k' .. " .. i .. "] = 0 } t.field" .. i .. " = " .. i .. " return t, function() return " .. i .. " end")
+        \\  local t, f = chunk()
+        \\  if i % 50 == 0 then keep[#keep + 1] = { t, f } end
+        \\end
+        \\collectgarbage()
+    , .{});
+    try std.testing.expect(lua.raw_state.proto_allocations.items.len - lua.raw_state.borrowed_proto_count < 20);
+    try std.testing.expectEqual(lua.raw_state.gc.allocationStats().total(), lua.raw_state.gc.known_total);
+
+    try lua.doString(
+        \\for _, pair in ipairs(keep) do
+        \\  local t, f = pair[1], pair[2]
+        \\  local i = f()
+        \\  assert(t["field" .. i] == i and t["k" .. i] == 0)
+        \\end
+    , .{});
+}

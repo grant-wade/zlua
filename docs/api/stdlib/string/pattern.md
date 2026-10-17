@@ -113,6 +113,7 @@
 - [testing.expected_failures](../../testing/expected_failures.md)
 - [testing.metadata](../../testing/metadata.md)
 - [testing.normalizer](../../testing/normalizer.md)
+- [testing.parallel](../../testing/parallel.md)
 - [testing.extension_runner](../../testing/extension_runner.md)
 - [testing.official_suite](../../testing/official_suite.md)
 
@@ -124,6 +125,7 @@
 - [patternHasMagic](#fn-patternhasmagic)
 - [plainFind](#fn-plainfind)
 - [simplePatternFind](#fn-simplepatternfind)
+- [unanchoredPatternFind](#fn-unanchoredpatternfind)
 - [invalidCaptureIndex](#fn-invalidcaptureindex)
 - [firstMatchValue](#fn-firstmatchvalue)
 - [appendMatchValues](#fn-appendmatchvalues)
@@ -189,6 +191,16 @@ References: [`Match`](#type-match)
 
 ```zig
 pub fn simplePatternFind(state: *State, source: []const u8, pattern: []const u8, start: usize) !?Match
+```
+
+References: [`Match`](#type-match)
+
+<a id="fn-unanchoredpatternfind"></a>
+
+## unanchoredPatternFind
+
+```zig
+pub fn unanchoredPatternFind(state: *State, source: []const u8, pattern: []const u8, start: usize) !?Match
 ```
 
 References: [`Match`](#type-match)
