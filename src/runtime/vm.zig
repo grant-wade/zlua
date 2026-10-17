@@ -799,7 +799,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
 
                 const executed_count = pc +% count_bias -% segment_start;
                 const copied = @min(op.arg_count, callee_proto.param_count);
-                @memset(thread.stack.items[callee_base + copied .. stack_end], .nil);
+                clearRegisters(thread.stack.items[callee_base + copied .. stack_end]);
                 frame.pc = pc + 1;
                 frame = &@as([*]CallFrame, @ptrCast(frame))[1];
                 frame.* = .{
@@ -865,7 +865,8 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             },
             .ret => {
                 const op = instructions[pc].ret;
-                if (frame_index <= return_floor) break :fast_loop;
+                // Returning onto the floor frame is fine, but the outer loop must take over afterwards.
+                if (frame_index < return_floor or frame_index == 0) break :fast_loop;
                 const open_here = if (thread.open_upvalues) |upvalue| upvalue.stack_index >= base else false;
                 if (proto.has_to_close_locals or op.count == bytecode.multret_count or frame.return_count == bytecode.multret_count or
                     frame.owns_varargs or frame.pending_returns != null or open_here)
@@ -889,7 +890,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 const executed_count = pc +% count_bias -% segment_start;
                 const copied = @min(return_count, op.count);
                 for (0..copied) |index| thread.stack.items[return_start + index] = stack[op.first + index];
-                @memset(thread.stack.items[return_start + copied .. return_start + return_count], .nil);
+                clearRegisters(thread.stack.items[return_start + copied .. return_start + return_count]);
                 thread.frames.items.len = frame_index;
                 thread.last_result_base = return_start;
                 thread.last_result_count = return_count;
@@ -901,7 +902,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 pc = frame.pc;
                 count_bias = segment_start -% pc;
                 base = frame.base;
-                if (self.budget.fastLoopInterrupted()) return true;
+                if (frame_index + 1 == return_floor or self.budget.fastLoopInterrupted()) return true;
                 continue :frames;
             },
             .close => {
@@ -921,6 +922,12 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
         thread.last_transfer_count = 0;
         return true;
     }
+}
+
+/// Small frames clear their registers inline; a `memset` call costs more than the stores.
+inline fn clearRegisters(registers: []Value) void {
+    if (registers.len > 16) return @memset(registers, .nil);
+    for (registers) |*register| register.* = .nil;
 }
 
 inline fn arrayValue(table_value: Value, key: Value) ?Value {
