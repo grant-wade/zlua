@@ -333,7 +333,6 @@ fn skipReason(file: []const u8, mode: Mode) ?[]const u8 {
     return skipReasonForOs(builtin.os.tag, filename) orelse skipReasonForMode(mode, filename);
 }
 
-/// Complete mode runs each file standalone, without the setup that `all.lua` provides.
 fn skipReasonForMode(mode: Mode, filename: []const u8) ?[]const u8 {
     if (mode != .complete) return null;
     const skips = [_]struct { []const u8, []const u8 }{

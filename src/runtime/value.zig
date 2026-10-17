@@ -396,8 +396,7 @@ pub fn parseLuaNumber(text: []const u8) !f64 {
     return std.fmt.parseFloat(f64, trimmed);
 }
 
-/// Ports `lua_strx2number`: digits past the 30th significant one only adjust
-/// the binary exponent, so long numerals neither overflow nor lose their scale.
+/// Ports `lua_strx2number`: digits past the 30th significant one only adjust the exponent.
 fn parseHexNumber(text: []const u8) !f64 {
     const max_significant_digits = 30;
     var index: usize = 2;

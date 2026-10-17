@@ -5,7 +5,6 @@ const Smith = std.testing.Smith;
 
 const limits: api.Options = .{ .limits = .{ .max_memory = 64 << 20, .max_instructions = 200_000 } };
 
-/// Loading arbitrary source must compile or fail with a Lua error, never crash.
 fn loadSource(source: []const u8) !void {
     var lua = try api.State.init(a, limits);
     defer lua.deinit();
@@ -29,7 +28,6 @@ const bytecode_seeds = [_][]const u8{
 
 const Mutation = struct { offset: usize, byte: u8 };
 
-/// The VM trusts verified chunks, so a mutated dump must be rejected or run without crashing.
 fn runMutatedBytecode(seed: usize, mutations: []const Mutation, truncate: usize) !void {
     var lua = try api.State.init(a, limits);
     defer lua.deinit();
@@ -70,7 +68,6 @@ const string_library_chunk =
     \\pcall(function() return string.unpack(f, string.pack(f, 1, 2, 3, 4, 5)) end)
 ;
 
-/// Patterns with many quantifiers backtrack polynomially in the subject length, as in C Lua.
 fn tooManyQuantifiers(pattern: []const u8) bool {
     var count: usize = 0;
     for (pattern) |byte| {
@@ -79,7 +76,6 @@ fn tooManyQuantifiers(pattern: []const u8) bool {
     return count > 4;
 }
 
-/// Patterns, formats, and pack layouts from arbitrary bytes must raise Lua errors, never crash.
 fn runStringLibrary(subject: []const u8, pattern: []const u8, format: []const u8) !void {
     if (tooManyQuantifiers(pattern)) return;
     var lua = try api.State.init(a, limits);

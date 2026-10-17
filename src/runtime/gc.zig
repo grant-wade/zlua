@@ -420,7 +420,6 @@ pub const Gc = struct {
         const state = gc.parentState();
         if (state.gc.stress_step and state.gc.phase == .pause) state.gc.major_pending = true;
         defer state.gc.stress_mark = state.gc.known_total;
-        // Safepoints sit between instructions, so registers above the live frame top are dead unless a hook is running.
         const conservative = state.gc.conservative_depth != 0;
         if (state.gc.stress_collect or gc.luaFastStep()) return gc.collectWithFinalizersMode(thread, conservative);
         _ = try gc.step(thread, conservative);
@@ -546,7 +545,6 @@ pub const Gc = struct {
             },
             .atomic => {
                 try gc.atomic();
-                // Like Lua's atomic2gen, survivors age here; objects allocated during the sweep stay young.
                 if (state.gc.cycle == .major) gc.ageAllObjects();
                 state.gc.phase = .sweep_threads;
                 state.gc.sweep_cursor = if (state.gc.cycle == .minor) state.gc.old.thread_allocations else 0;
@@ -663,8 +661,6 @@ pub const Gc = struct {
         inline for (reflection.fieldsOf(types.GcGenerations)) |f| @field(state.gc.old, f) = @field(state, f).items.len;
     }
 
-    /// Lua's entergen collects before aging survivors; starting every object young
-    /// lets the next minor collection free garbage that existed before the switch.
     fn makeAllObjectsYoung(gc: *Gc) void {
         const state = gc.parentState();
         state.gc.remembered.clearRetainingCapacity();
@@ -1495,7 +1491,7 @@ pub const Gc = struct {
         const state = gc.parentState();
         const strings = comptime std.mem.eql(u8, field, "string_allocations");
         const tables = comptime std.mem.eql(u8, field, "table_allocations");
-        // A major cycle ages its survivors at the atomic step, so objects allocated after it sit beyond the boundary and are live.
+        // Objects allocated after a major cycle's atomic step sit beyond the old boundary and are live.
         const end: *const usize = if (state.gc.cycle == .major) &@field(state.gc.old, field) else &@field(state, field).items.len;
         var work: usize = 0;
         while (state.gc.sweep_cursor < end.* and work < budget) : (work += 1) {

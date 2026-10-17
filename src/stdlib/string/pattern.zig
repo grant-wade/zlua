@@ -64,8 +64,6 @@ pub fn simplePatternFind(state: *State, source: []const u8, pattern: []const u8,
     return unanchoredPatternFind(state, source, pattern, start);
 }
 
-/// Finds the first match at or after `start`, treating a leading '^' as a
-/// literal character the way `string.gmatch` does.
 pub fn unanchoredPatternFind(state: *State, source: []const u8, pattern: []const u8, start: usize) !?Match {
     if (pattern.len == 0) return .{ .range = .{ .start = @min(start, source.len), .end = @min(start, source.len) }, .captures = .{} };
     if (repeatedEscapePattern(pattern)) |repeated| return findRepeatedEscape(source, repeated, start);
@@ -260,8 +258,7 @@ fn matchSimplePatternAt(state: *State, source: []const u8, pattern: []const u8, 
     return matchPatternFrom(state, source, pattern, start, 0, 0, .{});
 }
 
-/// Mirrors `match` in Lua's lstrlib.c: single items advance in place, and only
-/// captures and quantifiers recurse, so `depth` tracks the same nesting limit.
+/// Mirrors `match` in lstrlib.c; `depth` counts nested calls toward Lua's limit.
 fn matchPatternFrom(state: *State, source: []const u8, pattern: []const u8, source_start: usize, pattern_start: usize, depth: usize, captures: CaptureState) MatchError!?MatchResult {
     if (depth >= pattern_match_max_depth) return state.failLibrary("pattern too complex");
     var s = source_start;
@@ -361,8 +358,6 @@ fn singleMatch(source: []const u8, index: usize, item: []const u8) bool {
     return index < source.len and patternAtomMatches(item, source[index]);
 }
 
-/// Returns the end of the single-character class starting at `index`, raising
-/// Lua's malformed-pattern errors for a trailing '%' or an unclosed '['.
 fn singleItemEnd(state: *State, pattern: []const u8, index: usize) !usize {
     switch (pattern[index]) {
         '%' => {
