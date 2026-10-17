@@ -906,9 +906,8 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 continue :frames;
             },
             .close => {
-                const register = instructions[pc].close;
-                const first = base + register;
-                if (thread.open_upvalues) |upvalue| if (upvalue.stack_index >= first) break :fast_loop;
+                const first = base + instructions[pc].close;
+                if (thread.open_upvalues) |upvalue| if (upvalue.stack_index >= first) upvalue_mod.closeUpvalues(self, thread, first);
                 pc += 1;
                 if (pc >= instructions.len) break :fast_loop;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);

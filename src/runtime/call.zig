@@ -93,7 +93,14 @@ fn callOneResultMaybeContinuation(self: *State, thread: *Thread, callable: Value
     thread.stack.items[base] = callable;
     for (args, 0..) |arg, index| thread.stack.items[base + 1 + index] = arg;
 
-    invokeValue(self, thread, .{ .base = relative_base, .arg_count = @intCast(args.len), .return_count = 1 }, 0) catch |err| switch (err) {
+    const op: bytecode.Call = .{ .base = relative_base, .arg_count = @intCast(args.len), .return_count = 1 };
+    if (callable == .closure) {
+        const call_name = thread.next_call_name;
+        const call_namewhat = thread.next_call_namewhat;
+        thread.next_call_name = null;
+        thread.next_call_namewhat = null;
+        try callClosure(self, thread, op, callable.closure, call_name, call_namewhat);
+    } else invokeValue(self, thread, op, 0) catch |err| switch (err) {
         error.CoroutineYield => {
             if (continuation_result) |result| try pushCallOneContinuation(self, thread, frame_count, result);
             return err;

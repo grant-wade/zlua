@@ -867,6 +867,7 @@ pub const StringAllocation = struct {
     gc: GcMeta = .{},
 };
 pub const PointerAllocationIndex = @import("address_index.zig").AddressIndex;
+pub const ObjectAllocationIndex = @import("address_index.zig").ObjectAddressIndex;
 
 /// Hashes object addresses, which are distinct and aligned, without Wyhash.
 pub const AddressContext = struct {
