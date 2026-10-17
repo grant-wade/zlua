@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 /// Runs `runOne(context, index)` for every index below `count` on up to `jobs`
 /// workers (0 means one per CPU), then calls `report(context, index)` serially
@@ -47,9 +48,11 @@ pub fn forEachOrdered(
     @memset(finished, false);
 
     const workers = if (jobs == 0) std.Thread.getCpuCount() catch 1 else jobs;
+    // Zig 0.16 can leak inheritable pipe writers between concurrent Windows spawns.
+    const safe_workers = if (builtin.os.tag == .windows and builtin.zig_version.order(.{ .major = 0, .minor = 17, .patch = 0 }) == .lt) 1 else workers;
     var state: State = .{ .finished = finished };
     var group: std.Io.Group = .init;
-    for (0..@max(1, @min(workers, count))) |_| group.async(io, State.worker, .{ &state, io, count, context });
+    for (0..@max(1, @min(safe_workers, count))) |_| group.async(io, State.worker, .{ &state, io, count, context });
     try group.await(io);
 
     if (state.first_error) |err| return err;

@@ -35,13 +35,14 @@ pub fn formatFloat(buffer: *[max_formatted_len]u8, spec: Spec, value: f64) []con
     const upper = std.ascii.isUpper(clamped.conversion);
     var body_buffer: [max_formatted_len]u8 = undefined;
     var body = Out{ .buf = &body_buffer };
-    const negative = std.math.signbit(value);
+    var negative = std.math.signbit(value);
     var numeric = true;
     var allow_sign = true;
     if (std.math.isNan(value)) {
         body.pushSlice("nan");
         numeric = false;
-        if (darwin_printf or builtin.os.tag == .freebsd or builtin.os.tag == .windows) allow_sign = false;
+        if (darwin_printf or builtin.os.tag == .freebsd) allow_sign = false;
+        if (builtin.os.tag == .windows) negative = false;
     } else if (std.math.isInf(value)) {
         body.pushSlice("inf");
         numeric = false;
@@ -536,6 +537,19 @@ test "Lua float strings agree with the exact %.15g/%.17g rule" {
         if ((std.fmt.parseFloat(f64, expected) catch unreachable) != value) expected = formatFloat(&scratch, .{ .conversion = 'g', .precision = 17 }, value);
         const actual = formatLuaFloat(&buffer, value);
         try std.testing.expectEqualStrings(expected, actual[0 .. actual.len - @as(usize, if (looksLikeInteger(expected)) 2 else 0)]);
+    }
+}
+
+test "NaN formatting follows the target libc sign rules" {
+    const signed_nan = !darwin_printf and builtin.os.tag != .freebsd;
+    const negative_nan = signed_nan and builtin.os.tag != .windows;
+    for ([_]f64{ std.math.nan(f64), -std.math.nan(f64) }, 0..) |value, index| {
+        const negative = negative_nan and index == 1;
+        try expectFormat(if (negative) "-nan" else "nan", .{ .conversion = 'g' }, value);
+        try expectFormat(if (negative) "-nan" else if (signed_nan) "+nan" else "nan", .{ .conversion = 'g', .force_sign = true }, value);
+        try expectFormat(if (negative) "-nan" else if (signed_nan) " nan" else "nan", .{ .conversion = 'g', .space_sign = true }, value);
+        try expectFormat(if (negative) "    -nan" else if (signed_nan) "    +nan" else "     nan", .{ .conversion = 'g', .force_sign = true, .zero_pad = true, .width = 8 }, value);
+        try expectFormat(if (negative) "-NAN" else "NAN", .{ .conversion = 'G' }, value);
     }
 }
 

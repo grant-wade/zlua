@@ -41,8 +41,10 @@ download() {
         curl -L --fail --output "$tmp" "$url"
     elif command -v wget >/dev/null 2>&1; then
         wget -O "$tmp" "$url"
+    elif command -v fetch >/dev/null 2>&1; then
+        fetch -o "$tmp" "$url"
     else
-        echo "fetch-lua: need curl or wget" >&2
+        echo "fetch-lua: need curl, wget, or fetch" >&2
         exit 1
     fi
     mv "$tmp" "$path"

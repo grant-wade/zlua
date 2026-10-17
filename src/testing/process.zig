@@ -144,6 +144,32 @@ test "memory limit wrapper rejects empty argv" {
     try std.testing.expectError(error.EmptyArgv, result);
 }
 
+test "concurrent Windows children close their output pipes" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+
+    const Context = struct {
+        io: std.Io,
+
+        fn runOne(self: *@This(), index: usize) anyerror!void {
+            const command = if (index == 0)
+                "ping.exe -n 7 127.0.0.1 >nul & (echo stdout) & (echo stderr 1>&2)"
+            else
+                "(echo stdout) & (echo stderr 1>&2)";
+            var result = try runProcess(std.testing.allocator, self.io, &.{
+                "cmd.exe", "/d", "/c", command,
+            }, .{ .expand_arg0 = true, .timeout_ms = if (index == 0) 15_000 else 5000 });
+            defer result.deinit(std.testing.allocator);
+            try std.testing.expect(result.success());
+            try std.testing.expectEqualStrings("stdout", std.mem.trim(u8, result.stdout, " \r\n"));
+            try std.testing.expectEqualStrings("stderr", std.mem.trim(u8, result.stderr, " \r\n"));
+        }
+
+        fn report(_: *@This(), _: usize) anyerror!void {}
+    };
+    var context: Context = .{ .io = std.testing.io };
+    try @import("parallel.zig").forEachOrdered(std.testing.allocator, context.io, 8, 64, &context, Context.runOne, Context.report);
+}
+
 test "memory limit is applied to the child and preserves arguments" {
     if (builtin.os.tag != .linux and builtin.os.tag != .freebsd) return error.SkipZigTest;
 

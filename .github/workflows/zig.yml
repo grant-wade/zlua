@@ -14,7 +14,7 @@ concurrency:
 jobs:
   test:
     name: Full suite (${{ matrix.os }}, Zig ${{ matrix.zig }})
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner || matrix.os }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -26,11 +26,21 @@ jobs:
           - macos-15-intel
           - macos-15
           - windows-2025
+          - freebsd-15.1
+        include:
+          - os: freebsd-15.1
+            runner: [self-hosted, freebsd, p1-freebsd]
     defaults:
       run:
         shell: bash
     steps:
       - uses: actions/checkout@v7.0.1
+      - name: Verify FreeBSD jail
+        if: matrix.os == 'freebsd-15.1'
+        run: |
+          test "$(uname -s)" = FreeBSD
+          test "$(sysctl -n security.jail.jailed)" = 1
+          test "$(id -u)" != 0
       - uses: grant-wade/zig-setup@v1.0.1
         with:
           version: ${{ matrix.zig }}

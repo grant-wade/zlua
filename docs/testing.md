@@ -29,8 +29,8 @@ zig build test --fuzz=100K
 ## GitHub Actions
 
 Every push runs `zig build ci test-wasm check-tools` with Zig `0.16.0` and `0.17.0`
-on Linux and macOS (x64 and ARM64), plus Windows x64. You can also start the full
-matrix manually. Each job then builds, runs, and tests the downstream embedding
+on Linux and macOS (x64 and ARM64), plus Windows and FreeBSD x64. You can also start
+the full matrix manually. Each job then builds, runs, and tests the downstream embedding
 project in `examples/project` against the current checkout.
 
 An extended job on Linux runs `zig build test-official-complete test-gc-stress` with

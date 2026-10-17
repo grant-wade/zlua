@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const compile = @import("../../compile.zig");
 const runtime = @import("../../runtime.zig");
 const metatable_mod = @import("../../runtime/metatable.zig");
@@ -59,6 +60,9 @@ pub fn format(state: *State, thread: *Thread, op: bytecode.Call) !void {
             'a', 'A' => {
                 try checkFormat(state, form, "-+#0 ", true);
                 const number = try state.argumentNumber(thread, op, function_name, arg);
+                if (builtin.os.tag == .windows and form.len > 2) {
+                    return state.failLibrary("modifiers for format '%a'/'%A' not implemented");
+                }
                 try appendFloatFormat(state, &out, number, parseFormatSpec(form));
             },
             'e', 'E', 'f', 'g', 'G' => {
