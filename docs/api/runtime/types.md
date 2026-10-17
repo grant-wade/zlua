@@ -49,6 +49,9 @@
 - [runtime.operators](../runtime/operators.md)
 - [stdlib.table](../stdlib/table.md)
 - [stdlib.string](../stdlib/string.md)
+- [stdlib.string.format](../stdlib/string/format.md)
+- [stdlib.string.pack](../stdlib/string/pack.md)
+- [stdlib.string.pattern](../stdlib/string/pattern.md)
 - [stdlib.math](../stdlib/math.md)
 - [stdlib.utf8](../stdlib/utf8.md)
 - [stdlib.coroutine](../stdlib/coroutine.md)
@@ -69,6 +72,7 @@
 - [testing.process](../testing/process.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
+- [runtime.native_fn](../runtime/native_fn.md)
 - [compile.compiler](../compile/compiler.md)
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
@@ -118,7 +122,6 @@
 
 - [RuntimeError](#type-runtimeerror)
 - [Value](#type-value)
-- [NativeFn](#type-nativefn)
 - [AllocatorLifetime](#type-allocatorlifetime)
 - [UserdataPayload](#type-userdatapayload)
 - [ProtectedCallResult](#type-protectedcallresult)
@@ -169,6 +172,10 @@
 - [ApiCallbackDispatchFn](#const-apicallbackdispatchfn)
 - [TableEntryIndex](#const-tableentryindex)
 - [PointerAllocationIndex](#const-pointerallocationindex)
+
+## Imports
+
+- [NativeFn](#import-nativefn) `@import("native_fn.zig")`
 
 <a id="type-runtimeerror"></a>
 
@@ -232,195 +239,13 @@ pub const Value = union(enum(u8)) {
 };
 ```
 
-<a id="type-nativefn"></a>
+<a id="import-nativefn"></a>
 
 ## NativeFn
 
 ```zig
-pub const NativeFn = enum {
-    load,
-    type,
-    tonumber,
-    warn,
-    table_concat,
-    table_dedup,
-    table_insert,
-    table_move,
-    table_pack,
-    table_remove,
-    table_sort,
-    table_unpack,
-    string_byte,
-    string_char,
-    string_dump,
-    string_find,
-    string_format,
-    string_gmatch,
-    string_gmatch_iter,
-    string_gsub,
-    string_len,
-    string_lower,
-    string_match,
-    string_pack,
-    string_packsize,
-    string_rep,
-    string_reverse,
-    string_rsplit,
-    string_split,
-    string_strip,
-    string_sub,
-    string_unpack,
-    string_upper,
-    math_abs,
-    math_acos,
-    math_asin,
-    math_atan,
-    math_ceil,
-    math_cos,
-    math_deg,
-    math_exp,
-    math_floor,
-    math_fmod,
-    math_frexp,
-    math_ldexp,
-    math_log,
-    math_max,
-    math_min,
-    math_modf,
-    math_rad,
-    math_random,
-    math_randomseed,
-    math_sin,
-    math_sqrt,
-    math_tan,
-    math_tointeger,
-    math_type,
-    math_ult,
-    utf8_char,
-    utf8_codepoint,
-    utf8_codes,
-    utf8_codes_iter,
-    utf8_len,
-    utf8_offset,
-    loadfile,
-    dofile,
-    require,
-    package_searchpath,
-    package_searcher_preload,
-    package_searcher_lua,
-    package_loadlib,
-    io_read,
-    io_write,
-    io_open,
-    io_input,
-    io_output,
-    io_close,
-    io_flush,
-    io_lines,
-    io_tmpfile,
-    io_type,
-    io_popen,
-    io_file_read,
-    io_file_write,
-    io_file_close,
-    io_file_seek,
-    io_file_flush,
-    io_file_lines,
-    io_file_setvbuf,
-    io_file_tostring,
-    io_file_gc,
-    io_lines_iter,
-    os_time,
-    os_clock,
-    os_date,
-    os_getenv,
-    os_setlocale,
-    os_execute,
-    os_remove,
-    os_rename,
-    os_tmpname,
-    os_difftime,
-    os_exit,
-    debug_getinfo,
-    debug_getupvalue,
-    debug_setupvalue,
-    debug_upvalueid,
-    debug_upvaluejoin,
-    debug_getlocal,
-    debug_setlocal,
-    debug_getregistry,
-    debug_sethook,
-    debug_gethook,
-    debug_setmetatable,
-    debug_setuservalue,
-    debug_getuservalue,
-    debug_getmetatable,
-    debug_debug,
-    traceback_message_handler,
-    json_read,
-    json_write,
-    toml_read,
-    toml_write,
-    msgpack_read,
-    msgpack_write,
-    csv_read,
-    csv_write,
-    fs_read,
-    fs_write,
-    fs_open,
-    fs_stat,
-    fs_exists,
-    fs_list,
-    fs_scandir,
-    fs_walk,
-    fs_mkdir,
-    fs_remove,
-    fs_copy,
-    fs_rename,
-    fs_move,
-    fs_touch,
-    fs_open_dir,
-    fs_iterator_next,
-    fs_iterator_close,
-    fs_iterator_skip,
-    fs_error_tostring,
-    fs_file_stat,
-    fs_file_tell,
-    fs_file_truncate,
-    fs_file_path,
-    fs_dir_entries,
-    fs_dir_walk,
-    fs_dir_open,
-    fs_dir_stat,
-    fs_dir_mkdir,
-    fs_dir_remove,
-    fs_dir_close,
-    fs_path_join,
-    fs_path_normalize,
-    fs_path_basename,
-    fs_path_dirname,
-    fs_path_extension,
-    fs_path_stem,
-    fs_path_is_absolute,
-    fs_path_relative,
-};
+pub const NativeFn = @import("native_fn.zig").NativeFn;
 ```
-
-### Nested Declarations
-
-| Name | Parameters | Return Type | Description |
-| --- | --- | --- | --- |
-| [name](#fn-nativefn-name) | `self: NativeFn` | `[]const u8` |  |
-
-<a id="fn-nativefn-name"></a>
-
-### NativeFn.name
-
-```zig
-pub fn name(self: NativeFn) []const u8
-```
-
-References: [`NativeFn`](#type-nativefn)
 
 <a id="const-userdatafinalizer"></a>
 
