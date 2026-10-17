@@ -88,245 +88,7 @@ fn runThreadLoop(self: *State, thread: *Thread, target_frame_count: usize) anyer
             try debug_mod.callCountHook(self, thread);
         }
 
-        frame = &thread.frames.items[thread.frames.items.len - 1];
-        const base = frame.base;
-        const stack = thread.stack.items;
-
-        switch (instruction) {
-            .load_nil => |dest| stack[base + dest] = .nil,
-            .load_bool => |op| stack[base + op.dest] = .{ .boolean = op.value },
-            .load_const => |op| stack[base + op.dest] = try protoConstant(self, frame.closure, proto, op.constant),
-            .move => |op| stack[base + op.dest] = stack[base + op.source],
-            .get_global => |op| stack[base + op.register] = globalGet(self, proto, op.name),
-            .set_global => |op| if (!fastGlobalSetExisting(self, proto, op.name, stack[base + op.register])) {
-                try self.setGlobal(constantString(proto, op.name), stack[base + op.register]);
-            },
-            .declare_global => |op| try self.declareGlobal(thread, constantString(proto, op.name), op.table, op.value),
-            .add => |op| {
-                const lhs = stack[base + op.left];
-                const rhs = stack[base + op.right];
-                if (operators_mod.rawNumericBinaryOpFast(lhs, rhs, .add)) |value| {
-                    stack[base + op.dest] = value;
-                } else {
-                    try operators_mod.binaryOpToRegister(self, thread, op, .add);
-                }
-            },
-            .sub => |op| {
-                const lhs = stack[base + op.left];
-                const rhs = stack[base + op.right];
-                if (operators_mod.rawNumericBinaryOpFast(lhs, rhs, .sub)) |value| {
-                    stack[base + op.dest] = value;
-                } else {
-                    try operators_mod.binaryOpToRegister(self, thread, op, .sub);
-                }
-            },
-            .mul => |op| {
-                const lhs = stack[base + op.left];
-                const rhs = stack[base + op.right];
-                if (operators_mod.rawNumericBinaryOpFast(lhs, rhs, .mul)) |value| {
-                    stack[base + op.dest] = value;
-                } else {
-                    try operators_mod.binaryOpToRegister(self, thread, op, .mul);
-                }
-            },
-            .div => |op| {
-                const lhs = stack[base + op.left];
-                const rhs = stack[base + op.right];
-                if (operators_mod.rawNumericBinaryOpFast(lhs, rhs, .div)) |value| {
-                    stack[base + op.dest] = value;
-                } else {
-                    try operators_mod.binaryOpToRegister(self, thread, op, .div);
-                }
-            },
-            .idiv => |op| {
-                const lhs = stack[base + op.left];
-                const rhs = stack[base + op.right];
-                if (operators_mod.rawNumericBinaryOpFast(lhs, rhs, .idiv)) |value| {
-                    stack[base + op.dest] = value;
-                } else {
-                    try operators_mod.binaryOpToRegister(self, thread, op, .idiv);
-                }
-            },
-            .mod => |op| {
-                const lhs = stack[base + op.left];
-                const rhs = stack[base + op.right];
-                if (operators_mod.rawNumericBinaryOpFast(lhs, rhs, .mod)) |value| {
-                    stack[base + op.dest] = value;
-                } else {
-                    try operators_mod.binaryOpToRegister(self, thread, op, .mod);
-                }
-            },
-            .pow => |op| try operators_mod.binaryOpToRegister(self, thread, op, .pow),
-            .band => |op| {
-                const lhs = stack[base + op.left];
-                const rhs = stack[base + op.right];
-                if (operators_mod.rawIntegerBitwiseOpFast(lhs, rhs, .band)) |value| {
-                    stack[base + op.dest] = value;
-                } else {
-                    try operators_mod.binaryOpToRegister(self, thread, op, .band);
-                }
-            },
-            .bor => |op| {
-                const lhs = stack[base + op.left];
-                const rhs = stack[base + op.right];
-                if (operators_mod.rawIntegerBitwiseOpFast(lhs, rhs, .bor)) |value| {
-                    stack[base + op.dest] = value;
-                } else {
-                    try operators_mod.binaryOpToRegister(self, thread, op, .bor);
-                }
-            },
-            .bxor => |op| {
-                const lhs = stack[base + op.left];
-                const rhs = stack[base + op.right];
-                if (operators_mod.rawIntegerBitwiseOpFast(lhs, rhs, .bxor)) |value| {
-                    stack[base + op.dest] = value;
-                } else {
-                    try operators_mod.binaryOpToRegister(self, thread, op, .bxor);
-                }
-            },
-            .shl => |op| {
-                const lhs = stack[base + op.left];
-                const rhs = stack[base + op.right];
-                if (operators_mod.rawIntegerBitwiseOpFast(lhs, rhs, .shl)) |value| {
-                    stack[base + op.dest] = value;
-                } else {
-                    try operators_mod.binaryOpToRegister(self, thread, op, .shl);
-                }
-            },
-            .shr => |op| {
-                const lhs = stack[base + op.left];
-                const rhs = stack[base + op.right];
-                if (operators_mod.rawIntegerBitwiseOpFast(lhs, rhs, .shr)) |value| {
-                    stack[base + op.dest] = value;
-                } else {
-                    try operators_mod.binaryOpToRegister(self, thread, op, .shr);
-                }
-            },
-            .unm => |op| try operators_mod.unaryOpToRegister(self, thread, op, .unm),
-            .bnot => |op| try operators_mod.unaryOpToRegister(self, thread, op, .bnot),
-            .concat => |op| try operators_mod.binaryOpToRegister(self, thread, op, .concat),
-            .concat_range => |op| try operators_mod.concatRangeToRegister(self, thread, op),
-            .eq => |op| {
-                const lhs = stack[base + op.left];
-                const rhs = stack[base + op.right];
-                if (!operators_mod.equalityHasMetamethod(lhs, rhs)) {
-                    stack[base + op.dest] = .{ .boolean = valuesEqual(lhs, rhs) };
-                } else {
-                    try operators_mod.equalValuesToRegister(self, thread, op);
-                }
-            },
-            .lt => |op| {
-                const lhs = stack[base + op.left];
-                const rhs = stack[base + op.right];
-                if (operators_mod.rawCompare(lhs, rhs, .lt)) |result| {
-                    stack[base + op.dest] = .{ .boolean = result };
-                } else {
-                    try operators_mod.compareValuesToRegister(self, thread, op, .lt);
-                }
-            },
-            .le => |op| {
-                const lhs = stack[base + op.left];
-                const rhs = stack[base + op.right];
-                if (operators_mod.rawCompare(lhs, rhs, .le)) |result| {
-                    stack[base + op.dest] = .{ .boolean = result };
-                } else {
-                    try operators_mod.compareValuesToRegister(self, thread, op, .le);
-                }
-            },
-            .not => |op| {
-                const result = !truthy(stack[base + op.source]);
-                stack[base + op.dest] = .{ .boolean = result };
-            },
-            .len => |op| try operators_mod.lengthToRegister(self, thread, op),
-            .new_table => |op| stack[base + op.dest] = try self.newTableWithHints(op.array_hint, op.hash_hint),
-            .set_list => |op| try setList(self, thread, op),
-            .get_table => |op| {
-                const table_value = stack[base + op.table];
-                const key_value = stack[base + op.key];
-                if (frame.named_vararg_readonly and op.table == proto.param_count) {
-                    stack[base + op.dest] = call_mod.namedVarargRead(frame.varargs, key_value);
-                } else if (fastTableRawGet(table_value, key_value)) |value| {
-                    stack[base + op.dest] = value;
-                } else {
-                    try index_mod.getTableToRegister(self, thread, op.dest, table_value, key_value);
-                }
-            },
-            .set_table => |op| {
-                const table_value = stack[base + op.table];
-                const key_value = stack[base + op.key];
-                const value = stack[base + op.value];
-                if (!try fastTableArraySet(self, table_value, key_value, value)) {
-                    if (key_value != .string or !try fastTableKnownKeySet(self, table_value, key_value, value)) {
-                        try index_mod.setTableFromThreadContinuable(self, thread, table_value, key_value, value);
-                    }
-                }
-            },
-            .set_array => |op| {
-                const table_value = stack[base + op.table];
-                const value = stack[base + op.value];
-                if (table_value == .table and op.index != 0) {
-                    try setTableArrayRawIndex(self, table_value.table, op.index, value);
-                } else {
-                    try index_mod.setTableFromThreadContinuable(self, thread, table_value, .{ .integer = @intCast(op.index) }, value);
-                }
-            },
-            .get_field => |op| {
-                const table_value = stack[base + op.table];
-                const key = Value{ .string = constantString(proto, op.name) };
-                if (frame.named_vararg_readonly and op.table == proto.param_count) {
-                    stack[base + op.dest] = call_mod.namedVarargRead(frame.varargs, key);
-                } else if (fastTableFieldGet(table_value, key.string, proto.constant_hashes[op.name])) |value| {
-                    stack[base + op.dest] = value;
-                } else {
-                    try index_mod.getTableToRegister(self, thread, op.dest, table_value, key);
-                }
-            },
-            .set_field => |op| {
-                const table_value = stack[base + op.table];
-                const key = Value{ .string = constantString(proto, op.name) };
-                const value = stack[base + op.value];
-                if (!fastTableKnownKeySetExistingNoAlloc(self, table_value, key, proto.constant_hashes[op.name], value) and
-                    !try fastTableKnownKeySet(self, table_value, key, value))
-                {
-                    try index_mod.setTableFromThreadContinuable(self, thread, table_value, key, value);
-                }
-            },
-            .jmp => |offset| try jumpThreadMaybeFast(self, thread, offset, true),
-            .compare_branch => |op| {
-                const lhs = stack[base + op.left];
-                const rhs = stack[base + op.right];
-                if (operators_mod.rawCompareBranchResult(lhs, rhs, op.op)) |result| {
-                    if (result == op.jump_if_truthy) try jumpThreadMaybeFast(self, thread, op.offset, true);
-                } else {
-                    try operators_mod.compareBranch(self, thread, op);
-                }
-            },
-            .test_op => |op| if (truthy(stack[base + op.register]) == op.jump_if_truthy) {
-                try jumpThreadMaybeFast(self, thread, op.offset, true);
-            },
-            .test_set => |op| {
-                const value = stack[base + op.source];
-                stack[base + op.dest] = value;
-                if (truthy(value) == op.jump_if_truthy) {
-                    try jumpThreadMaybeFast(self, thread, op.offset, true);
-                }
-            },
-            .call => |op| try call_mod.callValue(self, thread, op),
-            .tail_call => |op| try call_mod.tailCallValue(self, thread, op),
-            .ret => |op| try call_mod.returnFromFrame(self, thread, op.first, op.count),
-            .vararg => |op| try call_mod.loadVarargs(self, thread, op),
-            .for_prep => |op| try forPrep(self, thread, op),
-            .for_loop => |op| try forLoop(self, thread, op),
-            .tfor_prep => |op| if (!(try index_mod.advanceGenericFor(self, thread, op, true))) try jumpThread(self, thread, op.offset, false),
-            .tfor_call => |op| _ = try index_mod.advanceGenericFor(self, thread, op, false),
-            .tfor_loop => |op| try jumpThread(self, thread, op.offset, false),
-            .closure => |op| stack[base + op.dest] = try self.newClosure(thread, proto.children.items[op.proto]),
-            .get_upvalue => |op| stack[base + op.register] = upvalue_mod.readUpvalue(self, thread, op.upvalue),
-            .set_upvalue => |op| try upvalue_mod.writeUpvalue(self, thread, op.upvalue, stack[base + op.register]),
-            .close => |register| if (thread.open_upvalues != null) upvalue_mod.closeUpvalues(self, thread, base + register),
-            .check_close => |register| try upvalue_mod.checkToBeClosedRegister(self, thread, register),
-            .close_tbc => |register| try upvalue_mod.closeToBeClosedRegister(self, thread, register, null),
-        }
+        try executeInstruction(self, thread, proto, instruction);
 
         if (!instructionPreservesLastResult(instruction)) {
             thread.last_result_count = 0;
@@ -334,6 +96,247 @@ fn runThreadLoop(self: *State, thread: *Thread, target_frame_count: usize) anyer
         }
 
         if (self.gc.running and (self.gc.shouldRunAuto() or self.stressPending())) try self.gc.autoStep(thread);
+    }
+}
+
+fn executeInstruction(self: *State, thread: *Thread, proto: *const proto_mod.Proto, instruction: bytecode.Instruction) anyerror!void {
+    const frame = &thread.frames.items[thread.frames.items.len - 1];
+    const base = frame.base;
+    const stack = thread.stack.items;
+    switch (instruction) {
+        .load_nil => |dest| stack[base + dest] = .nil,
+        .load_bool => |op| stack[base + op.dest] = .{ .boolean = op.value },
+        .load_const => |op| stack[base + op.dest] = try protoConstant(self, frame.closure, proto, op.constant),
+        .move => |op| stack[base + op.dest] = stack[base + op.source],
+        .get_global => |op| stack[base + op.register] = globalGet(self, proto, op.name),
+        .set_global => |op| if (!fastGlobalSetExisting(self, proto, op.name, stack[base + op.register])) {
+            try self.setGlobal(constantString(proto, op.name), stack[base + op.register]);
+        },
+        .declare_global => |op| try self.declareGlobal(thread, constantString(proto, op.name), op.table, op.value),
+        .add => |op| {
+            const lhs = stack[base + op.left];
+            const rhs = stack[base + op.right];
+            if (operators_mod.rawNumericBinaryOpFast(lhs, rhs, .add)) |value| {
+                stack[base + op.dest] = value;
+            } else {
+                try operators_mod.binaryOpToRegister(self, thread, op, .add);
+            }
+        },
+        .sub => |op| {
+            const lhs = stack[base + op.left];
+            const rhs = stack[base + op.right];
+            if (operators_mod.rawNumericBinaryOpFast(lhs, rhs, .sub)) |value| {
+                stack[base + op.dest] = value;
+            } else {
+                try operators_mod.binaryOpToRegister(self, thread, op, .sub);
+            }
+        },
+        .mul => |op| {
+            const lhs = stack[base + op.left];
+            const rhs = stack[base + op.right];
+            if (operators_mod.rawNumericBinaryOpFast(lhs, rhs, .mul)) |value| {
+                stack[base + op.dest] = value;
+            } else {
+                try operators_mod.binaryOpToRegister(self, thread, op, .mul);
+            }
+        },
+        .div => |op| {
+            const lhs = stack[base + op.left];
+            const rhs = stack[base + op.right];
+            if (operators_mod.rawNumericBinaryOpFast(lhs, rhs, .div)) |value| {
+                stack[base + op.dest] = value;
+            } else {
+                try operators_mod.binaryOpToRegister(self, thread, op, .div);
+            }
+        },
+        .idiv => |op| {
+            const lhs = stack[base + op.left];
+            const rhs = stack[base + op.right];
+            if (operators_mod.rawNumericBinaryOpFast(lhs, rhs, .idiv)) |value| {
+                stack[base + op.dest] = value;
+            } else {
+                try operators_mod.binaryOpToRegister(self, thread, op, .idiv);
+            }
+        },
+        .mod => |op| {
+            const lhs = stack[base + op.left];
+            const rhs = stack[base + op.right];
+            if (operators_mod.rawNumericBinaryOpFast(lhs, rhs, .mod)) |value| {
+                stack[base + op.dest] = value;
+            } else {
+                try operators_mod.binaryOpToRegister(self, thread, op, .mod);
+            }
+        },
+        .pow => |op| try operators_mod.binaryOpToRegister(self, thread, op, .pow),
+        .band => |op| {
+            const lhs = stack[base + op.left];
+            const rhs = stack[base + op.right];
+            if (operators_mod.rawIntegerBitwiseOpFast(lhs, rhs, .band)) |value| {
+                stack[base + op.dest] = value;
+            } else {
+                try operators_mod.binaryOpToRegister(self, thread, op, .band);
+            }
+        },
+        .bor => |op| {
+            const lhs = stack[base + op.left];
+            const rhs = stack[base + op.right];
+            if (operators_mod.rawIntegerBitwiseOpFast(lhs, rhs, .bor)) |value| {
+                stack[base + op.dest] = value;
+            } else {
+                try operators_mod.binaryOpToRegister(self, thread, op, .bor);
+            }
+        },
+        .bxor => |op| {
+            const lhs = stack[base + op.left];
+            const rhs = stack[base + op.right];
+            if (operators_mod.rawIntegerBitwiseOpFast(lhs, rhs, .bxor)) |value| {
+                stack[base + op.dest] = value;
+            } else {
+                try operators_mod.binaryOpToRegister(self, thread, op, .bxor);
+            }
+        },
+        .shl => |op| {
+            const lhs = stack[base + op.left];
+            const rhs = stack[base + op.right];
+            if (operators_mod.rawIntegerBitwiseOpFast(lhs, rhs, .shl)) |value| {
+                stack[base + op.dest] = value;
+            } else {
+                try operators_mod.binaryOpToRegister(self, thread, op, .shl);
+            }
+        },
+        .shr => |op| {
+            const lhs = stack[base + op.left];
+            const rhs = stack[base + op.right];
+            if (operators_mod.rawIntegerBitwiseOpFast(lhs, rhs, .shr)) |value| {
+                stack[base + op.dest] = value;
+            } else {
+                try operators_mod.binaryOpToRegister(self, thread, op, .shr);
+            }
+        },
+        .unm => |op| try operators_mod.unaryOpToRegister(self, thread, op, .unm),
+        .bnot => |op| try operators_mod.unaryOpToRegister(self, thread, op, .bnot),
+        .concat => |op| try operators_mod.binaryOpToRegister(self, thread, op, .concat),
+        .concat_range => |op| try operators_mod.concatRangeToRegister(self, thread, op),
+        .eq => |op| {
+            const lhs = stack[base + op.left];
+            const rhs = stack[base + op.right];
+            if (!operators_mod.equalityHasMetamethod(lhs, rhs)) {
+                stack[base + op.dest] = .{ .boolean = valuesEqual(lhs, rhs) };
+            } else {
+                try operators_mod.equalValuesToRegister(self, thread, op);
+            }
+        },
+        .lt => |op| {
+            const lhs = stack[base + op.left];
+            const rhs = stack[base + op.right];
+            if (operators_mod.rawCompare(lhs, rhs, .lt)) |result| {
+                stack[base + op.dest] = .{ .boolean = result };
+            } else {
+                try operators_mod.compareValuesToRegister(self, thread, op, .lt);
+            }
+        },
+        .le => |op| {
+            const lhs = stack[base + op.left];
+            const rhs = stack[base + op.right];
+            if (operators_mod.rawCompare(lhs, rhs, .le)) |result| {
+                stack[base + op.dest] = .{ .boolean = result };
+            } else {
+                try operators_mod.compareValuesToRegister(self, thread, op, .le);
+            }
+        },
+        .not => |op| {
+            const result = !truthy(stack[base + op.source]);
+            stack[base + op.dest] = .{ .boolean = result };
+        },
+        .len => |op| try operators_mod.lengthToRegister(self, thread, op),
+        .new_table => |op| stack[base + op.dest] = try self.newTableWithHints(op.array_hint, op.hash_hint),
+        .set_list => |op| try setList(self, thread, op),
+        .get_table => |op| {
+            const table_value = stack[base + op.table];
+            const key_value = stack[base + op.key];
+            if (frame.named_vararg_readonly and op.table == proto.param_count) {
+                stack[base + op.dest] = call_mod.namedVarargRead(frame.varargs, key_value);
+            } else if (fastTableRawGet(table_value, key_value)) |value| {
+                stack[base + op.dest] = value;
+            } else {
+                try index_mod.getTableToRegister(self, thread, op.dest, table_value, key_value);
+            }
+        },
+        .set_table => |op| {
+            const table_value = stack[base + op.table];
+            const key_value = stack[base + op.key];
+            const value = stack[base + op.value];
+            if (!try fastTableArraySet(self, table_value, key_value, value)) {
+                if (key_value != .string or !try fastTableKnownKeySet(self, table_value, key_value, value)) {
+                    try index_mod.setTableFromThreadContinuable(self, thread, table_value, key_value, value);
+                }
+            }
+        },
+        .set_array => |op| {
+            const table_value = stack[base + op.table];
+            const value = stack[base + op.value];
+            if (table_value == .table and op.index != 0) {
+                try setTableArrayRawIndex(self, table_value.table, op.index, value);
+            } else {
+                try index_mod.setTableFromThreadContinuable(self, thread, table_value, .{ .integer = @intCast(op.index) }, value);
+            }
+        },
+        .get_field => |op| {
+            const table_value = stack[base + op.table];
+            const key = Value{ .string = constantString(proto, op.name) };
+            if (frame.named_vararg_readonly and op.table == proto.param_count) {
+                stack[base + op.dest] = call_mod.namedVarargRead(frame.varargs, key);
+            } else if (fastTableFieldGet(table_value, key.string, proto.constant_hashes[op.name])) |value| {
+                stack[base + op.dest] = value;
+            } else {
+                try index_mod.getTableToRegister(self, thread, op.dest, table_value, key);
+            }
+        },
+        .set_field => |op| {
+            const table_value = stack[base + op.table];
+            const key = Value{ .string = constantString(proto, op.name) };
+            const value = stack[base + op.value];
+            if (!fastTableKnownKeySetExistingNoAlloc(self, table_value, key, proto.constant_hashes[op.name], value) and
+                !try fastTableKnownKeySet(self, table_value, key, value))
+            {
+                try index_mod.setTableFromThreadContinuable(self, thread, table_value, key, value);
+            }
+        },
+        .jmp => |offset| try jumpThreadMaybeFast(self, thread, offset, true),
+        .compare_branch => |op| {
+            const lhs = stack[base + op.left];
+            const rhs = stack[base + op.right];
+            if (operators_mod.rawCompareBranchResult(lhs, rhs, op.op)) |result| {
+                if (result == op.jump_if_truthy) try jumpThreadMaybeFast(self, thread, op.offset, true);
+            } else {
+                try operators_mod.compareBranch(self, thread, op);
+            }
+        },
+        .test_op => |op| if (truthy(stack[base + op.register]) == op.jump_if_truthy) {
+            try jumpThreadMaybeFast(self, thread, op.offset, true);
+        },
+        .test_set => |op| {
+            const value = stack[base + op.source];
+            stack[base + op.dest] = value;
+            if (truthy(value) == op.jump_if_truthy) {
+                try jumpThreadMaybeFast(self, thread, op.offset, true);
+            }
+        },
+        .call => |op| try call_mod.callValue(self, thread, op),
+        .tail_call => |op| try call_mod.tailCallValue(self, thread, op),
+        .ret => |op| try call_mod.returnFromFrame(self, thread, op.first, op.count),
+        .vararg => |op| try call_mod.loadVarargs(self, thread, op),
+        .for_prep => |op| try forPrep(self, thread, op),
+        .for_loop => |op| try forLoop(self, thread, op),
+        .tfor_prep => |op| if (!(try index_mod.advanceGenericFor(self, thread, op, true))) try jumpThread(self, thread, op.offset, false),
+        .tfor_call => |op| _ = try index_mod.advanceGenericFor(self, thread, op, false),
+        .tfor_loop => |op| try jumpThread(self, thread, op.offset, false),
+        .closure => |op| stack[base + op.dest] = try self.newClosure(thread, proto.children.items[op.proto]),
+        .get_upvalue => |op| stack[base + op.register] = upvalue_mod.readUpvalue(self, thread, op.upvalue),
+        .set_upvalue => |op| try upvalue_mod.writeUpvalue(self, thread, op.upvalue, stack[base + op.register]),
+        .close => |register| if (thread.open_upvalues != null) upvalue_mod.closeUpvalues(self, thread, base + register),
+        .check_close => |register| try upvalue_mod.checkToBeClosedRegister(self, thread, register),
+        .close_tbc => |register| try upvalue_mod.closeToBeClosedRegister(self, thread, register, null),
     }
 }
 
