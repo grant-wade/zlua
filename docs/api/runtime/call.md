@@ -21,13 +21,12 @@
 - [compile.resolver](../compile/resolver.md)
 - [compile.bytecode](../compile/bytecode.md)
 - [compile.proto](../compile/proto.md)
-- [compile.compiler](../compile/compiler.md)
-- [compile.disasm](../compile/disasm.md)
-- [api](../api.md)
+- [runtime.types](../runtime/types.md)
 - [runtime](../runtime.md)
 - [runtime.chunk](../runtime/chunk.md)
-- [runtime.types](../runtime/types.md)
+- [reflection](../reflection.md)
 - [runtime.value](../runtime/value.md)
+- [runtime.number_format](../runtime/number_format.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
 - [runtime.state](../runtime/state.md)
@@ -37,6 +36,7 @@
 - [runtime.debug](../runtime/debug.md)
 - [runtime.gc](../runtime/gc.md)
 - [runtime.host](../runtime/host.md)
+- [runtime.timezone](../runtime/timezone.md)
 - [stdlib](../stdlib.md)
 - [stdlib.base](../stdlib/base.md)
 - [stdlib.table](../stdlib/table.md)
@@ -45,19 +45,23 @@
 - [stdlib.utf8](../stdlib/utf8.md)
 - [stdlib.coroutine](../stdlib/coroutine.md)
 - [stdlib.debug](../stdlib/debug.md)
-- [stdlib.package](../stdlib/package.md)
 - [stdlib.io](../stdlib/io.md)
+- [stdlib.static_strings](../stdlib/static_strings.md)
 - [stdlib.os](../stdlib/os.md)
+- [stdlib.package](../stdlib/package.md)
 - [stdlib.json](../stdlib/json.md)
 - [stdlib.zerde_lua](../stdlib/zerde_lua.md)
 - [stdlib.toml](../stdlib/toml.md)
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
-- [stdlib.static_strings](../stdlib/static_strings.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
+- [compile.compiler](../compile/compiler.md)
+- [compile.fold](../compile/fold.md)
+- [compile.disasm](../compile/disasm.md)
+- [api](../api.md)
 - [runtime.snapshot](../runtime/snapshot.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
@@ -90,6 +94,7 @@
 - [callOneResultWithContinuation](#fn-calloneresultwithcontinuation)
 - [callOneMetamethodWithContinuation](#fn-callonemetamethodwithcontinuation)
 - [callOneMetamethod](#fn-callonemetamethod)
+- [callOneNamed](#fn-callonenamed)
 - [metamethodDebugName](#fn-metamethoddebugname)
 - [callOneResultMaybeContinuation](#fn-calloneresultmaybecontinuation)
 - [pushCallOneContinuation](#fn-pushcallonecontinuation)
@@ -105,7 +110,6 @@
 - [completeReadyProtectedContinuation](#fn-completereadyprotectedcontinuation)
 - [completeProtectedContinuationError](#fn-completeprotectedcontinuationerror)
 - [returnProtectedContinuationSuccess](#fn-returnprotectedcontinuationsuccess)
-- [returnProtectedContinuationFailure](#fn-returnprotectedcontinuationfailure)
 - [returnProtectedResult](#fn-returnprotectedresult)
 - [collectArgs](#fn-collectargs)
 - [resolveReturnCount](#fn-resolvereturncount)
@@ -141,6 +145,16 @@ pub fn callOneMetamethodWithContinuation(comptime State: type, self: *State, thr
 
 ```zig
 pub fn callOneMetamethod(comptime State: type, self: *State, thread: *Thread, name: []const u8, callable: Value, args: []const Value) anyerror!Value
+```
+
+<a id="fn-callonenamed"></a>
+
+## callOneNamed
+
+Calls `callable` for one result; a Lua callee reports `namewhat 'name'`.
+
+```zig
+pub fn callOneNamed(comptime State: type, self: *State, thread: *Thread, name: []const u8, namewhat: []const u8, callable: Value, args: []const Value) anyerror!Value
 ```
 
 <a id="fn-metamethoddebugname"></a>
@@ -220,7 +234,7 @@ pub fn runProtectedCall(comptime State: type, self: *State, thread: *Thread, con
 ## pushProtectedContinuation
 
 ```zig
-pub fn pushProtectedContinuation(comptime State: type, self: *State, thread: *Thread, context: ProtectedCallContext, base: bytecode.Register, return_count: u16, kind: ProtectedContinuationKind, handler: Value, handler_depth: usize) !void
+pub fn pushProtectedContinuation(comptime State: type, self: *State, thread: *Thread, context: ProtectedCallContext, base: u32, return_count: u16) !void
 ```
 
 <a id="fn-readyprotectedcontinuationindex"></a>
@@ -252,7 +266,7 @@ pub fn completeReadyProtectedContinuation(comptime State: type, self: *State, th
 ## completeProtectedContinuationError
 
 ```zig
-pub fn completeProtectedContinuationError(comptime State: type, self: *State, thread: *Thread, error_value: Value) !bool
+pub fn completeProtectedContinuationError(comptime State: type, self: *State, thread: *Thread) !bool
 ```
 
 <a id="fn-returnprotectedcontinuationsuccess"></a>
@@ -263,20 +277,12 @@ pub fn completeProtectedContinuationError(comptime State: type, self: *State, th
 pub fn returnProtectedContinuationSuccess(comptime State: type, self: *State, thread: *Thread, continuation: ProtectedContinuation, values: []Value) !void
 ```
 
-<a id="fn-returnprotectedcontinuationfailure"></a>
-
-## returnProtectedContinuationFailure
-
-```zig
-pub fn returnProtectedContinuationFailure(comptime State: type, self: *State, thread: *Thread, continuation: ProtectedContinuation, failure: Value) !void
-```
-
 <a id="fn-returnprotectedresult"></a>
 
 ## returnProtectedResult
 
 ```zig
-pub fn returnProtectedResult(comptime State: type, self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, result: ProtectedCallResult) !void
+pub fn returnProtectedResult(comptime State: type, self: *State, thread: *Thread, base: u32, return_count: u16, result: ProtectedCallResult) !void
 ```
 
 <a id="fn-collectargs"></a>
@@ -284,7 +290,7 @@ pub fn returnProtectedResult(comptime State: type, self: *State, thread: *Thread
 ## collectArgs
 
 ```zig
-pub fn collectArgs(comptime State: type, self: *State, thread: *Thread, op: bytecode.Call, first: u16) ![]Value
+pub fn collectArgs(comptime State: type, self: *State, thread: *Thread, op: bytecode.Call, first: u32) ![]Value
 ```
 
 <a id="fn-resolvereturncount"></a>

@@ -4,6 +4,7 @@ const host = @import("runtime/host.zig");
 const state_mod = @import("runtime/state.zig");
 const tests = @import("runtime/tests.zig");
 const types = @import("runtime/types.zig");
+const value_mod = @import("runtime/value.zig");
 
 pub const RuntimeError = types.RuntimeError;
 pub const binary_chunk_signature = chunk_mod.binary_chunk_signature;
@@ -11,7 +12,10 @@ pub const binary_chunk_payload_magic = chunk_mod.binary_chunk_payload_magic;
 
 pub const State = state_mod.State;
 pub const StateOptions = state_mod.StateOptions;
+pub const OutputFlush = state_mod.OutputFlush;
 pub const StartupPhase = state_mod.StartupPhase;
+pub const HostErrorHandler = state_mod.HostErrorHandler;
+pub const InterruptControl = @import("runtime/vm.zig").InterruptControl;
 
 pub const Value = types.Value;
 pub const NativeFn = types.NativeFn;
@@ -30,6 +34,7 @@ pub const Upvalue = types.Upvalue;
 pub const Table = types.Table;
 pub const Userdata = types.Userdata;
 pub const Thread = types.Thread;
+pub const ValueRoots = types.ValueRoots;
 pub const GcMode = types.GcMode;
 pub const GcParam = types.GcParam;
 
@@ -47,15 +52,22 @@ pub const EnvironmentCapability = host.EnvironmentCapability;
 pub const CustomEnvironment = host.CustomEnvironment;
 pub const ClockCapability = host.ClockCapability;
 pub const CustomClock = host.CustomClock;
+pub const FixedClock = host.FixedClock;
+pub const UtcOffset = host.UtcOffset;
 pub const ProcessCapability = host.ProcessCapability;
 pub const CustomProcess = host.CustomProcess;
 pub const ProcessResult = host.ProcessResult;
 pub const ProcessStatus = host.ProcessStatus;
+pub const PopenResult = host.PopenResult;
+pub const ExitRequest = host.ExitRequest;
+pub const WarningHandler = host.WarningHandler;
+pub const default_max_file_bytes = host.default_max_file_bytes;
 
 pub const CompareOp = state_mod.CompareOp;
 pub const valuesEqual = state_mod.valuesEqual;
 pub const truthy = state_mod.truthy;
 pub const toInteger = state_mod.toInteger;
+pub const coerceToInteger = value_mod.coerceToInteger;
 pub const toNumber = state_mod.toNumber;
 pub const appendLuaString = state_mod.appendLuaString;
 pub const localActiveAt = state_mod.localActiveAt;
@@ -66,10 +78,13 @@ pub const trimAscii = state_mod.trimAscii;
 pub const runtimeArgValue = state_mod.runtimeArgValue;
 pub const argValue = state_mod.argValue;
 pub const appendValue = state_mod.appendValue;
+pub const appendErrorValue = state_mod.appendErrorValue;
 pub const isFileValue = state_mod.isFileValue;
 pub const isClosedFileValue = state_mod.isClosedFileValue;
 pub const appendNumber = state_mod.appendNumber;
 pub const appendFmt = state_mod.appendFmt;
+pub const typeName = state_mod.luaTypeName;
+pub const number_format = @import("runtime/number_format.zig");
 
 pub const ExecuteOptions = execute_mod.ExecuteOptions;
 pub const executeSource = execute_mod.executeSource;
@@ -77,4 +92,5 @@ pub const executeSourceWithOptions = execute_mod.executeSourceWithOptions;
 
 test {
     _ = tests;
+    _ = @import("runtime/number_format.zig");
 }

@@ -16,8 +16,8 @@ pub fn load(state: *State, thread: *Thread, op: bytecode.Call) !void {
 
     const source = loaded_source.source;
     if (invalidLoadMode(state, thread, op)) return state.failArgumentMessage("load", 3, "invalid mode");
-    if (loadModeError(state, thread, op, source)) |message| {
-        try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.intern(message) } });
+    if (try loadModeError(state, thread, op, source)) |message| {
+        try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = message } });
         return;
     }
 
@@ -63,12 +63,13 @@ fn loadSource(state: *State, thread: *Thread, op: bytecode.Call) !LoadSource {
     while (true) {
         state.conservative_gc_depth += 1;
         defer state.conservative_gc_depth -= 1;
-        const result = try state.protectedCall(thread, source_value, &.{});
+        var context = state.protectedCallContextWithErrors(thread);
+        context.error_handler = thread.error_handler;
+        const result = try state.runProtectedCall(thread, context, source_value, &.{});
         const values = switch (result) {
             .success => |values| values,
             .failure => |failure| {
-                const message = if (failure == .string) failure.string else "reader function failed";
-                try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.intern(message) } });
+                try state.returnValues(thread, op.base, op.return_count, &.{ .nil, try state.caughtErrorValue(failure) });
                 return error.LoadReturned;
             },
         };
@@ -89,19 +90,20 @@ fn loadSource(state: *State, thread: *Thread, op: bytecode.Call) !LoadSource {
     }
 }
 
-fn loadModeError(state: *State, thread: *Thread, op: bytecode.Call, source: []const u8) ?[]const u8 {
+fn loadModeError(state: *State, thread: *Thread, op: bytecode.Call, source: []const u8) !?[]const u8 {
     const mode = if (op.arg_count >= 3 and runtime.argValue(state, thread, op, 2) == .string) runtime.argValue(state, thread, op, 2).string else "bt";
     const binary = looksLikeBinaryChunk(source);
-    if (binary and std.mem.indexOfScalar(u8, mode, 'b') == null) return "attempt to load a binary chunk";
-    if (!binary and std.mem.indexOfScalar(u8, mode, 't') == null) return "attempt to load a text chunk";
-    return null;
+    const kind = if (binary) "binary" else "text";
+    if (std.mem.indexOfScalar(u8, mode, kind[0]) != null) return null;
+    var message = std.ArrayList(u8).empty;
+    defer message.deinit(state.allocator);
+    try runtime.appendFmt(state.allocator, &message, "attempt to load a {s} chunk (mode is '{s}')", .{ kind, mode });
+    return try state.intern(message.items);
 }
 
 fn invalidLoadMode(state: *State, thread: *Thread, op: bytecode.Call) bool {
     const mode = if (op.arg_count >= 3 and runtime.argValue(state, thread, op, 2) == .string) runtime.argValue(state, thread, op, 2).string else "bt";
-    if (mode.len == 0) return true;
-    for (mode) |byte| if (byte != 'b' and byte != 't') return true;
-    return false;
+    return std.mem.indexOfScalar(u8, mode, 'B') != null;
 }
 
 fn looksLikeBinaryChunk(source: []const u8) bool {
@@ -152,11 +154,15 @@ pub fn tonumber(state: *State, thread: *Thread, op: bytecode.Call) !void {
 }
 
 pub fn warn(state: *State, thread: *Thread, op: bytecode.Call) !void {
+    const count = @max(op.arg_count, 1);
+    const parts = try state.allocator.alloc([]const u8, count);
+    defer state.allocator.free(parts);
+    for (parts, 0..) |*part, index| part.* = try state.expectArgumentString(thread, op, "warn", @intCast(index));
+    try state.warn(parts);
     try state.returnValues(thread, op.base, op.return_count, &.{});
 }
 
 fn typeName(value: Value) []const u8 {
-    if (runtime.isFileValue(value)) return "userdata";
     return switch (value) {
         .nil => "nil",
         .boolean => "boolean",

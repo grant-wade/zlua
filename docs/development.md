@@ -64,7 +64,7 @@ The recipe formats `build.zig`, top-level `src/*.zig`, `src/testing/*.zig`, and 
 
 For a behavior change:
 
-1. Add the smallest Lua fixture, C fixture, Zig test, or embedding example that demonstrates it.
+1. Add the smallest Lua fixture, extension fixture, Zig test, or embedding example that demonstrates it.
 2. Compare Lua-visible behavior with downloaded Lua 5.5.
 3. Make the narrowest compatible change.
 4. Run the focused test first, then `zig build ci` when the change crosses shared compiler, runtime, GC, stdlib, or API code.

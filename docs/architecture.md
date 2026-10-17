@@ -78,13 +78,13 @@ Constants keep numeric source text until loaded so conversion follows Lua rules.
 
 The global environment table is the single source of truth for globals. `_G` points back to that table, including for states opened with no standard libraries. There is no separate native globals map to keep in sync.
 
-Objects allocated by a state are tracked in state-owned lists. `State.deinit` walks those lists and releases them. The GC uses the same lists for marking, sweeping, finalization, and memory accounting.
+Objects allocated by a state are tracked in state-owned lists. `State.deinit` first calls pending finalizers like `lua_close`, then walks those lists and releases them. The GC uses the same lists for marking, sweeping, finalization, and memory accounting.
 
 ### State Startup
 
 State initialization is planned around the chosen standard libraries:
 
-1. `stdlib.initHintsWithStdin` predicts global entries, dynamic strings, and tables.
+1. `stdlib.initHints` predicts global entries, dynamic strings, and tables. Stdin bytes stay with the I/O capability and are not interned.
 2. The state reserves its string and table tracking capacity.
 3. The global table is created with the expected hash capacity and installs `_G`.
 4. Selected libraries: 
@@ -95,7 +95,7 @@ State initialization is planned around the chosen standard libraries:
 
 Common library names and fixed values live in `src/stdlib/static_strings.zig`. They are process-lifetime strings stored in the executable, so each state can reuse them without allocating or GC-tracking copies. `State.intern` returns the canonical static slice when one exists and uses the per-state interning table for all other strings.
 
-Library setup also avoids repeated object layouts. Standard file handles share one lazily created method metatable instead of copying methods into every file table.
+Library setup also avoids repeated object layouts. File handles are `FILE*` userdata that share one lazily created metatable.
 
 `State.initWithOptionsObserved` exposes the startup phases—state containers, globals, libraries, and GC baseline—to the in-process startup benchmark. High-level callers use `zlua.State.init`; internal runtime callers use `initWithOptions`.
 
@@ -108,7 +108,7 @@ Library setup also avoids repeated object layouts. Standard file handles share o
 | `Closure` | Proto, Lua upvalues, lazily loaded constants, and debug-strip state. |
 | `Upvalue` | An open stack slot or a closed stored value. |
 | `Table` | Array part, hash entries and index, metatable, and GC flags. |
-| `Userdata` | Native pointer, type information, metatable, finalizer, and deinit hook. |
+| `Userdata` | Native pointer, type information, metatable, `__gc` registration, host finalizer, and deinit hook. |
 | `Thread` | Value stack, call frames, continuations, open upvalues, hooks, and coroutine status. |
 
 Tables keep positive integer keys in an array part and other keys in hash entries backed by an index map. Iteration order is not a stable API except where compatibility tests pin Lua behavior.
@@ -120,12 +120,14 @@ Each thread owns a value stack and `CallFrame` stack. Calls enter through helper
 ```text
 value + arguments
   -> invokeValue
-  -> Lua frame, C closure, native function, or __call
+  -> Lua frame, built-in native, host API callback, or __call
   -> runThreadUntil
   -> adjust results for the caller
 ```
 
-Protected calls save enough state to restore stacks, frames, results, and prior error information. This path supports Lua `pcall`/`xpcall`, Zig `Function.protectedCall`, and C `lua_pcallk`.
+Protected calls save enough state to restore stacks, frames, results, prior error information, and the thread's message handler. This path supports Lua `pcall`/`xpcall` and Zig `Function.protectedCall`.
+
+Each thread has a message handler, like Lua's `errfunc`. `xpcall` and host calls with a handler install it, and it runs where the error is raised, before failing frames unwind.
 
 Yielding is continuation-based. Threads retain continuation records for protected calls, generic loops, branches, tail calls, and single calls so execution can resume in the correct opcode after a native call or metamethod yields.
 
@@ -133,14 +135,16 @@ Yielding is continuation-based. Threads retain continuation records for protecte
 
 The instruction dispatcher lives in `runtime/state.zig`; `runtime/vm.zig` performs cross-cutting limit checks. The VM handles Lua-specific result adjustment, varargs, tail calls, metamethods, to-be-closed unwinding, primitive metatables, debug hooks, and stack overflow guards.
 
-- `max_instructions` is a cumulative state budget that can be queried and reset through the Zig API.
+- `max_instructions` is a cumulative state budget that can be queried and reset through the Zig API. Host calls can narrow it with per-call deadlines.
+- Instruction budgets and interrupt polls share one checkpoint in the dispatch loop.
+- Interrupts use an atomic flag that survives state moves and reset. `error.Interrupted` bypasses `pcall`, `xpcall`, and `__close` handlers.
 - `max_memory` is enforced by the embedding API's bounded allocator. Low-level runtime users must supply their own bounded allocator.
 
 ### Garbage Collection
 
 The collector keeps object addresses stable and supports two modes. Generational mode, the default, focuses on recently allocated objects. Incremental mode spreads a full collection across VM safepoints and calls to `State.stepGc`.
 
-Collection follows references from globals, embedding handles, active calls, and suspended coroutines. Write barriers keep those references valid when Lua or host code changes an object between steps. Weak tables and finalizers receive special handling so unreachable objects can be cleared or finalized without losing objects that become reachable again.
+Collection follows references from globals, embedding handles, active calls, and suspended coroutines. Write barriers keep those references valid when Lua or host code changes an object between steps. Thread stacks have no per-register barrier: running threads are revisited at each atomic step, and an old thread is remembered for minor collections when it runs, suspends, or has a register written from another thread. An explicit `collectgarbage()` marks each frame's registers up to its pending call, like Lua's stack top, and clears dead registers above it. Weak tables and finalizers receive special handling so unreachable objects can be cleared or finalized without losing objects that become reachable again. Tables and userdata registered for a Lua `__gc` share one finalizer queue, newest first; a userdata's host finalizer runs only once it is unreachable after its `__gc`. Errors in `__gc` become Lua warnings.
 
 Snapshots save the heap and GC settings without running collection. Reset restores the saved objects without repeating a full-heap scan; generational collections then focus on new allocations. Storage kept for reset still counts toward the state's memory limit, even when it is no longer part of the live Lua heap.
 
@@ -156,10 +160,10 @@ Opening a library and granting host access are separate decisions:
 
 | Capability | Available modes |
 | --- | --- |
-| I/O | Optional Zig `std.Io`, stdin bytes, and output writers. |
+| I/O | Optional Zig `std.Io`, stdin bytes (or a runtime-level stdin reader, used by the CLI), and output writers with flush policies. |
 | Filesystem | Disabled, read-only memory files, mutable memory filesystem, host cwd, rooted host directory, or callbacks. |
 | Environment | Disabled, host-provided map, or callbacks. |
-| Clock | Disabled, fixed, system, or callbacks. |
+| Clock | Disabled, fixed (optionally with a local offset), system, or callbacks. |
 | Process | Disabled, std-backed, or callbacks. |
 
 The memory filesystem normalizes sandbox-relative paths and rejects absolute paths and parent traversal. `io`, `os`, `package`, and `fs` all consume the same capability layer, so opening one of those libraries does not grant ambient access by itself.
@@ -178,6 +182,8 @@ Load-time failures use `errors.Diagnostic`. Runtime failures use `RuntimeErrorPa
 
 zlua binary chunks serialize protos for zlua-to-zlua use. `string.dump`, `Function.dumpBytecode`, and `State.loadBytecode` use this format. It is version-sensitive, does not promise `luac` compatibility, and is not a stable external ABI.
 
+Loaded chunks are checked by `verifyProto` in `src/runtime/chunk.zig`, because the VM indexes registers, constants, upvalues, protos, and jump targets without bounds checks. New opcodes must extend it.
+
 ## Testing Architecture
 
 The test harnesses are Zig build artifacts under `src/testing/`:
@@ -190,7 +196,7 @@ The test harnesses are Zig build artifacts under `src/testing/`:
 | Official suite | Upstream Lua 5.5 tests under both runtimes. |
 | Benchmarks | Process-level and in-process startup measurements. |
 
-Staged differential tests can compare frontend, resolver, and compiler acceptance without depending on VM execution. Startup tests separately check allocation hints, static strings, global-table identity, and shared file metatables.
+Staged differential tests can compare frontend, resolver, and compiler acceptance without depending on VM execution. Startup tests separately check allocation hints, static strings, global-table identity, and the shared file metatable and method table.
 
 ## Invariants
 
@@ -203,7 +209,8 @@ Changes should preserve these rules:
 - Static strings must have process lifetime and never enter state-owned deallocation paths.
 - Standard-library startup changes must update capacity hints, the static-string catalog, and startup tests together.
 - Protected calls must restore stack, frame, result, and error state.
-- C/runtime value conversion must preserve table identity and cycles.
+- Zig API/runtime value conversion must preserve table identity and cycles.
 - Host effects remain explicit capabilities.
 - Binary chunks and VM layouts remain internal.
+- Loaded binary chunks are verified before they run.
 - Performance work must still pass differential, extension, official, and embedding tests.

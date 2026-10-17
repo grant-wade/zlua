@@ -33,12 +33,16 @@ var lua = try zlua.State.init(allocator, .{
 The base library installs `_VERSION = "Lua 5.5"` and the usual core functions:
 
 ```text
-assert  collectgarbage  error  getmetatable  ipairs  load  next  pairs
-pcall   print           rawequal rawget       rawlen  rawset select
-setmetatable            tonumber tostring     type    warn   xpcall
+assert  collectgarbage  dofile  error  getmetatable  ipairs  load
+loadfile  next  pairs  pcall  print  rawequal  rawget  rawlen  rawset
+select  setmetatable  tonumber  tostring  type  warn  xpcall
 ```
 
-`_G` exists even when base is not open.
+`warn` follows Lua 5.5, including `@on` and `@off`. Warnings start off, as in the CLI without `-W`, and print to stderr as `Lua warning: <message>`.
+
+`xpcall` runs its message handler at the error point, before to-be-closed variables close.
+
+`loadfile` and `dofile` read through the filesystem capability, or from stdin without a file name.
 
 | Library | Members |
 | --- | --- |
@@ -47,10 +51,12 @@ setmetatable            tonumber tostring     type    warn   xpcall
 | `math` | `abs`, `acos`, `asin`, `atan`, `ceil`, `cos`, `deg`, `exp`, `floor`, `fmod`, `frexp`, `huge`, `ldexp`, `log`, `max`, `maxinteger`, `min`, `mininteger`, `modf`, `pi`, `rad`, `random`, `randomseed`, `sin`, `sqrt`, `tan`, `tointeger`, `type`, `ult` |
 | `utf8` | `char`, `charpattern`, `codepoint`, `codes`, `len`, `offset` |
 | `coroutine` | `close`, `create`, `isyieldable`, `resume`, `running`, `status`, `wrap`, `yield` |
-| `io` | `close`, `flush`, `input`, `lines`, `open`, `output`, `read`, `stderr`, `stdin`, `stdout`, `tmpfile`, `type`, `write` |
-| `os` | `clock`, `date`, `difftime`, `execute`, `getenv`, `remove`, `rename`, `setlocale`, `time`, `tmpname` |
-| `debug` | `gethook`, `getinfo`, `getlocal`, `getregistry`, `getupvalue`, `getuservalue`, `sethook`, `setlocal`, `setmetatable`, `setupvalue`, `setuservalue`, `traceback`, `upvalueid`, `upvaluejoin` |
-| `package` | `config`, `cpath`, `loaded`, `path`, `preload`, `searchers`, `searchpath`; also `dofile`, `loadfile`, and `require` globals |
+| `io` | `close`, `flush`, `input`, `lines`, `open`, `output`, `popen`, `read`, `stderr`, `stdin`, `stdout`, `tmpfile`, `type`, `write` |
+| `os` | `clock`, `date`, `difftime`, `execute`, `exit`, `getenv`, `remove`, `rename`, `setlocale`, `time`, `tmpname` |
+| `debug` | `debug`, `gethook`, `getinfo`, `getlocal`, `getmetatable`, `getregistry`, `getupvalue`, `getuservalue`, `sethook`, `setlocal`, `setmetatable`, `setupvalue`, `setuservalue`, `traceback`, `upvalueid`, `upvaluejoin` |
+| `package` | `config`, `cpath`, `loaded`, `loadlib`, `path`, `preload`, `searchers`, `searchpath`; also the `require` global |
+
+`table.create(nseq[, nrec])` is standard in Lua 5.5.
 
 `collectgarbage` supports Lua 5.5's incremental and generational modes, with generational mode as the default. Use `collectgarbage("collect")` for a full collection or `collectgarbage("step", bytes)` to advance it. Explicit collection works even after `collectgarbage("stop")`. Memory counts and collection timing may differ from C Lua. For host-side controls, see [Garbage Collection](embedding.md#garbage-collection).
 
@@ -58,12 +64,14 @@ setmetatable            tonumber tostring     type    warn   xpcall
 
 | Function | Behavior |
 | --- | --- |
-| `table.create(array_hint[, hash_hint])` | Creates an empty table with capacity hints. |
 | `table.dedup(values)` | Returns unique array elements in first-occurrence order using raw key equality; non-array fields are ignored. |
 | `string.strip(value[, chars])` | Removes leading/trailing ASCII whitespace or bytes from `chars`. |
 | `string.split(value[, separator[, maxsplit]])` | Splits from the left; omitted separator means ASCII whitespace. |
 | `string.rsplit(value[, separator[, maxsplit]])` | Same operation starting from the right. |
 
+These helpers follow Python's `str.split`, `str.rsplit`, and `str.strip`. The separator is plain text, a `nil` separator splits on whitespace, `maxsplit` limits the number of splits (negative or `nil` means no limit), and `chars` is a set of bytes.
+
+`table.dedup` compares values as raw table keys, so `__eq` is ignored and `1` and `1.0` are duplicates. `nil` entries are skipped.
 
 ## Host-Facing Libraries
 
@@ -73,17 +81,41 @@ Opening `io`, `os`, `package`, or `fs` does not grant ambient access in an embed
 | --- | --- |
 | `io.read`, `io.write`, standard streams, `print` | I/O streams. |
 | `io.open`, file methods, `loadfile`, `dofile`, filesystem `require` | Filesystem, plus `std.Io` for std-backed modes. |
-| `os.time()` and `os.date()` without an explicit time | Clock. |
+| `os.time()` and `os.date()` without an explicit time, local time, `os.clock` | Clock. |
 | `os.getenv` | Environment. |
-| `os.execute` | Process, with configured I/O/environment behavior. |
+| `os.execute`, `io.popen`, `os.exit` | Process, with configured I/O/environment behavior. |
 | `os.remove`, `os.rename` | Filesystem. |
 | `fs.*` | Filesystem; std-backed modes also need `std.Io`. |
 
-The CLI configures host capabilities; Zig embedders opt in. `os.clock` currently returns a deterministic `0`. `io.tmpfile` and `os.tmpname` create synthetic names/handles; a writable temporary handle still uses the filesystem capability when flushed or closed.
+The CLI configures host capabilities; Zig embedders opt in.
+
+`io.tmpfile()` returns an in-memory file. It needs no filesystem capability and leaves nothing behind.
+
+`os.tmpname()` creates an empty file with a unique `lua_XXXXXX` name, like `mkstemp`: in `TMPDIR` with the host filesystem, or at the root of a sandboxed one.
+
+File handles are `FILE*` userdata, as in C Lua.
+
+Writes are buffered in memory and count toward `max_memory`.
+
+Failed writes return `nil, message, errno, count`. Files cannot grow past `max_file_bytes` (256 MiB by default).
+
+The collector flushes and closes unreachable handles, and `State.deinit` closes any still open. Implicit closes ignore flush failures; explicit `close` and `flush` return `nil, message, errno`.
+
+`/dev/null` is emulated in every filesystem mode, and `/dev/full` on Linux.
+
+File errors follow C Lua: `io.open` returns `nil, "path: No such file or directory", 2`.
+
+`os.date` supports the C99 conversions. Local time comes from the clock capability (`TZ` or `/etc/localtime` with the system clock), and `os.clock` reports process CPU time.
+
+`io.popen` runs the whole command at once: read mode when the handle opens, write mode when it closes.
+
+`os.exit` raises `error.LuaExit`, which `pcall` cannot catch. The CLI exits with the requested status and runs `__gc` finalizers unless `os.exit` was called without `close`.
+
+`package.loadlib` always returns `nil, "dynamic libraries not enabled; check your Lua installation", "absent"`.
 
 ## Package Loading
 
-When `package` is open, zlua installs `require`, `loadfile`, and `dofile`.
+When `package` is open, zlua installs `require`. It also installs `loadfile` and `dofile` when base is not open.
 
 | Field | Default |
 | --- | --- |
@@ -140,6 +172,8 @@ JSON, TOML, and MessagePack writers share table-shape rules:
 - String-keyed tables become objects/maps.
 - Cycles, sparse arrays, mixed array/object tables, unsupported values, non-string object keys, and non-finite numbers are rejected.
 
+Integers outside the 64-bit signed range raise an error rather than becoming floats.
+
 ### JSON
 
 ```lua
@@ -150,7 +184,7 @@ print(json.write(value, { pretty = true, indent = 2 }))
 
 | Member | Behavior |
 | --- | --- |
-| `json.read(input)` | Decodes null, booleans, numbers, strings, arrays, and objects. Integers stay integers when representable. |
+| `json.read(input)` | Decodes null, booleans, numbers, strings, arrays, and objects. Integer literals become Lua integers. |
 | `json.write(value[, options])` | Encodes a value. Options are `pretty` and non-negative `indent`. |
 | `json.null` | Sentinel for JSON null. Lua `nil` also encodes as null. |
 

@@ -7,6 +7,7 @@ pub const UpvalueIndex = u16;
 pub const LocalIndex = u16;
 pub const JumpOffset = i32;
 pub const multret_count: u16 = std.math.maxInt(u16);
+pub const multret_arg_count: u32 = std.math.maxInt(u32);
 
 pub const Constant = union(enum) {
     nil,
@@ -91,6 +92,8 @@ pub const Instruction = union(enum(u8)) {
     tfor_prep: GenericFor,
     tfor_call: GenericFor,
     tfor_loop: GenericFor,
+
+    concat_range: ConcatRange,
 };
 
 pub const LoadBool = struct {
@@ -178,6 +181,15 @@ pub const Binary = struct {
     right: Register,
 };
 
+/// Concatenates `count` (at least 2) consecutive registers starting at
+/// `first` right to left, like PUC OP_CONCAT, and stores the result in
+/// `dest`. Operand registers are scratch space for partial results.
+pub const ConcatRange = struct {
+    dest: Register,
+    first: Register,
+    count: u16,
+};
+
 pub const CompareBranchOp = enum {
     eq,
     lt,
@@ -206,8 +218,10 @@ pub const TestSet = struct {
 };
 
 pub const Call = struct {
-    base: Register,
-    arg_count: u16,
+    base: u32,
+    /// `multret_arg_count` in bytecode when the arguments end at the last
+    /// multiple results; runtime calls always carry the resolved count.
+    arg_count: u32,
     return_count: u16,
 };
 

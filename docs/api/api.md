@@ -20,13 +20,12 @@
 - [compile.resolver](compile/resolver.md)
 - [compile.bytecode](compile/bytecode.md)
 - [compile.proto](compile/proto.md)
-- [compile.compiler](compile/compiler.md)
-- [compile.disasm](compile/disasm.md)
-- [api](api.md)
+- [runtime.types](runtime/types.md)
 - [runtime](runtime.md)
 - [runtime.chunk](runtime/chunk.md)
-- [runtime.types](runtime/types.md)
+- [reflection](reflection.md)
 - [runtime.value](runtime/value.md)
+- [runtime.number_format](runtime/number_format.md)
 - [runtime.execute](runtime/execute.md)
 - [testing.process](testing/process.md)
 - [runtime.state](runtime/state.md)
@@ -36,6 +35,7 @@
 - [runtime.debug](runtime/debug.md)
 - [runtime.gc](runtime/gc.md)
 - [runtime.host](runtime/host.md)
+- [runtime.timezone](runtime/timezone.md)
 - [stdlib](stdlib.md)
 - [stdlib.base](stdlib/base.md)
 - [stdlib.table](stdlib/table.md)
@@ -44,19 +44,23 @@
 - [stdlib.utf8](stdlib/utf8.md)
 - [stdlib.coroutine](stdlib/coroutine.md)
 - [stdlib.debug](stdlib/debug.md)
-- [stdlib.package](stdlib/package.md)
 - [stdlib.io](stdlib/io.md)
+- [stdlib.static_strings](stdlib/static_strings.md)
 - [stdlib.os](stdlib/os.md)
+- [stdlib.package](stdlib/package.md)
 - [stdlib.json](stdlib/json.md)
 - [stdlib.zerde_lua](stdlib/zerde_lua.md)
 - [stdlib.toml](stdlib/toml.md)
 - [stdlib.msgpack](stdlib/msgpack.md)
 - [stdlib.csv](stdlib/csv.md)
 - [stdlib.fs](stdlib/fs.md)
-- [stdlib.static_strings](stdlib/static_strings.md)
 - [runtime.vm](runtime/vm.md)
 - [runtime.tests](runtime/tests.md)
 - [runtime.internal](runtime/internal.md)
+- [compile.compiler](compile/compiler.md)
+- [compile.fold](compile/fold.md)
+- [compile.disasm](compile/disasm.md)
+- [api](api.md)
 - [runtime.snapshot](runtime/snapshot.md)
 - [testing](testing.md)
 - [testing.clua](testing/clua.md)
@@ -146,6 +150,8 @@ and should not be treated as a stable embedding contract.
 - [IoCapability](#type-iocapability)
 - [Capabilities](#type-capabilities)
 - [Limits](#type-limits)
+- [CallOptions](#type-calloptions)
+- [InterruptHandle](#type-interrupthandle)
 - [InstructionBudget](#type-instructionbudget)
 - [GcOptions](#type-gcoptions)
 - [DebugOptions](#type-debugoptions)
@@ -177,6 +183,7 @@ and should not be treated as a stable embedding contract.
 - [LibrarySet](#alias-libraryset)
 - [MemoryFile](#alias-memoryfile)
 - [MemoryFilesystem](#alias-memoryfilesystem)
+- [OutputFlush](#alias-outputflush)
 - [FilesystemCapability](#alias-filesystemcapability)
 - [CustomFilesystem](#alias-customfilesystem)
 - [HostDirectory](#alias-hostdirectory)
@@ -188,10 +195,15 @@ and should not be treated as a stable embedding contract.
 - [CustomEnvironment](#alias-customenvironment)
 - [ClockCapability](#alias-clockcapability)
 - [CustomClock](#alias-customclock)
+- [FixedClock](#alias-fixedclock)
+- [UtcOffset](#alias-utcoffset)
 - [ProcessCapability](#alias-processcapability)
 - [CustomProcess](#alias-customprocess)
 - [ProcessResult](#alias-processresult)
 - [ProcessStatus](#alias-processstatus)
+- [PopenResult](#alias-popenresult)
+- [ExitRequest](#alias-exitrequest)
+- [WarningHandler](#alias-warninghandler)
 - [GcMode](#alias-gcmode)
 - [GcParam](#alias-gcparam)
 - [GcParams](#alias-gcparams)
@@ -202,11 +214,16 @@ and should not be treated as a stable embedding contract.
 
 ## Error
 
-[Error](#type-error) set used when an API operation failed because Lua raised a syntax or runtime error.
+`LuaError`: Lua raised a syntax or runtime error.
+`LuaExit`: Lua called `os.exit` with process access; read `State.exitRequest`.
+`Interrupted`: the host interrupted execution through an `InterruptHandle`.
+Lua cannot catch an exit or an interrupt with `pcall`, `xpcall`, or coroutines.
 
 ```zig
 pub const Error = error{
     LuaError,
+    LuaExit,
+    Interrupted,
 };
 ```
 
@@ -329,6 +346,18 @@ pub const MemoryFilesystem = runtime.MemoryFilesystem;
 
 References: [`runtime.MemoryFilesystem`](runtime.md#alias-memoryfilesystem)
 
+<a id="alias-outputflush"></a>
+
+## OutputFlush
+
+When Lua output writers are flushed beyond explicit flush points.
+
+```zig
+pub const OutputFlush = runtime.OutputFlush;
+```
+
+References: [`runtime.OutputFlush`](runtime.md#alias-outputflush)
+
 <a id="type-iocapability"></a>
 
 ## IoCapability
@@ -345,6 +374,17 @@ pub const IoCapability = struct {
     stdout: ?*std.Io.Writer = null,
     /// Optional writer used for Lua stderr.
     stderr: ?*std.Io.Writer = null,
+    /// When the runtime flushes `stdout` besides `io.flush`, `os.exit`, and
+    /// child process starts. `.line` behaves like a line-buffered C stream.
+    stdout_flush: OutputFlush = .explicit,
+    /// When the runtime flushes `stderr`; `.always` behaves like unbuffered C stderr.
+    stderr_flush: OutputFlush = .explicit,
+    /// Start with Lua warnings on, as `lua -W` does. Lua code switches them
+    /// with `warn("@on")` and `warn("@off")`.
+    warnings: bool = false,
+    /// Receives each complete warning instead of `stderr`, which otherwise
+    /// gets `Lua warning: <message>` lines. It must not call back into the state.
+    warning_handler: ?WarningHandler = null,
 };
 ```
 
@@ -478,7 +518,7 @@ References: [`runtime.CustomEnvironment`](runtime.md#alias-customenvironment)
 
 ## ClockCapability
 
-Clock access granted to Lua time/date APIs.
+Clock access granted to `os.time`, `os.date`, and `os.clock`.
 
 ```zig
 pub const ClockCapability = runtime.ClockCapability;
@@ -498,11 +538,35 @@ pub const CustomClock = runtime.CustomClock;
 
 References: [`runtime.CustomClock`](runtime.md#alias-customclock)
 
+<a id="alias-fixedclock"></a>
+
+## FixedClock
+
+Fixed timestamp with an explicit local-time offset and `os.clock` value.
+
+```zig
+pub const FixedClock = runtime.FixedClock;
+```
+
+References: [`runtime.FixedClock`](runtime.md#alias-fixedclock)
+
+<a id="alias-utcoffset"></a>
+
+## UtcOffset
+
+Local-time offset returned by `CustomClock.utc_offset`.
+
+```zig
+pub const UtcOffset = runtime.UtcOffset;
+```
+
+References: [`runtime.UtcOffset`](runtime.md#alias-utcoffset)
+
 <a id="alias-processcapability"></a>
 
 ## ProcessCapability
 
-Process-spawning access granted to `os.execute`.
+Process access granted to `os.execute`, `io.popen`, and `os.exit`.
 
 ```zig
 pub const ProcessCapability = runtime.ProcessCapability;
@@ -543,6 +607,42 @@ pub const ProcessStatus = runtime.ProcessStatus;
 ```
 
 References: [`runtime.ProcessStatus`](runtime.md#alias-processstatus)
+
+<a id="alias-popenresult"></a>
+
+## PopenResult
+
+Result returned by `CustomProcess.popen`.
+
+```zig
+pub const PopenResult = runtime.PopenResult;
+```
+
+References: [`runtime.PopenResult`](runtime.md#alias-popenresult)
+
+<a id="alias-exitrequest"></a>
+
+## ExitRequest
+
+Exit code and close flag recorded by `os.exit`; see `State.exitRequest`.
+
+```zig
+pub const ExitRequest = runtime.ExitRequest;
+```
+
+References: [`runtime.ExitRequest`](runtime.md#alias-exitrequest)
+
+<a id="alias-warninghandler"></a>
+
+## WarningHandler
+
+Host receiver for Lua warnings; see `IoCapability.warning_handler`.
+
+```zig
+pub const WarningHandler = runtime.WarningHandler;
+```
+
+References: [`runtime.WarningHandler`](runtime.md#alias-warninghandler)
 
 <a id="type-capabilities"></a>
 
@@ -599,8 +699,89 @@ pub const Limits = struct {
     max_call_frames: ?usize = null,
     /// Maximum VM instructions executed since the last budget reset, or unlimited when null.
     max_instructions: ?u64 = null,
+    /// Largest file read at once by `io`, `loadfile`, `dofile`, `require`, `fs`, and `loadFile`.
+    /// `fs.read` options can only lower it. Reads also count against `max_memory`.
+    max_file_bytes: usize = runtime.default_max_file_bytes,
 };
 ```
+
+<a id="type-calloptions"></a>
+
+## CallOptions
+
+[Options](#type-options) for `Function.callWith` and `Function.protectedCallWith`.
+
+```zig
+pub const CallOptions = struct {
+    /// Maximum VM instructions for this call, including nested Lua calls,
+    /// callbacks that call back into Lua, and coroutines resumed inside it.
+    /// Nested budgeted calls keep the tighter of the two budgets. Exhaustion
+    /// raises the same "instruction limit exceeded" error as `Limits.max_instructions`,
+    /// which still applies. Null adds no per-call budget.
+    max_instructions: ?u64 = null,
+    /// Capture a traceback at the error point, before the failing frames unwind.
+    /// Read it with `ErrorRef.traceback`; after `callWith`, take it with `State.takeErrorValue`.
+    traceback: bool = false,
+    /// Message handler with `xpcall` semantics. It runs at the error point, on
+    /// top of the failing frames and before `__close` handlers, and its first
+    /// result becomes the error value; an error inside it is handled again
+    /// until Lua's C-stack limit. Must belong to the called state.
+    message_handler: ?Function = null,
+};
+```
+
+<a id="type-interrupthandle"></a>
+
+## InterruptHandle
+
+Copyable, thread-safe handle that asks a `State` to stop running Lua.
+
+`interrupt` may be called from any thread while the [State](#type-state) is alive; join
+threads that use the handle before `State.deinit`. Execution stops at the
+next safepoint: loop back edges, calls, every few hundred instructions,
+and inside long-running library functions. The interrupted host call
+returns `error.Interrupted`. Lua `pcall`, `xpcall`, and coroutines cannot
+catch it, and pending `__close` handlers of the interrupted frames do not
+run. The request is consumed when the error reaches the host; a request
+made while no Lua is running applies to the next execution that reaches a
+safepoint, unless `State.clearInterrupt` drops it first.
+
+```zig
+pub const InterruptHandle = struct {
+    control: *runtime.InterruptControl,
+};
+```
+
+### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [interrupt](#fn-interrupthandle-interrupt) | `self: InterruptHandle` | `void` | Requests that the State stop at its next safepoint. |
+| [isPending](#fn-interrupthandle-ispending) | `self: InterruptHandle` | `bool` | Reports whether an interrupt is pending. |
+
+<a id="fn-interrupthandle-interrupt"></a>
+
+### InterruptHandle.interrupt
+
+Requests that the [State](#type-state) stop at its next safepoint.
+
+```zig
+pub fn interrupt(self: InterruptHandle) void
+```
+
+References: [`InterruptHandle`](#type-interrupthandle)
+
+<a id="fn-interrupthandle-ispending"></a>
+
+### InterruptHandle.isPending
+
+Reports whether an interrupt is pending.
+
+```zig
+pub fn isPending(self: InterruptHandle) bool
+```
+
+References: [`InterruptHandle`](#type-interrupthandle)
 
 <a id="type-instructionbudget"></a>
 
@@ -849,6 +1030,8 @@ pub const State = struct {
     raw_state: runtime.State,
     /// Registry root for the last captured Lua error value.
     last_error_root: ?usize = null,
+    /// Traceback captured with the last error value by `Function.callWith`.
+    last_error_traceback: ?[]u8 = null,
     /// Owned memory-file entries visible to the configured memory filesystem.
     memory_files: std.ArrayList(MemoryFile) = .empty,
     /// Tracks whether each memory-file entry owns its contents slice.
@@ -863,12 +1046,15 @@ pub const State = struct {
 | Name | Parameters | Return Type | Description |
 | --- | --- | --- | --- |
 | [init](#fn-state-init) | `state_allocator: std.mem.Allocator, options: Options` | `!State` | Creates a new Lua state using &#96;state_allocator&#96; and the supplied options. |
-| [deinit](#fn-state-deinit) | `self: *State` | `void` | Releases all resources owned by the state and invalidates outstanding API handles. |
+| [deinit](#fn-state-deinit) | `self: *State` | `void` | Releases all resources owned by the state and invalidates outstanding API handles. First calls pending finalizers like &#96;lua_close&#96;: &#96;__gc&#96; metamethods run, newest first, with errors ignored, and open Lua file handles are closed, flushing buffered writes through the filesystem capability and ignoring failures. Each finalizer gets a fresh &#96;max_instructions&#96; budget; a pending interrupt stops them, as does &#96;os.exit&#96;, whose request only a custom process &#96;exit&#96; callback observes. &#96;reset&#96; calls no finalizers. |
 | [snapshot](#fn-state-snapshot) | `self: *State, snapshot_allocator: std.mem.Allocator` | `!Snapshot` | Captures an idle VM, including suspended Lua coroutines, and installs a new baseline. Earlier Snapshots remain independently usable; reset restores only the new baseline. Uses &#96;snapshot_allocator&#96; for snapshot storage. Borrowed host capabilities must outlive the snapshot and states created from it. The source retains the baseline after the public wrapper is destroyed; keep the snapshot allocator valid until all retaining states release it. |
-| [reset](#fn-state-reset) | `self: *State` | `!void` | Incrementally restores this State's active baseline and invalidates prior handles. Returns &#96;error.NoSnapshot&#96; until capture installs a baseline. Unchanged baselines without eager resource hooks allocate nothing. Fallible eager userdata copies are prepared before rollback commits. Atomic failure semantics do not make State concurrently usable. Rollback skips Lua &#96;__gc&#96; and &#96;__close&#96; handlers. |
+| [reset](#fn-state-reset) | `self: *State` | `!void` | Incrementally restores this State's active baseline and invalidates prior handles. Returns &#96;error.NoSnapshot&#96; until capture installs a baseline. Unchanged baselines without eager resource hooks allocate nothing. Fallible eager userdata copies are prepared before rollback commits. Atomic failure semantics do not make State concurrently usable. Rollback skips Lua &#96;__gc&#96; and &#96;__close&#96; handlers, and discards file handles opened since the baseline without flushing them. |
 | [allocator](#fn-state-allocator) | `self: *State` | `std.mem.Allocator` | Returns the allocator used for API-owned allocations returned to the host. |
 | [instructionBudget](#fn-state-instructionbudget) | `self: *const State` | `InstructionBudget` | Returns the cumulative instruction budget usage for this state. |
 | [resetInstructionBudget](#fn-state-resetinstructionbudget) | `self: *State` | `void` | Resets the cumulative instruction counter to zero. |
+| [interruptHandle](#fn-state-interrupthandle) | `self: *State` | `!InterruptHandle` | Returns a thread-safe handle that interrupts this State. See &#96;InterruptHandle&#96;. |
+| [clearInterrupt](#fn-state-clearinterrupt) | `self: *State` | `void` | Drops a pending interrupt request, for example one that arrived after the script it targeted had already finished. |
+| [isInterruptPending](#fn-state-isinterruptpending) | `self: *const State` | `bool` | Reports whether an interrupt request is pending. |
 | [openLibs](#fn-state-openlibs) | `self: *State, selection: Stdlib` | `!void` | Opens additional standard libraries after state creation. |
 | [collect](#fn-state-collect) | `self: *State` | `!void` | Runs a full collection and pending finalizers, even while automatic GC is stopped. |
 | [stepGc](#fn-state-stepgc) | `self: *State, budget: GcBudget` | `!GcStepResult` | Runs at most the requested number of basic steps, even while stopped. This limits work, not elapsed time; large objects and finalizers may take longer. |
@@ -880,9 +1066,9 @@ pub const State = struct {
 | [restartGc](#fn-state-restartgc) | `self: *State` | `void` |  |
 | [isGcRunning](#fn-state-isgcrunning) | `self: *const State` | `bool` |  |
 | [push](#fn-state-push) | `self: *State, value: anytype` | `!Value` | Converts a Zig value into a rooted high-level Lua &#96;Value&#96;. |
-| [read](#fn-state-read) | `self: *State, value: Value, comptime T: type` | `!T` | Converts a high-level Lua &#96;Value&#96; to the requested Zig type. |
+| [read](#fn-state-read) | `self: *State, value: Value, comptime T: type` | `!T` | Converts a high-level Lua &#96;Value&#96; to the requested Zig type. A &#96;[]const u8&#96; result borrows VM memory; see &#96;Value.string&#96;. |
 | [setGlobal](#fn-state-setglobal) | `self: *State, name: []const u8, value: anytype` | `!void` | Sets a global variable after converting &#96;value&#96; to a Lua value. |
-| [getGlobal](#fn-state-getglobal) | `self: *State, name: []const u8, comptime T: type` | `!T` | Reads a global variable and converts it to &#96;T&#96;. |
+| [getGlobal](#fn-state-getglobal) | `self: *State, name: []const u8, comptime T: type` | `!T` | Reads a global variable and converts it to &#96;T&#96;. A &#96;[]const u8&#96; result borrows VM memory; see &#96;Value.string&#96;. |
 | [register](#fn-state-register) | `self: *State, name: []const u8, callback: HostFn` | `!Function` | Creates a Lua function handle that dispatches to an untyped Zig callback. |
 | [registerTyped](#fn-state-registertyped) | `self: *State, name: []const u8, comptime function: anytype` | `!Function` | Creates a Lua function handle from a typed Zig function. |
 | [registerUserdataInitializerWith](#fn-state-registeruserdatainitializerwith) | `self: *State, comptime T: type, name: []const u8, comptime initializer: anytype, comptime options: UserdataOptions(T)` | `!Function` | Creates a Lua function handle that constructs auto-bound userdata using &#96;initializer&#96;. |
@@ -893,7 +1079,10 @@ pub const State = struct {
 | [newUserdataPtr](#fn-state-newuserdataptr) | `self: *State, comptime T: type, ptr: *T, options: UserdataPtrOptions(T)` | `!Userdata(T)` | Wraps host-owned storage as Lua userdata without taking ownership of &#96;ptr&#96;. |
 | [newUserdataPtrAuto](#fn-state-newuserdataptrauto) | `self: *State, comptime T: type, ptr: *T, options: UserdataPtrOptions(T)` | `!Userdata(T)` | Wraps host-owned storage as Lua userdata and installs eligible methods declared on &#96;T&#96;. |
 | [createModule](#fn-state-createmodule) | `self: *State, name: []const u8` | `!Table` | Creates a table intended to be installed as a Lua module. |
-| [preloadModule](#fn-state-preloadmodule) | `self: *State, name: []const u8, module: Table` | `!void` | Adds &#96;module&#96; to &#96;package.loaded&#96; so &#96;require(name)&#96; returns it. |
+| [setLoadedModule](#fn-state-setloadedmodule) | `self: *State, name: []const u8, module: anytype` | `!void` | Stores &#96;module&#96; in &#96;package.loaded[name]&#96; so &#96;require(name)&#96; returns it without running a loader. Opens the package library if needed. |
+| [preloadModule](#fn-state-preloadmodule) | `self: *State, name: []const u8, loader: Function` | `!void` | Installs &#96;loader&#96; as &#96;package.preload[name]&#96;. Opens the package library if needed. |
+| [preloadModuleFn](#fn-state-preloadmodulefn) | `self: *State, name: []const u8, comptime loader: anytype` | `!void` | Registers &#96;loader&#96; like &#96;registerTyped&#96; and installs it with &#96;preloadModule&#96;. |
+| [require](#fn-state-require) | `self: *State, name: []const u8, comptime T: type` | `!T` | Calls the package library's &#96;require(name)&#96; and converts its result to &#96;T&#96;. |
 | [setPackagePath](#fn-state-setpackagepath) | `self: *State, path: []const u8` | `!void` | Sets &#96;package.path&#96;, opening the package library first if needed. |
 | [addMemoryFile](#fn-state-addmemoryfile) | `self: *State, path: []const u8, contents: []const u8` | `!void` | Adds or writes a file in the state's memory-backed filesystem. |
 | [loadString](#fn-state-loadstring) | `self: *State, source: []const u8, options: LoadOptions` | `!Function` | Loads source text or bytecode from memory and returns a rooted function handle. |
@@ -901,7 +1090,10 @@ pub const State = struct {
 | [loadBytecode](#fn-state-loadbytecode) | `self: *State, bytecode: []const u8, options: BytecodeLoadOptions` | `!Function` | Loads a zlua bytecode dump and returns a rooted function handle. |
 | [doString](#fn-state-dostring) | `self: *State, source: []const u8, options: DoOptions` | `!void` | Loads and immediately executes source text or bytecode from memory. |
 | [doFile](#fn-state-dofile) | `self: *State, path: []const u8, options: DoOptions` | `!void` | Loads and immediately executes a chunk from the configured filesystem. |
-| [errorMessage](#fn-state-errormessage) | `self: *State` | `![]const u8` | Formats the last Lua error value as an allocated message. |
+| [exitRequest](#fn-state-exitrequest) | `self: *const State` | `?ExitRequest` | Returns the exit recorded by Lua's &#96;os.exit&#96; after an API call returned &#96;error.LuaExit&#96;, or null. When &#96;close&#96; is true, Lua asked for the state to be closed; its pending to-be-closed variables have already run. |
+| [clearExitRequest](#fn-state-clearexitrequest) | `self: *State` | `void` | Clears a recorded &#96;os.exit&#96; request so the state can keep running Lua. |
+| [setWarnings](#fn-state-setwarnings) | `self: *State, on: bool` | `void` | Turns Lua warnings on or off, like &#96;warn("@on")&#96; and &#96;warn("@off")&#96;. |
+| [errorMessage](#fn-state-errormessage) | `self: *State` | `![]const u8` | Formats the last Lua error value as an allocated message. A nil error object is described as &#96;<no error object>&#96;. |
 | [takeErrorValue](#fn-state-takeerrorvalue) | `self: *State` | `?ErrorRef` | Takes ownership of the last captured Lua error value, if one exists. |
 
 <a id="fn-state-init"></a>
@@ -924,6 +1116,12 @@ References: [`Options`](#type-options), [`State`](#type-state)
 ### State.deinit
 
 Releases all resources owned by the state and invalidates outstanding API handles.
+First calls pending finalizers like `lua_close`: `__gc` metamethods
+run, newest first, with errors ignored, and open Lua file handles are
+closed, flushing buffered writes through the filesystem capability
+and ignoring failures. Each finalizer gets a fresh `max_instructions`
+budget; a pending interrupt stops them, as does `os.exit`, whose request
+only a custom process `exit` callback observes. `reset` calls no finalizers.
 
 ```zig
 pub fn deinit(self: *State) void
@@ -957,7 +1155,8 @@ Returns `error.NoSnapshot` until capture installs a baseline.
 Unchanged baselines without eager resource hooks allocate nothing.
 Fallible eager userdata copies are prepared before rollback commits.
 Atomic failure semantics do not make [State](#type-state) concurrently usable.
-Rollback skips Lua `__gc` and `__close` handlers.
+Rollback skips Lua `__gc` and `__close` handlers, and discards file
+handles opened since the baseline without flushing them.
 
 ```zig
 pub fn reset(self: *State) !void
@@ -997,6 +1196,47 @@ Resets the cumulative instruction counter to zero.
 
 ```zig
 pub fn resetInstructionBudget(self: *State) void
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-interrupthandle"></a>
+
+### State.interruptHandle
+
+Returns a thread-safe handle that interrupts this [State](#type-state). See `InterruptHandle`.
+
+The first call allocates the shared interrupt flag; later calls return
+handles to the same flag, which stays valid across `reset` until `deinit`.
+While a handle exists, the dispatch loop polls the flag periodically.
+
+```zig
+pub fn interruptHandle(self: *State) !InterruptHandle
+```
+
+References: [`State`](#type-state), [`InterruptHandle`](#type-interrupthandle)
+
+<a id="fn-state-clearinterrupt"></a>
+
+### State.clearInterrupt
+
+Drops a pending interrupt request, for example one that arrived after
+the script it targeted had already finished.
+
+```zig
+pub fn clearInterrupt(self: *State) void
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-isinterruptpending"></a>
+
+### State.isInterruptPending
+
+Reports whether an interrupt request is pending.
+
+```zig
+pub fn isInterruptPending(self: *const State) bool
 ```
 
 References: [`State`](#type-state)
@@ -1130,6 +1370,7 @@ References: [`State`](#type-state), [`Value`](#type-value)
 ### State.read
 
 Converts a high-level Lua `Value` to the requested Zig type.
+A `[]const u8` result borrows VM memory; see `Value.string`.
 
 ```zig
 pub fn read(self: *State, value: Value, comptime T: type) !T
@@ -1154,6 +1395,7 @@ References: [`State`](#type-state)
 ### State.getGlobal
 
 Reads a global variable and converts it to `T`.
+A `[]const u8` result borrows VM memory; see `Value.string`.
 
 ```zig
 pub fn getGlobal(self: *State, name: []const u8, comptime T: type) !T
@@ -1297,17 +1539,68 @@ pub fn createModule(self: *State, name: []const u8) !Table
 
 References: [`State`](#type-state), [`Table`](#type-table)
 
+<a id="fn-state-setloadedmodule"></a>
+
+### State.setLoadedModule
+
+Stores `module` in `package.loaded[name]` so `require(name)` returns it
+without running a loader. Opens the package library if needed.
+
+```zig
+pub fn setLoadedModule(self: *State, name: []const u8, module: anytype) !void
+```
+
+References: [`State`](#type-state)
+
 <a id="fn-state-preloadmodule"></a>
 
 ### State.preloadModule
 
-Adds `module` to `package.loaded` so `require(name)` returns it.
+Installs `loader` as `package.preload[name]`. Opens the package library if needed.
+
+The first `require(name)` calls `loader(name, ":preload:")` and caches
+its first result (or `true`) in `package.loaded[name]`; later calls
+return the cached module. The host keeps its own `loader` handle.
 
 ```zig
-pub fn preloadModule(self: *State, name: []const u8, module: Table) !void
+pub fn preloadModule(self: *State, name: []const u8, loader: Function) !void
 ```
 
-References: [`State`](#type-state), [`Table`](#type-table)
+References: [`State`](#type-state), [`Function`](#type-function)
+
+<a id="fn-state-preloadmodulefn"></a>
+
+### State.preloadModuleFn
+
+Registers `loader` like `registerTyped` and installs it with `preloadModule`.
+
+`loader` builds the module lazily on the first `require(name)`. It may
+take `*Context`, the module name, and the loader data `":preload:"`,
+and it usually returns a `Table`; returned handles are released after
+conversion.
+
+```zig
+pub fn preloadModuleFn(self: *State, name: []const u8, comptime loader: anytype) !void
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-require"></a>
+
+### State.require
+
+Calls the package library's `require(name)` and converts its result to `T`.
+
+Opens the package library if needed and uses the built-in `require`
+even if Lua code replaced the global. Use `Tuple(&.{ M, []const u8 })`
+to also read the loader data. Lua failures return `error.LuaError`.
+Loaders run like `Function.call` and cannot yield.
+
+```zig
+pub fn require(self: *State, name: []const u8, comptime T: type) !T
+```
+
+References: [`State`](#type-state)
 
 <a id="fn-state-setpackagepath"></a>
 
@@ -1397,11 +1690,50 @@ pub fn doFile(self: *State, path: []const u8, options: DoOptions) !void
 
 References: [`State`](#type-state), [`DoOptions`](#alias-dooptions)
 
+<a id="fn-state-exitrequest"></a>
+
+### State.exitRequest
+
+Returns the exit recorded by Lua's `os.exit` after an API call returned
+`error.LuaExit`, or null. When `close` is true, Lua asked for the state to
+be closed; its pending to-be-closed variables have already run.
+
+```zig
+pub fn exitRequest(self: *const State) ?ExitRequest
+```
+
+References: [`State`](#type-state), [`ExitRequest`](#alias-exitrequest)
+
+<a id="fn-state-clearexitrequest"></a>
+
+### State.clearExitRequest
+
+Clears a recorded `os.exit` request so the state can keep running Lua.
+
+```zig
+pub fn clearExitRequest(self: *State) void
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-setwarnings"></a>
+
+### State.setWarnings
+
+Turns Lua warnings on or off, like `warn("@on")` and `warn("@off")`.
+
+```zig
+pub fn setWarnings(self: *State, on: bool) void
+```
+
+References: [`State`](#type-state)
+
 <a id="fn-state-errormessage"></a>
 
 ### State.errorMessage
 
-Formats the last Lua error value as an allocated message.
+Formats the last Lua error value as an allocated message. A nil
+error object is described as `<no error object>`.
 
 The caller owns the returned slice and must free it with `allocator()`.
 
@@ -1494,7 +1826,8 @@ References: [`Snapshot`](#type-snapshot), [`State`](#type-state)
 
 ## Ref
 
-Rooted handle to any Lua value.
+Rooted handle to any Lua value, including strings: a `Ref` keeps a string's
+bytes alive, unlike `Value.string`.
 
 ```zig
 pub const Ref = struct {
@@ -1552,13 +1885,22 @@ pub const Table = struct {
 | Name | Parameters | Return Type | Description |
 | --- | --- | --- | --- |
 | [deinit](#fn-table-deinit) | `self: *Table` | `void` | Releases this table handle's root. |
-| [get](#fn-table-get) | `self: Table, key: anytype, comptime T: type` | `!T` | Reads &#96;key&#96; from the table and converts the result to &#96;T&#96;. |
-| [set](#fn-table-set) | `self: Table, key: anytype, value: anytype` | `!void` | Converts and assigns &#96;value&#96; at &#96;key&#96; in the table. |
+| [get](#fn-table-get) | `self: Table, key: anytype, comptime T: type` | `!T` | Reads &#96;t[key]&#96; like Lua indexing and converts the result to &#96;T&#96;. |
+| [set](#fn-table-set) | `self: Table, key: anytype, value: anytype` | `!void` | Converts &#96;value&#96; and assigns &#96;t[key] = value&#96; like Lua assignment. |
+| [rawSet](#fn-table-rawset) | `self: Table, key: anytype, value: anytype` | `!void` | Converts &#96;value&#96; and assigns &#96;t[key] = value&#96; without invoking &#96;__newindex&#96;, like Lua &#96;rawset&#96;. A nil or NaN key returns &#96;error.LuaError&#96;. |
+| [append](#fn-table-append) | `self: Table, value: anytype` | `!void` | Appends &#96;value&#96; at raw index &#96;rawLen() + 1&#96; without invoking metamethods. Appending nil leaves the table unchanged. |
+| [len](#fn-table-len) | `self: Table` | `!i64` | Returns the length like Lua &#96;#t&#96;, honoring &#96;__len&#96;. |
+| [rawLen](#fn-table-rawlen) | `self: Table` | `!i64` | Returns the raw border length without invoking &#96;__len&#96;, like Lua &#96;rawlen&#96;. |
 | [identity](#fn-table-identity) | `self: Table` | `!usize` | Returns a state-local token, valid while rooted and until reset. The token does not retain the table and must not be dereferenced. |
 | [getMetatable](#fn-table-getmetatable) | `self: Table` | `!?Table` | Returns the metatable, ignoring __metatable. Deinitialize the returned handle. |
-| [rawGet](#fn-table-rawget) | `self: Table, key: anytype, comptime T: type` | `!T` | Reads an entry without invoking __index. |
-| [Entry](#type-table-entry) |  |  |  |
-| [rawNext](#fn-table-rawnext) | `self: Table, key: anytype` | `!?Entry` | Iterates without metamethods. Start with null or Value.nil, then pass the previous key. Deinitialize each entry and avoid structural changes during traversal. |
+| [setMetatable](#fn-table-setmetatable) | `self: Table, metatable: ?Table` | `!void` | Replaces or removes (&#96;null&#96;) the metatable. |
+| [rawGet](#fn-table-rawget) | `self: Table, key: anytype, comptime T: type` | `!T` | Reads an entry without invoking __index. A &#96;[]const u8&#96; result borrows VM memory; see &#96;Value.string&#96;. |
+| [toSlice](#fn-table-toslice) | `self: Table, comptime T: type, allocator: std.mem.Allocator` | `![]T` | Reads raw entries &#96;1..rawLen()&#96; into a new slice allocated with &#96;allocator&#96;. |
+| [Entry](#type-table-entry) |  |  | Key/value pair produced by &#96;rawNext&#96; or an &#96;Iterator&#96;. String fields borrow VM memory; see &#96;Value.string&#96;. |
+| [rawNext](#fn-table-rawnext) | `self: Table, key: anytype` | `!?Entry` | Iterates without metamethods. Start with null or Value.nil, then pass the previous key. Deinitialize each entry. Prefer &#96;rawIterator&#96;, which also keeps the previous key alive; see it for mutation rules. |
+| [rawIterator](#fn-table-rawiterator) | `self: Table` | `!Iterator` | Returns an iterator over raw entries without invoking metamethods, like Lua &#96;next&#96;. Deinitialize the iterator; it owns the entries it returns. |
+| [pairs](#fn-table-pairs) | `self: Table` | `!Iterator` | Returns an iterator like Lua &#96;pairs(t)&#96;. Deinitialize it; it owns the entries it returns. |
+| [Iterator](#type-table-iterator) |  |  | Traversal state returned by &#96;Table.rawIterator&#96; and &#96;Table.pairs&#96;. |
 
 <a id="fn-table-deinit"></a>
 
@@ -1576,7 +1918,11 @@ References: [`Table`](#type-table)
 
 ### Table.get
 
-Reads `key` from the table and converts the result to `T`.
+Reads `t[key]` like Lua indexing and converts the result to `T`.
+
+Honors `__index` tables and functions. [Function](#type-function) metamethods run like
+`Function.call` and cannot yield; their failures return `error.LuaError`.
+A `[]const u8` result borrows VM memory; see `Value.string`.
 
 ```zig
 pub fn get(self: Table, key: anytype, comptime T: type) !T
@@ -1588,10 +1934,68 @@ References: [`Table`](#type-table)
 
 ### Table.set
 
-Converts and assigns `value` at `key` in the table.
+Converts `value` and assigns `t[key] = value` like Lua assignment.
+
+Honors `__newindex` tables and functions when `key` is absent. [Function](#type-function)
+metamethods run like `Function.call` and cannot yield. A nil or NaN key
+that reaches a raw store returns `error.LuaError`. Use `rawSet` to bypass
+metamethods.
 
 ```zig
 pub fn set(self: Table, key: anytype, value: anytype) !void
+```
+
+References: [`Table`](#type-table)
+
+<a id="fn-table-rawset"></a>
+
+### Table.rawSet
+
+Converts `value` and assigns `t[key] = value` without invoking `__newindex`,
+like Lua `rawset`. A nil or NaN key returns `error.LuaError`.
+
+```zig
+pub fn rawSet(self: Table, key: anytype, value: anytype) !void
+```
+
+References: [`Table`](#type-table)
+
+<a id="fn-table-append"></a>
+
+### Table.append
+
+Appends `value` at raw index `rawLen() + 1` without invoking metamethods.
+Appending nil leaves the table unchanged.
+
+```zig
+pub fn append(self: Table, value: anytype) !void
+```
+
+References: [`Table`](#type-table)
+
+<a id="fn-table-len"></a>
+
+### Table.len
+
+Returns the length like Lua `#t`, honoring `__len`.
+
+A `__len` function runs like `Function.call` and cannot yield. As with
+`luaL_len`, a result that is not an integer returns `error.LuaError`.
+
+```zig
+pub fn len(self: Table) !i64
+```
+
+References: [`Table`](#type-table)
+
+<a id="fn-table-rawlen"></a>
+
+### Table.rawLen
+
+Returns the raw border length without invoking `__len`, like Lua `rawlen`.
+
+```zig
+pub fn rawLen(self: Table) !i64
 ```
 
 References: [`Table`](#type-table)
@@ -1621,11 +2025,28 @@ pub fn getMetatable(self: Table) !?Table
 
 References: [`Table`](#type-table)
 
+<a id="fn-table-setmetatable"></a>
+
+### Table.setMetatable
+
+Replaces or removes (`null`) the metatable.
+
+Like `lua_setmetatable`, this ignores `__metatable` protection, which
+only guards Lua's `setmetatable`. A `__gc` field present now marks the
+table for finalization, and a `__mode` field makes it weak.
+
+```zig
+pub fn setMetatable(self: Table, metatable: ?Table) !void
+```
+
+References: [`Table`](#type-table)
+
 <a id="fn-table-rawget"></a>
 
 ### Table.rawGet
 
 Reads an entry without invoking __index.
+A `[]const u8` result borrows VM memory; see `Value.string`.
 
 ```zig
 pub fn rawGet(self: Table, key: anytype, comptime T: type) !T
@@ -1633,9 +2054,30 @@ pub fn rawGet(self: Table, key: anytype, comptime T: type) !T
 
 References: [`Table`](#type-table)
 
+<a id="fn-table-toslice"></a>
+
+### Table.toSlice
+
+Reads raw entries `1..rawLen()` into a new slice allocated with `allocator`.
+
+Elements convert like `rawGet`; a hole or wrong type returns
+`error.TypeMismatch` unless `T` is optional. The caller frees the slice
+and deinitializes handle elements such as `Table` or `Value`. `[]const u8`
+elements borrow VM memory that this table keeps alive only while it holds
+them; see `Value.string`.
+
+```zig
+pub fn toSlice(self: Table, comptime T: type, allocator: std.mem.Allocator) ![]T
+```
+
+References: [`Table`](#type-table)
+
 <a id="type-table-entry"></a>
 
 ### Table.Entry
+
+Key/value pair produced by `rawNext` or an `Iterator`.
+String fields borrow VM memory; see `Value.string`.
 
 ```zig
 pub const Entry = struct {
@@ -1648,11 +2090,14 @@ pub const Entry = struct {
 
 | Name | Parameters | Return Type | Description |
 | --- | --- | --- | --- |
-| [deinit](#fn-entry-deinit) | `self: *Entry` | `void` |  |
+| [deinit](#fn-entry-deinit) | `self: *Entry` | `void` | Releases the handles of an entry returned by &#96;rawNext&#96;. Entries returned by &#96;Iterator.next&#96; are owned by the iterator. |
 
 <a id="fn-entry-deinit"></a>
 
 #### Entry.deinit
+
+Releases the handles of an entry returned by `rawNext`.
+Entries returned by `Iterator.next` are owned by the iterator.
 
 ```zig
 pub fn deinit(self: *Entry) void
@@ -1665,13 +2110,121 @@ References: [`Entry`](#type-table-entry)
 ### Table.rawNext
 
 Iterates without metamethods. Start with null or Value.nil, then pass the previous key.
-Deinitialize each entry and avoid structural changes during traversal.
+Deinitialize each entry. Prefer `rawIterator`, which also keeps the
+previous key alive; see it for mutation rules.
 
 ```zig
 pub fn rawNext(self: Table, key: anytype) !?Entry
 ```
 
 References: [`Table`](#type-table), [`Entry`](#type-table-entry)
+
+<a id="fn-table-rawiterator"></a>
+
+### Table.rawIterator
+
+Returns an iterator over raw entries without invoking metamethods, like
+Lua `next`. Deinitialize the iterator; it owns the entries it returns.
+
+During traversal you may assign to existing fields, including assigning
+nil to clear them. Adding new keys is undefined: entries may be skipped
+or repeated, or `next` may return `error.LuaError` for an invalid key.
+
+```zig
+pub fn rawIterator(self: Table) !Iterator
+```
+
+References: [`Table`](#type-table), [`Iterator`](#type-table-iterator)
+
+<a id="fn-table-pairs"></a>
+
+### Table.pairs
+
+Returns an iterator like Lua `pairs(t)`. Deinitialize it; it owns the
+entries it returns.
+
+Without `__pairs`, this is `rawIterator`. Otherwise `__pairs(t)` runs
+immediately, and each `next` calls the returned iterator function like
+a generic `for`. These calls run like `Function.call` and cannot yield.
+A fourth `__pairs` result is a closing value: its `__close` runs when
+iteration ends, fails, or `Iterator.close` is called, but not on `deinit`.
+
+```zig
+pub fn pairs(self: Table) !Iterator
+```
+
+References: [`Table`](#type-table), [`Iterator`](#type-table-iterator)
+
+<a id="type-table-iterator"></a>
+
+### Table.Iterator
+
+Traversal state returned by `Table.rawIterator` and `Table.pairs`.
+
+The iterator roots the table or iterator function, its state, the
+current key and value, and any closing value. It owns each returned
+`Entry` until the next call to `next`, `close`, or `deinit`; do not
+deinitialize entries. Push a value with `State.push` to keep a handle
+beyond that point. Reset invalidates the iterator.
+
+```zig
+pub const Iterator = struct {
+    state: *State,
+    generation: u64,
+    mode: Mode,
+    roots: [slot_count]?usize = @splat(null),
+    entry: ?Entry = null,
+    done: bool = false,
+};
+```
+
+#### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [next](#fn-iterator-next) | `self: *Iterator` | `!?Entry` | Advances and returns the next entry, or null when traversal ends. |
+| [close](#fn-iterator-close) | `self: *Iterator` | `!void` | Ends traversal early, running a pending &#96;__pairs&#96; closing value's &#96;__close&#96; like a generic &#96;for&#96; exited with &#96;break&#96;. Call &#96;deinit&#96; afterwards. |
+| [deinit](#fn-iterator-deinit) | `self: *Iterator` | `void` | Releases the iterator's roots and current entry without calling Lua. |
+
+<a id="fn-iterator-next"></a>
+
+#### Iterator.next
+
+Advances and returns the next entry, or null when traversal ends.
+
+The previous entry is released first. Strings in the returned entry
+stay valid until the next call to `next`, `close`, or `deinit`.
+
+```zig
+pub fn next(self: *Iterator) !?Entry
+```
+
+References: [`Iterator`](#type-table-iterator), [`Entry`](#type-table-entry)
+
+<a id="fn-iterator-close"></a>
+
+#### Iterator.close
+
+Ends traversal early, running a pending `__pairs` closing value's
+`__close` like a generic `for` exited with `break`. [Call](compile/bytecode.md#type-call) `deinit` afterwards.
+
+```zig
+pub fn close(self: *Iterator) !void
+```
+
+References: [`Iterator`](#type-table-iterator)
+
+<a id="fn-iterator-deinit"></a>
+
+#### Iterator.deinit
+
+Releases the iterator's roots and current entry without calling Lua.
+
+```zig
+pub fn deinit(self: *Iterator) void
+```
+
+References: [`Iterator`](#type-table-iterator)
 
 <a id="type-function"></a>
 
@@ -1690,8 +2243,10 @@ pub const Function = struct {
 | Name | Parameters | Return Type | Description |
 | --- | --- | --- | --- |
 | [deinit](#fn-function-deinit) | `self: *Function` | `void` | Releases this function handle's root. |
-| [call](#fn-function-call) | `self: Function, args: anytype, comptime R: type` | `!R` | Calls the function with tuple arguments and converts the first or tuple result to &#96;R&#96;. |
-| [protectedCall](#fn-function-protectedcall) | `self: Function, args: anytype, comptime R: type` | `!CallResult(R)` | Calls the function and returns Lua failures as an &#96;ErrorRef&#96; instead of &#96;error.LuaError&#96;. |
+| [call](#fn-function-call) | `self: Function, args: anytype, comptime R: type` | `!R` | Calls the function with tuple arguments and converts the first or tuple result to &#96;R&#96;. &#96;[]const u8&#96; results borrow VM memory and may be collected by the next GC-capable API call if nothing references them; see &#96;Value.string&#96;. |
+| [callWith](#fn-function-callwith) | `self: Function, args: anytype, comptime R: type, options: CallOptions` | `!R` | Like &#96;call&#96;, with a per-call instruction budget, traceback capture, or message handler; see &#96;CallOptions&#96;. On &#96;error.LuaError&#96;, the handled error value and any traceback are captured on the state for &#96;errorMessage&#96; and &#96;takeErrorValue&#96;. |
+| [protectedCall](#fn-function-protectedcall) | `self: Function, args: anytype, comptime R: type` | `!CallResult(R)` | Calls the function and returns Lua failures as an &#96;ErrorRef&#96; instead of &#96;error.LuaError&#96;. Successful results convert and borrow strings as in &#96;call&#96;. |
+| [protectedCallWith](#fn-function-protectedcallwith) | `self: Function, args: anytype, comptime R: type, options: CallOptions` | `!CallResult(R)` | Like &#96;protectedCall&#96;, with a per-call instruction budget, traceback capture, or message handler; see &#96;CallOptions&#96;. A captured traceback is owned by the returned &#96;ErrorRef&#96;. |
 | [dumpBytecode](#fn-function-dumpbytecode) | `self: Function, options: BytecodeDumpOptions` | `![]const u8` | Dumps this Lua function to zlua bytecode. Native host callbacks return &#96;error.TypeMismatch&#96;. |
 
 <a id="fn-function-deinit"></a>
@@ -1711,6 +2266,8 @@ References: [`Function`](#type-function)
 ### Function.call
 
 Calls the function with tuple arguments and converts the first or tuple result to `R`.
+`[]const u8` results borrow VM memory and may be collected by the next
+GC-capable API call if nothing references them; see `Value.string`.
 
 Lua failures are returned as `error.LuaError` and captured on the state.
 
@@ -1720,17 +2277,47 @@ pub fn call(self: Function, args: anytype, comptime R: type) !R
 
 References: [`Function`](#type-function)
 
+<a id="fn-function-callwith"></a>
+
+### Function.callWith
+
+Like `call`, with a per-call instruction budget, traceback capture, or
+message handler; see `CallOptions`. On `error.LuaError`, the handled
+error value and any traceback are captured on the state for `errorMessage`
+and `takeErrorValue`.
+
+```zig
+pub fn callWith(self: Function, args: anytype, comptime R: type, options: CallOptions) !R
+```
+
+References: [`Function`](#type-function), [`CallOptions`](#type-calloptions)
+
 <a id="fn-function-protectedcall"></a>
 
 ### Function.protectedCall
 
 Calls the function and returns Lua failures as an `ErrorRef` instead of `error.LuaError`.
+Successful results convert and borrow strings as in `call`.
 
 ```zig
 pub fn protectedCall(self: Function, args: anytype, comptime R: type) !CallResult(R)
 ```
 
 References: [`Function`](#type-function)
+
+<a id="fn-function-protectedcallwith"></a>
+
+### Function.protectedCallWith
+
+Like `protectedCall`, with a per-call instruction budget, traceback
+capture, or message handler; see `CallOptions`. A captured traceback is
+owned by the returned `ErrorRef`.
+
+```zig
+pub fn protectedCallWith(self: Function, args: anytype, comptime R: type, options: CallOptions) !CallResult(R)
+```
+
+References: [`Function`](#type-function), [`CallOptions`](#type-calloptions)
 
 <a id="fn-function-dumpbytecode"></a>
 
@@ -1818,6 +2405,8 @@ Rooted handle to a Lua error value.
 ```zig
 pub const ErrorRef = struct {
     ref: Ref,
+    /// Traceback owned by this handle; read it with `traceback`.
+    traceback_text: ?[]const u8 = null,
 };
 ```
 
@@ -1825,18 +2414,35 @@ pub const ErrorRef = struct {
 
 | Name | Parameters | Return Type | Description |
 | --- | --- | --- | --- |
-| [deinit](#fn-errorref-deinit) | `self: *ErrorRef` | `void` | Releases this error handle's root. |
+| [deinit](#fn-errorref-deinit) | `self: *ErrorRef` | `void` | Releases this error handle's root and traceback. |
+| [traceback](#fn-errorref-traceback) | `self: ErrorRef` | `?[]const u8` | Returns the traceback captured at the error point when the call requested &#96;CallOptions.traceback&#96;, or null. The text has the form of Lua's &#96;debug.traceback&#96; without a message: &#96;stack traceback:&#96; followed by one tab-indented line per level, innermost first. It is valid until &#96;deinit&#96;. |
 | [value](#fn-errorref-value) | `self: ErrorRef` | `!Value` | Returns the raw Lua error value as a high-level &#96;Value&#96;. |
-| [message](#fn-errorref-message) | `self: ErrorRef` | `![]const u8` | Formats the Lua error value as an allocated message. |
+| [message](#fn-errorref-message) | `self: ErrorRef` | `![]const u8` | Formats the Lua error value as an allocated message. A nil error object, which &#96;value&#96; returns as &#96;.nil&#96;, is described as &#96;<no error object>&#96;. |
 
 <a id="fn-errorref-deinit"></a>
 
 ### ErrorRef.deinit
 
-Releases this error handle's root.
+Releases this error handle's root and traceback.
 
 ```zig
 pub fn deinit(self: *ErrorRef) void
+```
+
+References: [`ErrorRef`](#type-errorref)
+
+<a id="fn-errorref-traceback"></a>
+
+### ErrorRef.traceback
+
+Returns the traceback captured at the error point when the call
+requested `CallOptions.traceback`, or null. The text has the form of
+Lua's `debug.traceback` without a message: `stack traceback:` followed
+by one tab-indented line per level, innermost first. It is valid until
+`deinit`.
+
+```zig
+pub fn traceback(self: ErrorRef) ?[]const u8
 ```
 
 References: [`ErrorRef`](#type-errorref)
@@ -1857,7 +2463,8 @@ References: [`ErrorRef`](#type-errorref), [`Value`](#type-value)
 
 ### ErrorRef.message
 
-Formats the Lua error value as an allocated message.
+Formats the Lua error value as an allocated message. A nil error
+object, which `value` returns as `.nil`, is described as `<no error object>`.
 
 The caller owns the returned slice and must free it with the state's allocator.
 
@@ -1883,7 +2490,11 @@ pub const Value = union(enum) {
     integer: i64,
     /// Lua floating-point number.
     number: f64,
-    /// Lua string bytes interned in the state.
+    /// Lua string bytes borrowed from the state; not copied and not rooted.
+    /// Valid while Lua can reach the string (a global, table field, live stack
+    /// slot, or `Ref` root). Once unreachable, any API call that may collect
+    /// (Lua calls, writes, `collect`, `stepGc`) can free it; `deinit` and
+    /// `reset` always invalidate it. Copy it, or read the value as a `Ref`, to keep it.
     string: []const u8,
     /// Rooted Lua table handle.
     table: Table,
@@ -1945,7 +2556,7 @@ pub const Context = struct {
 | --- | --- | --- | --- |
 | [state](#fn-context-state) | `self: *Context` | `*State` | Returns the owning Lua state. |
 | [argCount](#fn-context-argcount) | `self: *Context` | `usize` | Returns the number of Lua arguments passed to the callback. |
-| [arg](#fn-context-arg) | `self: *Context, index: usize, comptime T: type` | `!T` | Reads required argument &#96;index&#96; and converts it to &#96;T&#96;. |
+| [arg](#fn-context-arg) | `self: *Context, index: usize, comptime T: type` | `!T` | Reads required argument &#96;index&#96; and converts it to &#96;T&#96;. A &#96;[]const u8&#96; argument borrows VM memory valid until the callback returns. |
 | [optionalArg](#fn-context-optionalarg) | `self: *Context, index: usize, comptime T: type` | `!?T` | Reads optional argument &#96;index&#96;, returning null when absent or Lua &#96;nil&#96;. |
 | [pushReturn](#fn-context-pushreturn) | `self: *Context, value: anytype` | `!void` | Appends one converted Lua return value for the current callback. |
 | [returnValues](#fn-context-returnvalues) | `self: *Context, values: anytype` | `!void` | Replaces callback returns with &#96;values&#96;. |
@@ -1985,6 +2596,7 @@ References: [`Context`](#type-context)
 ### Context.arg
 
 Reads required argument `index` and converts it to `T`.
+A `[]const u8` argument borrows VM memory valid until the callback returns.
 
 ```zig
 pub fn arg(self: *Context, index: usize, comptime T: type) !T

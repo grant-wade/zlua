@@ -92,7 +92,7 @@ pub fn coroutineCreate(comptime State: type, self: *State, thread: *Thread, op: 
 }
 
 pub fn coroutineResume(comptime State: type, self: *State, thread: *Thread, op: bytecode.Call) !void {
-    const target = try self.expectThread(argValue(self, thread, op, 0));
+    const target = try self.expectArgumentThread(thread, op, "coroutine.resume", 0);
     const args = try self.collectArgs(thread, op, 1);
     defer self.allocator.free(args);
 
@@ -132,6 +132,7 @@ pub fn suspendCoroutine(comptime State: type, self: *State, thread: *Thread, op:
     thread.yield_values.clearRetainingCapacity();
     thread.yield_values.appendSliceAssumeCapacity(values);
     for (values) |value| self.threadBarrier(thread, value);
+    @import("gc.zig").rememberObject(State, self, .{ .thread = thread });
     const frame = thread.frames.items[thread.frames.items.len - 1];
     thread.yield_result_base = frame.base + op.base;
     thread.yield_result_count = op.return_count;
@@ -146,7 +147,7 @@ pub fn coroutineYield(comptime State: type, self: *State, thread: *Thread, op: b
 }
 
 pub fn coroutineStatus(comptime State: type, self: *State, thread: *Thread, op: bytecode.Call) !void {
-    const target = try self.expectThread(argValue(self, thread, op, 0));
+    const target = try self.expectArgumentThread(thread, op, "coroutine.status", 0);
     try self.returnValues(thread, op.base, op.return_count, &.{.{ .string = try self.intern(threadStatusName(target.status)) }});
 }
 
@@ -156,7 +157,7 @@ pub fn coroutineRunning(comptime State: type, self: *State, thread: *Thread, op:
 }
 
 pub fn coroutineIsYieldable(comptime State: type, self: *State, thread: *Thread, op: bytecode.Call) !void {
-    const target = if (op.arg_count == 0) thread else try self.expectThread(argValue(self, thread, op, 0));
+    const target = if (op.arg_count == 0) thread else try self.expectArgumentThread(thread, op, "coroutine.isyieldable", 0);
     const yieldable = if (target == thread)
         isYieldable(thread)
     else
@@ -165,7 +166,7 @@ pub fn coroutineIsYieldable(comptime State: type, self: *State, thread: *Thread,
 }
 
 pub fn coroutineClose(comptime State: type, self: *State, thread: *Thread, op: bytecode.Call) !void {
-    const target = if (op.arg_count == 0) thread else try self.expectThread(argValue(self, thread, op, 0));
+    const target = if (op.arg_count == 0) thread else try self.expectArgumentThread(thread, op, "coroutine.close", 0);
     if (target.closing) return self.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = true }});
     const closes_self = target == thread and target.status == .running;
     if (try closeCoroutine(State, self, target, null)) |error_value| {
@@ -193,7 +194,7 @@ pub fn callCoroutineWrapper(comptime State: type, self: *State, thread: *Thread,
     try callCoroutineWrapperWithArgs(State, self, thread, op.base, op.return_count, target, args);
 }
 
-pub fn callCoroutineWrapperWithArgs(comptime State: type, self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, target: *Thread, args: []const Value) !void {
+pub fn callCoroutineWrapperWithArgs(comptime State: type, self: *State, thread: *Thread, base: u32, return_count: u16, target: *Thread, args: []const Value) !void {
     const result = try resumeCoroutine(State, self, target, args);
     defer freeCoroutineResumeResult(self.allocator, result);
     switch (result) {
@@ -203,7 +204,7 @@ pub fn callCoroutineWrapperWithArgs(comptime State: type, self: *State, thread: 
                 (try closeCoroutine(State, self, target, null)) orelse error_value
             else
                 error_value;
-            return self.throwValue(failure);
+            return self.throwValue(try self.withLibraryWhere(failure));
         },
     }
 }
@@ -224,14 +225,14 @@ pub fn closeCoroutine(comptime State: type, self: *State, target: *Thread, error
     if (target.is_main) return self.fail("cannot close main coroutine");
     if (target.status == .running and target != self.current_thread) return self.fail("cannot close a running coroutine");
     try @import("rollback.zig").threadWritable(target);
-    if (self.coroutine_close_depth >= self.callFrameLimit()) return .{ .string = try self.intern("C stack overflow") };
+    if (self.coroutine_close_depth >= State.max_c_calls) return .{ .string = try self.intern("C stack overflow") };
     self.coroutine_close_depth += 1;
     defer self.coroutine_close_depth -= 1;
 
     const previous_thread = self.current_thread;
     const previous_parent = target.resume_parent;
     self.current_thread = target;
-    target.resume_parent = previous_thread;
+    if (previous_thread != target) target.resume_parent = previous_thread;
     target.status = .running;
     target.closing = true;
     defer {
@@ -243,8 +244,9 @@ pub fn closeCoroutine(comptime State: type, self: *State, target: *Thread, error
 
     const failure = error_value orelse target.close_error_value;
     defer target.close_error_value = null;
+    target.error_handler = .nil;
     self.closeFramesTo(target, 0, failure) catch |err| switch (err) {
-        error.RuntimeError, error.StackOverflow, error.UnsupportedOpcode => return self.currentErrorValue(),
+        error.RuntimeError, error.StackOverflow, error.UnsupportedOpcode => return try self.caughtErrorValue(self.currentErrorValue()),
         else => return err,
     };
     return failure;
@@ -257,7 +259,7 @@ pub fn resumeCoroutine(comptime State: type, self: *State, target: *Thread, args
 
     const parent = self.current_thread;
     if (parent == target) return .{ .failure = .{ .string = try self.intern("cannot resume running coroutine") } };
-    if (resumeChainDepth(parent) >= self.callFrameLimit()) return .{ .failure = .{ .string = try self.intern("C stack overflow") } };
+    if (resumeChainDepth(parent) >= State.max_c_calls) return .{ .failure = .{ .string = try self.intern("C stack overflow") } };
 
     try @import("rollback.zig").threadWritable(target);
     if (parent) |parent_thread| {
@@ -278,7 +280,6 @@ pub fn resumeCoroutine(comptime State: type, self: *State, target: *Thread, args
     }
 
     self.last_error = null;
-    self.last_error_in_close = false;
     var first = true;
     while (true) {
         const execution = if (first) beginResume(State, self, target, args) else self.runThreadUntil(target, 0);
@@ -286,19 +287,23 @@ pub fn resumeCoroutine(comptime State: type, self: *State, target: *Thread, args
         execution catch |err| switch (err) {
             error.CoroutineYield => return .{ .success = try copyValues(State, self, target.yield_values.items) },
             error.CoroutineClose => return .{ .success = try copyValues(State, self, &.{}) },
-            error.RuntimeError, error.StackOverflow, error.UnsupportedOpcode => {
-                if (err == error.StackOverflow and self.last_error == null) self.last_error = .{ .diagnostic = "stack overflow" };
-                const error_value = self.currentErrorValue();
-                const completed = self.completeProtectedContinuationError(target, error_value) catch |continuation_err| switch (continuation_err) {
+            error.RuntimeError, error.StackOverflow, error.UnsupportedOpcode, error.OutOfMemory => {
+                self.noteCaughtError(err);
+                const completed = self.completeProtectedContinuationError(target) catch |continuation_err| switch (continuation_err) {
                     error.CoroutineYield => return .{ .success = try copyValues(State, self, target.yield_values.items) },
                     else => return continuation_err,
                 };
                 if (completed) continue;
+                const error_value = try self.caughtErrorValue(self.currentErrorValue());
                 target.error_traceback = try self.snapshotCoroutineErrorTraceback(target);
                 target.close_error_value = error_value;
                 self.threadBarrier(target, error_value);
                 target.status = .dead;
                 return .{ .failure = error_value };
+            },
+            error.Interrupted => {
+                self.closeUpvalues(target, 0);
+                return err;
             },
             else => return err,
         };
@@ -331,14 +336,14 @@ pub fn startCoroutine(comptime State: type, self: *State, target: *Thread, args:
     try @import("rollback.zig").threadWritable(target);
     const closure, const arg_count = switch (target.entry) {
         .closure => |closure| blk: {
-            try target.ensureStack(self.allocator, 1 + args.len, self.stackValueLimit());
+            try target.ensureStack(self.allocator, 1 + args.len, self.callStackValueLimit(target));
             target.stack.items[0] = .{ .closure = closure };
             for (args, 0..) |arg, index| target.stack.items[1 + index] = arg;
             break :blk .{ closure, args.len };
         },
         else => blk: {
             const trampoline = try callableEntryClosure(State, self);
-            try target.ensureStack(self.allocator, 2 + args.len, self.stackValueLimit());
+            try target.ensureStack(self.allocator, 2 + args.len, self.callStackValueLimit(target));
             target.stack.items[0] = .{ .closure = trampoline };
             target.stack.items[1] = target.entry;
             for (args, 0..) |arg, index| target.stack.items[2 + index] = arg;
@@ -346,7 +351,7 @@ pub fn startCoroutine(comptime State: type, self: *State, target: *Thread, args:
         },
     };
     var frame = try self.prepareClosureFrame(target, closure, 0, 0, arg_count, 0, bytecode.multret_count);
-    errdefer frame.deinit(self.allocator);
+    errdefer target.releaseFrame(&frame, self.allocator);
     try target.frames.append(self.allocator, frame);
     target.started = true;
     if (target.hook_call and !target.hook_running) try self.callHook(target, "call");
@@ -360,9 +365,9 @@ pub fn callableEntryClosure(comptime State: type, self: *State) !*Closure {
     proto.max_registers = 2;
     proto.param_count = 1;
     proto.is_vararg = true;
-    proto.source_name = "=(coroutine entry)";
+    proto.source_name = @import("debug.zig").coroutine_entry_source;
     _ = try proto.emit(.{ .vararg = .{ .dest = 1, .count = bytecode.multret_count } }, 0);
-    _ = try proto.emit(.{ .call = .{ .base = 0, .arg_count = bytecode.multret_count, .return_count = bytecode.multret_count } }, 0);
+    _ = try proto.emit(.{ .call = .{ .base = 0, .arg_count = bytecode.multret_arg_count, .return_count = bytecode.multret_count } }, 0);
     _ = try proto.emit(.{ .ret = .{ .first = 0, .count = bytecode.multret_count } }, 0);
     try self.registerAllocation("proto_allocations", proto);
     errdefer {
@@ -383,7 +388,7 @@ pub fn callableEntryClosure(comptime State: type, self: *State) !*Closure {
 pub fn setCoroutineResumeValues(comptime State: type, self: *State, target: *Thread, args: []const Value) !void {
     try @import("rollback.zig").threadWritable(target);
     const actual_count = try self.resolveReturnCount(target.yield_result_count, args.len);
-    try target.ensureStack(self.allocator, target.yield_result_base + actual_count, self.stackValueLimit());
+    try target.ensureStack(self.allocator, target.yield_result_base + actual_count, self.callStackValueLimit(target));
     for (0..actual_count) |index| {
         target.stack.items[target.yield_result_base + index] = if (index < args.len) args[index] else .nil;
     }
@@ -391,7 +396,7 @@ pub fn setCoroutineResumeValues(comptime State: type, self: *State, target: *Thr
     target.last_result_count = actual_count;
 }
 
-pub fn returnCoroutineResumeResult(comptime State: type, self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, result: CoroutineResumeResult) !void {
+pub fn returnCoroutineResumeResult(comptime State: type, self: *State, thread: *Thread, base: u32, return_count: u16, result: CoroutineResumeResult) !void {
     switch (result) {
         .success => |values| {
             var returns = std.ArrayList(Value).empty;

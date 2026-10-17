@@ -21,13 +21,12 @@
 - [compile.resolver](../compile/resolver.md)
 - [compile.bytecode](../compile/bytecode.md)
 - [compile.proto](../compile/proto.md)
-- [compile.compiler](../compile/compiler.md)
-- [compile.disasm](../compile/disasm.md)
-- [api](../api.md)
+- [runtime.types](../runtime/types.md)
 - [runtime](../runtime.md)
 - [runtime.chunk](../runtime/chunk.md)
-- [runtime.types](../runtime/types.md)
+- [reflection](../reflection.md)
 - [runtime.value](../runtime/value.md)
+- [runtime.number_format](../runtime/number_format.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
 - [runtime.state](../runtime/state.md)
@@ -37,6 +36,7 @@
 - [runtime.debug](../runtime/debug.md)
 - [runtime.gc](../runtime/gc.md)
 - [runtime.host](../runtime/host.md)
+- [runtime.timezone](../runtime/timezone.md)
 - [stdlib](../stdlib.md)
 - [stdlib.base](../stdlib/base.md)
 - [stdlib.table](../stdlib/table.md)
@@ -45,19 +45,23 @@
 - [stdlib.utf8](../stdlib/utf8.md)
 - [stdlib.coroutine](../stdlib/coroutine.md)
 - [stdlib.debug](../stdlib/debug.md)
-- [stdlib.package](../stdlib/package.md)
 - [stdlib.io](../stdlib/io.md)
+- [stdlib.static_strings](../stdlib/static_strings.md)
 - [stdlib.os](../stdlib/os.md)
+- [stdlib.package](../stdlib/package.md)
 - [stdlib.json](../stdlib/json.md)
 - [stdlib.zerde_lua](../stdlib/zerde_lua.md)
 - [stdlib.toml](../stdlib/toml.md)
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
-- [stdlib.static_strings](../stdlib/static_strings.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
+- [compile.compiler](../compile/compiler.md)
+- [compile.fold](../compile/fold.md)
+- [compile.disasm](../compile/disasm.md)
+- [api](../api.md)
 - [runtime.snapshot](../runtime/snapshot.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
@@ -90,6 +94,7 @@
 - [dofile](#fn-dofile)
 - [require](#fn-require)
 - [searchpath](#fn-searchpath)
+- [loadlib](#fn-loadlib)
 - [searcherPreload](#fn-searcherpreload)
 - [searcherLua](#fn-searcherlua)
 
@@ -123,6 +128,16 @@ pub fn require(state: *State, thread: *Thread, op: bytecode.Call) !void
 
 ```zig
 pub fn searchpath(state: *State, thread: *Thread, op: bytecode.Call) !void
+```
+
+<a id="fn-loadlib"></a>
+
+## loadlib
+
+Native C modules are not supported, matching a Lua build without dynamic libraries.
+
+```zig
+pub fn loadlib(state: *State, thread: *Thread, op: bytecode.Call) !void
 ```
 
 <a id="fn-searcherpreload"></a>

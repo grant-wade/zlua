@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const fixtures = @import("fixtures.zig");
 const clua = @import("clua.zig");
 const compile = @import("../compile.zig");
@@ -108,10 +109,6 @@ fn parseArgs(args: []const []const u8) !Options {
             options.clua = args[index];
         } else if (std.mem.startsWith(u8, arg, "--clua=")) {
             options.clua = arg[7..];
-        } else if (std.mem.eql(u8, arg, "--bless")) {
-            // Accepted for command stability; fixtures remain source-of-truth in milestone 0.
-        } else if (std.mem.eql(u8, arg, "--update-expected-failures")) {
-            // Accepted for command stability; registry updates are intentionally manual for now.
         } else if (std.mem.startsWith(u8, arg, "--stage=")) {
             options.stage = try metadata.parseStage(arg[8..]);
         } else if (std.mem.startsWith(u8, arg, "--feature=")) {
@@ -153,6 +150,16 @@ fn runOne(
     if (meta.expect == .skip) {
         counts.skipped += 1;
         try out.print("skip {s} ({s})\n", .{ path, meta.reason });
+        return;
+    }
+    if (metadata.skipsOs(meta, builtin.os.tag)) {
+        counts.skipped += 1;
+        try out.print("skip {s} ({s}: {s})\n", .{ path, @tagName(builtin.os.tag), meta.reason });
+        return;
+    }
+    if (meta.gc_stress == .skip and options.gc_stress) {
+        counts.skipped += 1;
+        try out.print("skip {s} (gc stress: {s})\n", .{ path, meta.reason });
         return;
     }
 
@@ -221,8 +228,8 @@ fn runZluaForStage(
         .resolve => runZluaResolveStage(allocator, source),
         .compile => runZluaCompileStage(allocator, source),
         .runtime, .stdlib, .official => runtime.executeSourceWithOptions(allocator, source, .{
-            .collect_after_instruction = options.gc_stress,
-            .step_after_instruction = options.gc_step_stress,
+            .stress_collect = options.gc_stress,
+            .stress_step = options.gc_step_stress,
             .state = .{
                 .io = io,
                 .filesystem = .host_cwd,

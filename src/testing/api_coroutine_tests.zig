@@ -164,7 +164,7 @@ test "host yield preserves Lua protected iterator metamethod tail and scope clos
         "return ask()",
         "local function nested() return ask() end; return nested()",
         "local ok, n = pcall(ask); assert(ok); return n",
-        "local ok, n = xpcall(function() error('failure') end, ask); assert(not ok); return n",
+        "local ok, n = xpcall(ask, debug.traceback); assert(ok); return n",
         "for n in function() return ask() end do return n end",
         "local t = setmetatable({}, {__index=ask}); return t.missing",
         "local t = setmetatable({}, {__add=ask}); return t + t",
@@ -322,7 +322,7 @@ test "suspended host yield values survive GC snapshots independent resumes and r
     var thread = try lua.newCoroutine(chunk);
     defer thread.deinit();
     try lua.setGlobal("co", thread);
-    lua.raw_state.collect_after_instruction = true;
+    lua.raw_state.stress_collect = true;
     var first = try thread.resumeCoroutine(.{}, api.Table, i64);
     defer first.deinit();
     try lua.collect();
@@ -596,4 +596,16 @@ test "interleaved host yields survive repeated collection without leaking roots"
     }
     try lua.collect();
     try std.testing.expectEqual(roots, lua.raw_state.activeRootCount());
+}
+
+test "coroutine.resume reports memory errors like pcall" {
+    var lua = try api.State.init(a, .{ .stdlib = .safe, .limits = .{ .max_memory = 1024 * 1024 } });
+    defer lua.deinit();
+    try lua.doString(
+        \\local co = coroutine.create(string.rep)
+        \\local ok, message = coroutine.resume(co, 'x', 4 * 1024 * 1024)
+        \\assert(not ok and message == 'not enough memory', message)
+        \\assert(coroutine.status(co) == 'dead')
+        \\assert(select(2, pcall(string.rep, 'x', 4 * 1024 * 1024)) == message)
+    , .{});
 }

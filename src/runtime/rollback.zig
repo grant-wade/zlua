@@ -312,6 +312,8 @@ pub const Journal = struct {
         const roots = state.api_roots;
         const callback_dispatch = state.api_callback_dispatch;
         const callback_data = state.api_callback_user_data;
+        const interrupt = state.interrupt;
+        const file_generation = state.file_generation;
         const gc_work = state.gc_work;
         const gc_remembered = state.gc_remembered;
         const gc_weak = state.gc_weak;
@@ -331,6 +333,10 @@ pub const Journal = struct {
         state.api_roots.clearRetainingCapacity();
         state.api_callback_dispatch = callback_dispatch;
         state.api_callback_user_data = callback_data;
+        state.interrupt = interrupt;
+        state.file_generation = file_generation +% 1;
+        state.call_instruction_deadline = null;
+        state.instruction_checkpoint = 0;
         self.registries_detached = false;
         self.output_detached = false;
     }

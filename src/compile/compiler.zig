@@ -3,6 +3,7 @@ const errors = @import("../errors.zig");
 const frontend = @import("../frontend.zig");
 const ast = frontend.ast;
 const bytecode = @import("bytecode.zig");
+const fold = @import("fold.zig");
 const proto_mod = @import("proto.zig");
 
 const lua_rk_constant_limit: bytecode.ConstantIndex = 255;
@@ -103,6 +104,25 @@ const Loop = struct {
     close_register: bytecode.Register,
 };
 
+const ConstantKeyContext = struct {
+    pub fn hash(_: ConstantKeyContext, key: bytecode.Constant) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        hasher.update(&.{@intFromEnum(std.meta.activeTag(key))});
+        switch (key) {
+            .nil => {},
+            .boolean => |value| hasher.update(&.{@intFromBool(value)}),
+            .integer, .number, .string => |text| hasher.update(text),
+        }
+        return hasher.final();
+    }
+
+    pub fn eql(_: ConstantKeyContext, lhs: bytecode.Constant, rhs: bytecode.Constant) bool {
+        return bytecode.constantEql(lhs, rhs);
+    }
+};
+
+const ConstantIndexMap = std.HashMapUnmanaged(bytecode.Constant, bytecode.ConstantIndex, ConstantKeyContext, std.hash_map.default_max_load_percentage);
+
 const FunctionCompiler = struct {
     allocator: std.mem.Allocator,
     proto: *proto_mod.Proto,
@@ -115,6 +135,8 @@ const FunctionCompiler = struct {
     gotos: std.ArrayList(PendingGoto) = .empty,
     breaks: std.ArrayList(usize) = .empty,
     loops: std.ArrayList(Loop) = .empty,
+    constant_indices: ConstantIndexMap = .empty,
+    fold_failures: std.AutoHashMapUnmanaged(*const ast.Expr, void) = .empty,
     next_register: bytecode.Register = 0,
     current_line: usize = 1,
     forced_line: ?usize = null,
@@ -124,6 +146,8 @@ const FunctionCompiler = struct {
     }
 
     fn deinit(self: *FunctionCompiler) void {
+        self.fold_failures.deinit(self.allocator);
+        self.constant_indices.deinit(self.allocator);
         self.loops.deinit(self.allocator);
         self.breaks.deinit(self.allocator);
         self.gotos.deinit(self.allocator);
@@ -277,7 +301,7 @@ const FunctionCompiler = struct {
                 if (op.register != source) return false;
                 op.register = dest;
             },
-            inline .load_bool, .load_const, .move, .get_table, .get_field, .new_table, .closure, .add, .sub, .mul, .div, .idiv, .mod, .pow, .unm, .band, .bor, .bxor, .bnot, .shl, .shr, .eq, .lt, .le, .not, .len, .concat => |*op| {
+            inline .load_bool, .load_const, .move, .get_table, .get_field, .new_table, .closure, .add, .sub, .mul, .div, .idiv, .mod, .pow, .unm, .band, .bor, .bxor, .bnot, .shl, .shr, .eq, .lt, .le, .not, .len, .concat, .concat_range => |*op| {
                 if (op.dest != source) return false;
                 op.dest = dest;
             },
@@ -467,7 +491,7 @@ const FunctionCompiler = struct {
         if (stmt.step) |step_expr| {
             try self.compileExpr(step_expr, step);
         } else {
-            const one = try self.proto.addConstant(.{ .integer = "1" });
+            const one = try self.addConstant(.{ .integer = "1" });
             _ = try self.emit(.{ .load_const = .{ .dest = step, .constant = one } });
         }
 
@@ -631,9 +655,9 @@ const FunctionCompiler = struct {
         switch (expr.*) {
             .nil => _ = try self.emit(.{ .load_nil = dest }),
             .boolean => |literal| _ = try self.emit(.{ .load_bool = .{ .dest = dest, .value = literal.value } }),
-            .integer => |literal| _ = try self.emit(.{ .load_const = .{ .dest = dest, .constant = try self.proto.addConstant(.{ .integer = literal.lexeme }) } }),
-            .float => |literal| _ = try self.emit(.{ .load_const = .{ .dest = dest, .constant = try self.proto.addConstant(.{ .number = literal.lexeme }) } }),
-            .string => |literal| _ = try self.emit(.{ .load_const = .{ .dest = dest, .constant = try self.proto.addConstant(.{ .string = literal.lexeme }) } }),
+            .integer => |literal| _ = try self.emit(.{ .load_const = .{ .dest = dest, .constant = try self.addConstant(.{ .integer = literal.lexeme }) } }),
+            .float => |literal| _ = try self.emit(.{ .load_const = .{ .dest = dest, .constant = try self.addConstant(.{ .number = literal.lexeme }) } }),
+            .string => |literal| _ = try self.emit(.{ .load_const = .{ .dest = dest, .constant = try self.addConstant(.{ .string = literal.lexeme }) } }),
             .vararg => try self.compileExprCount(expr, dest, 1),
             .identifier => |identifier| try self.loadName(identifier.name, dest),
             .table_constructor => |constructor| try self.compileTableConstructor(constructor, dest),
@@ -693,9 +717,51 @@ const FunctionCompiler = struct {
                     self.release(mark);
                 }
             },
-            .unary => |unary| try self.compileUnary(unary, dest),
-            .binary => |binary| try self.compileBinary(binary, dest),
+            .unary => |unary| if (try self.foldConstant(expr)) |value| {
+                try self.emitFoldedConstant(expr, value, dest);
+            } else {
+                try self.compileUnary(unary, dest);
+            },
+            .binary => |binary| if (try self.foldConstant(expr)) |value| {
+                try self.emitFoldedConstant(expr, value, dest);
+            } else {
+                try self.compileBinary(binary, dest);
+            },
         }
+    }
+
+    fn foldConstant(self: *FunctionCompiler, expr: *const ast.Expr) !?fold.Numeral {
+        switch (expr.*) {
+            .integer, .float => return fold.literal(expr),
+            .grouped => |inner| return self.foldConstant(inner),
+            .unary => |unary| {
+                if (!fold.foldsUnary(unary.op) or self.fold_failures.contains(expr)) return null;
+                const operand = (try self.foldConstant(unary.operand)) orelse return self.noteFoldFailure(expr, unary.operand);
+                return fold.unary(unary.op, operand);
+            },
+            .binary => |binary| {
+                if (!fold.foldsBinary(binary.op) or self.fold_failures.contains(expr)) return null;
+                const lhs = (try self.foldConstant(binary.left)) orelse return self.noteFoldFailure(expr, binary.left);
+                const rhs = (try self.foldConstant(binary.right)) orelse return self.noteFoldFailure(expr, binary.right);
+                return fold.binary(binary.op, lhs, rhs);
+            },
+            else => return null,
+        }
+    }
+
+    fn noteFoldFailure(self: *FunctionCompiler, expr: *const ast.Expr, operand: *const ast.Expr) !?fold.Numeral {
+        switch (operand.*) {
+            .unary, .binary, .grouped => try self.fold_failures.put(self.allocator, expr, {}),
+            else => {},
+        }
+        return null;
+    }
+
+    fn emitFoldedConstant(self: *FunctionCompiler, expr: *const ast.Expr, value: fold.Numeral, dest: bytecode.Register) !void {
+        var buffer: [fold.render_buffer_len]u8 = undefined;
+        const constant = try self.addConstant(fold.constant(&buffer, value));
+        self.current_line = lastTokenLine(expr);
+        _ = try self.emit(.{ .load_const = .{ .dest = dest, .constant = constant } });
     }
 
     fn compileFunctionLiteral(self: *FunctionCompiler, body: ast.FunctionBody, dest: bytecode.Register, debug_name: ?[]const u8) !void {
@@ -788,12 +854,15 @@ const FunctionCompiler = struct {
             return;
         }
 
+        if (binary.op == .concat and try self.compileConcatChain(binary, dest)) return;
+
         const mark = self.registerMark();
         const direct_left = self.sourceRegister(binary.left);
         const direct_right = self.sourceRegister(binary.right);
         // Lua keeps local operands in their registers while evaluating the
-        // right side, which may itself update a captured local.
-        const use_direct_left = direct_left != null;
+        // right side, which may itself update a captured local. Concat copies
+        // the left operand first unless the right side cannot run code.
+        const use_direct_left = direct_left != null and (binary.op != .concat or self.evaluationIsInert(binary.right));
         const use_direct_right = direct_right != null and direct_right.? != dest;
         const right = if (use_direct_right) direct_right.? else try self.allocReg();
         var left_origin = try self.exprOrigin(binary.left);
@@ -812,6 +881,57 @@ const FunctionCompiler = struct {
         }
         self.current_line = right_line;
         self.release(mark);
+    }
+
+    fn compileConcatChain(self: *FunctionCompiler, binary: ast.BinaryExpr, dest: bytecode.Register) anyerror!bool {
+        var operands = std.ArrayList(*const ast.Expr).empty;
+        defer operands.deinit(self.allocator);
+        var operator_lines = std.ArrayList(usize).empty;
+        defer operator_lines.deinit(self.allocator);
+        var link = binary;
+        while (true) {
+            try operands.append(self.allocator, link.left);
+            try operator_lines.append(self.allocator, link.op_line);
+            const right = ungroupedExpr(link.right);
+            if (right.* == .binary and right.binary.op == .concat) {
+                link = right.binary;
+                continue;
+            }
+            try operands.append(self.allocator, link.right);
+            break;
+        }
+        if (operands.items.len == 2) return false;
+
+        const count = operands.items.len;
+        const origins = try self.allocator.alloc(proto_mod.OperandOrigin, count);
+        defer self.allocator.free(origins);
+
+        const mark = self.registerMark();
+        const first = if (dest + 1 == mark) dest else try self.allocReg();
+        _ = try self.allocRegs(@intCast(count - 1));
+        for (operands.items, 0..) |operand, index| {
+            const register = first + @as(bytecode.Register, @intCast(index));
+            origins[index] = try self.exprOrigin(operand);
+            if (index + 1 < count) {
+                try self.compileExprForcedLine(operand, register, operator_lines.items[index]);
+            } else {
+                try self.compileExpr(operand, register);
+            }
+        }
+        self.current_line = operator_lines.items[count - 2];
+        _ = try self.emitWithErrorSite(.{ .concat_range = .{ .dest = dest, .first = first, .count = @intCast(count) } }, .concat, origins, null);
+        self.current_line = exprLine(operands.items[count - 1].*);
+        self.release(mark);
+        return true;
+    }
+
+    fn evaluationIsInert(self: *FunctionCompiler, expr: *const ast.Expr) bool {
+        return switch (expr.*) {
+            .nil, .boolean, .integer, .float, .string, .vararg, .function_literal => true,
+            .grouped => |inner| self.evaluationIsInert(inner),
+            .identifier => self.sourceRegister(expr) != null,
+            else => false,
+        };
     }
 
     fn compileConditionJump(self: *FunctionCompiler, expr: *const ast.Expr, jump_if_truthy: bool) anyerror!usize {
@@ -922,7 +1042,7 @@ const FunctionCompiler = struct {
                 try self.compileExpr(call.callee, dest);
                 const arg_count = try self.compileCallArgs(call.args, dest + 1, 0);
                 self.current_line = call.call_line;
-                _ = try self.emitWithErrorSite(if (tail) .{ .tail_call = .{ .base = dest, .arg_count = arg_count, .return_count = returns } } else .{ .call = .{ .base = dest, .arg_count = arg_count, .return_count = returns } }, .call, &.{call_name}, call_name);
+                _ = try self.emitWithErrorSite(if (tail) .{ .tail_call = .{ .base = dest, .arg_count = callArgCount(arg_count), .return_count = returns } } else .{ .call = .{ .base = dest, .arg_count = callArgCount(arg_count), .return_count = returns } }, .call, &.{call_name}, call_name);
                 self.release(callReleaseMark(dest, returns));
                 return dest;
             },
@@ -939,7 +1059,7 @@ const FunctionCompiler = struct {
                 else
                     proto_mod.OperandOrigin{ .field = call.method.name };
                 self.current_line = call.call_line;
-                _ = try self.emitWithErrorSite(if (tail) .{ .tail_call = .{ .base = dest, .arg_count = arg_count, .return_count = returns } } else .{ .call = .{ .base = dest, .arg_count = arg_count, .return_count = returns } }, .call, &.{method_origin}, method_origin);
+                _ = try self.emitWithErrorSite(if (tail) .{ .tail_call = .{ .base = dest, .arg_count = callArgCount(arg_count), .return_count = returns } } else .{ .call = .{ .base = dest, .arg_count = callArgCount(arg_count), .return_count = returns } }, .call, &.{method_origin}, method_origin);
                 self.release(callReleaseMark(dest, returns));
                 return dest;
             },
@@ -1393,7 +1513,6 @@ const FunctionCompiler = struct {
         return switch (expr.*) {
             .identifier => |identifier| self.nameOrigin(identifier.name),
             .field => |field| .{ .field = field.name.name },
-            .method_call => |call| .{ .method = call.method.name },
             .grouped => |inner| self.exprOrigin(inner),
             .string => |literal| .{ .constant = stringLiteralPreview(literal.lexeme) },
             else => .temporary,
@@ -1420,8 +1539,15 @@ const FunctionCompiler = struct {
         }
     }
 
+    fn addConstant(self: *FunctionCompiler, constant: bytecode.Constant) !bytecode.ConstantIndex {
+        if (self.constant_indices.get(constant)) |index| return index;
+        const index = try self.proto.appendConstant(constant);
+        try self.constant_indices.put(self.allocator, self.proto.constants.items[index], index);
+        return index;
+    }
+
     fn nameConstant(self: *FunctionCompiler, name: []const u8) !bytecode.ConstantIndex {
-        return self.proto.addConstant(.{ .string = name });
+        return self.addConstant(.{ .string = name });
     }
 };
 
@@ -1463,6 +1589,21 @@ fn binaryInstruction(op: ast.BinaryOp, dest: bytecode.Register, left: bytecode.R
         .idiv => .{ .idiv = binary },
         .mod => .{ .mod = binary },
         .pow => .{ .pow = binary },
+    };
+}
+
+fn ungroupedExpr(expr: *const ast.Expr) *const ast.Expr {
+    var current = expr;
+    while (current.* == .grouped) current = current.grouped;
+    return current;
+}
+
+fn lastTokenLine(expr: *const ast.Expr) usize {
+    return switch (expr.*) {
+        .grouped => |inner| lastTokenLine(inner),
+        .unary => |unary| lastTokenLine(unary.operand),
+        .binary => |binary| lastTokenLine(binary.right),
+        else => exprLine(expr.*),
     };
 }
 
@@ -1521,6 +1662,10 @@ fn assignmentTargetDebugName(target: *const ast.Expr) ?[]const u8 {
 
 fn callReleaseMark(dest: bytecode.Register, count: u16) bytecode.Register {
     return if (count == bytecode.multret_count) dest + 1 else dest + count;
+}
+
+fn callArgCount(count: u16) u32 {
+    return if (count == bytecode.multret_count) bytecode.multret_arg_count else count;
 }
 
 fn stmtLine(statement: ast.Stmt) usize {
@@ -1608,7 +1753,7 @@ test "compiles a simple chunk" {
     defer proto.deinit();
 
     try std.testing.expect(proto.instructions.items.len > 0);
-    try std.testing.expect(proto.constants.items.len >= 2);
+    try std.testing.expect(proto.constants.items.len >= 1);
     try std.testing.expect(proto.max_registers > 0);
 }
 
@@ -1664,4 +1809,87 @@ test "compiler child ownership survives every allocation failure for all functio
             }
         }.run, .{&tree});
     }
+}
+
+test "folds numeric constant expressions into one load" {
+    var tree = try frontend.parse(std.testing.allocator,
+        \\local x = 2^10 * 3 + 1
+    );
+    defer tree.deinit();
+
+    var proto = try compile(std.testing.allocator, &tree);
+    defer proto.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), proto.instructions.items.len);
+    const load = proto.instructions.items[1].load_const;
+    try std.testing.expectEqual(@as(bytecode.Register, 1), load.dest);
+    try std.testing.expectEqualStrings("3.073e3", proto.constants.items[load.constant].number);
+    try std.testing.expectEqual(@as(usize, 1), proto.constants.items.len);
+}
+
+test "leaves operations PUC refuses to fold for run time" {
+    var tree = try frontend.parse(std.testing.allocator,
+        \\local a, b, c, d, e = 1 // 0, 1 % 0.0, 1.5 | 0, -0.0, 0.0 / 0.0
+    );
+    defer tree.deinit();
+
+    var proto = try compile(std.testing.allocator, &tree);
+    defer proto.deinit();
+
+    var operations: usize = 0;
+    for (proto.instructions.items) |instruction| switch (instruction) {
+        .idiv, .mod, .bor, .unm, .div => operations += 1,
+        else => {},
+    };
+    try std.testing.expectEqual(@as(usize, 5), operations);
+}
+
+test "compiles concatenation chains into one range instruction" {
+    var tree = try frontend.parse(std.testing.allocator,
+        \\local a, b = ...
+        \\return a .. "-" .. (b .. 1 .. (2.5 .. a))
+    );
+    defer tree.deinit();
+
+    var proto = try compile(std.testing.allocator, &tree);
+    defer proto.deinit();
+
+    var ranges: usize = 0;
+    for (proto.instructions.items) |instruction| switch (instruction) {
+        .concat => return error.TestUnexpectedResult,
+        .concat_range => |op| {
+            ranges += 1;
+            try std.testing.expectEqual(@as(u16, 6), op.count);
+        },
+        else => {},
+    };
+    try std.testing.expectEqual(@as(usize, 1), ranges);
+}
+
+test "deduplicates constants by kind and lexeme" {
+    var tree = try frontend.parse(std.testing.allocator,
+        \\local t = {1, 1.0, 1, 1.0, "1", "1", 2 - 1, x = 1, x = 2}
+        \\return t.x, t.x
+    );
+    defer tree.deinit();
+
+    var proto = try compile(std.testing.allocator, &tree);
+    defer proto.deinit();
+
+    try std.testing.expectEqual(@as(usize, 5), proto.constants.items.len);
+}
+
+test "constant folding and concatenation survive every allocation failure" {
+    const allocator = std.testing.allocator;
+    var tree = try frontend.parse(allocator,
+        \\local a = ...
+        \\return 1 + 2 * 3 - 4 // 5, a .. "x" .. (a .. 1) .. 2.5, ((a + 1) + 2) + 3
+    );
+    defer tree.deinit();
+    try std.testing.checkAllAllocationFailures(allocator, struct {
+        fn run(failing: std.mem.Allocator, parsed: *const ast.Ast) !void {
+            var proto = try compile(failing, parsed);
+            defer proto.deinit();
+        }
+    }.run, .{&tree});
 }

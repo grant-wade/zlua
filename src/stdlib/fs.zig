@@ -10,12 +10,10 @@ const Thread = runtime.Thread;
 const Value = runtime.Value;
 const Table = runtime.Table;
 
-const default_max_read_bytes: usize = 256 * 1024 * 1024;
-
 pub fn read(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const path = try state.expectArgumentString(thread, op, "fs.read", 0);
     const options = optionTable(state, thread, op, "fs.read", 1) catch |err| return err;
-    const max_bytes = if (options) |table| try integerOption(state, table, "fs.read", "max_bytes", default_max_read_bytes) else default_max_read_bytes;
+    const max_bytes = if (options) |table| try integerOption(state, table, "fs.read", "max_bytes", state.options.max_file_bytes) else state.options.max_file_bytes;
     const bytes = state.fsReadFileAlloc(path, max_bytes) catch |err| return returnFailure(state, thread, op, "read", path, null, err);
     defer state.allocator.free(bytes);
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(bytes) }});
@@ -43,7 +41,7 @@ pub fn write(state: *State, thread: *Thread, op: bytecode.Call) !void {
         if (already_exists) return returnFailure(state, thread, op, "write", path, null, error.PathAlreadyExists);
     }
     if (append) {
-        const existing = state.fsReadFileAlloc(path, default_max_read_bytes) catch |err| switch (err) {
+        const existing = state.fsReadFileAlloc(path, state.options.max_file_bytes) catch |err| switch (err) {
             error.FileNotFound => try state.allocator.dupe(u8, ""),
             else => return returnFailure(state, thread, op, "read", path, null, err),
         };
@@ -64,17 +62,26 @@ pub fn open(state: *State, thread: *Thread, op: bytecode.Call) !void {
     else
         "r";
     const parsed = io_lib.parseMode(mode) orelse return state.failArgumentMessage("fs.open", 2, "invalid mode");
-    const contents = if (parsed.reads_existing or parsed.append)
-        state.fsReadFileAlloc(path, default_max_read_bytes) catch |err| switch (err) {
-            error.FileNotFound => if (parsed.kind == 'r') return returnFailure(state, thread, op, "open", path, null, err) else try state.allocator.dupe(u8, ""),
+    try openFile(state, thread, op, path, parsed);
+}
+
+fn openFile(state: *State, thread: *Thread, op: bytecode.Call, path: []const u8, parsed: io_lib.ParsedMode) !void {
+    var contents: []const u8 = "";
+    var found = true;
+    if (parsed.reads_existing or parsed.append) {
+        contents = state.fsReadFileAlloc(path, state.options.max_file_bytes) catch |err| switch (err) {
+            error.FileNotFound => if (parsed.kind == 'r') return returnFailure(state, thread, op, "open", path, null, err) else blk: {
+                found = false;
+                break :blk "";
+            },
             else => return returnFailure(state, thread, op, "open", path, null, err),
-        }
-    else
-        try state.allocator.dupe(u8, "");
-    defer state.allocator.free(contents);
-    if (parsed.kind != 'r') state.fsWriteFile(path, contents) catch |err| return returnFailure(state, thread, op, "open", path, null, err);
-    const value = try io_lib.newFile(state, path, mode, contents, parsed);
-    try addFileMethods(state, value.table);
+        };
+    }
+    io_lib.prepareWrite(state, path, parsed, found) catch |err| {
+        state.allocator.free(contents);
+        return returnFailure(state, thread, op, "open", path, null, err);
+    };
+    const value = try io_lib.newFile(state, .{ .path = path, .mode = parsed, .contents = contents, .buffer_mode = .no, .fs_methods = true });
     try state.returnValues(thread, op.base, op.return_count, &.{value});
 }
 
@@ -227,7 +234,7 @@ pub fn move(state: *State, thread: *Thread, op: bytecode.Call) !void {
 
 pub fn touch(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const path = try state.expectArgumentString(thread, op, "fs.touch", 0);
-    const existing = state.fsReadFileAlloc(path, default_max_read_bytes) catch |err| switch (err) {
+    const existing = state.fsReadFileAlloc(path, state.options.max_file_bytes) catch |err| switch (err) {
         error.FileNotFound => try state.allocator.dupe(u8, ""),
         else => return returnFailure(state, thread, op, "touch", path, null, err),
     };
@@ -317,43 +324,31 @@ pub fn errorTostring(state: *State, thread: *Thread, op: bytecode.Call) !void {
 }
 
 pub fn fileStat(state: *State, thread: *Thread, op: bytecode.Call) !void {
-    const file = try expectFsFile(state, runtime.argValue(state, thread, op, 0));
-    const path = try state.expectString(file.get(.{ .string = "__zlua_file_path" }));
+    const path = (try expectFsFile(state, runtime.argValue(state, thread, op, 0))).path;
     const value = state.fsStat(path, true) catch |err| return returnFailure(state, thread, op, "stat", path, null, err);
     try state.returnValues(thread, op.base, op.return_count, &.{try statValue(state, value)});
 }
 
 pub fn fileTell(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const file = try expectFsFile(state, runtime.argValue(state, thread, op, 0));
-    const pos = runtime.toInteger(file.get(.{ .string = "__zlua_file_pos" })) orelse 1;
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .integer = @max(pos - 1, 0) }});
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .integer = @intCast(file.pos) }});
 }
 
 pub fn fileTruncate(state: *State, thread: *Thread, op: bytecode.Call) !void {
-    const file = try expectFsFile(state, runtime.argValue(state, thread, op, 0));
-    const mode = try state.expectString(file.get(.{ .string = "__zlua_file_mode" }));
-    if (mode.len == 0 or (mode[0] != 'w' and mode[0] != 'a' and std.mem.indexOfScalar(u8, mode, '+') == null)) {
-        const path = try state.expectString(file.get(.{ .string = "__zlua_file_path" }));
-        return returnFailure(state, thread, op, "truncate", path, null, error.NotOpenForWriting);
-    }
+    const value = runtime.argValue(state, thread, op, 0);
+    const file = try expectFsFile(state, value);
+    if (file.closed) return state.fail("attempt to use a closed file");
+    if (!file.writable) return returnFailure(state, thread, op, "truncate", file.path, null, error.NotOpenForWriting);
     const size_i = try state.argumentInteger(thread, op, "fs file:truncate", 1);
     if (size_i < 0) return state.failArgumentMessage("fs file:truncate", 2, "non-negative size expected");
     const size: usize = @intCast(size_i);
-    const old = try state.expectString(file.get(.{ .string = "__zlua_file_content" }));
-    const bytes = try state.allocator.alloc(u8, size);
-    defer state.allocator.free(bytes);
-    const copied = @min(size, old.len);
-    @memcpy(bytes[0..copied], old[0..copied]);
-    if (size > copied) @memset(bytes[copied..], 0);
-    const path = try state.expectString(file.get(.{ .string = "__zlua_file_path" }));
-    state.fsWriteFile(path, bytes) catch |err| return returnFailure(state, thread, op, "truncate", path, null, err);
-    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_content") }, .{ .string = try state.intern(bytes) });
+    io_lib.truncateFile(state, value.userdata, size) catch |err| return returnFailure(state, thread, op, "truncate", file.path, null, err);
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = true }});
 }
 
 pub fn filePath(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const file = try expectFsFile(state, runtime.argValue(state, thread, op, 0));
-    try state.returnValues(thread, op.base, op.return_count, &.{file.get(.{ .string = "__zlua_file_path" })});
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(file.path) }});
 }
 
 pub fn dirEntries(state: *State, thread: *Thread, op: bytecode.Call) !void {
@@ -389,18 +384,7 @@ pub fn dirOpen(state: *State, thread: *Thread, op: bytecode.Call) !void {
     defer state.allocator.free(path);
     const mode = if (op.arg_count >= 3 and runtime.argValue(state, thread, op, 2) != .nil) try state.expectArgumentString(thread, op, "fs directory:open", 2) else "r";
     const parsed = io_lib.parseMode(mode) orelse return state.failArgumentMessage("fs directory:open", 3, "invalid mode");
-    const contents = if (parsed.reads_existing or parsed.append)
-        state.fsReadFileAlloc(path, default_max_read_bytes) catch |err| switch (err) {
-            error.FileNotFound => if (parsed.kind == 'r') return returnFailure(state, thread, op, "open", path, null, err) else try state.allocator.dupe(u8, ""),
-            else => return returnFailure(state, thread, op, "open", path, null, err),
-        }
-    else
-        try state.allocator.dupe(u8, "");
-    defer state.allocator.free(contents);
-    if (parsed.kind != 'r') state.fsWriteFile(path, contents) catch |err| return returnFailure(state, thread, op, "open", path, null, err);
-    const value = try io_lib.newFile(state, path, mode, contents, parsed);
-    try addFileMethods(state, value.table);
-    try state.returnValues(thread, op.base, op.return_count, &.{value});
+    try openFile(state, thread, op, path, parsed);
 }
 
 pub fn dirStat(state: *State, thread: *Thread, op: bytecode.Call) !void {
@@ -623,19 +607,9 @@ fn normalizedErrorCode(name: []const u8) []const u8 {
     return "io";
 }
 
-fn addFileMethods(state: *State, file: *Table) !void {
-    // fs handles are immediately coherent with path-based operations.
-    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_buffer_mode") }, .{ .string = try state.intern("no") });
-    try state.setTableRaw(file, .{ .string = try state.intern("stat") }, .{ .native = .fs_file_stat });
-    try state.setTableRaw(file, .{ .string = try state.intern("tell") }, .{ .native = .fs_file_tell });
-    try state.setTableRaw(file, .{ .string = try state.intern("truncate") }, .{ .native = .fs_file_truncate });
-    try state.setTableRaw(file, .{ .string = try state.intern("path") }, .{ .native = .fs_file_path });
-    try state.setTableRaw(file, .{ .string = try state.intern("sync") }, .{ .native = .io_file_flush });
-}
-
-fn expectFsFile(state: *State, value: Value) !*Table {
-    if (!runtime.isFileValue(value)) return state.fail("fs file expected");
-    return value.table;
+fn expectFsFile(state: *State, value: Value) !*const io_lib.File {
+    if (io_lib.checkedFile(state, value) == null) return state.fail("fs file expected");
+    return io_lib.fileOf(value).?;
 }
 
 fn expectIteratorTable(state: *State, value: Value) !*Table {
@@ -654,7 +628,7 @@ fn dirPath(state: *State, dir: *Table) ![]const u8 {
     return state.expectString(dir.get(.{ .string = "__zlua_fs_dir_path" }));
 }
 
-fn optionTable(state: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16) !?*Table {
+fn optionTable(state: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) !?*Table {
     if (op.arg_count <= index or runtime.argValue(state, thread, op, index) == .nil) return null;
     const value = runtime.argValue(state, thread, op, index);
     if (value != .table) return state.failArgumentType(function_name, index + 1, "table", value);

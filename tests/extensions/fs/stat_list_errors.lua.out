@@ -1,0 +1,24 @@
+stat missing	nil	not_found	stat	path	fs.Error
+stat missing message	true	FileNotFound
+stat missing nofollow	true
+list missing	nil	not_found	list	path	fs.Error
+list missing message	true	true
+exists missing	false
+stat file	file	4
+stat dir	directory
+list file	nil	not_directory	list	path	fs.Error
+stat below file	nil	stat	string
+list below file	nil	list	string
+list dir	3	a.txt:file b.txt:file empty:directory
+list empty	0
+list unsorted	3
+list sorted nil	3
+stat no args	false	bad argument #1 to 'fs.stat' (string expected, got no value)
+stat boolean	false	bad argument #1 to 'fs.stat' (string expected, got boolean)
+stat bad options	false	bad argument #2 to 'fs.stat' (table expected, got string)
+stat bad follow	false	bad argument #2 to 'fs.stat' (boolean option expected)
+list no args	false	bad argument #1 to 'fs.list' (string expected, got no value)
+list table	false	bad argument #1 to 'fs.list' (string expected, got table)
+list bad options	false	bad argument #2 to 'fs.list' (table expected, got number)
+list bad sorted	false	bad argument #2 to 'fs.list' (boolean option expected)
+cleanup	false

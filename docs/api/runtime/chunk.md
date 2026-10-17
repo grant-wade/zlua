@@ -21,13 +21,12 @@
 - [compile.resolver](../compile/resolver.md)
 - [compile.bytecode](../compile/bytecode.md)
 - [compile.proto](../compile/proto.md)
-- [compile.compiler](../compile/compiler.md)
-- [compile.disasm](../compile/disasm.md)
-- [api](../api.md)
+- [runtime.types](../runtime/types.md)
 - [runtime](../runtime.md)
 - [runtime.chunk](../runtime/chunk.md)
-- [runtime.types](../runtime/types.md)
+- [reflection](../reflection.md)
 - [runtime.value](../runtime/value.md)
+- [runtime.number_format](../runtime/number_format.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
 - [runtime.state](../runtime/state.md)
@@ -37,6 +36,7 @@
 - [runtime.debug](../runtime/debug.md)
 - [runtime.gc](../runtime/gc.md)
 - [runtime.host](../runtime/host.md)
+- [runtime.timezone](../runtime/timezone.md)
 - [stdlib](../stdlib.md)
 - [stdlib.base](../stdlib/base.md)
 - [stdlib.table](../stdlib/table.md)
@@ -45,19 +45,23 @@
 - [stdlib.utf8](../stdlib/utf8.md)
 - [stdlib.coroutine](../stdlib/coroutine.md)
 - [stdlib.debug](../stdlib/debug.md)
-- [stdlib.package](../stdlib/package.md)
 - [stdlib.io](../stdlib/io.md)
+- [stdlib.static_strings](../stdlib/static_strings.md)
 - [stdlib.os](../stdlib/os.md)
+- [stdlib.package](../stdlib/package.md)
 - [stdlib.json](../stdlib/json.md)
 - [stdlib.zerde_lua](../stdlib/zerde_lua.md)
 - [stdlib.toml](../stdlib/toml.md)
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
-- [stdlib.static_strings](../stdlib/static_strings.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
+- [compile.compiler](../compile/compiler.md)
+- [compile.fold](../compile/fold.md)
+- [compile.disasm](../compile/disasm.md)
+- [api](../api.md)
 - [runtime.snapshot](../runtime/snapshot.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
@@ -88,6 +92,7 @@
 
 - [appendBinaryChunkHeader](#fn-appendbinarychunkheader)
 - [dumpClosureBinary](#fn-dumpclosurebinary)
+- [verifyProto](#fn-verifyproto)
 - [BinaryChunkReader](#fn-binarychunkreader)
 
 ## Constants
@@ -125,6 +130,20 @@ pub fn appendBinaryChunkHeader(allocator: std.mem.Allocator, out: *std.ArrayList
 
 ```zig
 pub fn dumpClosureBinary(allocator: std.mem.Allocator, out: *std.ArrayList(u8), closure: *const types.Closure, strip_debug: bool) !void
+```
+
+<a id="fn-verifyproto"></a>
+
+## verifyProto
+
+Checks the operand invariants the compiler guarantees and the VM relies on
+without bounds checks: registers within `max_registers`, constant, upvalue
+and child indexes in range, and jump targets within the code. Children are
+verified separately; this level checks the upvalue descriptors they
+resolve against it.
+
+```zig
+pub fn verifyProto(proto: *const proto_mod.Proto) bool
 ```
 
 <a id="fn-binarychunkreader"></a>

@@ -101,16 +101,12 @@ pub const InitHints = struct {
 };
 
 pub fn initHints(selection: LibrarySelection) InitHints {
-    return initHintsWithStdin(selection, "");
-}
-
-pub fn initHintsWithStdin(selection: LibrarySelection, stdin: []const u8) InitHints {
     const libraries = selection.toSet();
     var globals: u32 = 1; // _G
-    var strings: usize = 0;
+    const strings: usize = 0;
     var tables: usize = 1; // _G
 
-    if (libraries.base) globals += 22;
+    if (libraries.base) globals += 24;
     if (libraries.table) {
         globals += 1;
         tables += 1;
@@ -133,8 +129,7 @@ pub fn initHintsWithStdin(selection: LibrarySelection, stdin: []const u8) InitHi
     }
     if (libraries.io) {
         globals += 1;
-        strings += @intFromBool(stdin.len != 0 and static_strings.canonical(stdin) == null);
-        tables += 5;
+        tables += 3;
     }
     if (libraries.os) {
         globals += 1;
@@ -166,7 +161,7 @@ pub fn initHintsWithStdin(selection: LibrarySelection, stdin: []const u8) InitHi
         tables += 2;
     }
     if (libraries.package) {
-        globals += 4;
+        globals += if (libraries.base) 2 else 4;
         tables += 4;
     }
     return .{ .globals = globals, .strings = strings, .tables = tables };
@@ -265,6 +260,8 @@ fn openBase(state: *State) !void {
         .{ .name = "type", .value = .{ .native = .type } },
         .{ .name = "tonumber", .value = .{ .native = .tonumber } },
         .{ .name = "warn", .value = .{ .native = .warn } },
+        .{ .name = "loadfile", .value = .{ .native = .loadfile } },
+        .{ .name = "dofile", .value = .{ .native = .dofile } },
         .{ .name = "_VERSION", .value = .{ .string = static_strings.get("Lua 5.5") } },
     };
     inline for (fields) |field| try putStaticGlobal(state, field.name, field.value);
@@ -389,17 +386,18 @@ fn openIo(state: *State) !void {
         .{ .name = "lines", .value = .{ .native = .io_lines } },
         .{ .name = "tmpfile", .value = .{ .native = .io_tmpfile } },
         .{ .name = "type", .value = .{ .native = .io_type } },
+        .{ .name = "popen", .value = .{ .native = .io_popen } },
     };
-    const io_lib = try newStaticTable(state, &fields, 5);
-    const stdin = try newStandardFile(state, static_strings.get("stdin"), static_strings.get("r"));
-    const stdout = try newStandardFile(state, static_strings.get("stdout"), static_strings.get("w"));
-    const stderr = try newStandardFile(state, static_strings.get("stderr"), static_strings.get("w"));
-    try setStaticField(state, io_lib, "stdin", stdin);
-    try setStaticField(state, io_lib, "stdout", stdout);
-    try setStaticField(state, io_lib, "stderr", stderr);
-    try setStaticField(state, io_lib, "__zlua_input", stdin);
-    try setStaticField(state, io_lib, "__zlua_output", stdout);
+    const io_lib = try newStaticTable(state, &fields, 3);
     try putStaticGlobal(state, "io", io_lib);
+    const stdin = try io.newStandardFile(state, .stdin);
+    try setStaticField(state, io_lib, "stdin", stdin);
+    const stdout = try io.newStandardFile(state, .stdout);
+    try setStaticField(state, io_lib, "stdout", stdout);
+    const stderr = try io.newStandardFile(state, .stderr);
+    try setStaticField(state, io_lib, "stderr", stderr);
+    state.io_input = stdin.userdata;
+    state.io_output = stdout.userdata;
 }
 
 fn openOs(state: *State) !void {
@@ -414,6 +412,7 @@ fn openOs(state: *State) !void {
         .{ .name = "rename", .value = .{ .native = .os_rename } },
         .{ .name = "tmpname", .value = .{ .native = .os_tmpname } },
         .{ .name = "difftime", .value = .{ .native = .os_difftime } },
+        .{ .name = "exit", .value = .{ .native = .os_exit } },
     };
     try putStaticGlobal(state, "os", try newStaticTable(state, &fields, 0));
 }
@@ -434,6 +433,8 @@ fn openDebug(state: *State) !void {
         .{ .name = "setmetatable", .value = .{ .native = .debug_setmetatable } },
         .{ .name = "setuservalue", .value = .{ .native = .debug_setuservalue } },
         .{ .name = "getuservalue", .value = .{ .native = .debug_getuservalue } },
+        .{ .name = "getmetatable", .value = .{ .native = .debug_getmetatable } },
+        .{ .name = "debug", .value = .{ .native = .debug_debug } },
     };
     try putStaticGlobal(state, "debug", try newStaticTable(state, &fields, 0));
 }
@@ -513,8 +514,10 @@ fn openFs(state: *State) !void {
 }
 
 fn openPackage(state: *State, libraries: LibrarySet) !void {
-    try putStaticGlobal(state, "loadfile", .{ .native = .loadfile });
-    try putStaticGlobal(state, "dofile", .{ .native = .dofile });
+    if (!libraries.base) {
+        try putStaticGlobal(state, "loadfile", .{ .native = .loadfile });
+        try putStaticGlobal(state, "dofile", .{ .native = .dofile });
+    }
     try putStaticGlobal(state, "require", .{ .native = .require });
 
     const loaded_count: u32 = 1 + @as(u32, @intFromBool(libraries.coroutine)) + @as(u32, @intFromBool(libraries.debug)) +
@@ -522,7 +525,7 @@ fn openPackage(state: *State, libraries: LibrarySet) !void {
         @as(u32, @intFromBool(libraries.string)) + @as(u32, @intFromBool(libraries.table)) + @as(u32, @intFromBool(libraries.utf8)) +
         @as(u32, @intFromBool(libraries.json)) + @as(u32, @intFromBool(libraries.toml)) + @as(u32, @intFromBool(libraries.msgpack)) +
         @as(u32, @intFromBool(libraries.csv)) + @as(u32, @intFromBool(libraries.fs));
-    const package_lib = try state.newTableWithHints(0, 7);
+    const package_lib = try state.newTableWithHints(0, 8);
     const loaded = try state.newTableWithHints(0, loaded_count);
     const preload = try state.newTableWithHints(0, 4);
     const searchers = try state.newTableWithHints(2, 0);
@@ -546,29 +549,11 @@ fn openPackage(state: *State, libraries: LibrarySet) !void {
     try setStaticField(state, package_lib, "preload", preload);
     try setStaticField(state, package_lib, "searchers", searchers);
     try setStaticField(state, package_lib, "searchpath", .{ .native = .package_searchpath });
+    try setStaticField(state, package_lib, "loadlib", .{ .native = .package_loadlib });
     try setStaticField(state, package_lib, "path", .{ .string = static_strings.get("./?.lua;./?/init.lua") });
     try setStaticField(state, package_lib, "cpath", .{ .string = static_strings.get("") });
     try setStaticField(state, package_lib, "config", .{ .string = static_strings.get("/\n;\n?\n!\n-\n") });
     try putStaticGlobal(state, "package", package_lib);
-}
-
-fn newStandardFile(state: *State, path: []const u8, mode: []const u8) !Value {
-    const value = try state.newTableWithHints(0, 8);
-    const file = value.table;
-    try setStaticField(state, value, "__zlua_file", .{ .boolean = true });
-    try setStaticField(state, value, "__zlua_file_path", .{ .string = path });
-    try setStaticField(state, value, "__zlua_file_mode", .{ .string = mode });
-    const contents = if (!std.mem.eql(u8, path, "stdin") or state.options.stdin.len == 0)
-        static_strings.get("")
-    else
-        try state.intern(state.options.stdin);
-    try setStaticField(state, value, "__zlua_file_content", .{ .string = contents });
-    try setStaticField(state, value, "__zlua_file_pos", .{ .integer = 1 });
-    try setStaticField(state, value, "__zlua_file_closed", .{ .boolean = false });
-    try setStaticField(state, value, "__zlua_file_standard", .{ .boolean = true });
-    try setStaticField(state, value, "__zlua_file_buffer_mode", .{ .string = static_strings.get("full") });
-    state.setTableMetatableRaw(file, try state.fileMetatable());
-    return value;
 }
 
 pub const NativeFn = runtime.NativeFn;
@@ -645,6 +630,7 @@ pub fn callNative(state: *State, native: NativeFn, thread: *Thread, op: bytecode
         .package_searchpath => try package.searchpath(state, thread, op),
         .package_searcher_preload => try package.searcherPreload(state, thread, op),
         .package_searcher_lua => try package.searcherLua(state, thread, op),
+        .package_loadlib => try package.loadlib(state, thread, op),
         .io_read => try io.read(state, thread, op),
         .io_write => try io.write(state, thread, op),
         .io_open => try io.open(state, thread, op),
@@ -655,6 +641,9 @@ pub fn callNative(state: *State, native: NativeFn, thread: *Thread, op: bytecode
         .io_lines => try io.lines(state, thread, op),
         .io_tmpfile => try io.tmpfile(state, thread, op),
         .io_type => try io.typeValue(state, thread, op),
+        .io_popen => try io.popen(state, thread, op),
+        .io_file_tostring => try io.fileTostring(state, thread, op),
+        .io_file_gc => try io.fileGc(state, thread, op),
         .io_file_read => try io.fileRead(state, thread, op),
         .io_file_write => try io.fileWrite(state, thread, op),
         .io_file_close => try io.fileClose(state, thread, op),
@@ -673,6 +662,7 @@ pub fn callNative(state: *State, native: NativeFn, thread: *Thread, op: bytecode
         .os_rename => try os.rename(state, thread, op),
         .os_tmpname => try os.tmpname(state, thread, op),
         .os_difftime => try os.difftime(state, thread, op),
+        .os_exit => try os.exit(state, thread, op),
         .debug_getinfo => try debug.getinfo(state, thread, op),
         .debug_getupvalue => try debug.getupvalue(state, thread, op),
         .debug_setupvalue => try debug.setupvalue(state, thread, op),
@@ -686,6 +676,9 @@ pub fn callNative(state: *State, native: NativeFn, thread: *Thread, op: bytecode
         .debug_setmetatable => try debug.setmetatable(state, thread, op),
         .debug_setuservalue => try debug.setuservalue(state, thread, op),
         .debug_getuservalue => try debug.getuservalue(state, thread, op),
+        .debug_getmetatable => try debug.getmetatable(state, thread, op),
+        .debug_debug => try debug.debugPrompt(state, thread, op),
+        .traceback_message_handler => try state.tracebackMessageHandler(thread, op),
         .json_read => try json.read(state, thread, op),
         .json_write => try json.write(state, thread, op),
         .toml_read => try toml.read(state, thread, op),
@@ -746,30 +739,46 @@ test "startup uses canonical globals, static strings, and exact table hints" {
     }
 }
 
-test "startup plans the non-static stdin string" {
+test "startup keeps stdin bytes out of the string table" {
     const selection: LibrarySelection = .{ .libraries = .{ .io = true } };
     const stdin = "dynamic stdin contents";
     var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = selection, .stdin = stdin });
     defer state.deinit();
 
-    const hints = initHintsWithStdin(selection, stdin);
-    try std.testing.expectEqual(@as(usize, 1), hints.strings);
+    const hints = initHints(selection);
+    try std.testing.expectEqual(@as(usize, 0), hints.strings);
     try std.testing.expectEqual(hints.strings, state.string_allocations.items.len);
     try std.testing.expectEqual(hints.tables, state.table_allocations.items.len);
+    try state.executeSourceChunk("first, second = io.read('a'), io.read('a')");
+    try std.testing.expectEqualStrings(stdin, state.getGlobal("first").string);
+    try std.testing.expectEqualStrings("", state.getGlobal("second").string);
 }
 
-test "IO files share one method metatable" {
+test "IO files share one PUC-layout metatable and method table" {
     var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .{ .libraries = .{ .io = true } } });
     defer state.deinit();
 
     const io_table = state.getGlobal("io").table;
-    const stdin = io_table.get(.{ .string = static_strings.get("stdin") }).table;
-    const stdout = io_table.get(.{ .string = static_strings.get("stdout") }).table;
-    const stderr = io_table.get(.{ .string = static_strings.get("stderr") }).table;
+    const stdin = io_table.get(.{ .string = static_strings.get("stdin") }).userdata;
+    const stdout = io_table.get(.{ .string = static_strings.get("stdout") }).userdata;
+    const stderr = io_table.get(.{ .string = static_strings.get("stderr") }).userdata;
+    try std.testing.expect(stdin.type_id == io.fileTypeId());
     try std.testing.expect(stdin.metatable == stdout.metatable);
     try std.testing.expect(stdin.metatable == stderr.metatable);
-    try std.testing.expect(stdin.get(.{ .string = static_strings.get("read") }) == .nil);
-    try std.testing.expect(stdin.metatable.?.get(.{ .string = static_strings.get("read") }) == .native);
+    const metatable = stdin.metatable.?;
+    try std.testing.expectEqual(@as(usize, 5), metatable.entries.items.len);
+    try std.testing.expect(metatable.get(.{ .string = static_strings.get("read") }) == .nil);
+    try std.testing.expect(metatable.get(.{ .string = static_strings.get("__gc") }) == .native);
+    try std.testing.expect(metatable.get(.{ .string = static_strings.get("__close") }) == .native);
+    try std.testing.expect(metatable.get(.{ .string = static_strings.get("__tostring") }) == .native);
+    try std.testing.expectEqualStrings("FILE*", metatable.get(.{ .string = static_strings.get("__name") }).string);
+    const methods = metatable.get(.{ .string = static_strings.get("__index") }).table;
+    try std.testing.expectEqual(@as(usize, 7), methods.entries.items.len);
+    try std.testing.expect(methods.get(.{ .string = static_strings.get("read") }) == .native);
+    try std.testing.expect(methods.get(.{ .string = static_strings.get("setvbuf") }) == .native);
+    try std.testing.expectEqual(@as(usize, 14), io_table.entries.items.len);
+    try std.testing.expect(state.io_input.? == stdin);
+    try std.testing.expect(state.io_output.? == stdout);
 }
 
 test {

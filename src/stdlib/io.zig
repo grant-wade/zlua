@@ -1,24 +1,270 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const compile = @import("../compile.zig");
 const runtime = @import("../runtime.zig");
+const host = @import("../runtime/host.zig");
+const rollback = @import("../runtime/rollback.zig");
+const static_strings = @import("static_strings.zig");
+const os_lib = @import("os.zig");
 
 const bytecode = compile.bytecode;
 const State = runtime.State;
 const Thread = runtime.Thread;
 const Value = runtime.Value;
+const Table = runtime.Table;
+const Userdata = runtime.Userdata;
 
 const max_line_args = 250;
 
+/// The payload of every Lua file handle. Standard streams, `io.open`,
+/// `io.tmpfile`, `io.popen`, `io.lines`, and `fs.open` all return `FILE*`
+/// userdata around one of these, so no handle state is visible from Lua.
+///
+/// A handle buffers the whole file, like a C stream with a whole-file buffer.
+/// Sequential writes append to `content`, so they cost time linear in the
+/// bytes written. Snapshots copy the payload and rollback copies it before
+/// its first change after a baseline, so changes go through `writable`.
+pub const File = struct {
+    kind: Kind,
+    /// Regular file path or popen command, owned by the handle; empty otherwise.
+    path: []const u8 = "",
+    readable: bool,
+    writable: bool,
+    /// Every write goes to the end of the file.
+    append: bool = false,
+    closed: bool = false,
+    buffer_mode: BufferMode = .full,
+    /// The handle opened a directory: C `fopen` succeeds, then reads fail.
+    is_directory: bool = false,
+    /// `/dev/full` has buffered writes that its next flush fails to write.
+    device_pending: bool = false,
+    content: std.ArrayList(u8) = .empty,
+    /// Zero-based position.
+    pos: usize = 0,
+    /// Bytes known to match the host file, which is no longer than that.
+    /// The handle has unflushed writes while this is below `content.len`.
+    synced: usize = 0,
+    /// `State.file_generation` when the handle last matched the filesystem.
+    generation: u64 = 0,
+    /// The command's status once a popen command has run.
+    popen_result: ?host.ProcessResult = null,
+    /// Creation order on the scale of `Table.finalizer_order`.
+    finalizer_order: u64 = 0,
+
+    pub const Kind = enum {
+        stdin,
+        stdout,
+        stderr,
+        /// A file of the filesystem capability.
+        regular,
+        popen,
+        /// `/dev/null`: writes are discarded and reads see no bytes.
+        null_device,
+        /// Linux `/dev/full`: reads see endless zero bytes, and writing
+        /// buffered bytes out fails with `ENOSPC`.
+        full_device,
+        /// `io.tmpfile`: memory only; it never touches a filesystem.
+        anonymous,
+    };
+
+    pub const BufferMode = enum { no, full, line };
+
+    fn isStandard(self: *const File) bool {
+        return switch (self.kind) {
+            .stdin, .stdout, .stderr => true,
+            else => false,
+        };
+    }
+
+    fn hasUnflushedWrites(self: *const File) bool {
+        return self.synced < self.content.items.len;
+    }
+
+    fn deinit(self: *File, allocator: std.mem.Allocator) void {
+        self.content.deinit(allocator);
+        if (self.path.len != 0) allocator.free(self.path);
+    }
+};
+
+const Handle = struct {
+    userdata: *Userdata,
+    file: *File,
+
+    fn value(self: Handle) Value {
+        return .{ .userdata = self.userdata };
+    }
+
+    fn noteSize(self: Handle, state: *State) void {
+        const payload = self.userdata.payload orelse return;
+        const bytes = managedBytes(self.file);
+        if (bytes > payload.managed_bytes) state.noteAllocation(bytes - payload.managed_bytes) else state.noteAllocationFreed(payload.managed_bytes - bytes);
+        payload.managed_bytes = bytes;
+    }
+};
+
+var file_type_token: u8 = 0;
+
+/// Userdata type identity of file handles.
+pub fn fileTypeId() usize {
+    return @intFromPtr(&file_type_token);
+}
+
+/// The file behind a handle, for reading only; null for other values.
+pub fn fileOf(value: Value) ?*const File {
+    if (value != .userdata) return null;
+    return fileOfUserdata(value.userdata);
+}
+
+fn fileOfUserdata(userdata: *Userdata) ?*const File {
+    if (userdata.type_id != fileTypeId()) return null;
+    return @ptrCast(@alignCast(userdata.ptr));
+}
+
+fn writable(userdata: *Userdata) !Handle {
+    try rollback.userdataWritable(userdata);
+    return .{ .userdata = userdata, .file = @ptrCast(@alignCast(userdata.ptr)) };
+}
+
+fn managedBytes(file: *const File) usize {
+    return @sizeOf(File) + file.content.capacity + file.path.len;
+}
+
+fn fileFinalizer(_: *anyopaque, _: ?*const anyopaque) void {}
+
+fn disposeFile(allocator: std.mem.Allocator, ptr: *anyopaque) void {
+    const file: *File = @ptrCast(@alignCast(ptr));
+    file.deinit(allocator);
+    allocator.destroy(file);
+}
+
+fn copyFile(allocator: std.mem.Allocator, ptr: *const anyopaque) anyerror!*anyopaque {
+    const source: *const File = @ptrCast(@alignCast(ptr));
+    const copy = try allocator.create(File);
+    errdefer allocator.destroy(copy);
+    copy.* = source.*;
+    copy.path = "";
+    copy.content = .empty;
+    errdefer copy.deinit(allocator);
+    if (source.path.len != 0) copy.path = try allocator.dupe(u8, source.path);
+    copy.content = try .initCapacity(allocator, source.content.items.len);
+    copy.content.appendSliceAssumeCapacity(source.content.items);
+    return copy;
+}
+
+fn ownedBuffer(bytes: []const u8) std.ArrayList(u8) {
+    if (bytes.len == 0) return .empty;
+    return .fromOwnedSlice(@constCast(bytes));
+}
+
+pub const FileOptions = struct {
+    kind: File.Kind = .regular,
+    path: []const u8 = "",
+    mode: ParsedMode,
+    /// Initial bytes allocated by the state allocator. `newFile` takes them,
+    /// even when it fails.
+    contents: []const u8 = "",
+    buffer_mode: File.BufferMode = .full,
+    is_directory: bool = false,
+    popen_result: ?host.ProcessResult = null,
+    /// `fs` handles also have the `fs` file methods.
+    fs_methods: bool = false,
+};
+
+pub fn newFile(state: *State, options: FileOptions) !Value {
+    var content = ownedBuffer(options.contents);
+    errdefer content.deinit(state.allocator);
+    const metatable = if (options.fs_methods) try state.fsFileMetatable() else try state.fileMetatable();
+    const file = try state.allocator.create(File);
+    errdefer state.allocator.destroy(file);
+    const path = if (options.path.len == 0) "" else try state.allocator.dupe(u8, options.path);
+    errdefer if (path.len != 0) state.allocator.free(path);
+    file.* = .{
+        .kind = options.kind,
+        .path = path,
+        .readable = options.mode.readable(),
+        .writable = options.mode.writable(),
+        .append = options.mode.append,
+        .buffer_mode = options.buffer_mode,
+        .is_directory = options.is_directory,
+        .content = content,
+        .synced = content.items.len,
+        .pos = if (options.mode.opensAtEnd()) content.items.len else 0,
+        .generation = state.file_generation,
+        .popen_result = options.popen_result,
+        .finalizer_order = state.nextFinalizerOrder(),
+    };
+    const value = try state.newUserdata(file, fileTypeId(), static_strings.get("FILE*"), fileFinalizer, null, disposeFile);
+    const userdata = value.userdata;
+    const payload = userdata.payload.?;
+    payload.snapshot_copy = copyFile;
+    payload.snapshot_dispose = disposeFile;
+    payload.snapshot_tracking = .scoped;
+    payload.is_snapshot_copy = true;
+    userdata.metatable = metatable;
+    state.writeBarrier(userdata, .{ .table = metatable });
+    (Handle{ .userdata = userdata, .file = file }).noteSize(state);
+    return value;
+}
+
+/// Closes an unreachable open handle for the collector, like PUC's `__gc`:
+/// buffered writes are flushed and the file is closed. Failures are ignored,
+/// as `__gc` ignores the result of C `fclose`.
+pub fn finalizeFile(state: *State, userdata: *Userdata) void {
+    const handle = writable(userdata) catch return;
+    if (handle.file.closed or handle.file.isStandard()) return;
+    closeQuietly(state, handle) catch {};
+}
+
+/// The finalization order of an open handle `State.deinit` must close, or null.
+pub fn closeFinalizerOrder(userdata: *Userdata) ?u64 {
+    const file = fileOfUserdata(userdata) orelse return null;
+    if (file.closed or file.isStandard() or userdata.finalized) return null;
+    return file.finalizer_order;
+}
+
+pub fn hasOpenFiles(state: *State) bool {
+    for (state.userdata_allocations.items) |userdata| {
+        if (closeFinalizerOrder(userdata) != null) return true;
+    }
+    return false;
+}
+
+/// Closes every open file handle, newest first, like `lua_close` running
+/// their `__gc`: buffered writes are flushed and failures are ignored.
+/// `State.deinit` calls this; reset discards handles without closing them.
+pub fn closeOpenFiles(state: *State) void {
+    var index = state.userdata_allocations.items.len;
+    while (index > 0) {
+        index -= 1;
+        const userdata = state.userdata_allocations.items[index];
+        const file = fileOfUserdata(userdata) orelse continue;
+        if (file.closed or file.isStandard()) continue;
+        finalizeFile(state, userdata);
+    }
+}
+
+fn closeQuietly(state: *State, handle: Handle) !void {
+    const saved_error = state.last_error;
+    const saved_handled = state.error_handled;
+    defer {
+        state.last_error = saved_error;
+        state.error_handled = saved_handled;
+    }
+    defer if (!handle.file.closed) markClosed(state, handle);
+    _ = closeFile(state, handle) catch |err| switch (err) {
+        error.RuntimeError => null,
+        else => return err,
+    };
+}
+
 pub fn read(state: *State, thread: *Thread, op: bytecode.Call) !void {
-    const file = try currentFile(state, "__zlua_input");
-    if (runtime.isClosedFileValue(.{ .table = file })) return state.fail(" input file is closed");
-    try readFromFile(state, thread, op, file, 0);
+    const handle = try writable(try defaultFile(state, .input));
+    try readFromFile(state, thread, op, handle, 0);
 }
 
 pub fn write(state: *State, thread: *Thread, op: bytecode.Call) !void {
-    const file = try currentFile(state, "__zlua_output");
-    if (runtime.isClosedFileValue(.{ .table = file })) return state.fail(" output file is closed");
-    try writeToFile(state, thread, op, file, 0, "io.write");
+    const handle = try writable(try defaultFile(state, .output));
+    try writeToFile(state, thread, op, handle, 0, "io.write");
 }
 
 pub fn open(state: *State, thread: *Thread, op: bytecode.Call) !void {
@@ -29,112 +275,179 @@ pub fn open(state: *State, thread: *Thread, op: bytecode.Call) !void {
         "r";
     const parsed = parseMode(mode) orelse return state.failArgumentMessage("io.open", 2, "invalid mode");
 
-    if (isSpecialDevice(path)) {
-        try state.returnValues(thread, op.base, op.return_count, &.{try newFile(state, path, mode, "", parsed)});
-        return;
-    }
-    if (path.len != 0 and path[0] == '/' and parsed.kind != 'r') return openFailure(state, thread, op, "cannot open file");
+    if (specialDevice(path)) |kind| return returnFile(state, thread, op, try newFile(state, .{ .kind = kind, .path = path, .mode = parsed }));
 
-    const contents = if (parsed.reads_existing or parsed.append)
-        state.readFileAlloc(path) catch |err| switch (err) {
-            error.RuntimeError => if (parsed.kind == 'r') return openFailure(state, thread, op, "cannot open file") else try state.allocator.dupe(u8, ""),
-            else => return err,
-        }
+    var contents: []const u8 = "";
+    var found = true;
+    if (parsed.reads_existing or parsed.append) {
+        contents = state.readFileRaw(path) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            error.FileNotFound => if (parsed.kind == 'r') return os_lib.fileFailure(state, thread, op, path, err) else blk: {
+                found = false;
+                break :blk "";
+            },
+            error.IsDir => if (parsed.kind == 'r' and !parsed.plus)
+                return returnFile(state, thread, op, try newFile(state, .{ .path = path, .mode = parsed, .is_directory = true }))
+            else
+                return os_lib.fileFailure(state, thread, op, path, err),
+            else => return os_lib.fileFailure(state, thread, op, path, err),
+        };
+    }
+    prepareWrite(state, path, parsed, found) catch |err| {
+        state.allocator.free(contents);
+        return os_lib.fileFailure(state, thread, op, path, err);
+    };
+    try returnFile(state, thread, op, try newFile(state, .{ .path = path, .mode = parsed, .contents = contents }));
+}
+
+/// Readies the file of an open for its mode, like `fopen`: "w" truncates it,
+/// and "a" creates it when missing or checks it is writable without
+/// rewriting it, so bytes other writers append meanwhile survive.
+pub fn prepareWrite(state: *State, path: []const u8, parsed: ParsedMode, exists: bool) anyerror!void {
+    switch (parsed.kind) {
+        'w' => try state.fsWriteFile(path, ""),
+        'a' => if (exists)
+            try state.fsCheckWritable(path)
+        else
+            state.fsCreateFileExclusive(path) catch |err| if (err != error.PathAlreadyExists) return err,
+        else => {},
+    }
+}
+
+fn returnFile(state: *State, thread: *Thread, op: bytecode.Call, file: Value) !void {
+    try state.returnValues(thread, op.base, op.return_count, &.{file});
+}
+
+pub fn popen(state: *State, thread: *Thread, op: bytecode.Call) !void {
+    const command = try state.expectArgumentString(thread, op, "io.popen", 0);
+    const mode = if (op.arg_count >= 2 and runtime.argValue(state, thread, op, 1) != .nil)
+        try state.expectArgumentString(thread, op, "io.popen", 1)
     else
-        try state.allocator.dupe(u8, "");
-    defer state.allocator.free(contents);
-    if (parsed.kind != 'r') try state.writeFile(path, contents);
-    try state.returnValues(thread, op.base, op.return_count, &.{try newFile(state, path, mode, contents, parsed)});
+        "r";
+    if (!std.mem.eql(u8, mode, "r") and !std.mem.eql(u8, mode, "w")) return state.failArgumentMessage("io.popen", 2, "invalid mode");
+    const parsed = parseMode(mode).?;
+
+    var command_output: []const u8 = "";
+    var result: ?host.ProcessResult = null;
+    if (mode[0] == 'r') {
+        const popen_result = try state.popenProcess(command, null);
+        command_output = popen_result.output;
+        result = popen_result.result;
+    } else if (!state.processEnabled()) {
+        return state.fail("'popen' not supported");
+    } else switch (state.options.process) {
+        .custom => |process| if (process.popen == null) return state.fail("'popen' not supported"),
+        else => {},
+    }
+    try returnFile(state, thread, op, try newFile(state, .{ .kind = .popen, .path = command, .mode = parsed, .contents = command_output, .popen_result = result }));
+}
+
+fn finishPopen(state: *State, file: *File) !host.ProcessResult {
+    if (file.popen_result == null) {
+        const popen_result = try state.popenProcess(file.path, file.content.items);
+        state.allocator.free(popen_result.output);
+        file.popen_result = popen_result.result;
+    }
+    return file.popen_result.?;
+}
+
+pub fn fileTostring(state: *State, thread: *Thread, op: bytecode.Call) !void {
+    const userdata = try expectFileArgument(state, runtime.argValue(state, thread, op, 0), "file:__tostring", 1);
+    const name = if (fileOfUserdata(userdata).?.closed) try state.intern("file (closed)") else name: {
+        var buffer: [32]u8 = undefined;
+        break :name try state.intern(std.fmt.bufPrint(&buffer, "file (0x{x})", .{@intFromPtr(userdata)}) catch unreachable);
+    };
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = name }});
 }
 
 pub fn input(state: *State, thread: *Thread, op: bytecode.Call) !void {
-    try setCurrentFile(state, thread, op, "__zlua_input", "r");
+    try setCurrentFile(state, thread, op, .input);
 }
 
 pub fn output(state: *State, thread: *Thread, op: bytecode.Call) !void {
-    try setCurrentFile(state, thread, op, "__zlua_output", "w");
+    try setCurrentFile(state, thread, op, .output);
 }
 
 pub fn close(state: *State, thread: *Thread, op: bytecode.Call) !void {
-    const value = if (op.arg_count == 0 or runtime.argValue(state, thread, op, 0) == .nil)
-        Value{ .table = try currentFile(state, "__zlua_output") }
+    const value = if (op.arg_count == 0)
+        Value{ .userdata = try currentFile(state, .output) }
     else
         runtime.argValue(state, thread, op, 0);
-    try closeFileValue(state, thread, op, value, "io.close", false);
+    try closeFileValue(state, thread, op, value, "io.close");
 }
 
 pub fn flush(state: *State, thread: *Thread, op: bytecode.Call) !void {
-    const file = try currentFile(state, "__zlua_output");
-    if (std.mem.eql(u8, try fileString(state, file, "__zlua_file_path"), "/dev/full")) {
-        try state.returnValues(thread, op.base, op.return_count, &.{.nil});
-        return;
-    }
-    try flushFile(state, file);
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = true }});
+    const handle = try writable(try defaultFile(state, .output));
+    try returnResult(state, thread, op, try flushReport(state, handle.file), .{ .boolean = true });
+}
+
+fn returnResult(state: *State, thread: *Thread, op: bytecode.Call, failure: ?host.FileError, success: Value) !void {
+    const info = failure orelse return state.returnValues(thread, op.base, op.return_count, &.{success});
+    try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.intern(info.message) }, .{ .integer = info.errno } });
 }
 
 pub fn lines(state: *State, thread: *Thread, op: bytecode.Call) !void {
     if (op.arg_count > max_line_args + 1) return state.fail("too many arguments");
-    var start: u16 = 0;
-    const file_value = if (op.arg_count >= 1 and runtime.argValue(state, thread, op, 0) != .nil) blk: {
-        start = 1;
+    const from_path = op.arg_count >= 1 and runtime.argValue(state, thread, op, 0) != .nil;
+    const file_value = if (from_path) blk: {
         const path = try state.expectArgumentString(thread, op, "io.lines", 0);
-        const parsed = parseMode("r").?;
-        const contents = state.readFileAlloc(path) catch return state.fail("cannot open file");
-        defer state.allocator.free(contents);
-        break :blk try newFile(state, path, "r", contents, parsed);
+        break :blk try openCheckedFile(state, path, "r");
     } else blk: {
-        if (op.arg_count >= 1) start = 1;
-        break :blk Value{ .table = try currentFile(state, "__zlua_input") };
+        const userdata = try currentFile(state, .input);
+        try ensureOpen(state, fileOfUserdata(userdata).?);
+        break :blk Value{ .userdata = userdata };
     };
-    const iterator = try newLinesIterator(state, thread, file_value, op, start, start == 1);
-    if (start == 1) {
-        try state.returnValues(thread, op.base, op.return_count, &.{ iterator, file_value, .nil, file_value });
+    const first_format: u16 = if (op.arg_count >= 1) 1 else 0;
+    const iterator = try newLinesIterator(state, thread, file_value, op, first_format, from_path);
+    if (from_path) {
+        try state.returnValues(thread, op.base, op.return_count, &.{ iterator, .nil, .nil, file_value });
     } else {
         try state.returnValues(thread, op.base, op.return_count, &.{iterator});
     }
 }
 
 pub fn tmpfile(state: *State, thread: *Thread, op: bytecode.Call) !void {
-    const path = try tmpPath(state);
-    defer state.allocator.free(path);
-    const parsed = parseMode("w+").?;
-    try state.returnValues(thread, op.base, op.return_count, &.{try newFile(state, path, "w+", "", parsed)});
+    try returnFile(state, thread, op, try newFile(state, .{ .kind = .anonymous, .mode = parseMode("w+b").? }));
 }
 
 pub fn typeValue(state: *State, thread: *Thread, op: bytecode.Call) !void {
-    const file = runtime.argValue(state, thread, op, 0);
-    if (!runtime.isFileValue(file)) {
+    if (op.arg_count == 0) return state.failArgumentMessage("io.type", 1, "value expected");
+    const userdata = checkedFile(state, runtime.argValue(state, thread, op, 0)) orelse {
         try state.returnValues(thread, op.base, op.return_count, &.{.nil});
         return;
-    }
-    const name = if (runtime.isClosedFileValue(file)) "closed file" else "file";
+    };
+    const file = fileOfUserdata(userdata).?;
+    const name = if (file.closed) "closed file" else "file";
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(name) }});
 }
 
 pub fn fileRead(state: *State, thread: *Thread, op: bytecode.Call) !void {
-    const file = try expectFileArgument(state, runtime.argValue(state, thread, op, 0), "file:read", 1);
-    try readFromFile(state, thread, op, file, 1);
+    const handle = try writable(try expectFileArgument(state, runtime.argValue(state, thread, op, 0), "file:read", 1));
+    try readFromFile(state, thread, op, handle, 1);
 }
 
 pub fn fileWrite(state: *State, thread: *Thread, op: bytecode.Call) !void {
-    const file = try expectFileArgument(state, runtime.argValue(state, thread, op, 0), "file:write", 1);
-    try writeToFile(state, thread, op, file, 1, "file:write");
+    const handle = try writable(try expectFileArgument(state, runtime.argValue(state, thread, op, 0), "file:write", 1));
+    try writeToFile(state, thread, op, handle, 1, "file:write");
 }
 
 pub fn fileClose(state: *State, thread: *Thread, op: bytecode.Call) !void {
     if (op.arg_count == 0) return state.failArgumentMessage("file:close", 1, "FILE* expected, got no value");
-    if (runtime.isClosedFileValue(runtime.argValue(state, thread, op, 0))) {
-        try state.returnValues(thread, op.base, op.return_count, &.{.nil});
-        return;
-    }
-    try closeFileValue(state, thread, op, runtime.argValue(state, thread, op, 0), "file:close", false);
+    try closeFileValue(state, thread, op, runtime.argValue(state, thread, op, 0), "file:close");
+}
+
+/// `__gc` and `__close`: closes an open handle and ignores closed and
+/// standard ones, like PUC's `f_gc`.
+pub fn fileGc(state: *State, thread: *Thread, op: bytecode.Call) !void {
+    const handle = try writable(try expectFileArgument(state, runtime.argValue(state, thread, op, 0), "file:__gc", 1));
+    if (!handle.file.closed and !handle.file.isStandard()) try closeQuietly(state, handle);
+    try state.returnValues(thread, op.base, op.return_count, &.{});
 }
 
 pub fn fileSeek(state: *State, thread: *Thread, op: bytecode.Call) !void {
-    const file = try expectFileArgument(state, runtime.argValue(state, thread, op, 0), "file:seek", 1);
+    const handle = try writable(try expectFileArgument(state, runtime.argValue(state, thread, op, 0), "file:seek", 1));
+    const file = handle.file;
     try ensureOpen(state, file);
-    try refreshReadable(state, file);
     const whence = if (op.arg_count >= 2 and runtime.argValue(state, thread, op, 1) != .nil)
         try state.expectArgumentString(thread, op, "file:seek", 1)
     else
@@ -143,210 +456,462 @@ pub fn fileSeek(state: *State, thread: *Thread, op: bytecode.Call) !void {
         try state.argumentInteger(thread, op, "file:seek", 2)
     else
         0;
-    const content = try fileString(state, file, "__zlua_file_content");
-    const base: i64 = if (std.mem.eql(u8, whence, "set"))
-        0
+    const Whence = enum { set, cur, end };
+    const kind: Whence = if (std.mem.eql(u8, whence, "set"))
+        .set
     else if (std.mem.eql(u8, whence, "cur"))
-        (fileInteger(file, "__zlua_file_pos") orelse 1) - 1
+        .cur
     else if (std.mem.eql(u8, whence, "end"))
-        @intCast(content.len)
+        .end
     else
         return state.failArgumentMessage("file:seek", 2, "invalid whence");
-    const new_pos = base + offset;
-    if (new_pos < 0) {
-        try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.intern("invalid argument") }, .{ .integer = 22 } });
+
+    if (file.kind == .stdin) {
+        if (state.stdinIsStream()) {
+            try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.intern("Illegal seek") }, .{ .integer = 29 } });
+            return;
+        }
+        const base: usize = switch (kind) {
+            .set => 0,
+            .cur => state.stdin_pos,
+            .end => state.options.stdin.len,
+        };
+        const new_pos = seekPosition(base, offset) catch |err| return returnResult(state, thread, op, host.fileError(err), .nil);
+        state.stdin_pos = new_pos;
+        try state.returnValues(thread, op.base, op.return_count, &.{.{ .integer = @intCast(new_pos) }});
         return;
     }
-    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_pos") }, .{ .integer = new_pos + 1 });
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .integer = new_pos }});
+
+    // Like `fseek`, write out buffered output before moving.
+    if (file.hasUnflushedWrites()) {
+        if (try flushReport(state, file)) |failure| return returnResult(state, thread, op, failure, .nil);
+    }
+    try refreshReadable(state, handle);
+    const base: usize = switch (kind) {
+        .set => 0,
+        .cur => file.pos,
+        .end => file.content.items.len,
+    };
+    const new_pos = seekPosition(base, offset) catch |err| return returnResult(state, thread, op, host.fileError(err), .nil);
+    file.pos = new_pos;
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .integer = @intCast(new_pos) }});
+}
+
+/// The position `offset` bytes from `base`, failing like `fseek` when it is
+/// negative or overflows `lua_Integer` or the host position.
+fn seekPosition(base: usize, offset: i64) error{ InvalidArgument, ValueTooLarge }!usize {
+    const start = std.math.cast(i64, base) orelse return error.ValueTooLarge;
+    const target = std.math.add(i64, start, offset) catch return error.ValueTooLarge;
+    if (target < 0) return error.InvalidArgument;
+    return std.math.cast(usize, target) orelse error.ValueTooLarge;
 }
 
 pub fn fileFlush(state: *State, thread: *Thread, op: bytecode.Call) !void {
-    const file = try expectFileArgument(state, runtime.argValue(state, thread, op, 0), "file:flush", 1);
-    try ensureOpen(state, file);
-    if (std.mem.eql(u8, try fileString(state, file, "__zlua_file_path"), "/dev/full")) {
-        try state.returnValues(thread, op.base, op.return_count, &.{.nil});
-        return;
-    }
-    try flushFile(state, file);
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = true }});
+    const handle = try writable(try expectFileArgument(state, runtime.argValue(state, thread, op, 0), "file:flush", 1));
+    try ensureOpen(state, handle.file);
+    try returnResult(state, thread, op, try flushReport(state, handle.file), .{ .boolean = true });
 }
 
 pub fn fileLines(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const file_value = runtime.argValue(state, thread, op, 0);
-    _ = try expectFileArgument(state, file_value, "file:lines", 1);
+    const userdata = try expectFileArgument(state, file_value, "file:lines", 1);
+    try ensureOpen(state, fileOfUserdata(userdata).?);
     if (op.arg_count > max_line_args + 1) return state.fail("too many arguments");
     const iterator = try newLinesIterator(state, thread, file_value, op, 1, false);
     try state.returnValues(thread, op.base, op.return_count, &.{iterator});
 }
 
 pub fn fileSetvbuf(state: *State, thread: *Thread, op: bytecode.Call) !void {
-    const file = try expectFileArgument(state, runtime.argValue(state, thread, op, 0), "file:setvbuf", 1);
-    try ensureOpen(state, file);
+    const handle = try writable(try expectFileArgument(state, runtime.argValue(state, thread, op, 0), "file:setvbuf", 1));
+    try ensureOpen(state, handle.file);
     const mode = try state.expectArgumentString(thread, op, "file:setvbuf", 1);
-    if (!std.mem.eql(u8, mode, "no") and !std.mem.eql(u8, mode, "full") and !std.mem.eql(u8, mode, "line")) return state.failArgumentMessage("file:setvbuf", 2, "invalid mode");
-    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_buffer_mode") }, .{ .string = try state.intern(mode) });
-    if (std.mem.eql(u8, mode, "no")) try flushFile(state, file);
+    const buffer_mode = std.meta.stringToEnum(File.BufferMode, mode) orelse return state.failArgumentMessage("file:setvbuf", 2, "invalid mode");
+    if (try flushReport(state, handle.file)) |failure| return returnResult(state, thread, op, failure, .nil);
+    handle.file.buffer_mode = buffer_mode;
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = true }});
 }
 
 pub fn linesIter(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const values = try linesNext(state, runtime.argValue(state, thread, op, 0));
+    defer if (values.len != 0) state.allocator.free(values);
     try state.returnValues(thread, op.base, op.return_count, values);
 }
 
 pub fn linesNext(state: *State, iterator: Value) ![]const Value {
     if (iterator != .table) return state.fail("file is already closed");
     const table = iterator.table;
-    const file_value = table.get(.{ .string = "file" });
-    if (runtime.isClosedFileValue(file_value)) return state.fail("file is already closed");
-    const file = try expectFile(state, file_value);
+    const userdata = try expectFile(state, table.get(.{ .string = "file" }));
+    if (fileOfUserdata(userdata).?.closed) return state.fail("file is already closed");
+    const handle = try writable(userdata);
     const specs = table.get(.{ .string = "specs" });
     var values = std.ArrayList(Value).empty;
     errdefer values.deinit(state.allocator);
     if (specs == .table and specs.table.array.items.len != 0) {
-        for (specs.table.array.items) |spec| try values.append(state.allocator, try readOne(state, file, spec));
+        for (specs.table.array.items) |spec| if (!try readInto(state, handle, &values, spec)) break;
     } else {
-        try values.append(state.allocator, try readOne(state, file, .{ .string = try state.intern("l") }));
+        _ = try readInto(state, handle, &values, .{ .string = try state.intern("l") });
     }
     if (values.items.len == 0 or values.items[0] == .nil) {
         values.deinit(state.allocator);
-        if (table.get(.{ .string = "auto_close" }) == .boolean and table.get(.{ .string = "auto_close" }).boolean) {
-            try closeFile(state, file, true);
-        }
+        const auto_close = table.get(.{ .string = "auto_close" });
+        if (auto_close == .boolean and auto_close.boolean) _ = try closeFile(state, handle);
         return &[_]Value{};
     }
     return try values.toOwnedSlice(state.allocator);
 }
 
-fn setCurrentFile(state: *State, thread: *Thread, op: bytecode.Call, key: []const u8, mode: []const u8) !void {
-    const io_table = try state.expectTable(state.getGlobal("io"));
+const CurrentFile = enum { input, output };
+
+fn setCurrentFile(state: *State, thread: *Thread, op: bytecode.Call, which: CurrentFile) !void {
     if (op.arg_count == 0 or runtime.argValue(state, thread, op, 0) == .nil) {
-        try state.returnValues(thread, op.base, op.return_count, &.{io_table.get(.{ .string = key })});
+        try state.returnValues(thread, op.base, op.return_count, &.{.{ .userdata = try currentFile(state, which) }});
         return;
     }
     var value = runtime.argValue(state, thread, op, 0);
     if (value == .string) {
-        const path = value.string;
-        const parsed = parseMode(mode).?;
-        const contents = if (parsed.kind == 'r') state.readFileAlloc(path) catch return state.fail("cannot open file") else try state.allocator.dupe(u8, "");
-        defer state.allocator.free(contents);
-        value = try newFile(state, path, mode, contents, parsed);
+        value = try openCheckedFile(state, value.string, if (which == .output) "w" else "r");
     } else {
-        _ = try expectFileArgument(state, value, if (std.mem.eql(u8, key, "__zlua_output")) "io.output" else "io.input", 1);
+        const userdata = try expectFileArgument(state, value, if (which == .output) "io.output" else "io.input", 1);
+        try ensureOpen(state, fileOfUserdata(userdata).?);
     }
-    if (std.mem.eql(u8, key, "__zlua_output")) {
-        const old_value = io_table.get(.{ .string = key });
-        switch (old_value) {
-            .table => |old_file| if (old_file.get(.{ .string = "__zlua_file_standard" }) == .nil and !runtime.isClosedFileValue(old_value)) try closeFile(state, old_file, false),
-            else => {},
-        }
+    switch (which) {
+        .input => state.io_input = value.userdata,
+        .output => state.io_output = value.userdata,
     }
-    try state.setTableRaw(io_table, .{ .string = try state.intern(key) }, value);
     try state.returnValues(thread, op.base, op.return_count, &.{value});
 }
 
-fn currentFile(state: *State, key: []const u8) !*runtime.Table {
-    const io_table = try state.expectTable(state.getGlobal("io"));
-    return expectFile(state, io_table.get(.{ .string = key }));
+fn openCheckedFile(state: *State, path: []const u8, mode: []const u8) !Value {
+    const parsed = parseMode(mode).?;
+    if (specialDevice(path)) |kind| return newFile(state, .{ .kind = kind, .path = path, .mode = parsed });
+    if (parsed.kind != 'r') {
+        state.fsWriteFile(path, "") catch |err| return failOpenChecked(state, path, err);
+        return newFile(state, .{ .path = path, .mode = parsed });
+    }
+    const contents = state.readFileRaw(path) catch |err| {
+        if (err != error.IsDir) return failOpenChecked(state, path, err);
+        return newFile(state, .{ .path = path, .mode = parsed, .is_directory = true });
+    };
+    return newFile(state, .{ .path = path, .mode = parsed, .contents = contents });
 }
 
-fn readFromFile(state: *State, thread: *Thread, op: bytecode.Call, file: *runtime.Table, first_arg: u16) !void {
+fn failOpenChecked(state: *State, path: []const u8, err: anyerror) anyerror {
+    if (err == error.OutOfMemory) return err;
+    const message = try std.fmt.allocPrint(state.allocator, "cannot open file '{s}' ({s})", .{ path, host.fileError(err).message });
+    defer state.allocator.free(message);
+    return state.fail(try state.intern(message));
+}
+
+/// Reads the rest of standard input for `dofile()` and `loadfile()`, sharing
+/// the `io.stdin` position. The caller owns the bytes.
+pub fn readAllStdin(state: *State) ![]u8 {
+    var source = state.stdinSource();
+    defer source.finish();
+    var bytes: std.ArrayList(u8) = .empty;
+    errdefer bytes.deinit(state.allocator);
+    try appendRemaining(state, source.reader(), &bytes);
+    return bytes.toOwnedSlice(state.allocator);
+}
+
+/// Reads one line, including its newline, from standard input; null at end of input.
+pub fn readStdinLine(state: *State) !?[]const u8 {
+    const value = try readStdinFormat(state, .{ .line = true });
+    return if (value == .string) value.string else null;
+}
+
+/// Returns the unread bytes of an open, readable file and moves it to the
+/// end, for decoders that accept a FILE*. The bytes stay valid until the
+/// handle is next used.
+pub fn readRemaining(state: *State, userdata: *Userdata) ![]const u8 {
+    const handle = try writable(userdata);
+    const file = handle.file;
+    if (file.kind == .stdin) {
+        const value = try readStdinFormat(state, .all);
+        return if (value == .string) value.string else "";
+    }
+    if (file.kind == .full_device) return state.fail("File too large");
+    try refreshReadable(state, handle);
+    const content = file.content.items;
+    const start = @min(content.len, file.pos);
+    file.pos = content.len;
+    return content[start..];
+}
+
+/// Sets a file's size for `fs` file `truncate` and writes the result through
+/// the filesystem capability. The handle keeps its bytes if the write fails.
+pub fn truncateFile(state: *State, userdata: *Userdata, size: usize) !void {
+    const handle = try writable(userdata);
+    const file = handle.file;
+    const bytes = try state.allocator.alloc(u8, size);
+    var owned = true;
+    defer if (owned) state.allocator.free(bytes);
+    const copied = @min(size, file.content.items.len);
+    @memcpy(bytes[0..copied], file.content.items[0..copied]);
+    @memset(bytes[copied..], 0);
+    try state.fsWriteFile(file.path, bytes);
+    file.content.deinit(state.allocator);
+    file.content = ownedBuffer(bytes);
+    owned = false;
+    file.synced = size;
+    file.generation = state.file_generation;
+    handle.noteSize(state);
+}
+
+/// Writes the buffered output of every open file handle, as C `exit` flushes
+/// all streams. Used by the CLI before the process ends; errors are ignored.
+pub fn flushOpenFiles(state: *State) void {
+    var index: usize = 0;
+    while (index < state.userdata_allocations.items.len) : (index += 1) {
+        const userdata = state.userdata_allocations.items[index];
+        const file = fileOfUserdata(userdata) orelse continue;
+        if (file.closed or file.kind != .regular or !file.writable or !file.hasUnflushedWrites()) continue;
+        const handle = writable(userdata) catch continue;
+        flushFile(state, handle.file) catch {};
+    }
+}
+
+fn currentFile(state: *State, which: CurrentFile) !*Userdata {
+    return switch (which) {
+        .input => state.io_input,
+        .output => state.io_output,
+    } orelse state.fail("file expected");
+}
+
+fn defaultFile(state: *State, which: CurrentFile) !*Userdata {
+    const userdata = try currentFile(state, which);
+    if (fileOfUserdata(userdata).?.closed) return state.fail(switch (which) {
+        .input => "default input file is closed",
+        .output => "default output file is closed",
+    });
+    return userdata;
+}
+
+fn readFromFile(state: *State, thread: *Thread, op: bytecode.Call, handle: Handle, first_arg: u32) !void {
+    const file = handle.file;
     try ensureOpen(state, file);
-    if (!fileReadable(file)) {
+    if (!file.readable) {
         try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.intern("file is not readable") }, .{ .integer = 9 } });
+        return;
+    }
+    if (file.is_directory) {
+        const info = host.fileError(error.IsDir);
+        try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.intern(info.message) }, .{ .integer = info.errno } });
         return;
     }
     var values = std.ArrayList(Value).empty;
     defer values.deinit(state.allocator);
     if (op.arg_count <= first_arg) {
-        try values.append(state.allocator, try readOne(state, file, .{ .string = try state.intern("l") }));
+        _ = try readInto(state, handle, &values, .{ .string = try state.intern("l") });
     } else {
         var index = first_arg;
         while (index < op.arg_count) : (index += 1) {
-            const value = try readOne(state, file, runtime.argValue(state, thread, op, index));
-            try values.append(state.allocator, value);
-            if (value == .nil) break;
+            if (!try readInto(state, handle, &values, runtime.argValue(state, thread, op, index))) break;
         }
     }
     try state.returnValues(thread, op.base, op.return_count, values.items);
 }
 
-fn readOne(state: *State, file: *runtime.Table, spec_value: Value) !Value {
-    try ensureOpen(state, file);
-    try ensureReadable(state, file);
-    try refreshReadable(state, file);
-    const content = try fileString(state, file, "__zlua_file_content");
-    var pos = fileInteger(file, "__zlua_file_pos") orelse 1;
-    if (pos < 1) pos = 1;
-    const start: usize = @intCast(@min(@as(i64, @intCast(content.len)), pos - 1));
-
-    if (runtime.toInteger(spec_value)) |count_i64| {
-        if (count_i64 < 0) return state.fail("invalid format");
-        const count: usize = @intCast(count_i64);
-        if (count == 0) return if (start < content.len) .{ .string = try state.intern("") } else .nil;
-        if (start >= content.len) return .nil;
-        const end = @min(content.len, start + count);
-        try setPos(state, file, end + 1);
-        return .{ .string = try state.intern(content[start..end]) };
-    }
-
-    var spec = try state.expectString(spec_value);
-    if (spec.len != 0 and spec[0] == '*') spec = spec[1..];
-    if (std.mem.eql(u8, spec, "a") or std.mem.eql(u8, spec, "all")) {
-        try setPos(state, file, content.len + 1);
-        return .{ .string = try state.intern(content[start..]) };
-    }
-    if (std.mem.eql(u8, spec, "l") or std.mem.eql(u8, spec, "L")) {
-        if (start >= content.len) return .nil;
-        var end = start;
-        while (end < content.len and content[end] != '\n') end += 1;
-        const include_newline = std.mem.eql(u8, spec, "L") and end < content.len;
-        const slice_end = if (include_newline) end + 1 else end;
-        try setPos(state, file, if (end < content.len) end + 2 else end + 1);
-        return .{ .string = try state.intern(content[start..slice_end]) };
-    }
-    if (std.mem.eql(u8, spec, "n")) return readNumber(state, file, content, start);
-    return state.fail("invalid format");
+/// Appends the result of one read format; false when it fails, after which
+/// `g_read` reads no further formats.
+fn readInto(state: *State, handle: Handle, values: *std.ArrayList(Value), spec: Value) !bool {
+    const value = try readOne(state, handle, spec);
+    try values.append(state.allocator, value);
+    return value != .nil;
 }
 
-fn readNumber(state: *State, file: *runtime.Table, content: []const u8, start: usize) !Value {
-    var pos = start;
-    while (pos < content.len and std.ascii.isWhitespace(content[pos])) pos += 1;
-    if (pos >= content.len) {
-        try setPos(state, file, pos + 1);
-        return .nil;
+const ReadFormat = union(enum) {
+    count: usize,
+    all,
+    /// Keeps the newline for "L".
+    line: bool,
+    number,
+};
+
+fn parseReadFormat(state: *State, spec_value: Value) !ReadFormat {
+    if (runtime.toInteger(spec_value)) |count| {
+        if (count < 0) return state.fail("invalid format");
+        return .{ .count = std.math.cast(usize, count) orelse std.math.maxInt(usize) };
     }
+    var spec = try state.expectString(spec_value);
+    if (spec.len != 0 and spec[0] == '*') spec = spec[1..];
+    if (spec.len == 0) return state.fail("invalid format");
+    return switch (spec[0]) {
+        'a' => .all,
+        'l' => .{ .line = false },
+        'L' => .{ .line = true },
+        'n' => .number,
+        else => state.fail("invalid format"),
+    };
+}
+
+fn readOne(state: *State, handle: Handle, spec_value: Value) !Value {
+    const file = handle.file;
+    try ensureOpen(state, file);
+    if (!file.readable) return state.fail("file is not readable");
+    if (file.is_directory) return state.fail(host.fileError(error.IsDir).message);
+    const format = try parseReadFormat(state, spec_value);
+    if (file.kind == .stdin) return readStdinFormat(state, format);
+    if (file.kind == .full_device) return readFullDevice(state, format);
+    try refreshReadable(state, handle);
+    const content = file.content.items;
+    const start = @min(content.len, file.pos);
+
+    switch (format) {
+        .count => |count| {
+            if (count == 0) return if (start < content.len) .{ .string = try state.intern("") } else .nil;
+            if (start >= content.len) return .nil;
+            const end = start + @min(content.len - start, count);
+            file.pos = end;
+            return .{ .string = try state.intern(content[start..end]) };
+        },
+        .all => {
+            file.pos = content.len;
+            return .{ .string = try state.intern(content[start..]) };
+        },
+        .line => |keep_newline| {
+            if (start >= content.len) return .nil;
+            const end = std.mem.indexOfScalarPos(u8, content, start, '\n') orelse content.len;
+            const include_newline = keep_newline and end < content.len;
+            const slice_end = if (include_newline) end + 1 else end;
+            file.pos = if (end < content.len) end + 1 else end;
+            return .{ .string = try state.intern(content[start..slice_end]) };
+        },
+        .number => {
+            const scanned = scanNumber(content, start);
+            file.pos = scanned.next;
+            return scanned.value;
+        },
+    }
+}
+
+fn readFullDevice(state: *State, format: ReadFormat) !Value {
+    switch (format) {
+        .count => |count| {
+            if (count > state.options.max_file_bytes) return state.fail("File too large");
+            const bytes = try state.allocator.alloc(u8, count);
+            defer state.allocator.free(bytes);
+            @memset(bytes, 0);
+            return .{ .string = try state.intern(bytes) };
+        },
+        .number => return .nil,
+        .all, .line => return state.fail("File too large"),
+    }
+}
+
+fn readStdinFormat(state: *State, format: ReadFormat) !Value {
+    var source = state.stdinSource();
+    defer source.finish();
+    const reader = source.reader();
+    switch (format) {
+        .count => |count| {
+            const available = peekSome(reader) orelse return .nil;
+            if (count == 0) return .{ .string = try state.intern("") };
+            if (available.len >= count) {
+                const value = try state.intern(available[0..count]);
+                reader.toss(count);
+                return .{ .string = value };
+            }
+            var bytes: std.ArrayList(u8) = .empty;
+            defer bytes.deinit(state.allocator);
+            while (bytes.items.len < count) {
+                const more = peekSome(reader) orelse break;
+                const take = @min(more.len, count - bytes.items.len);
+                try bytes.appendSlice(state.allocator, more[0..take]);
+                reader.toss(take);
+            }
+            return .{ .string = try state.intern(bytes.items) };
+        },
+        .all => {
+            var bytes: std.ArrayList(u8) = .empty;
+            defer bytes.deinit(state.allocator);
+            try appendRemaining(state, reader, &bytes);
+            return .{ .string = try state.intern(bytes.items) };
+        },
+        .line => |keep_newline| {
+            var bytes: std.ArrayList(u8) = .empty;
+            defer bytes.deinit(state.allocator);
+            while (peekSome(reader)) |available| {
+                if (std.mem.indexOfScalar(u8, available, '\n')) |newline| {
+                    const end = if (keep_newline) newline + 1 else newline;
+                    const value = if (bytes.items.len == 0) try state.intern(available[0..end]) else blk: {
+                        try bytes.appendSlice(state.allocator, available[0..end]);
+                        break :blk try state.intern(bytes.items);
+                    };
+                    reader.toss(newline + 1);
+                    return .{ .string = value };
+                }
+                try bytes.appendSlice(state.allocator, available);
+                reader.toss(available.len);
+            }
+            if (bytes.items.len == 0) return .nil;
+            return .{ .string = try state.intern(bytes.items) };
+        },
+        .number => {
+            while (true) {
+                const available = peekSome(reader) orelse return .nil;
+                const skip = whitespacePrefix(available);
+                reader.toss(skip);
+                if (skip < available.len) break;
+            }
+            const window_limit = @min(reader.buffer.len, 600);
+            var window: []const u8 = reader.buffered();
+            var len: usize = 0;
+            while (len < window_limit) {
+                window = reader.peek(len + 1) catch {
+                    window = reader.buffered();
+                    break;
+                };
+                len += 1;
+                if (!isNumberTokenByte(window[len - 1])) break;
+            }
+            const scanned = scanNumber(window, 0);
+            reader.toss(scanned.next);
+            return scanned.value;
+        },
+    }
+}
+
+fn peekSome(reader: *std.Io.Reader) ?[]u8 {
+    return reader.peekGreedy(1) catch null;
+}
+
+fn appendRemaining(state: *State, reader: *std.Io.Reader, bytes: *std.ArrayList(u8)) !void {
+    while (peekSome(reader)) |available| {
+        if (bytes.items.len + available.len > state.options.max_file_bytes) return state.fail("File too large");
+        try bytes.appendSlice(state.allocator, available);
+        reader.toss(available.len);
+    }
+}
+
+fn whitespacePrefix(bytes: []const u8) usize {
+    var index: usize = 0;
+    while (index < bytes.len and std.ascii.isWhitespace(bytes[index])) index += 1;
+    return index;
+}
+
+const NumberScan = struct {
+    value: Value,
+    /// Offset after the bytes the read consumes.
+    next: usize,
+};
+
+fn scanNumber(content: []const u8, start: usize) NumberScan {
+    const pos = start + whitespacePrefix(content[start..]);
+    if (pos >= content.len) return .{ .value = .nil, .next = pos };
     var token_end = pos;
     while (token_end < content.len and isNumberTokenByte(content[token_end])) token_end += 1;
-    if (token_end - pos > 350) {
-        try setPos(state, file, @min(token_end, pos + 4) + 1);
-        return .nil;
-    }
-    if (invalidHexPrefix(content[pos..token_end])) {
-        try setPos(state, file, pos + 3);
-        return .nil;
-    }
-    if (invalidBareExponentToken(content[pos..token_end])) {
-        try setPos(state, file, token_end + 1);
-        return .nil;
-    }
-    const scan_end = @min(token_end, pos + 512);
-    var end = scan_end;
+    if (token_end - pos > 350) return .{ .value = .nil, .next = @min(token_end, pos + 4) };
+    if (invalidHexPrefix(content[pos..token_end])) return .{ .value = .nil, .next = pos + 2 };
+    if (invalidBareExponentToken(content[pos..token_end])) return .{ .value = .nil, .next = token_end };
+    var end = @min(token_end, pos + 512);
     while (end > pos) : (end -= 1) {
         const slice = content[pos..end];
-        if (runtime.parseIntegerStrict(slice)) |integer| {
-            try setPos(state, file, end + 1);
-            return .{ .integer = integer };
-        }
+        if (runtime.parseIntegerStrict(slice)) |integer| return .{ .value = .{ .integer = integer }, .next = end };
         if (runtime.parseLuaNumber(slice)) |number| {
-            try setPos(state, file, end + 1);
-            return .{ .number = number };
+            return .{ .value = .{ .number = number }, .next = end };
         } else |_| {}
     }
-    const consume = failedNumberPrefix(content[pos..]);
-    try setPos(state, file, pos + consume + 1);
-    return .nil;
+    return .{ .value = .nil, .next = pos + failedNumberPrefix(content[pos..]) };
 }
 
 fn failedNumberPrefix(text: []const u8) usize {
@@ -375,114 +940,184 @@ fn invalidHexPrefix(token: []const u8) bool {
     return unsigned.len >= 3 and unsigned[0] == '0' and (unsigned[1] == 'x' or unsigned[1] == 'X') and !std.ascii.isHex(unsigned[2]);
 }
 
-fn writeToFile(state: *State, thread: *Thread, op: bytecode.Call, file: *runtime.Table, first_arg: u16, function_name: []const u8) !void {
+const WriteTarget = enum { stdout, stderr, discard, full_device, buffer };
+
+fn writeTarget(file: *const File) WriteTarget {
+    return switch (file.kind) {
+        .stdout => .stdout,
+        .stderr => .stderr,
+        .null_device => .discard,
+        .full_device => .full_device,
+        .stdin, .regular, .popen, .anonymous => .buffer,
+    };
+}
+
+fn writeToFile(state: *State, thread: *Thread, op: bytecode.Call, handle: Handle, first_arg: u32, function_name: []const u8) !void {
+    const file = handle.file;
     try ensureOpen(state, file);
-    if (!fileWritable(file)) {
+    if (!file.writable) {
         try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.intern("file is not writable") }, .{ .integer = 9 } });
         return;
     }
+    const target = writeTarget(file);
+    // The Windows CRT treats `_IOLBF` as full buffering.
+    const line_buffered = file.buffer_mode == .line and builtin.os.tag != .windows;
     var wrote_newline = false;
+    var total: usize = 0;
+    var formatted: std.ArrayList(u8) = .empty;
+    defer formatted.deinit(state.allocator);
     var index = first_arg;
     while (index < op.arg_count) : (index += 1) {
         const value = runtime.argValue(state, thread, op, index);
-        switch (value) {
-            .string, .integer, .number => {},
-            else => return state.failArgumentType(function_name, index + 1 - first_arg, "string", value),
+        const bytes = switch (value) {
+            .string => |string| string,
+            .integer, .number => blk: {
+                formatted.clearRetainingCapacity();
+                try runtime.appendLuaString(state.allocator, &formatted, value);
+                break :blk formatted.items;
+            },
+            else => return state.failArgumentType(function_name, index + 1, "string", value),
+        };
+        if (line_buffered and !wrote_newline and std.mem.indexOfScalar(u8, bytes, '\n') != null) wrote_newline = true;
+        switch (target) {
+            .stdout => try state.writeStdout(bytes),
+            .stderr => try state.writeStderr(bytes),
+            .discard => {},
+            .full_device => if (bytes.len != 0) {
+                if (file.buffer_mode == .no) return returnWriteFailure(state, thread, op, host.fileError(error.NoSpaceLeft), total);
+                file.device_pending = true;
+            },
+            .buffer => writeBytes(state, handle, bytes) catch |err| switch (err) {
+                error.FileTooBig => return returnWriteFailure(state, thread, op, host.fileError(err), total),
+                else => return err,
+            },
         }
-        var bytes = std.ArrayList(u8).empty;
-        defer bytes.deinit(state.allocator);
-        try runtime.appendLuaString(state.allocator, &bytes, value);
-        if (std.mem.indexOfScalar(u8, bytes.items, '\n') != null) wrote_newline = true;
-        try writeBytes(state, file, bytes.items);
+        total += bytes.len;
     }
-    const buffer_mode = try fileString(state, file, "__zlua_file_buffer_mode");
-    if (std.mem.eql(u8, buffer_mode, "no") or (std.mem.eql(u8, buffer_mode, "line") and wrote_newline)) try flushFile(state, file);
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .table = file }});
+    if (file.buffer_mode == .no) {
+        if (try flushReport(state, file)) |failure| return returnWriteFailure(state, thread, op, failure, 0);
+    } else if (wrote_newline) _ = try flushReport(state, file);
+    try state.returnValues(thread, op.base, op.return_count, &.{handle.value()});
 }
 
-fn writeBytes(state: *State, file: *runtime.Table, bytes: []const u8) !void {
-    const path = try fileString(state, file, "__zlua_file_path");
-    if (std.mem.eql(u8, path, "stdout")) {
-        try state.writeStdout(bytes);
+fn returnWriteFailure(state: *State, thread: *Thread, op: bytecode.Call, info: host.FileError, total: usize) !void {
+    try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.intern(info.message) }, .{ .integer = info.errno }, .{ .integer = @intCast(total) } });
+}
+
+fn writeBytes(state: *State, handle: Handle, bytes: []const u8) !void {
+    if (bytes.len == 0) return;
+    const file = handle.file;
+    const content = &file.content;
+    const pos = if (file.append) content.items.len else file.pos;
+    const end = std.math.add(usize, pos, bytes.len) catch return error.FileTooBig;
+    if (end > state.options.max_file_bytes) return error.FileTooBig;
+    defer handle.noteSize(state);
+    if (pos < file.synced) file.synced = pos;
+    if (pos > content.items.len) try content.appendNTimes(state.allocator, 0, pos - content.items.len);
+    const overlap = @min(content.items.len - pos, bytes.len);
+    @memcpy(content.items[pos..][0..overlap], bytes[0..overlap]);
+    try content.appendSlice(state.allocator, bytes[overlap..]);
+    file.pos = end;
+}
+
+fn closeFileValue(state: *State, thread: *Thread, op: bytecode.Call, value: Value, function_name: []const u8) !void {
+    const handle = try writable(try expectFileArgument(state, value, function_name, 1));
+    const file = handle.file;
+    try ensureOpen(state, file);
+    if (file.isStandard()) {
+        try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.intern("cannot close standard file") } });
         return;
     }
-    if (std.mem.eql(u8, path, "stderr")) {
-        try state.writeStderr(bytes);
+    if (file.kind == .popen) {
+        const result = try finishPopen(state, file);
+        markClosed(state, handle);
+        try os_lib.returnProcessResult(state, thread, op, result);
         return;
     }
-    if (std.mem.eql(u8, path, "/dev/null") or std.mem.eql(u8, path, "/dev/full")) return;
-    var content = std.ArrayList(u8).empty;
-    defer content.deinit(state.allocator);
-    try content.appendSlice(state.allocator, try fileString(state, file, "__zlua_file_content"));
-    const mode = try fileString(state, file, "__zlua_file_mode");
-    const pos: usize = if (std.mem.indexOfScalar(u8, mode, 'a') != null)
-        content.items.len
-    else
-        @intCast(@max((fileInteger(file, "__zlua_file_pos") orelse 1) - 1, 0));
-    if (pos > content.items.len) {
-        const old_len = content.items.len;
-        try content.resize(state.allocator, pos);
-        @memset(content.items[old_len..], 0);
-    }
-    const end = pos + bytes.len;
-    if (end > content.items.len) try content.resize(state.allocator, end);
-    @memcpy(content.items[pos..end], bytes);
-    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_content") }, .{ .string = try state.intern(content.items) });
-    try setPos(state, file, end + 1);
+    try returnResult(state, thread, op, try closeFile(state, handle), .{ .boolean = true });
 }
 
-fn closeFileValue(state: *State, thread: *Thread, op: bytecode.Call, value: Value, function_name: []const u8, from_iterator: bool) !void {
-    const file = try expectFileArgument(state, value, function_name, 1);
-    if (runtime.isClosedFileValue(value)) {
-        if (from_iterator) return;
-        return state.fail("closed file");
+fn closeFile(state: *State, handle: Handle) !?host.FileError {
+    var failure: ?host.FileError = null;
+    if (handle.file.kind == .popen) {
+        _ = try finishPopen(state, handle.file);
+    } else failure = try flushReport(state, handle.file);
+    markClosed(state, handle);
+    return failure;
+}
+
+fn flushReport(state: *State, file: *File) error{OutOfMemory}!?host.FileError {
+    if (file.kind == .full_device) {
+        if (!file.device_pending) return null;
+        file.device_pending = false;
+        return host.fileError(error.NoSpaceLeft);
     }
-    if (file.get(.{ .string = "__zlua_file_standard" }) == .boolean and file.get(.{ .string = "__zlua_file_standard" }).boolean) {
-        try state.returnValues(thread, op.base, op.return_count, &.{.nil});
+    flushFile(state, file) catch |err| {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        return host.fileError(err);
+    };
+    return null;
+}
+
+fn markClosed(state: *State, handle: Handle) void {
+    handle.file.closed = true;
+    handle.file.content.clearAndFree(state.allocator);
+    handle.noteSize(state);
+}
+
+fn flushFile(state: *State, file: *File) anyerror!void {
+    switch (file.kind) {
+        .stdout => return state.flushStdout(),
+        .stderr => return state.flushStderr(),
+        .regular => {},
+        .full_device => {
+            file.device_pending = false;
+            return;
+        },
+        .stdin, .popen, .null_device, .anonymous => return,
+    }
+    if (!file.writable or !file.hasUnflushedWrites()) return;
+
+    const content = file.content.items;
+    if (file.append) {
+        state.fsAppendFile(file.path, content[file.synced..]) catch |err| switch (err) {
+            error.FileNotFound => try state.fsWriteFile(file.path, content),
+            else => return err,
+        };
+        file.synced = content.len;
         return;
     }
-    try closeFile(state, file, from_iterator);
-    if (!from_iterator) try state.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = true }});
+    var written = false;
+    if (file.generation == state.file_generation) {
+        if (state.fsWriteFileAt(file.path, file.synced, content[file.synced..])) {
+            written = true;
+        } else |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => {},
+        }
+    }
+    if (!written) try state.fsWriteFile(file.path, content);
+    file.synced = content.len;
+    file.generation = state.file_generation;
 }
 
-fn closeFile(state: *State, file: *runtime.Table, from_iterator: bool) !void {
-    _ = from_iterator;
-    if (fileWritable(file)) try flushFile(state, file);
-    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_closed") }, .{ .boolean = true });
+fn refreshReadable(state: *State, handle: Handle) !void {
+    const file = handle.file;
+    if (!file.readable or file.kind != .regular) return;
+    if (file.generation == state.file_generation) return;
+    if (file.hasUnflushedWrites()) return;
+    file.generation = state.file_generation;
+    const contents = state.readFileRaw(file.path) catch |err| {
+        if (err == error.OutOfMemory) return err;
+        return;
+    };
+    file.content.deinit(state.allocator);
+    file.content = ownedBuffer(contents);
+    file.synced = contents.len;
+    handle.noteSize(state);
 }
 
-fn flushFile(state: *State, file: *runtime.Table) !void {
-    const path = try fileString(state, file, "__zlua_file_path");
-    if (std.mem.eql(u8, path, "stdout")) return state.flushStdout();
-    if (std.mem.eql(u8, path, "stderr")) return state.flushStderr();
-    if (std.mem.eql(u8, path, "/dev/null") or std.mem.eql(u8, path, "/dev/full")) return;
-    if (fileWritable(file)) try state.writeFile(path, try fileString(state, file, "__zlua_file_content"));
-}
-
-fn refreshReadable(state: *State, file: *runtime.Table) !void {
-    if (!fileReadable(file)) return;
-    const path = try fileString(state, file, "__zlua_file_path");
-    if (std.mem.eql(u8, path, "stdin") or std.mem.eql(u8, path, "stdout") or std.mem.eql(u8, path, "stderr") or isSpecialDevice(path)) return;
-    const contents = state.readFileAlloc(path) catch return;
-    defer state.allocator.free(contents);
-    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_content") }, .{ .string = try state.intern(contents) });
-}
-
-pub fn newFile(state: *State, path: []const u8, mode: []const u8, contents: []const u8, parsed: ParsedMode) !Value {
-    const value = try state.newTableWithHints(0, 7);
-    const file = value.table;
-    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file") }, .{ .boolean = true });
-    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_path") }, .{ .string = try state.intern(path) });
-    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_mode") }, .{ .string = try state.intern(mode) });
-    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_content") }, .{ .string = try state.intern(contents) });
-    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_pos") }, .{ .integer = if (parsed.append) @as(i64, @intCast(contents.len + 1)) else 1 });
-    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_closed") }, .{ .boolean = false });
-    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_buffer_mode") }, .{ .string = try state.intern("full") });
-    state.setTableMetatableRaw(file, try state.fileMetatable());
-    return value;
-}
-
-fn newLinesIterator(state: *State, thread: *Thread, file_value: Value, op: bytecode.Call, first_arg: u16, auto_close: bool) !Value {
+fn newLinesIterator(state: *State, thread: *Thread, file_value: Value, op: bytecode.Call, first_arg: u32, auto_close: bool) !Value {
     const value = try state.newTableWithHints(0, 4);
     const table = value.table;
     try state.setTableRaw(table, .{ .string = try state.intern("__zlua_lines_iterator") }, .{ .boolean = true });
@@ -497,57 +1132,52 @@ fn newLinesIterator(state: *State, thread: *Thread, file_value: Value, op: bytec
     return .{ .gmatch_iterator = table };
 }
 
-fn openFailure(state: *State, thread: *Thread, op: bytecode.Call, message: []const u8) !void {
-    try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.intern(message) }, .{ .integer = 2 } });
+fn expectFile(state: *State, value: Value) !*Userdata {
+    if (fileOf(value) == null) return state.fail("file expected");
+    return value.userdata;
 }
 
-fn expectFile(state: *State, value: Value) !*runtime.Table {
-    if (!runtime.isFileValue(value)) return state.fail("file expected");
-    return value.table;
+fn expectFileArgument(state: *State, value: Value, function_name: []const u8, index: u32) !*Userdata {
+    return checkedFile(state, value) orelse state.failArgumentType(function_name, index, "FILE*", value);
 }
 
-fn expectFileArgument(state: *State, value: Value, function_name: []const u8, index: u16) !*runtime.Table {
-    if (!runtime.isFileValue(value)) return state.failArgumentType(function_name, index, "FILE*", value);
-    return value.table;
+/// The handle behind a value, checked like `luaL_testudata(L, i, "FILE*")`:
+/// a file userdata whose metatable is still a file metatable. A handle given
+/// another metatable with `debug.setmetatable` is not a file.
+pub fn checkedFile(state: *State, value: Value) ?*Userdata {
+    if (fileOf(value) == null) return null;
+    const metatable = value.userdata.metatable orelse return null;
+    if (state.file_metatable == metatable or state.fs_file_metatable == metatable) return value.userdata;
+    return null;
 }
 
-fn ensureOpen(state: *State, file: *runtime.Table) !void {
-    const closed = file.get(.{ .string = "__zlua_file_closed" });
-    if (closed == .boolean and closed.boolean) return state.fail("closed file");
-}
-
-fn ensureReadable(state: *State, file: *runtime.Table) !void {
-    if (!fileReadable(file)) return state.fail("file is not readable");
-}
-
-fn fileReadable(file: *runtime.Table) bool {
-    const mode = file.get(.{ .string = "__zlua_file_mode" });
-    if (mode != .string or mode.string.len == 0) return false;
-    return mode.string[0] == 'r' or std.mem.indexOfScalar(u8, mode.string, '+') != null;
-}
-
-fn fileWritable(file: *runtime.Table) bool {
-    const mode = file.get(.{ .string = "__zlua_file_mode" });
-    if (mode != .string or mode.string.len == 0) return false;
-    return mode.string[0] == 'w' or mode.string[0] == 'a' or std.mem.indexOfScalar(u8, mode.string, '+') != null;
-}
-
-fn fileString(state: *State, file: *runtime.Table, name: []const u8) ![]const u8 {
-    return state.expectString(file.get(.{ .string = name }));
-}
-
-fn fileInteger(file: *runtime.Table, comptime name: []const u8) ?i64 {
-    return runtime.toInteger(file.get(.{ .string = name }));
-}
-
-fn setPos(state: *State, file: *runtime.Table, pos: usize) !void {
-    try state.setTableRaw(file, .{ .string = try state.intern("__zlua_file_pos") }, .{ .integer = @intCast(pos) });
+fn ensureOpen(state: *State, file: *const File) !void {
+    if (file.closed) return state.fail("attempt to use a closed file");
 }
 
 pub const ParsedMode = struct {
     kind: u8,
     append: bool,
     reads_existing: bool,
+    plus: bool = false,
+
+    pub fn readable(self: ParsedMode) bool {
+        return self.kind == 'r' or self.plus;
+    }
+
+    pub fn writable(self: ParsedMode) bool {
+        return self.kind != 'r' or self.plus;
+    }
+
+    /// Whether the host's `fopen` positions the stream at the end of the
+    /// file. BSD libcs seek there for every append mode, glibc only for "a",
+    /// and musl and the Windows CRT start at zero until the first write.
+    pub fn opensAtEnd(self: ParsedMode) bool {
+        if (!self.append) return false;
+        if (builtin.os.tag == .windows) return false;
+        if (builtin.os.tag == .linux) return !self.plus and !builtin.abi.isMusl();
+        return true;
+    }
 };
 
 pub fn parseMode(mode: []const u8) ?ParsedMode {
@@ -555,17 +1185,149 @@ pub fn parseMode(mode: []const u8) ?ParsedMode {
     const kind = mode[0];
     if (kind != 'r' and kind != 'w' and kind != 'a') return null;
     var index: usize = 1;
-    if (index < mode.len and mode[index] == '+') index += 1;
+    const plus = index < mode.len and mode[index] == '+';
+    if (plus) index += 1;
     if (index < mode.len and mode[index] == 'b') index += 1;
     if (index != mode.len) return null;
-    return .{ .kind = kind, .append = kind == 'a', .reads_existing = kind == 'r' };
+    return .{ .kind = kind, .append = kind == 'a', .reads_existing = kind == 'r', .plus = plus };
 }
 
-fn isSpecialDevice(path: []const u8) bool {
-    return std.mem.eql(u8, path, "/dev/null") or std.mem.eql(u8, path, "/dev/full");
+fn specialDevice(path: []const u8) ?File.Kind {
+    if (std.mem.eql(u8, path, "/dev/null")) return .null_device;
+    if (builtin.os.tag == .linux and std.mem.eql(u8, path, "/dev/full")) return .full_device;
+    return null;
 }
 
-fn tmpPath(state: *State) ![]const u8 {
-    const timestamp = state.currentTime() catch 0;
-    return std.fmt.allocPrint(state.allocator, "zlua_tmp_{d}_{d}.tmp", .{ timestamp, state.table_allocations.items.len });
+/// Wraps a standard stream for `io.stdin`, `io.stdout`, and `io.stderr`.
+/// Standard streams read and write through the state's stdin source and
+/// output writers, never through a buffer.
+pub fn newStandardFile(state: *State, kind: File.Kind) !Value {
+    std.debug.assert(kind == .stdin or kind == .stdout or kind == .stderr);
+    return newFile(state, .{ .kind = kind, .mode = parseMode(if (kind == .stdin) "r" else "w").? });
+}
+
+test "host stdin reader is consumed only as far as each read needs" {
+    var reader: std.Io.Reader = .fixed("first\n12 rest\nabcdef\nlast");
+    var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .full, .stdin_reader = &reader });
+    defer state.deinit();
+    try state.executeSourceChunk("a = io.read()");
+    try std.testing.expectEqualStrings("first", state.getGlobal("a").string);
+    try std.testing.expectEqual(@as(usize, 6), reader.seek);
+    try state.executeSourceChunk(
+        \\b = io.read('n') c = io.read(5) d = io.stdin:read('L')
+        \\for line in io.lines() do e = line end
+        \\f = io.read('a') g = io.read() _, h, i = io.stdin:seek()
+    );
+    try std.testing.expectEqual(@as(i64, 12), state.getGlobal("b").integer);
+    try std.testing.expectEqualStrings(" rest", state.getGlobal("c").string);
+    try std.testing.expectEqualStrings("\n", state.getGlobal("d").string);
+    try std.testing.expectEqualStrings("last", state.getGlobal("e").string);
+    try std.testing.expectEqualStrings("", state.getGlobal("f").string);
+    try std.testing.expect(state.getGlobal("g") == .nil);
+    try std.testing.expectEqualStrings("Illegal seek", state.getGlobal("h").string);
+    try std.testing.expectEqual(@as(i64, 29), state.getGlobal("i").integer);
+}
+
+test "stdin seeks past the integer limits fail without moving" {
+    var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .full, .stdin = "abc" });
+    defer state.deinit();
+    try state.executeSourceChunk(
+        \\assert(io.read(1) == 'a')
+        \\local ok, message, code = io.stdin:seek('cur', math.maxinteger)
+        \\assert(ok == nil and message:find('^Value too large') and (code == 75 or code == 84 or code == 132))
+        \\assert(select(3, io.stdin:seek('end', math.maxinteger)) == code)
+        \\assert(select(3, io.stdin:seek('cur', math.mininteger)) == 22)
+        \\assert(select(2, io.stdin:seek('set', -1)) == 'Invalid argument')
+        \\assert(io.stdin:seek('set', math.maxinteger) == math.maxinteger and io.read(1) == nil)
+        \\assert(io.stdin:seek('set', 1) == 1 and io.read('a') == 'bc')
+    );
+}
+
+test "output flush policies follow C stdio buffering" {
+    inline for (.{ .{ OutputFlushCase.print, 0, 5 }, .{ OutputFlushCase.line, 3, 5 }, .{ OutputFlushCase.explicit, 0, 0 } }) |case| {
+        var buffer: [64]u8 = undefined;
+        var sink: std.Io.Writer.Discarding = .init(&buffer);
+        var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .full, .stdout = &sink.writer, .stdout_flush = case[0], .capture_output = false });
+        defer state.deinit();
+        try state.executeSourceChunk("io.write('ab\\n')");
+        try std.testing.expectEqual(@as(u64, case[1]), sink.count);
+        try state.executeSourceChunk("print('x')");
+        try std.testing.expectEqual(@as(u64, case[2]), sink.count);
+        try std.testing.expectEqual(@as(u64, 5), sink.fullCount());
+        try std.testing.expectEqual(@as(usize, 0), state.stdout.items.len);
+        try state.executeSourceChunk("io.stdout:write('y') io.flush()");
+        try std.testing.expectEqual(@as(u64, 6), sink.count);
+    }
+}
+
+const OutputFlushCase = runtime.OutputFlush;
+
+test "number scanning matches read_number consumption" {
+    const cases = [_]struct { text: []const u8, value: Value, next: usize }{
+        .{ .text = "  42 rest", .value = .{ .integer = 42 }, .next = 4 },
+        .{ .text = "0x1p4\n", .value = .{ .number = 16 }, .next = 5 },
+        .{ .text = "--1", .value = .nil, .next = 1 },
+        .{ .text = "0xg", .value = .nil, .next = 2 },
+        .{ .text = "   ", .value = .nil, .next = 3 },
+    };
+    for (cases) |case| {
+        const scanned = scanNumber(case.text, 0);
+        try std.testing.expectEqual(case.next, scanned.next);
+        try std.testing.expect(std.meta.eql(case.value, scanned.value));
+    }
+}
+
+test "Linux /dev/full emulation follows glibc stream results" {
+    // Windows streams have no line buffering.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .full });
+    defer state.deinit();
+    const device = try newFile(&state, .{ .kind = .full_device, .path = "/dev/full", .mode = parseMode("w").? });
+    try state.setTableRaw(state.global_table.?, .{ .string = try state.intern("full") }, device);
+    const second = try newFile(&state, .{ .kind = .full_device, .path = "/dev/full", .mode = parseMode("w").? });
+    try state.setTableRaw(state.global_table.?, .{ .string = try state.intern("other") }, second);
+    const third = try newFile(&state, .{ .kind = .full_device, .path = "/dev/full", .mode = parseMode("w").? });
+    try state.setTableRaw(state.global_table.?, .{ .string = try state.intern("third") }, third);
+    const reader = try newFile(&state, .{ .kind = .full_device, .path = "/dev/full", .mode = parseMode("r").? });
+    try state.setTableRaw(state.global_table.?, .{ .string = try state.intern("reader") }, reader);
+    try state.executeSourceChunk(
+        \\local enospc = 'No space left on device'
+        \\-- Full buffering: writes succeed, a flush fails once and discards them.
+        \\assert(full:write('abcd') == full)
+        \\local ok, message, code = full:flush()
+        \\assert(ok == nil and message == enospc and code == 28)
+        \\assert(full:flush() == true)
+        \\assert(full:write('abcd') == full)
+        \\ok, message, code = full:close()
+        \\assert(ok == nil and message == enospc and code == 28 and io.type(full) == 'closed file')
+        \\-- Unbuffered writes fail at once with the bytes written so far.
+        \\assert(other:setvbuf('no'))
+        \\local _, _, err, count = other:write('abcd')
+        \\assert(err == 28 and count == 0)
+        \\assert(select(4, other:write('', 'xy', 'z')) == 0)
+        \\assert(other:write('') == other)
+        \\-- Line buffering: glibc ignores the failed flush at a newline.
+        \\assert(other:setvbuf('line'))
+        \\assert(other:write('no newline') == other and other:write('line\n') == other)
+        \\assert(other:close() == true)
+        \\-- The default output reports through io.flush and io.close.
+        \\io.output(third)
+        \\assert(io.write('abcd') == third)
+        \\ok, message, code = io.flush()
+        \\assert(ok == nil and message == enospc and code == 28)
+        \\assert(io.flush() == true)
+        \\io.write('pending')
+        \\ok, message, code = io.close()
+        \\assert(ok == nil and message == enospc and code == 28)
+        \\io.output(io.stdout)
+        \\-- Reads see endless zero bytes.
+        \\assert(reader:read(4) == '\0\0\0\0' and reader:read(0) == '')
+        \\local a, b, c = reader:read(2, 'n', 1)
+        \\assert(a == '\0\0' and b == nil and c == nil)
+        \\assert(reader:read(1) == '\0')
+        \\for _, format in ipairs({ 'a', 'l', 'L' }) do
+        \\  assert(select(2, pcall(reader.read, reader, format)) == 'File too large')
+        \\end
+        \\assert(select(2, pcall(reader.read, reader, 1 << 40)) == 'File too large')
+    );
 }

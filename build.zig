@@ -157,6 +157,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "zlua-embed-userdata-auto", .path = "examples/userdata_auto.zig" },
         .{ .name = "zlua-embed-typed-userdata-initializer", .path = "examples/typed_userdata_initializer.zig" },
         .{ .name = "zlua-embed-preload-module", .path = "examples/preload_module.zig" },
+        .{ .name = "zlua-embed-watchdog", .path = "examples/watchdog.zig" },
     };
 
     const examples_step = b.step("examples", "Compile and run all embedding examples, requiring exit code 0");

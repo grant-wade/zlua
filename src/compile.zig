@@ -38,4 +38,5 @@ test {
     _ = proto;
     _ = compiler;
     _ = disasm;
+    _ = @import("compile/fold.zig");
 }

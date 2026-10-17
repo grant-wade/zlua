@@ -1,6 +1,7 @@
 const std = @import("std");
 const compile = @import("../compile.zig");
 const runtime = @import("../runtime.zig");
+const io_lib = @import("io.zig");
 
 const bytecode = compile.bytecode;
 const State = runtime.State;
@@ -8,52 +9,46 @@ const Thread = runtime.Thread;
 const Value = runtime.Value;
 
 pub fn loadfile(state: *State, thread: *Thread, op: bytecode.Call) !void {
-    const path = try state.expectArgumentString(thread, op, "loadfile", 0);
+    const path = try optionalPath(state, thread, op, "loadfile");
     const mode = if (op.arg_count >= 2 and runtime.argValue(state, thread, op, 1) == .string) runtime.argValue(state, thread, op, 1).string else "bt";
     if (invalidLoadMode(mode)) return state.failArgumentMessage("loadfile", 2, "invalid mode");
+    const environment = if (op.arg_count >= 3) runtime.argValue(state, thread, op, 2) else if (state.global_table) |table| Value{ .table = table } else state.getGlobal("_G");
 
-    const source = state.readFileAlloc(path) catch {
-        try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.intern("cannot open file") } });
-        return;
+    const closure = loadChunkFile(state, path, mode, environment) catch |err| switch (err) {
+        error.RuntimeError => {
+            const error_value = state.currentErrorValue();
+            const message: Value = if (error_value == .string) error_value else .{ .string = try state.intern("cannot load source") };
+            try state.returnValues(thread, op.base, op.return_count, &.{ .nil, message });
+            return;
+        },
+        else => return err,
     };
+    try state.returnValues(thread, op.base, op.return_count, &.{closure});
+}
+
+fn optionalPath(state: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8) !?[]const u8 {
+    if (op.arg_count == 0 or runtime.argValue(state, thread, op, 0) == .nil) return null;
+    return try state.expectArgumentString(thread, op, function_name, 0);
+}
+
+fn loadChunkFile(state: *State, path: ?[]const u8, mode: []const u8, environment: Value) !Value {
+    const source = if (path) |name| try state.readFileAlloc(name) else try io_lib.readAllStdin(state);
     var keep_source = false;
     defer if (!keep_source) state.allocator.free(source);
 
     const chunk = fileChunkStart(source);
     const binary = looksLikeBinaryChunk(chunk);
-    if (binary and std.mem.indexOfScalar(u8, mode, 'b') == null) {
-        try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.intern("attempt to load a binary chunk") } });
-        return;
-    }
-    if (!binary and std.mem.indexOfScalar(u8, mode, 't') == null) {
-        try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.intern("attempt to load a text chunk") } });
-        return;
-    }
+    if (binary and std.mem.indexOfScalar(u8, mode, 'b') == null) return state.fail("attempt to load a binary chunk");
+    if (!binary and std.mem.indexOfScalar(u8, mode, 't') == null) return state.fail("attempt to load a text chunk");
+    if (binary) return state.loadBinaryDump(chunk, environment);
 
-    const environment = if (op.arg_count >= 3) runtime.argValue(state, thread, op, 2) else if (state.global_table) |table| Value{ .table = table } else state.getGlobal("_G");
-    const closure = if (binary) blk: {
-        break :blk state.loadBinaryDump(chunk, environment) catch {
-            const error_value = state.currentErrorValue();
-            const message = if (error_value == .string) error_value.string else "cannot load binary chunk";
-            try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.intern(message) } });
-            return;
-        };
-    } else blk: {
-        prepareTextFileSource(@constCast(source));
-        const source_name = try std.fmt.allocPrint(state.allocator, "@{s}", .{path});
-        defer state.allocator.free(source_name);
-        break :blk state.loadSourceAsClosureNamedEnv(source, source_name, environment) catch {
-            const error_value = state.currentErrorValue();
-            const message = if (error_value == .string) error_value.string else "cannot load source";
-            try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.intern(message) } });
-            return;
-        };
-    };
-    if (!binary) {
-        try state.registerAllocation("source_allocations", source);
-        keep_source = true;
-    }
-    try state.returnValues(thread, op.base, op.return_count, &.{closure});
+    prepareTextFileSource(@constCast(source));
+    const source_name = if (path) |name| try std.fmt.allocPrint(state.allocator, "@{s}", .{name}) else try state.allocator.dupe(u8, "=stdin");
+    defer state.allocator.free(source_name);
+    const closure = try state.loadSourceAsClosureNamedEnv(source, source_name, environment);
+    try state.registerAllocation("source_allocations", source);
+    keep_source = true;
+    return closure;
 }
 
 fn invalidLoadMode(mode: []const u8) bool {
@@ -92,11 +87,12 @@ fn initialBomLen(source: []const u8) usize {
 }
 
 pub fn dofile(state: *State, thread: *Thread, op: bytecode.Call) !void {
-    const path = try state.expectArgumentString(thread, op, "dofile", 0);
-    const closure = try state.loadFileAsClosure(path);
+    const path = try optionalPath(state, thread, op, "dofile");
+    const environment = if (state.global_table) |table| Value{ .table = table } else state.getGlobal("_G");
+    const closure = try loadChunkFile(state, path, "bt", environment);
     const values = try state.callCollect(thread, closure, &.{});
     defer state.allocator.free(values);
-    const result_values = if (values.len >= 2 and values[0] == .native and values[0].native == .dofile and values[1] == .string and std.mem.eql(u8, values[1].string, path)) values[2..] else values;
+    const result_values = if (path != null and values.len >= 2 and values[0] == .native and values[0].native == .dofile and values[1] == .string and std.mem.eql(u8, values[1].string, path.?)) values[2..] else values;
     try state.returnValues(thread, op.base, op.return_count, result_values);
 }
 
@@ -115,7 +111,9 @@ pub fn require(state: *State, thread: *Thread, op: bytecode.Call) !void {
 
     var loader = preload.get(name_key);
     var loader_data: Value = .nil;
-    if (loader == .nil) {
+    if (loader != .nil) {
+        loader_data = .{ .string = try state.intern(":preload:") };
+    } else {
         const path_value = package.get(.{ .string = try state.intern("path") });
         if (path_value != .string) return state.failArgumentType("require", 1, "package.path string", path_value);
         const path = path_value.string;
@@ -128,15 +126,13 @@ pub fn require(state: *State, thread: *Thread, op: bytecode.Call) !void {
         loader_data = .{ .string = try state.intern(found) };
     }
 
+    const loader_data_root = try state.rootValue(loader_data);
+    defer state.unrootValue(loader_data_root);
     const values = try state.callCollect(thread, loader, &.{ name_key, loader_data });
     defer state.allocator.free(values);
     const module_value = if (values.len == 0 or values[0] == .nil) Value{ .boolean = true } else values[0];
     try state.setTableRaw(loaded, name_key, module_value);
-    if (loader_data == .nil) {
-        try state.returnValues(thread, op.base, op.return_count, &.{module_value});
-    } else {
-        try state.returnValues(thread, op.base, op.return_count, &.{ module_value, loader_data });
-    }
+    try state.returnValues(thread, op.base, op.return_count, &.{ module_value, loader_data });
 }
 
 pub fn searchpath(state: *State, thread: *Thread, op: bytecode.Call) !void {
@@ -158,6 +154,17 @@ pub fn searchpath(state: *State, thread: *Thread, op: bytecode.Call) !void {
     try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.intern(message) } });
 }
 
+/// Native C modules are not supported, matching a Lua build without dynamic libraries.
+pub fn loadlib(state: *State, thread: *Thread, op: bytecode.Call) !void {
+    _ = try state.expectArgumentString(thread, op, "package.loadlib", 0);
+    _ = try state.expectArgumentString(thread, op, "package.loadlib", 1);
+    try state.returnValues(thread, op.base, op.return_count, &.{
+        .nil,
+        .{ .string = try state.intern("dynamic libraries not enabled; check your Lua installation") },
+        .{ .string = try state.intern("absent") },
+    });
+}
+
 pub fn searcherPreload(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const name = try state.expectArgumentString(thread, op, "package.searchers preload", 0);
     const preload = try state.expectTable((try packageTable(state)).get(.{ .string = try state.intern("preload") }));
@@ -165,7 +172,7 @@ pub fn searcherPreload(state: *State, thread: *Thread, op: bytecode.Call) !void 
     if (loader == .nil) {
         try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern("no field package.preload") }});
     } else {
-        try state.returnValues(thread, op.base, op.return_count, &.{loader});
+        try state.returnValues(thread, op.base, op.return_count, &.{ loader, .{ .string = try state.intern(":preload:") } });
     }
 }
 
@@ -197,7 +204,10 @@ fn searchPath(state: *State, name: []const u8, path: []const u8, sep: []const u8
     while (iterator.next()) |template| {
         var candidate = try applyTemplate(state.allocator, template, module_path);
         defer candidate.deinit(state.allocator);
-        const contents = state.readFileAlloc(candidate.items) catch continue;
+        const contents = state.readFileRaw(candidate.items) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            continue;
+        };
         state.allocator.free(contents);
         const found = try state.allocator.dupe(u8, candidate.items);
         return found;

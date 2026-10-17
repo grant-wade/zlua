@@ -21,13 +21,12 @@
 - [compile.resolver](../compile/resolver.md)
 - [compile.bytecode](../compile/bytecode.md)
 - [compile.proto](../compile/proto.md)
-- [compile.compiler](../compile/compiler.md)
-- [compile.disasm](../compile/disasm.md)
-- [api](../api.md)
+- [runtime.types](../runtime/types.md)
 - [runtime](../runtime.md)
 - [runtime.chunk](../runtime/chunk.md)
-- [runtime.types](../runtime/types.md)
+- [reflection](../reflection.md)
 - [runtime.value](../runtime/value.md)
+- [runtime.number_format](../runtime/number_format.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
 - [runtime.state](../runtime/state.md)
@@ -37,6 +36,7 @@
 - [runtime.debug](../runtime/debug.md)
 - [runtime.gc](../runtime/gc.md)
 - [runtime.host](../runtime/host.md)
+- [runtime.timezone](../runtime/timezone.md)
 - [stdlib](../stdlib.md)
 - [stdlib.base](../stdlib/base.md)
 - [stdlib.table](../stdlib/table.md)
@@ -45,19 +45,23 @@
 - [stdlib.utf8](../stdlib/utf8.md)
 - [stdlib.coroutine](../stdlib/coroutine.md)
 - [stdlib.debug](../stdlib/debug.md)
-- [stdlib.package](../stdlib/package.md)
 - [stdlib.io](../stdlib/io.md)
+- [stdlib.static_strings](../stdlib/static_strings.md)
 - [stdlib.os](../stdlib/os.md)
+- [stdlib.package](../stdlib/package.md)
 - [stdlib.json](../stdlib/json.md)
 - [stdlib.zerde_lua](../stdlib/zerde_lua.md)
 - [stdlib.toml](../stdlib/toml.md)
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
-- [stdlib.static_strings](../stdlib/static_strings.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
+- [compile.compiler](../compile/compiler.md)
+- [compile.fold](../compile/fold.md)
+- [compile.disasm](../compile/disasm.md)
+- [api](../api.md)
 - [runtime.snapshot](../runtime/snapshot.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
@@ -96,23 +100,28 @@
 - [ApiCallbackContext](#type-apicallbackcontext)
 - [RuntimeErrorPayload](#type-runtimeerrorpayload)
 - [ProtectedCallContext](#type-protectedcallcontext)
-- [ProtectedContinuationKind](#type-protectedcontinuationkind)
+- [NativeMark](#type-nativemark)
 - [ProtectedContinuation](#type-protectedcontinuation)
 - [GenericForContinuation](#type-genericforcontinuation)
 - [PairsContinuation](#type-pairscontinuation)
 - [BranchContinuation](#type-branchcontinuation)
 - [TailCallContinuation](#type-tailcallcontinuation)
 - [CallOneContinuationResult](#type-callonecontinuationresult)
+- [ConcatContinuation](#type-concatcontinuation)
 - [CallOneContinuation](#type-callonecontinuation)
 - [CoroutineResumeResult](#type-coroutineresumeresult)
 - [Closure](#type-closure)
 - [Upvalue](#type-upvalue)
 - [TableEntry](#type-tableentry)
+- [MetaEvent](#type-metaevent)
 - [Table](#type-table)
 - [UserdataScope](#type-userdatascope)
+- [ValueRoots](#type-valueroots)
 - [Userdata](#type-userdata)
+- [FinalizerObject](#type-finalizerobject)
 - [Thread](#type-thread)
 - [ThreadStatus](#type-threadstatus)
+- [NativeCall](#type-nativecall)
 - [CallFrame](#type-callframe)
 - [StringAllocation](#type-stringallocation)
 - [GcMeta](#type-gcmeta)
@@ -273,6 +282,7 @@ pub const NativeFn = enum {
     package_searchpath,
     package_searcher_preload,
     package_searcher_lua,
+    package_loadlib,
     io_read,
     io_write,
     io_open,
@@ -283,6 +293,7 @@ pub const NativeFn = enum {
     io_lines,
     io_tmpfile,
     io_type,
+    io_popen,
     io_file_read,
     io_file_write,
     io_file_close,
@@ -290,6 +301,8 @@ pub const NativeFn = enum {
     io_file_flush,
     io_file_lines,
     io_file_setvbuf,
+    io_file_tostring,
+    io_file_gc,
     io_lines_iter,
     os_time,
     os_clock,
@@ -301,6 +314,7 @@ pub const NativeFn = enum {
     os_rename,
     os_tmpname,
     os_difftime,
+    os_exit,
     debug_getinfo,
     debug_getupvalue,
     debug_setupvalue,
@@ -314,6 +328,9 @@ pub const NativeFn = enum {
     debug_setmetatable,
     debug_setuservalue,
     debug_getuservalue,
+    debug_getmetatable,
+    debug_debug,
+    traceback_message_handler,
     json_read,
     json_write,
     toml_read,
@@ -753,24 +770,28 @@ References: [`RuntimeErrorPayload`](#type-runtimeerrorpayload), [`Value`](#type-
 ```zig
 pub const ProtectedCallContext = struct {
     frame_count: usize,
-    relative_base: bytecode.Register,
+    relative_base: u32,
     absolute_base: usize,
     stack_len: usize,
     last_result_base: usize,
     last_result_count: usize,
     last_error: ?RuntimeErrorPayload,
+    /// Message handler installed for the call, like `lua_pcall`'s `msgh`.
+    error_handler: Value = .nil,
+    /// The thread's handler before the call, restored when it ends.
+    previous_error_handler: Value = .nil,
 };
 ```
 
-<a id="type-protectedcontinuationkind"></a>
+<a id="type-nativemark"></a>
 
-## ProtectedContinuationKind
+## NativeMark
 
 ```zig
-pub const ProtectedContinuationKind = enum {
-    pcall,
-    xpcall,
-    xpcall_handler,
+pub const NativeMark = struct {
+    /// Frame count when the native function was called.
+    frame_count: u32,
+    callee: Value,
 };
 ```
 
@@ -782,11 +803,8 @@ pub const ProtectedContinuationKind = enum {
 pub const ProtectedContinuation = struct {
     order: usize,
     context: ProtectedCallContext,
-    base: bytecode.Register,
+    base: u32,
     return_count: u16,
-    kind: ProtectedContinuationKind,
-    handler: Value = .nil,
-    handler_depth: usize = 0,
 };
 ```
 
@@ -811,7 +829,7 @@ pub const PairsContinuation = struct {
     order: usize = 0,
     frame_count: usize,
     source_base: usize,
-    base: bytecode.Register,
+    base: u32,
     return_count: u16,
 };
 ```
@@ -834,7 +852,7 @@ pub const BranchContinuation = struct {
 ```zig
 pub const TailCallContinuation = struct {
     frame_count: usize,
-    base: bytecode.Register,
+    base: u32,
     return_count: u16,
 };
 ```
@@ -850,7 +868,24 @@ pub const CallOneContinuationResult = union(enum) {
     inverted_truthy: usize,
     branch_truthy: BranchContinuation,
     branch_inverted_truthy: BranchContinuation,
+    concat: ConcatContinuation,
     discard,
+};
+```
+
+<a id="type-concatcontinuation"></a>
+
+## ConcatContinuation
+
+A `concat_range` suspended in a `__concat` metamethod. Slots are
+absolute stack indices; the metamethod result becomes the last of the
+`count` operands still to be joined starting at `first`.
+
+```zig
+pub const ConcatContinuation = struct {
+    dest: usize,
+    first: usize,
+    count: usize,
 };
 ```
 
@@ -930,6 +965,60 @@ pub const TableEntryIndex = std.HashMap(Value, usize, ValueHashContext, std.hash
 
 References: [`Value`](#type-value)
 
+<a id="type-metaevent"></a>
+
+## MetaEvent
+
+Metamethod events whose absence a metatable caches in
+`Table.metamethod_absent`. [Tag](../frontend/token.md#type-tag) names are the event keys.
+
+```zig
+pub const MetaEvent = enum(u5) {
+    __index,
+    __newindex,
+    __len,
+    __eq,
+    __call,
+    __add,
+    __sub,
+    __mul,
+    __div,
+    __mod,
+    __pow,
+    __unm,
+    __idiv,
+    __band,
+    __bor,
+    __bxor,
+    __shl,
+    __shr,
+    __bnot,
+    __lt,
+    __le,
+    __concat,
+    __close,
+    __tostring,
+    __name,
+    __pairs,
+};
+```
+
+### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [fromName](#fn-metaevent-fromname) | `name: []const u8` | `?MetaEvent` |  |
+
+<a id="fn-metaevent-fromname"></a>
+
+### MetaEvent.fromName
+
+```zig
+pub fn fromName(name: []const u8) ?MetaEvent
+```
+
+References: [`MetaEvent`](#type-metaevent)
+
 <a id="type-table"></a>
 
 ## Table
@@ -949,6 +1038,11 @@ pub const Table = struct {
     finalizer_next: ?*Table = null,
     finalizer_prev: ?*Table = null,
     finalizer_order: u64 = 0,
+    /// Bit `e` set: this table, used as a metatable, has a nil raw value for
+    /// `MetaEvent` `e`. Only absence is cached. Every hash-part write that can
+    /// turn a nil value non-nil clears the whole set, so a set bit is never
+    /// stale. Array writes cannot affect string keys.
+    metamethod_absent: u32 = 0,
 };
 ```
 
@@ -959,6 +1053,9 @@ pub const Table = struct {
 | [init](#fn-table-init) | `allocator: std.mem.Allocator, array_hint: u32, hash_hint: u32` | `!Table` |  |
 | [deinit](#fn-table-deinit) | `self: *Table, allocator: std.mem.Allocator` | `void` |  |
 | [get](#fn-table-get) | `self: *const Table, key: Value` | `Value` |  |
+| [metaEventAbsent](#fn-table-metaeventabsent) | `self: *const Table, event: MetaEvent` | `bool` |  |
+| [metaEvent](#fn-table-metaevent) | `self: *Table, event: MetaEvent` | `Value` | Raw lookup of a metamethod in this metatable, caching absence. |
+| [invalidateMetaEvents](#fn-table-invalidatemetaevents) | `self: *Table` | `void` | Call before writing a hash slot that may currently hold nil. |
 | [findEntry](#fn-table-findentry) | `self: *const Table, key: Value` | `?usize` |  |
 | [rebuildEntryIndex](#fn-table-rebuildentryindex) | `self: *Table` | `!void` |  |
 | [insertHashEntryNoAlloc](#fn-table-inserthashentrynoalloc) | `self: *Table, key: Value, value: Value` | `bool` | Insert an absent hash key using reserved storage. The caller must check that the key is absent; false means growth or snapshot detachment is needed. |
@@ -998,6 +1095,40 @@ pub fn get(self: *const Table, key: Value) Value
 ```
 
 References: [`Table`](#type-table), [`Value`](#type-value)
+
+<a id="fn-table-metaeventabsent"></a>
+
+### Table.metaEventAbsent
+
+```zig
+pub inline fn metaEventAbsent(self: *const Table, event: MetaEvent) bool
+```
+
+References: [`Table`](#type-table), [`MetaEvent`](#type-metaevent)
+
+<a id="fn-table-metaevent"></a>
+
+### Table.metaEvent
+
+Raw lookup of a metamethod in this metatable, caching absence.
+
+```zig
+pub fn metaEvent(self: *Table, event: MetaEvent) Value
+```
+
+References: [`Table`](#type-table), [`MetaEvent`](#type-metaevent), [`Value`](#type-value)
+
+<a id="fn-table-invalidatemetaevents"></a>
+
+### Table.invalidateMetaEvents
+
+[Call](../compile/bytecode.md#type-call) before writing a hash slot that may currently hold nil.
+
+```zig
+pub inline fn invalidateMetaEvents(self: *Table) void
+```
+
+References: [`Table`](#type-table)
 
 <a id="fn-table-findentry"></a>
 
@@ -1104,6 +1235,20 @@ pub const UserdataScope = struct {
 };
 ```
 
+<a id="type-valueroots"></a>
+
+## ValueRoots
+
+Values a native function holds outside the Lua stack while it runs Lua
+code. The collector marks them until the scope is popped.
+
+```zig
+pub const ValueRoots = struct {
+    values: []const Value,
+    previous: ?*ValueRoots,
+};
+```
+
 <a id="type-userdata"></a>
 
 ## Userdata
@@ -1126,8 +1271,45 @@ pub const Userdata = struct {
     finalized: bool = false,
     finalization_pending: bool = false,
     finalizer_next: ?*Userdata = null,
+    /// Registered to call its metatable's `__gc`, as a table is with
+    /// `Table.finalizer_registered`. The host finalizer runs once the
+    /// userdata is unreachable after that.
+    lua_finalizer_registered: bool = false,
+    /// Registration order on the `Table.finalizer_order` scale, then the
+    /// position in the finalizer queue once separated.
+    lua_finalizer_order: u64 = 0,
+    lua_finalizer_next: ?*Userdata = null,
 };
 ```
+
+<a id="type-finalizerobject"></a>
+
+## FinalizerObject
+
+An object separated for a Lua `__gc` call.
+
+```zig
+pub const FinalizerObject = union(enum) {
+    table: *Table,
+    userdata: *Userdata,
+};
+```
+
+### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [order](#fn-finalizerobject-order) | `self: FinalizerObject` | `u64` |  |
+
+<a id="fn-finalizerobject-order"></a>
+
+### FinalizerObject.order
+
+```zig
+pub fn order(self: FinalizerObject) u64
+```
+
+References: [`FinalizerObject`](#type-finalizerobject)
 
 <a id="type-thread"></a>
 
@@ -1147,6 +1329,9 @@ pub const Thread = struct {
     continuation_order: usize = 0,
     tail_call_continuations: std.ArrayList(TailCallContinuation) = .empty,
     call_one_continuations: std.ArrayList(CallOneContinuation) = .empty,
+    /// Largest `frame_count` among the pending continuations. Every push calls
+    /// `noteContinuation`; every removal calls `refreshContinuationFrameCount`.
+    continuation_frame_count: usize = 0,
     open_upvalues: ?*Upvalue = null,
     hook: Value = .nil,
     hook_call: bool = false,
@@ -1171,13 +1356,28 @@ pub const Thread = struct {
     yield_result_base: usize = 0,
     yield_result_count: u16 = 0,
     native_call_depth: usize = 0,
-    traceback_native_name: ?[]const u8 = null,
+    native_call: ?NativeCall = null,
     protected_close_depth: usize = 0,
+    /// Message handler for errors raised on this thread, like `L->errfunc`.
+    error_handler: Value = .nil,
+    /// Set after a stack overflow so a message handler can still run on top
+    /// of the full stack; cleared once the stack unwinds below the limit.
+    stack_error_space: bool = false,
+    /// Tracebacks end with the `[C]: in ?` entry of a standalone host call.
+    host_frame: bool = false,
+    /// Native functions with no calling instruction (called by `xpcall` or
+    /// a message handler) that are still on the stack while a message
+    /// handler runs, oldest first, so tracebacks can show them.
+    native_marks: [4]NativeMark = undefined,
+    native_mark_count: u8 = 0,
     close_error_value: ?Value = null,
     error_traceback: ?[]const u8 = null,
     pending_unwind_error: ?Value = null,
     pending_unwind_resume_frame_count: usize = 0,
     pending_unwind_target_frame_count: usize = 0,
+    /// Bytes of owned varargs and pending returns held by frames made for
+    /// this thread, kept current as frames gain and release them.
+    frame_storage_bytes: usize = 0,
     resume_parent: ?*Thread = null,
     entry: Value = .nil,
     marked: bool = false,
@@ -1196,7 +1396,11 @@ pub const Thread = struct {
 | [initRoot](#fn-thread-initroot) | `allocator: std.mem.Allocator, closure: *Closure, stack_value_limit: usize` | `!Thread` |  |
 | [initCoroutine](#fn-thread-initcoroutine) | `entry: Value` | `Thread` |  |
 | [deinit](#fn-thread-deinit) | `self: *Thread, allocator: std.mem.Allocator` | `void` |  |
+| [releaseFrame](#fn-thread-releaseframe) | `self: *Thread, frame: *CallFrame, allocator: std.mem.Allocator` | `void` | Frees a frame made for this thread. |
+| [noteContinuation](#fn-thread-notecontinuation) | `self: *Thread, frame_count: usize` | `void` |  |
+| [refreshContinuationFrameCount](#fn-thread-refreshcontinuationframecount) | `self: *Thread` | `void` |  |
 | [ensureStack](#fn-thread-ensurestack) | `self: *Thread, allocator: std.mem.Allocator, size: usize, limit: usize` | `!void` |  |
+| [scratchRegister](#fn-thread-scratchregister) | `self: *const Thread` | `u32` | The register, relative to the top frame, where the runtime places a call it makes itself: above the frame's registers and above the arguments of any native function running on that frame. |
 
 <a id="fn-thread-initroot"></a>
 
@@ -1228,12 +1432,58 @@ pub fn deinit(self: *Thread, allocator: std.mem.Allocator) void
 
 References: [`Thread`](#type-thread)
 
+<a id="fn-thread-releaseframe"></a>
+
+### Thread.releaseFrame
+
+Frees a frame made for this thread.
+
+```zig
+pub fn releaseFrame(self: *Thread, frame: *CallFrame, allocator: std.mem.Allocator) void
+```
+
+References: [`Thread`](#type-thread), [`CallFrame`](#type-callframe)
+
+<a id="fn-thread-notecontinuation"></a>
+
+### Thread.noteContinuation
+
+```zig
+pub fn noteContinuation(self: *Thread, frame_count: usize) void
+```
+
+References: [`Thread`](#type-thread)
+
+<a id="fn-thread-refreshcontinuationframecount"></a>
+
+### Thread.refreshContinuationFrameCount
+
+```zig
+pub fn refreshContinuationFrameCount(self: *Thread) void
+```
+
+References: [`Thread`](#type-thread)
+
 <a id="fn-thread-ensurestack"></a>
 
 ### Thread.ensureStack
 
 ```zig
 pub fn ensureStack(self: *Thread, allocator: std.mem.Allocator, size: usize, limit: usize) !void
+```
+
+References: [`Thread`](#type-thread)
+
+<a id="fn-thread-scratchregister"></a>
+
+### Thread.scratchRegister
+
+The register, relative to the top frame, where the runtime places a
+call it makes itself: above the frame's registers and above the
+arguments of any native function running on that frame.
+
+```zig
+pub fn scratchRegister(self: *const Thread) u32
 ```
 
 References: [`Thread`](#type-thread)
@@ -1248,6 +1498,34 @@ pub const ThreadStatus = enum {
     running,
     normal,
     dead,
+};
+```
+
+<a id="type-nativecall"></a>
+
+## NativeCall
+
+The innermost non-Lua function running on a thread. Library errors use it
+the way `luaL_argerror` and `luaL_where` use the C call stack: to find the
+calling Lua function, the call-site name, and the argument count.
+
+```zig
+pub const NativeCall = struct {
+    /// Callee register, relative to the frame on top when it was called.
+    base: u32,
+    arg_count: u32,
+    /// Arguments prepended by `__call` metamethods, like `lua_Debug.extraargs`.
+    extra_args: u8 = 0,
+    frame_count: usize,
+    /// True when another native function made the call (like `pcall(f)`),
+    /// so no Lua code is the immediate caller.
+    from_native: bool,
+    /// Frame count of the enclosing native call, if any.
+    outer_frame_count: ?usize = null,
+    /// Name supplied by the runtime for calls that are not CALL instructions:
+    /// metamethods, generic-for iterators, and `__close`. Always static.
+    name: ?[]const u8 = null,
+    namewhat: ?[]const u8 = null,
 };
 ```
 
@@ -1279,7 +1557,18 @@ pub const CallFrame = struct {
 
 | Name | Parameters | Return Type | Description |
 | --- | --- | --- | --- |
+| [storageBytes](#fn-callframe-storagebytes) | `self: CallFrame` | `usize` |  |
 | [deinit](#fn-callframe-deinit) | `self: *CallFrame, allocator: std.mem.Allocator` | `void` |  |
+
+<a id="fn-callframe-storagebytes"></a>
+
+### CallFrame.storageBytes
+
+```zig
+pub fn storageBytes(self: CallFrame) usize
+```
+
+References: [`CallFrame`](#type-callframe)
 
 <a id="fn-callframe-deinit"></a>
 

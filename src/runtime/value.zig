@@ -1,6 +1,7 @@
 const std = @import("std");
 const compile = @import("../compile.zig");
 const types = @import("types.zig");
+const number_format = @import("number_format.zig");
 
 const bytecode = compile.bytecode;
 const proto_mod = compile.proto;
@@ -158,6 +159,17 @@ pub fn toInteger(value: Value) ?i64 {
     };
 }
 
+/// Converts like `lua_tointegerx`: floats and numeric strings convert only
+/// when their value is an exact integer.
+pub fn coerceToInteger(value: Value) ?i64 {
+    return switch (value) {
+        .integer => |integer| integer,
+        .number => |number| floatToInteger(number),
+        .string => |string| parseIntegerStrict(string) orelse if (parseLuaNumber(string)) |number| floatToInteger(number) else |_| null,
+        else => null,
+    };
+}
+
 pub fn toNumber(value: Value) !f64 {
     return switch (value) {
         .integer => |integer| @floatFromInt(integer),
@@ -297,6 +309,34 @@ pub fn appendLuaString(allocator: std.mem.Allocator, out: *std.ArrayList(u8), va
     }
 }
 
+/// Derive per-prototype runtime metadata once, before any closure of the tree
+/// runs. Prepared prototypes are never written again, so snapshot workers may
+/// share them. Prototypes that skip this keep defaults selecting general paths.
+pub fn prepareProtoTree(proto: *proto_mod.Proto) !void {
+    if (proto.runtime_prepared) return;
+    for (proto.children.items) |child| try prepareProtoTree(child);
+    const values = try proto.arena.allocator().alloc(Value, proto.constants.items.len);
+    for (proto.constants.items, values) |constant, *value| {
+        value.* = switch (constant) {
+            .nil => .nil,
+            .boolean => |boolean| .{ .boolean = boolean },
+            .integer => |lexeme| parseIntegerLiteral(lexeme) catch .{ .string = "" },
+            .number => |lexeme| if (parseLuaNumber(lexeme)) |number| .{ .number = number } else |_| .{ .string = "" },
+            .string => .{ .string = "" },
+        };
+    }
+    proto.constant_values = values;
+    proto.named_vararg_readonly = proto.hasReadOnlyNamedVararg();
+    const instructions = proto.instructions.items;
+    const last_stops = instructions.len != 0 and switch (instructions[instructions.len - 1]) {
+        .ret, .tail_call, .close => true,
+        else => false,
+    };
+    proto.fast_loop_entry = last_stops and !proto.has_to_close_locals;
+    proto.fast_loop_call = proto.fast_loop_entry and !proto.is_vararg and !proto.named_vararg;
+    proto.runtime_prepared = true;
+}
+
 pub fn localActiveAt(local: proto_mod.LocalDebug, pc: usize) bool {
     return local.start_pc <= pc and (local.end_pc == 0 or pc < local.end_pc);
 }
@@ -421,14 +461,14 @@ pub fn arrayIndex(value: Value) ?usize {
     return std.math.cast(usize, integer);
 }
 
-pub fn runtimeArgValue(state: anytype, thread: *Thread, op: bytecode.Call, index: u16) Value {
+pub fn runtimeArgValue(state: anytype, thread: *Thread, op: bytecode.Call, index: u32) Value {
     _ = state;
     if (index >= op.arg_count) return .nil;
     const frame = thread.frames.items[thread.frames.items.len - 1];
     return thread.stack.items[frame.base + op.base + 1 + index];
 }
 
-pub fn argValue(state: anytype, thread: *Thread, op: bytecode.Call, index: u16) Value {
+pub fn argValue(state: anytype, thread: *Thread, op: bytecode.Call, index: u32) Value {
     return runtimeArgValue(state, thread, op, index);
 }
 
@@ -436,16 +476,12 @@ pub fn appendValue(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value:
     switch (value) {
         .nil => try out.appendSlice(allocator, "nil"),
         .boolean => |boolean| try out.appendSlice(allocator, if (boolean) "true" else "false"),
-        .integer => |integer| try appendFmt(allocator, out, "{d}", .{integer}),
-        .number => |number| try appendNumber(allocator, out, number),
+        .integer, .number => {
+            var buffer: [max_number_text_len]u8 = undefined;
+            try out.appendSlice(allocator, formatNumber(&buffer, value));
+        },
         .string => |string| try out.appendSlice(allocator, string),
-        .table => |table| if (isFileValue(value)) {
-            if (isClosedFileValue(value)) {
-                try out.appendSlice(allocator, "file (closed)");
-            } else {
-                try appendFmt(allocator, out, "file (0x{x})", .{@intFromPtr(table)});
-            }
-        } else try appendFmt(allocator, out, "table: 0x{x}", .{@intFromPtr(table)}),
+        .table => |table| try appendFmt(allocator, out, "table: 0x{x}", .{@intFromPtr(table)}),
         .userdata => |userdata| try appendFmt(allocator, out, "userdata: 0x{x}", .{@intFromPtr(userdata)}),
         .closure => |closure| try appendFmt(allocator, out, "function: 0x{x}", .{@intFromPtr(closure)}),
         .thread => |thread| try appendFmt(allocator, out, "thread: 0x{x}", .{@intFromPtr(thread)}),
@@ -487,16 +523,6 @@ pub fn appendValue(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value:
     }
 }
 
-pub fn isFileValue(value: Value) bool {
-    return value == .table and value.table.get(.{ .string = "__zlua_file" }) != .nil;
-}
-
-pub fn isClosedFileValue(value: Value) bool {
-    if (!isFileValue(value)) return false;
-    const closed = value.table.get(.{ .string = "__zlua_file_closed" });
-    return closed == .boolean and closed.boolean;
-}
-
 pub fn appendNamedValue(allocator: std.mem.Allocator, out: *std.ArrayList(u8), name: []const u8, value: Value) !void {
     const address: ?usize = switch (value) {
         .table => |table| @intFromPtr(table),
@@ -521,9 +547,20 @@ pub fn freeProtectedResult(allocator: std.mem.Allocator, result: ProtectedCallRe
 }
 
 pub fn appendNumber(allocator: std.mem.Allocator, out: *std.ArrayList(u8), number: f64) !void {
-    try appendFmt(allocator, out, "{d}", .{number});
-    if (@floor(number) == number and std.math.isFinite(number)) {
-        try out.appendSlice(allocator, ".0");
+    var buffer: [max_number_text_len]u8 = undefined;
+    try out.appendSlice(allocator, formatNumber(&buffer, .{ .number = number }));
+}
+
+/// Fits the longest decimal rendering of any f64 (subnormals expand to
+/// about 343 bytes) plus a sign and a ".0" suffix.
+pub const max_number_text_len = 400;
+
+/// Renders an integer or float value as `tostring` and concatenation do.
+pub fn formatNumber(buffer: *[max_number_text_len]u8, value: Value) []const u8 {
+    switch (value) {
+        .integer => |integer| return std.fmt.bufPrint(buffer, "{d}", .{integer}) catch unreachable,
+        .number => |number| return number_format.formatLuaFloat(buffer[0..number_format.max_lua_float_len], number),
+        else => unreachable,
     }
 }
 

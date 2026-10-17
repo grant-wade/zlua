@@ -6,7 +6,7 @@ assert(err.operation == "read" and err.path == ".zlua-definitely-missing-file")
 local exists, exists_err = fs.exists(".zlua-definitely-missing-file")
 assert(exists == false and exists_err == nil)
 
-local ok = pcall(fs.read, 42)
+local ok = pcall(fs.read, true)
 assert(not ok)
 ok = pcall(fs.mkdir, "x", { parents = "yes" })
 assert(not ok)

@@ -1,0 +1,32 @@
+default	"x y"
+default inner	"a  b"
+default nul kept	"\0 x \0"
+default nbsp kept	5
+default nil chars	"x"
+set	"x"
+set order	"x"
+set dup	"x"
+set not prefix	"x"
+set keeps space	" -x- "
+set with space	"x"
+set pattern chars	"x"
+set class	"a]x[a"
+set nul	"x"
+set high bytes	"x"
+set empty	"  x  "
+set strips all	""
+set no match	"xyz"
+empty	""
+empty set	""
+all space	""
+single	"x"
+single space	""
+method	"m"
+method set	"m"
+result count	1
+nil source	false	bad argument #1 to 'string.strip' (string expected, got no value)
+number source	"12"
+table source	false	bad argument #1 to 'string.strip' (string expected, got table)
+number chars	"x"
+boolean chars	false	bad argument #2 to 'string.strip' (string expected, got boolean)
+method bad chars	false	strip_edges.lua:52: bad argument #1 to 'strip' (string expected, got table)

@@ -67,9 +67,13 @@ print(({ 10, 20, 30 })[2])
 | `stage` | `lex`, `parse`, `resolve`, `compile`, `runtime`, `stdlib`, `official` | `runtime` |
 | `feature` | Free-form tag | `uncategorized` |
 | `normalize` | `none`, `paths` | `none` |
+| `gc-stress` | `run`, `skip` | `run` |
+| `skip-os` | Space- or comma-separated OS names (`linux`, `macos`, `windows`, ...) | empty |
 | `reason`, `issue` | Free-form text | empty |
 
 The first four stages compare load-time acceptance while stopping zlua at the named compiler stage. Runtime-style stages also compare stdout and stderr. Normalization is opt-in and should only remove unstable paths, never semantic differences.
+
+Use `skip-os` (with a `reason`) only when the host C Lua's behavior depends on something zlua cannot see, such as the host filesystem's limits.
 
 Useful focused runs:
 
@@ -82,9 +86,7 @@ just diff --gc-step-stress
 just diff --show-clua --show-zlua tests/diff/runtime/errors.lua
 ```
 
-Use `--gc-stress` to look for values that are collected too early, or `--gc-step-stress` to test changes made between collection steps. Add `--feature=gc` to run just the GC fixtures. Both modes respect Lua's stop/restart controls.
-
-`--bless` and `--update-expected-failures` are accepted but are currently no-ops.
+Both stress modes collect at every safepoint reached after an allocation. Fixtures that allocate heavily on purpose can set `gc-stress: skip` (with a `reason`) to sit out `--gc-stress`. Use `--gc-stress` to look for values that are collected too early, or `--gc-step-stress` to test changes made between collection steps. Add `--feature=gc` to run just the GC fixtures. Both modes respect Lua's stop/restart controls.
 
 ### Expected Failures
 
@@ -102,6 +104,12 @@ just extensions --show-output tests/extensions/fs/basic.lua
 
 The harness uses safe libraries by default and full libraries for fixtures under `tests/extensions/fs`.
 
+`--bless` rewrites the expected `.out`, `.err`, and `.exit` files from the actual run.
+
+```sh
+just extensions --bless tests/extensions/string/split_edges.lua
+```
+
 ## Official Suite
 
 Downloaded tests live under `.zlua-deps/lua-5.5.0-tests`. The default run uses every top-level `.lua` file except `all.lua` with the basic compatibility prelude.
@@ -115,7 +123,7 @@ just official --mode=complete strings.lua
 zig build test-official -Dofficial-memory-limit-mb=0
 ```
 
-The build step applies a 256 MiB child-process cap on Linux by default and no cap elsewhere. It also limits each child to 120 seconds (`-Dofficial-timeout-ms=0` disables this). The allocator-exhaustion test `heavy.lua` is skipped on macOS and Windows because the harness cannot cap child memory there. The `files.lua` prelude emulates `/dev/full` on those platforms and maps `/dev/null` to `NUL` on Windows. Direct harness runs default to no timeout or memory cap. `--mode=internal` is parsed but skipped because `testC` builds are not wired.
+The build step applies a 256 MiB child-process cap on Linux by default and no cap elsewhere. It also limits each child to 120 seconds (`-Dofficial-timeout-ms=0` disables this). The allocator-exhaustion test `heavy.lua` is skipped on macOS and Windows because the harness cannot cap child memory there. The `files.lua` prelude emulates `/dev/full` on those platforms and maps `/dev/null` to `NUL` on Windows. Direct harness runs default to no timeout or memory cap. `--mode=internal` is rejected because it requires `testC` builds of both interpreters, which are not supported.
 
 Differential and extension output comparisons treat CRLF and LF as equivalent; lone carriage returns, spaces, and missing final newlines remain significant. Fixtures normalize platform-dependent paths explicitly where they print or assert them.
 

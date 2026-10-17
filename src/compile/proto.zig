@@ -1,5 +1,6 @@
 const std = @import("std");
 const bytecode = @import("bytecode.zig");
+const RuntimeValue = @import("../runtime/types.zig").Value;
 
 pub const LineInfo = struct {
     line: usize,
@@ -73,6 +74,21 @@ pub const Proto = struct {
     defined_line: usize = 0,
     last_defined_line: usize = 0,
     has_to_close_locals: bool = false,
+    /// Runtime metadata derived once when the runtime loads the prototype
+    /// tree (see `runtime/value.zig` `prepareProtoTree`). Prepared prototypes
+    /// are immutable afterwards and may be shared by snapshot workers. The
+    /// defaults select the general VM paths for unprepared prototypes.
+    runtime_prepared: bool = false,
+    named_vararg_readonly: bool = false,
+    /// The plain fast loop may run this prototype: it has no to-be-closed
+    /// locals and its last opcode stops sequential dispatch.
+    fast_loop_entry: bool = false,
+    /// `fast_loop_entry` with a fixed parameter list, so the fast loop's
+    /// call path can push a frame for it without capturing varargs.
+    fast_loop_call: bool = false,
+    /// Decoded non-string constants, indexed like `constants`. A `.string`
+    /// slot means the value is per-State (interned) and uses the closure cache.
+    constant_values: []const RuntimeValue = &.{},
 
     pub fn init(allocator: std.mem.Allocator) Proto {
         return .{
@@ -125,6 +141,7 @@ pub const Proto = struct {
                 inline .set_array, .set_field => |op| op.table == register or op.value == register,
                 .set_list => |op| op.table == register or op.first <= register,
                 .add, .sub, .mul, .div, .idiv, .mod, .pow, .band, .bor, .bxor, .shl, .shr, .eq, .lt, .le, .concat => |op| op.dest == register or op.left == register or op.right == register,
+                .concat_range => |op| op.dest == register or (op.first <= register and register - op.first < op.count),
                 .compare_branch => |op| op.left == register or op.right == register,
                 .test_set => |op| op.dest == register or op.source == register,
                 // Conservatively reject ranges that could include the binding.
@@ -159,13 +176,21 @@ pub const Proto = struct {
         }
     }
 
+    /// Linear-time deduplicating insert. The compiler keeps its own index
+    /// and calls `appendConstant` directly.
     pub fn addConstant(self: *Proto, constant: bytecode.Constant) !bytecode.ConstantIndex {
-        const owned = try self.ownConstant(constant);
         for (self.constants.items, 0..) |existing, index| {
-            if (bytecode.constantEql(existing, owned)) return @intCast(index);
+            if (bytecode.constantEql(existing, constant)) return @intCast(index);
         }
+        return self.appendConstant(constant);
+    }
+
+    /// Appends an owned copy without searching for an existing entry.
+    pub fn appendConstant(self: *Proto, constant: bytecode.Constant) !bytecode.ConstantIndex {
+        const index: bytecode.ConstantIndex = @intCast(self.constants.items.len);
+        const owned = try self.ownConstant(constant);
         try self.constants.append(self.allocator, owned);
-        return @intCast(self.constants.items.len - 1);
+        return index;
     }
 
     pub fn addLocal(self: *Proto, local: LocalDebug) !usize {

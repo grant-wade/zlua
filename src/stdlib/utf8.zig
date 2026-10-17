@@ -21,8 +21,8 @@ pub fn char(state: *State, thread: *Thread, op: bytecode.Call) !void {
 
 pub fn codepoint(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const source = try state.expectArgumentString(thread, op, "utf8.codepoint", 0);
-    const start = normalizeStringIndex(if (op.arg_count >= 2) runtime.toInteger(runtime.argValue(state, thread, op, 1)) orelse 1 else 1, source.len);
-    const stop = normalizeStringIndex(if (op.arg_count >= 3) runtime.toInteger(runtime.argValue(state, thread, op, 2)) orelse @as(i64, @intCast(start)) else @as(i64, @intCast(start)), source.len);
+    const start = normalizeStringIndex(try state.optionalArgumentInteger(thread, op, "utf8.codepoint", 1, 1), source.len);
+    const stop = normalizeStringIndex(try state.optionalArgumentInteger(thread, op, "utf8.codepoint", 2, @as(i64, @intCast(start))), source.len);
     const strict = !(op.arg_count >= 4 and runtime.truthy(runtime.argValue(state, thread, op, 3)));
     var values = std.ArrayList(Value).empty;
     defer values.deinit(state.allocator);
@@ -30,12 +30,13 @@ pub fn codepoint(state: *State, thread: *Thread, op: bytecode.Call) !void {
         try state.returnValues(thread, op.base, op.return_count, values.items);
         return;
     }
-    if (start < 1) return state.fail("out of bounds");
-    if (stop > source.len) return state.fail("out of bounds");
+    if (start < 1) return state.failArgumentMessage("utf8.codepoint", 2, "out of bounds");
+    if (stop > source.len) return state.failArgumentMessage("utf8.codepoint", 3, "out of bounds");
     var pos = if (start <= 1) @as(usize, 0) else start - 1;
     const end = @min(stop, source.len);
+    if (!state.nativeStackFits(thread, op, end - pos)) return state.failLibrary("stack overflow (string slice too long)");
     while (pos < end) {
-        const decoded = decodeAt(source, pos, strict) orelse return state.fail("invalid UTF-8 code");
+        const decoded = decodeAt(source, pos, strict) orelse return state.failLibrary("invalid UTF-8 code");
         try values.append(state.allocator, .{ .integer = decoded.codepoint });
         pos += decoded.len;
     }
@@ -68,10 +69,10 @@ pub fn codesNext(state: *State, state_value: Value, index_value: Value) ![2]Valu
         const pos: usize = if (current == 0) 0 else blk: {
             const previous_pos: usize = @intCast(current - 1);
             if (previous_pos >= state_value.string.len) return .{ .nil, .nil };
-            break :blk previous_pos + (sequenceLenAt(state_value.string, previous_pos) orelse return state.fail("invalid UTF-8 code"));
+            break :blk previous_pos + (sequenceLenAt(state_value.string, previous_pos) orelse return state.failLibrary("invalid UTF-8 code"));
         };
         if (pos >= state_value.string.len) return .{ .nil, .nil };
-        const decoded = decodeAt(state_value.string, pos, true) orelse return state.fail("invalid UTF-8 code");
+        const decoded = decodeAt(state_value.string, pos, true) orelse return state.failLibrary("invalid UTF-8 code");
         return .{ .{ .integer = @intCast(pos + 1) }, .{ .integer = decoded.codepoint } };
     }
 
@@ -81,19 +82,19 @@ pub fn codesNext(state: *State, state_value: Value, index_value: Value) ![2]Valu
     const strict = runtime.truthy(state_table.get(.{ .string = "strict" }));
     const pos: usize = @intCast(@max(current, 0));
     if (pos >= source.len) return .{ .nil, .nil };
-    const decoded = decodeAt(source, pos, strict) orelse return state.fail("invalid UTF-8 code");
+    const decoded = decodeAt(source, pos, strict) orelse return state.failLibrary("invalid UTF-8 code");
     try state.setTableRaw(state_table, .{ .string = try state.intern("i") }, .{ .integer = @intCast(pos + decoded.len) });
     return .{ .{ .integer = @intCast(pos + 1) }, .{ .integer = decoded.codepoint } };
 }
 
 pub fn len(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const source = try state.expectArgumentString(thread, op, "utf8.len", 0);
-    const start = normalizeStringIndex(if (op.arg_count >= 2) runtime.toInteger(runtime.argValue(state, thread, op, 1)) orelse 1 else 1, source.len);
-    const stop = normalizeStringIndex(if (op.arg_count >= 3) runtime.toInteger(runtime.argValue(state, thread, op, 2)) orelse -1 else -1, source.len);
+    const start = normalizeStringIndex(try state.optionalArgumentInteger(thread, op, "utf8.len", 1, 1), source.len);
+    const stop = normalizeStringIndex(try state.optionalArgumentInteger(thread, op, "utf8.len", 2, -1), source.len);
     const strict = !(op.arg_count >= 4 and runtime.truthy(runtime.argValue(state, thread, op, 3)));
     var count: i64 = 0;
-    if (start < 1 or start > source.len + 1) return state.fail("out of bounds");
-    if (stop > source.len) return state.fail("out of bounds");
+    if (start < 1 or start > source.len + 1) return state.failArgumentMessage("utf8.len", 2, "initial position out of bounds");
+    if (stop > source.len) return state.failArgumentMessage("utf8.len", 3, "final position out of bounds");
     if (start > stop) {
         try state.returnValues(thread, op.base, op.return_count, &.{.{ .integer = 0 }});
         return;
@@ -117,11 +118,11 @@ pub fn offset(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const explicit_pos = op.arg_count >= 3;
     const pos = normalizeStringIndex(if (explicit_pos) runtime.toInteger(runtime.argValue(state, thread, op, 2)) orelse 1 else if (n >= 0) 1 else @as(i64, @intCast(source.len + 1)), source.len);
     if (pos < 1 or pos > source.len + 1) {
-        if (explicit_pos) return state.fail("position out of bounds");
+        if (explicit_pos) return state.failArgumentMessage("utf8.offset", 3, "position out of bounds");
         try state.returnValues(thread, op.base, op.return_count, &.{.nil});
         return;
     }
-    if (n != 0 and pos <= source.len and isContinuation(source[pos - 1])) return state.fail("initial position is a continuation byte");
+    if (n != 0 and pos <= source.len and isContinuation(source[pos - 1])) return state.failLibrary("initial position is a continuation byte");
 
     if (n == 0) {
         const byte_pos = if (pos == source.len + 1) source.len else charStartAtOrBefore(source, pos - 1);
@@ -136,7 +137,7 @@ pub fn offset(state: *State, thread: *Thread, op: bytecode.Call) !void {
         }
         break :blk charStartAtOrBefore(source, pos - 2);
     };
-    if (n < 0 and byte_pos < source.len and isContinuation(source[byte_pos])) return state.fail("initial position is a continuation byte");
+    if (n < 0 and byte_pos < source.len and isContinuation(source[byte_pos])) return state.failLibrary("initial position is a continuation byte");
 
     var remaining = if (n > 0) n - 1 else -n - 1;
     while (remaining > 0) : (remaining -= 1) {
@@ -145,7 +146,7 @@ pub fn offset(state: *State, thread: *Thread, op: bytecode.Call) !void {
                 try state.returnValues(thread, op.base, op.return_count, &.{.nil});
                 return;
             }
-            byte_pos += sequenceLenAt(source, byte_pos) orelse return state.fail("invalid UTF-8 code");
+            byte_pos += sequenceLenAt(source, byte_pos) orelse return state.failLibrary("invalid UTF-8 code");
         } else {
             if (byte_pos == 0) {
                 try state.returnValues(thread, op.base, op.return_count, &.{.nil});
@@ -220,7 +221,7 @@ fn returnOffsetRange(state: *State, thread: *Thread, op: bytecode.Call, source: 
         try state.returnValues(thread, op.base, op.return_count, &.{ .{ .integer = sentinel }, .{ .integer = sentinel } });
         return;
     }
-    const len_at = sequenceLenAt(source, byte_pos) orelse return state.fail("invalid UTF-8 code");
+    const len_at = sequenceLenAt(source, byte_pos) orelse return state.failLibrary("invalid UTF-8 code");
     try state.returnValues(thread, op.base, op.return_count, &.{ .{ .integer = @intCast(byte_pos + 1) }, .{ .integer = @intCast(byte_pos + len_at) } });
 }
 

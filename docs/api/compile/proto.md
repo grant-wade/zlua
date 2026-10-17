@@ -21,13 +21,12 @@
 - [compile.resolver](../compile/resolver.md)
 - [compile.bytecode](../compile/bytecode.md)
 - [compile.proto](../compile/proto.md)
-- [compile.compiler](../compile/compiler.md)
-- [compile.disasm](../compile/disasm.md)
-- [api](../api.md)
+- [runtime.types](../runtime/types.md)
 - [runtime](../runtime.md)
 - [runtime.chunk](../runtime/chunk.md)
-- [runtime.types](../runtime/types.md)
+- [reflection](../reflection.md)
 - [runtime.value](../runtime/value.md)
+- [runtime.number_format](../runtime/number_format.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
 - [runtime.state](../runtime/state.md)
@@ -37,6 +36,7 @@
 - [runtime.debug](../runtime/debug.md)
 - [runtime.gc](../runtime/gc.md)
 - [runtime.host](../runtime/host.md)
+- [runtime.timezone](../runtime/timezone.md)
 - [stdlib](../stdlib.md)
 - [stdlib.base](../stdlib/base.md)
 - [stdlib.table](../stdlib/table.md)
@@ -45,19 +45,23 @@
 - [stdlib.utf8](../stdlib/utf8.md)
 - [stdlib.coroutine](../stdlib/coroutine.md)
 - [stdlib.debug](../stdlib/debug.md)
-- [stdlib.package](../stdlib/package.md)
 - [stdlib.io](../stdlib/io.md)
+- [stdlib.static_strings](../stdlib/static_strings.md)
 - [stdlib.os](../stdlib/os.md)
+- [stdlib.package](../stdlib/package.md)
 - [stdlib.json](../stdlib/json.md)
 - [stdlib.zerde_lua](../stdlib/zerde_lua.md)
 - [stdlib.toml](../stdlib/toml.md)
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
-- [stdlib.static_strings](../stdlib/static_strings.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
+- [compile.compiler](../compile/compiler.md)
+- [compile.fold](../compile/fold.md)
+- [compile.disasm](../compile/disasm.md)
+- [api](../api.md)
 - [runtime.snapshot](../runtime/snapshot.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
@@ -214,6 +218,21 @@ pub const Proto = struct {
     defined_line: usize = 0,
     last_defined_line: usize = 0,
     has_to_close_locals: bool = false,
+    /// Runtime metadata derived once when the runtime loads the prototype
+    /// tree (see `runtime/value.zig` `prepareProtoTree`). Prepared prototypes
+    /// are immutable afterwards and may be shared by snapshot workers. The
+    /// defaults select the general VM paths for unprepared prototypes.
+    runtime_prepared: bool = false,
+    named_vararg_readonly: bool = false,
+    /// The plain fast loop may run this prototype: it has no to-be-closed
+    /// locals and its last opcode stops sequential dispatch.
+    fast_loop_entry: bool = false,
+    /// `fast_loop_entry` with a fixed parameter list, so the fast loop's
+    /// call path can push a frame for it without capturing varargs.
+    fast_loop_call: bool = false,
+    /// Decoded non-string constants, indexed like `constants`. A `.string`
+    /// slot means the value is per-State (interned) and uses the closure cache.
+    constant_values: []const RuntimeValue = &.{},
 };
 ```
 
@@ -227,7 +246,8 @@ pub const Proto = struct {
 | [hasReadOnlyNamedVararg](#fn-proto-hasreadonlynamedvararg) | `self: *const Proto` | `bool` | Direct reads of an unmodified named vararg can use the argument slice. Any escape, write, or capture requires the ordinary table representation. |
 | [emit](#fn-proto-emit) | `self: *Proto, instruction: bytecode.Instruction, line: usize` | `!usize` |  |
 | [patchJump](#fn-proto-patchjump) | `self: *Proto, index: usize, target_pc: usize` | `!void` |  |
-| [addConstant](#fn-proto-addconstant) | `self: *Proto, constant: bytecode.Constant` | `!bytecode.ConstantIndex` |  |
+| [addConstant](#fn-proto-addconstant) | `self: *Proto, constant: bytecode.Constant` | `!bytecode.ConstantIndex` | Linear-time deduplicating insert. The compiler keeps its own index and calls &#96;appendConstant&#96; directly. |
+| [appendConstant](#fn-proto-appendconstant) | `self: *Proto, constant: bytecode.Constant` | `!bytecode.ConstantIndex` | Appends an owned copy without searching for an existing entry. |
 | [addLocal](#fn-proto-addlocal) | `self: *Proto, local: LocalDebug` | `!usize` |  |
 | [addUpvalue](#fn-proto-addupvalue) | `self: *Proto, upvalue: UpvalueDesc` | `!bytecode.UpvalueIndex` |  |
 | [addChild](#fn-proto-addchild) | `self: *Proto, child: *Proto` | `!bytecode.ProtoIndex` |  |
@@ -302,8 +322,23 @@ References: [`Proto`](#type-proto)
 
 ### Proto.addConstant
 
+Linear-time deduplicating insert. The compiler keeps its own index
+and calls `appendConstant` directly.
+
 ```zig
 pub fn addConstant(self: *Proto, constant: bytecode.Constant) !bytecode.ConstantIndex
+```
+
+References: [`Proto`](#type-proto)
+
+<a id="fn-proto-appendconstant"></a>
+
+### Proto.appendConstant
+
+Appends an owned copy without searching for an existing entry.
+
+```zig
+pub fn appendConstant(self: *Proto, constant: bytecode.Constant) !bytecode.ConstantIndex
 ```
 
 References: [`Proto`](#type-proto)

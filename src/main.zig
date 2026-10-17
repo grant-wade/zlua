@@ -14,6 +14,9 @@ const DumpMode = enum {
 
 const CliOptions = struct {
     evals: std.ArrayList([]const u8) = .empty,
+    /// For each `-W`, the number of `-e` chunks before it; `lua` handles
+    /// both options in order.
+    warning_points: std.ArrayList(usize) = .empty,
     script_path: ?[]const u8 = null,
     script_index: ?usize = null,
     interactive: bool = false,
@@ -26,6 +29,7 @@ const CliOptions = struct {
 
     fn deinit(self: *CliOptions, allocator: std.mem.Allocator) void {
         self.evals.deinit(allocator);
+        self.warning_points.deinit(allocator);
         self.* = undefined;
     }
 };
@@ -70,55 +74,120 @@ fn runCliProgram(
         options.interactive = true;
     }
 
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_writer = File.stdout().writerStreaming(io, &stdout_buffer);
+    var stderr_buffer: [0]u8 = undefined;
+    var stderr_writer = File.stderr().writerStreaming(io, &stderr_buffer);
+    var stdin_buffer: [64 * 1024]u8 = undefined;
+    var stdin_reader = File.stdin().readerStreaming(io, &stdin_buffer);
+    const stdout_tty = File.stdout().isTty(io) catch false;
+    var cli: Cli = .{ .io = io, .stdout = &stdout_writer.interface, .stdin = &stdin_reader.interface };
+
     const state_allocator = std.heap.smp_allocator;
     var state = try zlua.runtime.State.initWithOptions(state_allocator, .{
         .stdlib = options.stdlib,
         .io = io,
+        .stdout = cli.stdout,
+        .stderr = &stderr_writer.interface,
+        .stdout_flush = if (stdout_tty) .line else .print,
+        .stderr_flush = .always,
+        .capture_output = false,
+        .stdin_reader = cli.stdin,
         .filesystem = .host_cwd,
         .environment = .{ .map = environ_map },
         .process = .enabled,
         .debug_errors = options.debug_errors,
         .trace_vm = options.trace_vm,
     });
-    defer state.deinit();
+    const exit_code = runCliChunks(state_allocator, &cli, &state, args, &options) catch |err| {
+        _ = cli.close(&state);
+        return err;
+    };
+    return cli.close(&state) orelse exit_code;
+}
 
-    try installArgTable(state_allocator, &state, args, options.script_index);
+fn runCliChunks(
+    state_allocator: std.mem.Allocator,
+    cli: *Cli,
+    state: *zlua.runtime.State,
+    args: []const []const u8,
+    options: *CliOptions,
+) !u8 {
+    const io = cli.io;
+    const no_input = options.evals.items.len == 0 and options.script_path == null;
+    try installArgTable(state_allocator, state, args, options.script_index);
 
-    for (options.evals.items) |source| {
-        if (try executeChunkNamed(state_allocator, io, &state, source, "=(command line)")) |exit_code| return exit_code;
+    for (options.evals.items, 0..) |source, index| {
+        enableWarningsAt(state, options, index);
+        if (try executeChunkNamed(state_allocator, io, state, source, "=(command line)")) |exit_code| return exit_code;
     }
+    enableWarningsAt(state, options, options.evals.items.len);
 
     if (options.script_path) |path| {
         if (std.mem.eql(u8, path, "-")) {
-            const source = readStdinAlloc(state_allocator, io) catch |err| {
+            const source = cli.readStdinAlloc(state_allocator) catch |err| {
                 try stderrPrint(io, "cannot read stdin: {s}\n", .{@errorName(err)});
                 return 1;
             };
             defer state_allocator.free(source);
-            if (try executeChunkNamed(state_allocator, io, &state, stripInitialShebang(source), "@stdin")) |exit_code| return exit_code;
+            if (try executeChunkNamed(state_allocator, io, state, stripInitialShebang(source), "@stdin")) |exit_code| return exit_code;
         } else {
-            const source = Dir.cwd().readFileAlloc(io, path, state_allocator, .limited(1024 * 1024)) catch |err| {
+            const source = Dir.cwd().readFileAlloc(io, path, state_allocator, .limited(zlua.runtime.default_max_file_bytes)) catch |err| {
                 try stderrPrint(io, "cannot read script {s}: {s}\n", .{ path, @errorName(err) });
                 return 1;
             };
             defer state_allocator.free(source);
             const source_name = try std.fmt.allocPrint(state_allocator, "@{s}", .{path});
             defer state_allocator.free(source_name);
-            if (try executeChunkNamed(state_allocator, io, &state, stripInitialShebang(source), source_name)) |exit_code| return exit_code;
+            if (try executeChunkNamed(state_allocator, io, state, stripInitialShebang(source), source_name)) |exit_code| return exit_code;
         }
     } else if (no_input and !options.interactive) {
-        const source = readStdinAlloc(state_allocator, io) catch |err| {
+        const source = cli.readStdinAlloc(state_allocator) catch |err| {
             try stderrPrint(io, "cannot read stdin: {s}\n", .{@errorName(err)});
             return 1;
         };
         defer state_allocator.free(source);
-        if (try executeChunkNamed(state_allocator, io, &state, stripInitialShebang(source), "@stdin")) |exit_code| return exit_code;
+        if (try executeChunkNamed(state_allocator, io, state, stripInitialShebang(source), "@stdin")) |exit_code| return exit_code;
     }
 
-    if (options.interactive) try runRepl(state_allocator, io, &state);
+    if (options.interactive) if (try runRepl(state_allocator, cli, state)) |exit_code| return exit_code;
 
-    try flushStateOutput(io, &state);
     return 0;
+}
+
+const Cli = struct {
+    io: std.Io,
+    stdout: *std.Io.Writer,
+    stdin: *std.Io.Reader,
+
+    fn flushStdout(self: *Cli) void {
+        self.stdout.flush() catch {};
+    }
+
+    fn close(self: *Cli, state: *zlua.runtime.State) ?u8 {
+        zlua.stdlib.io.flushOpenFiles(state);
+        self.flushStdout();
+        const exit_code = closeState(state);
+        self.flushStdout();
+        return exit_code;
+    }
+
+    fn readStdinAlloc(self: *Cli, allocator: std.mem.Allocator) ![]u8 {
+        return self.stdin.allocRemaining(allocator, .limited(zlua.runtime.default_max_file_bytes));
+    }
+};
+
+fn closeState(state: *zlua.runtime.State) ?u8 {
+    const request = state.exit_request;
+    if (request != null and !request.?.close) {
+        state.deinitWithoutFinalizers();
+        return null;
+    }
+    state.exit_request = null;
+    state.runCloseFinalizers();
+    const finalizer_exit: ?u8 = if (state.exit_request != null) exitCode(state) else null;
+    state.deinitWithoutFinalizers();
+    return finalizer_exit;
 }
 
 fn parseCliOptions(allocator: std.mem.Allocator, args: []const []const u8) !CliOptions {
@@ -145,6 +214,8 @@ fn parseCliOptions(allocator: std.mem.Allocator, args: []const []const u8) !CliO
             options.trace_vm = true;
         } else if (std.mem.eql(u8, arg, "-i")) {
             options.interactive = true;
+        } else if (std.mem.eql(u8, arg, "-W")) {
+            try options.warning_points.append(allocator, options.evals.items.len);
         } else if (std.mem.eql(u8, arg, "--dump-ast")) {
             options.dump_mode = .ast;
         } else if (std.mem.eql(u8, arg, "--dump-scope")) {
@@ -177,6 +248,12 @@ fn parseCliOptions(allocator: std.mem.Allocator, args: []const []const u8) !CliO
     }
 
     return options;
+}
+
+fn enableWarningsAt(state: *zlua.runtime.State, options: *const CliOptions, index: usize) void {
+    for (options.warning_points.items) |point| {
+        if (point == index) state.warnings_on = true;
+    }
 }
 
 fn parseStdlibMode(value: []const u8) !zlua.runtime.StdlibMode {
@@ -274,7 +351,7 @@ fn readDumpInput(allocator: std.mem.Allocator, io: std.Io, options: *const CliOp
             return .{ .source = try readStdinAlloc(allocator, io), .name = try allocator.dupe(u8, "@stdin") };
         }
         return .{
-            .source = try Dir.cwd().readFileAlloc(io, path, allocator, .limited(1024 * 1024)),
+            .source = try Dir.cwd().readFileAlloc(io, path, allocator, .limited(zlua.runtime.default_max_file_bytes)),
             .name = try std.fmt.allocPrint(allocator, "@{s}", .{path}),
         };
     }
@@ -427,18 +504,19 @@ fn indent(out: anytype, depth: usize) !void {
     for (0..depth) |_| try out.writeAll("  ");
 }
 
-fn runRepl(allocator: std.mem.Allocator, io: std.Io, state: *zlua.runtime.State) !void {
+fn runRepl(allocator: std.mem.Allocator, cli: *Cli, state: *zlua.runtime.State) !?u8 {
+    const io = cli.io;
     const tty = try stdinIsTty(io);
-    var read_buffer: [4096]u8 = undefined;
-    var reader = File.stdin().readerStreaming(io, &read_buffer);
     var source = std.ArrayList(u8).empty;
     defer source.deinit(allocator);
 
     while (true) {
-        if (tty) try stdoutPrint(io, "{s}", .{if (source.items.len == 0) "> " else ">> "});
-        const maybe_line = reader.interface.takeDelimiter('\n') catch |err| switch (err) {
+        if (tty) cli.stdout.writeAll(if (source.items.len == 0) "> " else ">> ") catch {};
+        cli.flushStdout();
+        const maybe_line = cli.stdin.takeDelimiter('\n') catch |err| switch (err) {
             error.StreamTooLong => {
                 try stderrPrint(io, "input line too long\n", .{});
+                cli.stdin.tossBuffered();
                 source.items.len = 0;
                 continue;
             },
@@ -456,15 +534,16 @@ fn runRepl(allocator: std.mem.Allocator, io: std.Io, state: *zlua.runtime.State)
 
         const repl_source = try replSourceAlloc(allocator, source.items);
         defer allocator.free(repl_source);
-        try executeReplChunk(allocator, io, state, repl_source);
+        if (try executeReplChunk(allocator, cli, state, repl_source)) |exit_code| return exit_code;
         source.items.len = 0;
     }
 
     if (source.items.len != 0) {
         const repl_source = try replSourceAlloc(allocator, source.items);
         defer allocator.free(repl_source);
-        try executeReplChunk(allocator, io, state, repl_source);
+        if (try executeReplChunk(allocator, cli, state, repl_source)) |exit_code| return exit_code;
     }
+    return null;
 }
 
 fn replSourceAlloc(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
@@ -506,38 +585,47 @@ fn diagnosticNearEof(diagnostic: ?zlua.errors.Diagnostic) bool {
 }
 
 fn executeChunkNamed(allocator: std.mem.Allocator, io: std.Io, state: *zlua.runtime.State, source: []const u8, source_name: []const u8) !?u8 {
-    state.executeSourceChunkNamed(source, source_name) catch |err| {
-        const detail = try state.errorDetailAlloc(allocator, err);
-        defer allocator.free(detail);
-        const message = try std.fmt.allocPrint(allocator, "{s}\n", .{detail});
+    state.executeSourceChunkNamedHandled(source, source_name, cli_error_handler) catch |err| {
+        if (err == error.LuaExit) return exitCode(state);
+        const message = try errorReportAlloc(allocator, state, err);
         defer allocator.free(message);
-        try flushStateOutput(io, state);
         try stderrWrite(io, message);
         return 1;
     };
     return null;
 }
 
-fn executeReplChunk(allocator: std.mem.Allocator, io: std.Io, state: *zlua.runtime.State, source: []const u8) !void {
-    state.executeSourceChunkNamed(source, "=stdin") catch |err| {
-        const detail = try state.errorDetailAlloc(allocator, err);
-        defer allocator.free(detail);
-        const message = try std.fmt.allocPrint(allocator, "{s}\n", .{detail});
+const cli_error_handler: zlua.runtime.HostErrorHandler = .{
+    .message_handler = .{ .native = .traceback_message_handler },
+    .host_frame = true,
+};
+
+fn executeReplChunk(allocator: std.mem.Allocator, cli: *Cli, state: *zlua.runtime.State, source: []const u8) !?u8 {
+    defer cli.flushStdout();
+    state.executeSourceChunkNamedHandled(source, "=stdin", cli_error_handler) catch |err| {
+        if (err == error.LuaExit) return exitCode(state);
+        const message = try errorReportAlloc(allocator, state, err);
         defer allocator.free(message);
-        try flushStateOutput(io, state);
-        try stderrWrite(io, message);
-        state.stdout.items.len = 0;
-        state.stderr.items.len = 0;
-        return;
+        cli.flushStdout();
+        try stderrWrite(cli.io, message);
+        return null;
     };
-    try flushStateOutput(io, state);
+    return null;
 }
 
-fn flushStateOutput(io: std.Io, state: *zlua.runtime.State) !void {
-    try stdoutWrite(io, state.stdout.items);
-    try stderrWrite(io, state.stderr.items);
-    state.stdout.items.len = 0;
-    state.stderr.items.len = 0;
+fn errorReportAlloc(allocator: std.mem.Allocator, state: *zlua.runtime.State, err: anyerror) ![]u8 {
+    if (state.last_error != null) {
+        const value = state.currentErrorValue();
+        if (value == .string) return std.fmt.allocPrint(allocator, "zlua: {s}\n", .{value.string});
+    }
+    const detail = try state.errorDetailAlloc(allocator, err);
+    defer allocator.free(detail);
+    return std.fmt.allocPrint(allocator, "zlua: {s}\n", .{detail});
+}
+
+fn exitCode(state: *zlua.runtime.State) u8 {
+    const request = state.exit_request orelse return 0;
+    return @truncate(@as(u32, @bitCast(request.code)));
 }
 
 fn installArgTable(
@@ -559,7 +647,7 @@ fn installArgTable(
 fn readStdinAlloc(allocator: std.mem.Allocator, io: std.Io) ![]u8 {
     var buffer: [8192]u8 = undefined;
     var reader = File.stdin().readerStreaming(io, &buffer);
-    return reader.interface.allocRemaining(allocator, .limited(1024 * 1024));
+    return reader.interface.allocRemaining(allocator, .limited(zlua.runtime.default_max_file_bytes));
 }
 
 fn stdinIsTty(io: std.Io) !bool {
@@ -586,6 +674,7 @@ fn printUsage(io: std.Io) !void {
         \\  --stdlib=none|base|safe|full|LIB[,LIB...]
         \\  -e 'chunk'
         \\  -i
+        \\  -W
         \\  --dump-ast [script]
         \\  --dump-scope [script]
         \\  --dump-bytecode [script]
@@ -596,28 +685,21 @@ fn printUsage(io: std.Io) !void {
 
 fn stdoutPrint(io: std.Io, comptime fmt: []const u8, args: anytype) !void {
     var buffer: [4096]u8 = undefined;
-    var writer = File.stdout().writer(io, &buffer);
+    var writer = File.stdout().writerStreaming(io, &buffer);
     try writer.interface.print(fmt, args);
-    try writer.interface.flush();
-}
-
-fn stdoutWrite(io: std.Io, bytes: []const u8) !void {
-    var buffer: [4096]u8 = undefined;
-    var writer = File.stdout().writer(io, &buffer);
-    try writer.interface.writeAll(bytes);
     try writer.interface.flush();
 }
 
 fn stderrPrint(io: std.Io, comptime fmt: []const u8, args: anytype) !void {
     var buffer: [4096]u8 = undefined;
-    var writer = File.stderr().writer(io, &buffer);
+    var writer = File.stderr().writerStreaming(io, &buffer);
     try writer.interface.print(fmt, args);
     try writer.interface.flush();
 }
 
 fn stderrWrite(io: std.Io, bytes: []const u8) !void {
     var buffer: [4096]u8 = undefined;
-    var writer = File.stderr().writer(io, &buffer);
+    var writer = File.stderr().writerStreaming(io, &buffer);
     try writer.interface.writeAll(bytes);
     try writer.interface.flush();
 }
@@ -640,6 +722,19 @@ test "CLI parser accepts milestone 20 options" {
     try std.testing.expectEqual(@as(usize, 1), options.evals.items.len);
     try std.testing.expectEqualStrings("script.lua", options.script_path.?);
     try std.testing.expectEqual(@as(usize, 6), options.script_index.?);
+}
+
+test "CLI parser keeps -W in order with -e chunks" {
+    const args = [_][]const u8{ "zlua", "-e", "a()", "-W", "-e", "b()" };
+    var options = try parseCliOptions(std.testing.allocator, &args);
+    defer options.deinit(std.testing.allocator);
+    try std.testing.expectEqualSlices(usize, &.{1}, options.warning_points.items);
+    var state = try zlua.runtime.State.initWithOptions(std.testing.allocator, .{ .stdlib = .base });
+    defer state.deinit();
+    enableWarningsAt(&state, &options, 0);
+    try std.testing.expect(!state.warnings_on);
+    enableWarningsAt(&state, &options, 1);
+    try std.testing.expect(state.warnings_on);
 }
 
 test "CLI parser accepts granular stdlib libraries" {
@@ -670,4 +765,98 @@ test "CLI arg table indexing matches Lua script position" {
     try std.testing.expectEqualStrings("code", arg.get(.{ .integer = -1 }).string);
     try std.testing.expectEqualStrings("script.lua", arg.get(.{ .integer = 0 }).string);
     try std.testing.expectEqualStrings("a", arg.get(.{ .integer = 1 }).string);
+}
+
+fn cliErrorReport(source: []const u8) ![]u8 {
+    var state = try zlua.runtime.State.initWithOptions(std.testing.allocator, .{ .stdlib = .full });
+    defer state.deinit();
+    state.executeSourceChunkNamedHandled(source, "=(command line)", cli_error_handler) catch |err| {
+        return errorReportAlloc(std.testing.allocator, &state, err);
+    };
+    return error.TestExpectedError;
+}
+
+test "uncaught error objects are reported like lua.c's message handler" {
+    const plain_trace = "stack traceback:\n\t[C]: in global 'error'\n\t(command line):1: in main chunk\n\t[C]: in ?\n";
+    const cases = [_][2][]const u8{
+        .{ "error({})", "zlua: (error object is a table value)\n" ++ plain_trace },
+        .{ "error(nil)", "zlua: (error object is a nil value)\n" ++ plain_trace },
+        .{ "error(42)", "zlua: 42\n" ++ plain_trace },
+        .{ "error(true)", "zlua: (error object is a boolean value)\n" ++ plain_trace },
+        .{ "error(setmetatable({}, {__tostring = function() return 'custom' end}))", "zlua: custom\n" },
+        .{ "error(setmetatable({}, {__tostring = function() return 7 end}))", "zlua: (error object is a table value)\n" ++ plain_trace },
+        .{
+            "error(setmetatable({}, {__tostring = function() error('x') end}))",
+            "zlua: (command line):1: x\nstack traceback:\n\t[C]: in global 'error'\n\t(command line):1: in function <(command line):1>\n\t[C]: in ?\n\t[C]: in global 'error'\n\t(command line):1: in main chunk\n\t[C]: in ?\n",
+        },
+    };
+    for (cases) |case| {
+        const report = try cliErrorReport(case[0]);
+        defer std.testing.allocator.free(report);
+        try std.testing.expectEqualStrings(case[1], report);
+    }
+    const file_report = try cliErrorReport("error(io.stdout)");
+    defer std.testing.allocator.free(file_report);
+    try std.testing.expect(std.mem.startsWith(u8, file_report, "zlua: file (0x") and std.mem.endsWith(u8, file_report, ")\n"));
+}
+
+test "closing the CLI state runs finalizers unless os.exit skips lua_close" {
+    const cases = [_][2][]const u8{
+        .{ "KEEP = setmetatable({}, {__gc = function() print('bye') end})", "bye\n" },
+        .{ "KEEP = setmetatable({}, {__gc = function() print('bye') end}) error('x')", "bye\n" },
+        .{ "KEEP = setmetatable({}, {__gc = function() print('bye') end}) os.exit(true, true)", "bye\n" },
+        .{ "KEEP = setmetatable({}, {__gc = function() print('bye') end}) local x <close> = setmetatable({}, {__close = function() print('closed') end}) os.exit(0, true)", "closed\nbye\n" },
+        .{ "KEEP = setmetatable({}, {__gc = function() print('bye') end}) local x <close> = setmetatable({}, {__close = function() print('closed') end}) os.exit(3)", "" },
+    };
+    for (cases) |case| {
+        var buffer: [64]u8 = undefined;
+        var stdout: std.Io.Writer = .fixed(&buffer);
+        var state = try zlua.runtime.State.initWithOptions(std.testing.allocator, .{ .stdlib = .full, .process = .enabled, .stdout = &stdout, .capture_output = false });
+        state.executeSourceChunkNamed(case[0], "=(command line)") catch {};
+        _ = closeState(&state);
+        try std.testing.expectEqualStrings(case[1], stdout.buffered());
+    }
+}
+
+test "the CLI message handler runs at the error point" {
+    const cases = [_][2][]const u8{
+        .{
+            "local x <close> = setmetatable({}, {__close = function(_, e) print('close:', e) end}) error('boom')",
+            "close:\t(command line):1: boom\nstack traceback:\n\t[C]: in global 'error'\n\t(command line):1: in main chunk\n\t[C]: in ?\n",
+        },
+        .{
+            "print(load(function() error('rd') end))",
+            "nil\t(command line):1: rd\nstack traceback:\n\t[C]: in global 'error'\n\t(command line):1: in function <(command line):1>\n\t[C]: in global 'load'\n\t(command line):1: in main chunk\n\t[C]: in ?\n",
+        },
+    };
+    for (cases) |case| {
+        var buffer: [512]u8 = undefined;
+        var stdout: std.Io.Writer = .fixed(&buffer);
+        var state = try zlua.runtime.State.initWithOptions(std.testing.allocator, .{ .stdlib = .full, .stdout = &stdout, .capture_output = false });
+        defer state.deinit();
+        state.executeSourceChunkNamedHandled(case[0], "=(command line)", cli_error_handler) catch {};
+        try std.testing.expectEqualStrings(case[1], stdout.buffered());
+    }
+}
+
+test "os.exit in a finalizer while closing sets the CLI status" {
+    const Case = struct { source: []const u8, output: []const u8, code: ?u8 };
+    const cases = [_]Case{
+        .{
+            .source = "A = setmetatable({}, {__gc = function() print('older') end}) B = setmetatable({}, {__gc = function() print('exit') os.exit(7) end}) C = setmetatable({}, {__gc = function() print('newest') end})",
+            .output = "newest\nexit\n",
+            .code = 7,
+        },
+        .{ .source = "B = setmetatable({}, {__gc = function() os.exit(true) end}) error('x')", .output = "", .code = 0 },
+        .{ .source = "B = setmetatable({}, {__gc = function() io.write('buffered') os.exit(false, true) end})", .output = "buffered", .code = 1 },
+        .{ .source = "B = setmetatable({}, {__gc = function() print('no exit') end})", .output = "no exit\n", .code = null },
+    };
+    for (cases) |case| {
+        var buffer: [64]u8 = undefined;
+        var stdout: std.Io.Writer = .fixed(&buffer);
+        var state = try zlua.runtime.State.initWithOptions(std.testing.allocator, .{ .stdlib = .full, .process = .enabled, .stdout = &stdout, .capture_output = false });
+        state.executeSourceChunkNamed(case.source, "=(command line)") catch {};
+        try std.testing.expectEqual(case.code, closeState(&state));
+        try std.testing.expectEqualStrings(case.output, stdout.buffered());
+    }
 }

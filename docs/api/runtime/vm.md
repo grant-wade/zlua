@@ -21,13 +21,12 @@
 - [compile.resolver](../compile/resolver.md)
 - [compile.bytecode](../compile/bytecode.md)
 - [compile.proto](../compile/proto.md)
-- [compile.compiler](../compile/compiler.md)
-- [compile.disasm](../compile/disasm.md)
-- [api](../api.md)
+- [runtime.types](../runtime/types.md)
 - [runtime](../runtime.md)
 - [runtime.chunk](../runtime/chunk.md)
-- [runtime.types](../runtime/types.md)
+- [reflection](../reflection.md)
 - [runtime.value](../runtime/value.md)
+- [runtime.number_format](../runtime/number_format.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
 - [runtime.state](../runtime/state.md)
@@ -37,6 +36,7 @@
 - [runtime.debug](../runtime/debug.md)
 - [runtime.gc](../runtime/gc.md)
 - [runtime.host](../runtime/host.md)
+- [runtime.timezone](../runtime/timezone.md)
 - [stdlib](../stdlib.md)
 - [stdlib.base](../stdlib/base.md)
 - [stdlib.table](../stdlib/table.md)
@@ -45,19 +45,23 @@
 - [stdlib.utf8](../stdlib/utf8.md)
 - [stdlib.coroutine](../stdlib/coroutine.md)
 - [stdlib.debug](../stdlib/debug.md)
-- [stdlib.package](../stdlib/package.md)
 - [stdlib.io](../stdlib/io.md)
+- [stdlib.static_strings](../stdlib/static_strings.md)
 - [stdlib.os](../stdlib/os.md)
+- [stdlib.package](../stdlib/package.md)
 - [stdlib.json](../stdlib/json.md)
 - [stdlib.zerde_lua](../stdlib/zerde_lua.md)
 - [stdlib.toml](../stdlib/toml.md)
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
-- [stdlib.static_strings](../stdlib/static_strings.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
+- [compile.compiler](../compile/compiler.md)
+- [compile.fold](../compile/fold.md)
+- [compile.disasm](../compile/disasm.md)
+- [api](../api.md)
 - [runtime.snapshot](../runtime/snapshot.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
@@ -87,12 +91,124 @@
 ## Functions
 
 - [checkExecutionLimits](#fn-checkexecutionlimits)
+- [executionCheckpoint](#fn-executioncheckpoint)
+- [checkInterrupt](#fn-checkinterrupt)
+- [instructionBudgetExhausted](#fn-instructionbudgetexhausted)
+
+## Types
+
+- [InterruptControl](#type-interruptcontrol)
+
+## Constants
+
+- [interrupt_poll_interval](#const-interrupt_poll_interval)
+
+<a id="const-interrupt_poll_interval"></a>
+
+## interrupt_poll_interval
+
+Main-loop instructions between interrupt polls once a state has an
+interrupt control. The fast loop also polls at backward jumps and calls.
+
+```zig
+pub const interrupt_poll_interval: u64 = 1024;
+```
+
+<a id="type-interruptcontrol"></a>
+
+## InterruptControl
+
+Interrupt request shared between a state and host threads.
+
+The state allocates it on first request and frees it in `deinit`, so its
+address stays stable when the owning state value moves. Only `requested`
+is touched from other threads.
+
+```zig
+pub const InterruptControl = struct {
+    requested: std.atomic.Value(bool) = .init(false),
+};
+```
+
+### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [request](#fn-interruptcontrol-request) | `self: *InterruptControl` | `void` |  |
+| [clear](#fn-interruptcontrol-clear) | `self: *InterruptControl` | `void` |  |
+| [isRequested](#fn-interruptcontrol-isrequested) | `self: *const InterruptControl` | `bool` |  |
+
+<a id="fn-interruptcontrol-request"></a>
+
+### InterruptControl.request
+
+```zig
+pub fn request(self: *InterruptControl) void
+```
+
+References: [`InterruptControl`](#type-interruptcontrol)
+
+<a id="fn-interruptcontrol-clear"></a>
+
+### InterruptControl.clear
+
+```zig
+pub fn clear(self: *InterruptControl) void
+```
+
+References: [`InterruptControl`](#type-interruptcontrol)
+
+<a id="fn-interruptcontrol-isrequested"></a>
+
+### InterruptControl.isRequested
+
+```zig
+pub fn isRequested(self: *const InterruptControl) bool
+```
+
+References: [`InterruptControl`](#type-interruptcontrol)
 
 <a id="fn-checkexecutionlimits"></a>
 
 ## checkExecutionLimits
 
+Per-instruction safepoint for the general dispatch loop. The common case
+is one comparison against `instruction_checkpoint`; budgets, interrupt
+polls, and recomputation after a budget change share the cold path.
+
 ```zig
-pub fn checkExecutionLimits(comptime State: type, self: *State, thread: *Thread) !void
+pub inline fn checkExecutionLimits(comptime State: type, self: *State, thread: *Thread) !void
+```
+
+<a id="fn-executioncheckpoint"></a>
+
+## executionCheckpoint
+
+Checkpoint slow path. Interrupts and exhausted budgets leave the
+checkpoint in place, so every later safepoint raises again until the host
+clears the interrupt or the budget scope ends: Lua code cannot catch them
+and keep running.
+
+```zig
+pub noinline fn executionCheckpoint(comptime State: type, self: *State, thread: *Thread) !void
+```
+
+<a id="fn-checkinterrupt"></a>
+
+## checkInterrupt
+
+Raises `error.Interrupted` when a host thread has requested an interrupt.
+Long-running native functions call this periodically.
+
+```zig
+pub fn checkInterrupt(comptime State: type, self: *State) !void
+```
+
+<a id="fn-instructionbudgetexhausted"></a>
+
+## instructionBudgetExhausted
+
+```zig
+pub fn instructionBudgetExhausted(comptime State: type, self: *const State) bool
 ```
 

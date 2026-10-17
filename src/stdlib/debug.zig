@@ -1,6 +1,7 @@
 const std = @import("std");
 const compile = @import("../compile.zig");
 const runtime = @import("../runtime.zig");
+const io_lib = @import("io.zig");
 
 const bytecode = compile.bytecode;
 const State = runtime.State;
@@ -18,6 +19,9 @@ pub fn getinfo(state: *State, thread: *Thread, op: bytecode.Call) !void {
     }
     const options = if (op.arg_count > options_index) try state.expectArgumentString(thread, op, "debug.getinfo", options_index) else "flnSrtu";
     try validateGetinfoOptions(state, options, "debug.getinfo", options_index + 1);
+    if (target != .integer and !std.mem.eql(u8, runtime.typeName(target), "function")) {
+        target = .{ .integer = try state.argumentInteger(thread, op, "debug.getinfo", options_index - 1) };
+    }
 
     const target_closure: ?*runtime.Closure, const target_func: Value, const source_name, const what, const currentline, const level_name, const istailcall = switch (target) {
         .integer => blk: {
@@ -107,7 +111,7 @@ pub fn getupvalue(state: *State, thread: *Thread, op: bytecode.Call) !void {
     try state.returnValues(thread, op.base, op.return_count, &.{ .{ .string = try state.intern(name) }, readUpvalue(upvalue) });
 }
 
-fn validateGetinfoOptions(state: *State, options: []const u8, function_name: []const u8, index: u16) !void {
+fn validateGetinfoOptions(state: *State, options: []const u8, function_name: []const u8, index: u32) !void {
     for (options) |option| switch (option) {
         'X', '>' => return state.failArgumentMessage(function_name, index, "invalid option"),
         else => {},
@@ -332,10 +336,9 @@ pub fn sethook(state: *State, thread: *Thread, op: bytecode.Call) !void {
     }
 
     const first = runtime.argValue(state, thread, op, 0);
-    const target, const hook_index: u16 = if (first == .thread) .{ first.thread, 1 } else .{ thread, 0 };
+    const target, const hook_index: u32 = if (first == .thread) .{ first.thread, 1 } else .{ thread, 0 };
     const hook = runtime.argValue(state, thread, op, hook_index);
-    const mask_value = runtime.argValue(state, thread, op, hook_index + 1);
-    const mask = if (hook == .nil) "" else try state.expectString(mask_value);
+    const mask = if (hook == .nil) "" else try state.expectArgumentString(thread, op, "debug.sethook", hook_index + 1);
     const count = if (op.arg_count > hook_index + 2) hookCount(runtime.argValue(state, thread, op, hook_index + 2)) else 0;
 
     state.setThreadHook(target, hook, mask, if (count > 0) @intCast(count) else 0);
@@ -364,15 +367,52 @@ pub fn setmetatable(state: *State, thread: *Thread, op: bytecode.Call) !void {
     try state.returnValues(thread, op.base, op.return_count, &.{value});
 }
 
+pub fn getmetatable(state: *State, thread: *Thread, op: bytecode.Call) !void {
+    if (op.arg_count == 0) return state.failArgumentMessage("debug.getmetatable", 1, "value expected");
+    try state.returnValues(thread, op.base, op.return_count, &.{state.rawMetatableValue(runtime.argValue(state, thread, op, 0))});
+}
+
+/// Runs commands read from the stdin capability until "cont" or end of input,
+/// like Lua's `debug.debug`.
+pub fn debugPrompt(state: *State, thread: *Thread, op: bytecode.Call) !void {
+    while (true) {
+        try state.writeStderr("lua_debug> ");
+        const line = try io_lib.readStdinLine(state) orelse break;
+        if (std.mem.eql(u8, line, "cont\n") or std.mem.eql(u8, line, "cont")) break;
+        const source = try state.allocator.dupe(u8, line);
+        const closure = state.loadSourceAsClosureNamed(source, "=(debug command)") catch |err| {
+            state.allocator.free(source);
+            if (err == error.OutOfMemory) return err;
+            try writeDebugError(state, thread, state.currentErrorValue());
+            continue;
+        };
+        try state.registerAllocation("source_allocations", source);
+        switch (try state.runProtectedCall(thread, state.protectedCallContextWithErrors(thread), closure, &.{})) {
+            .success => |values| state.allocator.free(values),
+            .failure => |failure| try writeDebugError(state, thread, try state.caughtErrorValue(failure)),
+        }
+    }
+    try state.returnValues(thread, op.base, op.return_count, &.{});
+}
+
+fn writeDebugError(state: *State, thread: *Thread, value: Value) !void {
+    const message = state.valueToString(thread, value) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => "(error object is not a string)",
+    };
+    try state.writeStderr(message);
+    try state.writeStderr("\n");
+}
+
 pub fn setuservalue(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const target = runtime.argValue(state, thread, op, 0);
     if (isLightUserdataPlaceholder(target)) return state.failArgumentMessage("debug.setuservalue", 1, "userdata expected, got light userdata");
-    if (target != .table or !runtime.isFileValue(target)) return state.failArgumentType("debug.setuservalue", 1, "userdata", target);
+    if (target != .userdata) return state.failArgumentType("debug.setuservalue", 1, "userdata", target);
     try state.returnValues(thread, op.base, op.return_count, &.{.nil});
 }
 
 pub fn getuservalue(state: *State, thread: *Thread, op: bytecode.Call) !void {
-    try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .boolean = false } });
+    try state.returnValues(thread, op.base, op.return_count, &.{.nil});
 }
 
 fn upvalueIndex(value: Value) ?usize {
@@ -487,7 +527,7 @@ fn localOrTemporaryAtIndex(thread: *Thread, frame_index: usize, index: i64, incl
     if (!include_temporaries) return null;
 
     const register_limit = if (frame_index + 1 < thread.frames.items.len)
-        @min(frame.proto.max_registers, thread.frames.items[frame_index + 1].base - frame.base)
+        @min(frame.proto.max_registers, thread.frames.items[frame_index + 1].base - 1 - frame.base)
     else
         frame.proto.max_registers;
     for (0..register_limit) |register_usize| {

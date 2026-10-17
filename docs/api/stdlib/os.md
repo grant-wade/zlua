@@ -21,13 +21,12 @@
 - [compile.resolver](../compile/resolver.md)
 - [compile.bytecode](../compile/bytecode.md)
 - [compile.proto](../compile/proto.md)
-- [compile.compiler](../compile/compiler.md)
-- [compile.disasm](../compile/disasm.md)
-- [api](../api.md)
+- [runtime.types](../runtime/types.md)
 - [runtime](../runtime.md)
 - [runtime.chunk](../runtime/chunk.md)
-- [runtime.types](../runtime/types.md)
+- [reflection](../reflection.md)
 - [runtime.value](../runtime/value.md)
+- [runtime.number_format](../runtime/number_format.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
 - [runtime.state](../runtime/state.md)
@@ -37,6 +36,7 @@
 - [runtime.debug](../runtime/debug.md)
 - [runtime.gc](../runtime/gc.md)
 - [runtime.host](../runtime/host.md)
+- [runtime.timezone](../runtime/timezone.md)
 - [stdlib](../stdlib.md)
 - [stdlib.base](../stdlib/base.md)
 - [stdlib.table](../stdlib/table.md)
@@ -45,19 +45,23 @@
 - [stdlib.utf8](../stdlib/utf8.md)
 - [stdlib.coroutine](../stdlib/coroutine.md)
 - [stdlib.debug](../stdlib/debug.md)
-- [stdlib.package](../stdlib/package.md)
 - [stdlib.io](../stdlib/io.md)
+- [stdlib.static_strings](../stdlib/static_strings.md)
 - [stdlib.os](../stdlib/os.md)
+- [stdlib.package](../stdlib/package.md)
 - [stdlib.json](../stdlib/json.md)
 - [stdlib.zerde_lua](../stdlib/zerde_lua.md)
 - [stdlib.toml](../stdlib/toml.md)
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
-- [stdlib.static_strings](../stdlib/static_strings.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
+- [compile.compiler](../compile/compiler.md)
+- [compile.fold](../compile/fold.md)
+- [compile.disasm](../compile/disasm.md)
+- [api](../api.md)
 - [runtime.snapshot](../runtime/snapshot.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
@@ -89,13 +93,21 @@
 - [time](#fn-time)
 - [clock](#fn-clock)
 - [date](#fn-date)
+- [exit](#fn-exit)
 - [remove](#fn-remove)
 - [rename](#fn-rename)
+- [fileFailure](#fn-filefailure)
 - [tmpname](#fn-tmpname)
 - [difftime](#fn-difftime)
 - [getenv](#fn-getenv)
 - [setlocale](#fn-setlocale)
 - [execute](#fn-execute)
+- [returnProcessResult](#fn-returnprocessresult)
+- [brokenDownTime](#fn-brokendowntime)
+
+## Types
+
+- [DateParts](#type-dateparts)
 
 <a id="fn-time"></a>
 
@@ -121,6 +133,14 @@ pub fn clock(state: *State, thread: *Thread, op: bytecode.Call) !void
 pub fn date(state: *State, thread: *Thread, op: bytecode.Call) !void
 ```
 
+<a id="fn-exit"></a>
+
+## exit
+
+```zig
+pub fn exit(state: *State, thread: *Thread, op: bytecode.Call) !void
+```
+
 <a id="fn-remove"></a>
 
 ## remove
@@ -137,9 +157,22 @@ pub fn remove(state: *State, thread: *Thread, op: bytecode.Call) !void
 pub fn rename(state: *State, thread: *Thread, op: bytecode.Call) !void
 ```
 
+<a id="fn-filefailure"></a>
+
+## fileFailure
+
+Returns `nil, "[path: ]message", errno` like `luaL_fileresult`.
+
+```zig
+pub fn fileFailure(state: *State, thread: *Thread, op: bytecode.Call, path: ?[]const u8, err: anyerror) !void
+```
+
 <a id="fn-tmpname"></a>
 
 ## tmpname
+
+Like `mkstemp` in PUC's `os.tmpname`, creates an empty file with an
+unpredictable name and returns the name; the caller removes the file.
 
 ```zig
 pub fn tmpname(state: *State, thread: *Thread, op: bytecode.Call) !void
@@ -176,4 +209,49 @@ pub fn setlocale(state: *State, thread: *Thread, op: bytecode.Call) !void
 ```zig
 pub fn execute(state: *State, thread: *Thread, op: bytecode.Call) !void
 ```
+
+<a id="fn-returnprocessresult"></a>
+
+## returnProcessResult
+
+Returns `true|nil, "exit"|"signal", code` like `luaL_execresult`.
+
+```zig
+pub fn returnProcessResult(state: *State, thread: *Thread, op: bytecode.Call, result: host.ProcessResult) !void
+```
+
+<a id="type-dateparts"></a>
+
+## DateParts
+
+```zig
+pub const DateParts = struct {
+    year: i64,
+    month: u8,
+    day: u8,
+    hour: u8,
+    min: u8,
+    sec: u8,
+    /// Day of the year, 1-366.
+    yday: u16,
+    /// Day of the week, Sunday = 0.
+    wday: u8,
+    is_dst: bool,
+    offset: i32,
+    zone: ?[]const u8,
+};
+```
+
+<a id="fn-brokendowntime"></a>
+
+## brokenDownTime
+
+Breaks a Unix timestamp into local calendar fields; null when the year
+does not fit C's `struct tm`.
+
+```zig
+pub fn brokenDownTime(timestamp: i64, offset: timezone.LocalOffset) ?DateParts
+```
+
+References: [`DateParts`](#type-dateparts)
 

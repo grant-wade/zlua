@@ -21,13 +21,12 @@
 - [compile.resolver](../compile/resolver.md)
 - [compile.bytecode](../compile/bytecode.md)
 - [compile.proto](../compile/proto.md)
-- [compile.compiler](../compile/compiler.md)
-- [compile.disasm](../compile/disasm.md)
-- [api](../api.md)
+- [runtime.types](../runtime/types.md)
 - [runtime](../runtime.md)
 - [runtime.chunk](../runtime/chunk.md)
-- [runtime.types](../runtime/types.md)
+- [reflection](../reflection.md)
 - [runtime.value](../runtime/value.md)
+- [runtime.number_format](../runtime/number_format.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
 - [runtime.state](../runtime/state.md)
@@ -37,6 +36,7 @@
 - [runtime.debug](../runtime/debug.md)
 - [runtime.gc](../runtime/gc.md)
 - [runtime.host](../runtime/host.md)
+- [runtime.timezone](../runtime/timezone.md)
 - [stdlib](../stdlib.md)
 - [stdlib.base](../stdlib/base.md)
 - [stdlib.table](../stdlib/table.md)
@@ -45,19 +45,23 @@
 - [stdlib.utf8](../stdlib/utf8.md)
 - [stdlib.coroutine](../stdlib/coroutine.md)
 - [stdlib.debug](../stdlib/debug.md)
-- [stdlib.package](../stdlib/package.md)
 - [stdlib.io](../stdlib/io.md)
+- [stdlib.static_strings](../stdlib/static_strings.md)
 - [stdlib.os](../stdlib/os.md)
+- [stdlib.package](../stdlib/package.md)
 - [stdlib.json](../stdlib/json.md)
 - [stdlib.zerde_lua](../stdlib/zerde_lua.md)
 - [stdlib.toml](../stdlib/toml.md)
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
-- [stdlib.static_strings](../stdlib/static_strings.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
+- [compile.compiler](../compile/compiler.md)
+- [compile.fold](../compile/fold.md)
+- [compile.disasm](../compile/disasm.md)
+- [api](../api.md)
 - [runtime.snapshot](../runtime/snapshot.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
@@ -108,6 +112,10 @@
 - [sub](#fn-sub)
 - [unpack](#fn-unpack)
 - [upper](#fn-upper)
+
+## Types
+
+- [GmatchValues](#type-gmatchvalues)
 
 <a id="fn-byte"></a>
 
@@ -165,13 +173,45 @@ pub fn gmatch(state: *State, thread: *Thread, op: bytecode.Call) !void
 pub fn gmatchIter(state: *State, thread: *Thread, op: bytecode.Call) !void
 ```
 
+<a id="type-gmatchvalues"></a>
+
+## GmatchValues
+
+Results of one `string.gmatch` step: every capture (or the whole match),
+or no values once the subject is exhausted.
+
+```zig
+pub const GmatchValues = struct {
+    buffer: [max_captures]Value = undefined,
+    len: usize = 0,
+};
+```
+
+### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [slice](#fn-gmatchvalues-slice) | `self: *const GmatchValues` | `[]const Value` |  |
+
+<a id="fn-gmatchvalues-slice"></a>
+
+### GmatchValues.slice
+
+```zig
+pub fn slice(self: *const GmatchValues) []const Value
+```
+
+References: [`GmatchValues`](#type-gmatchvalues)
+
 <a id="fn-gmatchnext"></a>
 
 ## gmatchNext
 
 ```zig
-pub fn gmatchNext(state: *State, state_value: Value) ![2]Value
+pub fn gmatchNext(state: *State, state_value: Value) !GmatchValues
 ```
+
+References: [`GmatchValues`](#type-gmatchvalues)
 
 <a id="fn-gsub"></a>
 

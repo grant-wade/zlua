@@ -21,13 +21,12 @@
 - [compile.resolver](../compile/resolver.md)
 - [compile.bytecode](../compile/bytecode.md)
 - [compile.proto](../compile/proto.md)
-- [compile.compiler](../compile/compiler.md)
-- [compile.disasm](../compile/disasm.md)
-- [api](../api.md)
+- [runtime.types](../runtime/types.md)
 - [runtime](../runtime.md)
 - [runtime.chunk](../runtime/chunk.md)
-- [runtime.types](../runtime/types.md)
+- [reflection](../reflection.md)
 - [runtime.value](../runtime/value.md)
+- [runtime.number_format](../runtime/number_format.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
 - [runtime.state](../runtime/state.md)
@@ -37,6 +36,7 @@
 - [runtime.debug](../runtime/debug.md)
 - [runtime.gc](../runtime/gc.md)
 - [runtime.host](../runtime/host.md)
+- [runtime.timezone](../runtime/timezone.md)
 - [stdlib](../stdlib.md)
 - [stdlib.base](../stdlib/base.md)
 - [stdlib.table](../stdlib/table.md)
@@ -45,19 +45,23 @@
 - [stdlib.utf8](../stdlib/utf8.md)
 - [stdlib.coroutine](../stdlib/coroutine.md)
 - [stdlib.debug](../stdlib/debug.md)
-- [stdlib.package](../stdlib/package.md)
 - [stdlib.io](../stdlib/io.md)
+- [stdlib.static_strings](../stdlib/static_strings.md)
 - [stdlib.os](../stdlib/os.md)
+- [stdlib.package](../stdlib/package.md)
 - [stdlib.json](../stdlib/json.md)
 - [stdlib.zerde_lua](../stdlib/zerde_lua.md)
 - [stdlib.toml](../stdlib/toml.md)
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
-- [stdlib.static_strings](../stdlib/static_strings.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
+- [compile.compiler](../compile/compiler.md)
+- [compile.fold](../compile/fold.md)
+- [compile.disasm](../compile/disasm.md)
+- [api](../api.md)
 - [runtime.snapshot](../runtime/snapshot.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
@@ -107,6 +111,7 @@
 - [SetList](#type-setlist)
 - [Unary](#type-unary)
 - [Binary](#type-binary)
+- [ConcatRange](#type-concatrange)
 - [CompareBranchOp](#type-comparebranchop)
 - [CompareBranch](#type-comparebranch)
 - [Test](#type-test)
@@ -121,6 +126,7 @@
 ## Constants
 
 - [multret_count](#const-multret_count)
+- [multret_arg_count](#const-multret_arg_count)
 
 ## Aliases
 
@@ -185,6 +191,14 @@ pub const JumpOffset = i32;
 
 ```zig
 pub const multret_count: u16 = std.math.maxInt(u16);
+```
+
+<a id="const-multret_arg_count"></a>
+
+## multret_arg_count
+
+```zig
+pub const multret_arg_count: u32 = std.math.maxInt(u32);
 ```
 
 <a id="type-constant"></a>
@@ -270,6 +284,7 @@ pub const Instruction = union(enum(u8)) {
     tfor_prep: GenericFor,
     tfor_call: GenericFor,
     tfor_loop: GenericFor,
+    concat_range: ConcatRange,
 };
 ```
 
@@ -448,6 +463,22 @@ pub const Binary = struct {
 };
 ```
 
+<a id="type-concatrange"></a>
+
+## ConcatRange
+
+Concatenates `count` (at least 2) consecutive registers starting at
+`first` right to left, like PUC OP_CONCAT, and stores the result in
+`dest`. Operand registers are scratch space for partial results.
+
+```zig
+pub const ConcatRange = struct {
+    dest: Register,
+    first: Register,
+    count: u16,
+};
+```
+
 <a id="type-comparebranchop"></a>
 
 ## CompareBranchOp
@@ -505,8 +536,10 @@ pub const TestSet = struct {
 
 ```zig
 pub const Call = struct {
-    base: Register,
-    arg_count: u16,
+    base: u32,
+    /// `multret_arg_count` in bytecode when the arguments end at the last
+    /// multiple results; runtime calls always carry the resolved count.
+    arg_count: u32,
     return_count: u16,
 };
 ```

@@ -1,0 +1,66 @@
+# Changelog
+
+## 0.7.0
+
+### Breaking changes
+
+- `State.preloadModule(name, loader)` now takes a loader `Function` and installs it in `package.preload`, so `require` loads the module lazily. The old behavior, writing a table straight into `package.loaded`, is now `State.setLoadedModule(name, module)`.
+- `stdlib.initHintsWithStdin` was removed; use `stdlib.initHints`.
+- Number formatting now matches Lua 5.5: large and small floats print as `1e+15` and `9.2233720368547758e+18` instead of long decimal strings.
+- Bitwise operators no longer convert strings (`"3" | 0` raises an error, as in Lua 5.5).
+- `State.deinit` runs pending `__gc` finalizers and closes open files, like `lua_close`.
+
+### Embedding API
+
+- Interrupt a running state from another thread with `State.interruptHandle()`. Interrupts can't be caught by `pcall` and surface as `error.Interrupted`.
+- Per-call instruction budgets and tracebacks through `Function.callWith` / `protectedCallWith` and `CallOptions`. `ErrorRef.traceback()` returns the captured traceback.
+- `Table` gains `len`, `rawLen`, `rawSet`, `append`, `setMetatable`, `toSlice`, `rawIterator`, and `pairs`. `get`/`set` now call function `__index`/`__newindex` metamethods.
+- New module helpers: `preloadModuleFn`, `setLoadedModule`, and a host-side `require`.
+- New `limits.max_file_bytes` (default 256 MiB) shared by `io`, `fs`, `loadfile`, and `require`.
+- `os.exit` returns `error.LuaExit` to embedders instead of exiting the host process.
+- Output flush policies for stdout/stderr writers, and an incremental stdin reader option.
+- Binary chunks are verified before they run.
+- Warnings can be turned on with `IoCapability.warnings` or routed to `IoCapability.warning_handler`.
+
+### Lua compatibility
+
+- New: `os.exit`, `io.popen`, `debug.getmetatable`, `debug.debug`, `package.loadlib`.
+- `os.clock` reports CPU time; `os.date` and `os.time` support local time zones.
+- `loadfile` and `dofile` are base functions.
+- `xpcall` handlers run at the error point, so `debug.traceback` sees the failing frames.
+- `warn` works, and the CLI supports `-W`.
+- `__gc` works on userdata.
+- File handles are real `FILE*` userdata. `io.tmpfile` is in-memory and leaves nothing behind, and `os.tmpname` returns unique names.
+- Failed `close` and `flush` return `nil, message, errno` instead of raising.
+- The Lua stack limit matches PUC Lua (1,000,000 slots), and nested native calls stop at 200 with `C stack overflow`.
+- String library functions accept numbers.
+- Argument errors use Lua's wording, position prefixes, and function names.
+- `io.open` and friends return Lua-style error messages and errno values.
+- The file metatable matches PUC Lua's layout, and `io` no longer exposes internal fields.
+- Fixed `string.gmatch` dropping captures after the second, `next` returning an extra value, and `table.create` edge cases.
+
+### CLI
+
+- Output streams as the script runs instead of appearing when a chunk finishes.
+- `io.read` reads stdin incrementally.
+- Uncaught errors print a Lua-style stack traceback.
+
+### Performance
+
+- Constant folding and single-instruction concat chains.
+- Lua function calls are about 25% faster; metamethod lookups are cached and constants are decoded once per function.
+- Sequential file writes are linear instead of quadratic.
+
+### Fixes
+
+- Generational GC could free values held by suspended coroutines.
+- Explicit `collectgarbage()` could free live temporaries and crash.
+- Fixed GC crashes in the official coroutine tests.
+- Library functions called through `pcall` or `xpcall` could have their arguments overwritten when they invoked a metamethod.
+- Calls with more than 65535 arguments crashed.
+- `table.sort` and `table.unpack` could lose elements when a callback triggered a collection.
+- Errors caught after a coroutine yielded across `pcall` could leave stale continuations that crashed later.
+- `file:seek` with an offset that overflows returns `nil, message, errno` instead of crashing.
+- `file:lines` with several formats stops at the first one that fails, like `file:read`.
+- `io.open` in append mode no longer rewrites the existing file, and appends from separate handles are kept.
+- `table.unpack` accepts any indexable value, and `table.insert`/`table.remove` follow Lua's bounds rules for extreme lengths.

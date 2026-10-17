@@ -10,6 +10,7 @@ const errors = @import("../errors.zig");
 const frontend = @import("../frontend.zig");
 const gc_mod = @import("gc.zig");
 const host = @import("host.zig");
+const timezone = @import("timezone.zig");
 const stdlib = @import("../stdlib.zig");
 const stdlib_static_strings = @import("../stdlib/static_strings.zig");
 const types = @import("types.zig");
@@ -23,9 +24,11 @@ const Dir = std.Io.Dir;
 
 pub const RuntimeError = types.RuntimeError;
 
-const default_max_stack_values: usize = 65536;
-const default_max_call_frames: usize = 256;
-const max_error_handler_depth: usize = 200;
+const default_max_stack_values: usize = 1_000_000;
+const default_max_call_frames: usize = 1_000_000;
+const lua_max_c_calls: usize = 200;
+const stack_error_frames: usize = 32;
+const stack_error_values: usize = 200;
 const max_metamethod_depth: usize = 15;
 
 pub const Value = types.Value;
@@ -37,7 +40,6 @@ pub const ApiCallbackDispatchFn = types.ApiCallbackDispatchFn;
 pub const ApiCallbackContext = types.ApiCallbackContext;
 pub const RuntimeErrorPayload = types.RuntimeErrorPayload;
 const ProtectedCallContext = types.ProtectedCallContext;
-const ProtectedContinuationKind = types.ProtectedContinuationKind;
 const ProtectedContinuation = types.ProtectedContinuation;
 const GenericForContinuation = types.GenericForContinuation;
 const BranchContinuation = types.BranchContinuation;
@@ -87,16 +89,47 @@ pub const StartupPhase = enum {
     gc_baseline,
 };
 
+/// When the runtime flushes a configured stdout or stderr writer. Writers are
+/// always flushed by `io.flush`/`file:flush`, `os.exit`, and before
+/// `os.execute`/`io.popen` start a child process.
+pub const OutputFlush = enum {
+    /// Only at the points above; the writer's own buffer decides the rest.
+    explicit,
+    /// Also after each `print`, like C Lua's `lua_writeline`; other writes
+    /// stay buffered like a fully buffered C stream.
+    print,
+    /// Also after each write containing a newline, like a line-buffered C
+    /// stream. This includes every `print`.
+    line,
+    /// After every write, like an unbuffered C stream.
+    always,
+};
+
 pub const StateOptions = struct {
     stdlib: StdlibMode = .full,
     io: ?std.Io = null,
     stdout: ?*std.Io.Writer = null,
     stderr: ?*std.Io.Writer = null,
+    stdout_flush: OutputFlush = .explicit,
+    stderr_flush: OutputFlush = .explicit,
+    /// Also keep Lua stdout/stderr bytes in `State.stdout`/`State.stderr`.
+    /// Streaming hosts with writers can disable this to bound memory.
+    capture_output: bool = true,
+    /// Start with Lua warnings on. Lua's `warn("@on")` and `warn("@off")` switch them.
+    warnings: bool = false,
+    /// Receives warnings instead of stderr.
+    warning_handler: ?host.WarningHandler = null,
     filesystem: FilesystemCapability = .disabled,
     environment: EnvironmentCapability = .disabled,
     clock: ClockCapability = .system,
     process: ProcessCapability = .disabled,
     stdin: []const u8 = "",
+    /// Host stdin stream read incrementally by `io.read`, `io.lines`, and
+    /// `loadfile()`. Takes precedence over `stdin` bytes. Borrowed; reads
+    /// cannot be undone by snapshot reset.
+    stdin_reader: ?*std.Io.Reader = null,
+    /// Largest file `io`, `loadfile`, `dofile`, `require`, and `fs` read at once.
+    max_file_bytes: usize = host.default_max_file_bytes,
     /// Memory budget retained for embedding API allocator setup and snapshots.
     /// Direct runtime users must enforce this budget through their allocator.
     max_memory: ?usize = null,
@@ -107,9 +140,23 @@ pub const StateOptions = struct {
     trace_vm: bool = false,
 };
 
+/// Host handling for a runtime error escaping a host entry point. It runs
+/// at the error point, before the failing frames unwind or `__close` runs.
+pub const HostErrorHandler = struct {
+    /// Lua message handler with `xpcall` semantics; its first result replaces the error value.
+    message_handler: Value = .nil,
+    /// Receives a traceback allocated with the state allocator. The caller
+    /// initializes it to null and frees any traceback stored there.
+    traceback: ?*?[]u8 = null,
+    /// End the traceback with `[C]: in ?` for the host entry, as `lua.c` does.
+    host_frame: bool = false,
+};
+
 pub const State = struct {
+    pub const max_c_calls = lua_max_c_calls;
     rollback: ?*rollback_mod.Journal = null,
     userdata_scope: ?*types.UserdataScope = null,
+    value_roots: ?*types.ValueRoots = null,
     /// Includes direct interpreter entry, nested calls, and suspended host callbacks.
     execution_depth: usize = 0,
     allocator_lifetime: ?*types.AllocatorLifetime = null,
@@ -127,6 +174,9 @@ pub const State = struct {
     table_finalizer_head: ?*Table = null,
     table_finalizer_serial: u64 = 0,
     table_pending_finalizer_head: ?*Table = null,
+    /// Userdata separated for their Lua `__gc`, in queue order shared with
+    /// `table_pending_finalizer_head`.
+    userdata_lua_pending_head: ?*Userdata = null,
     userdata_pending_finalizer_head: ?*Userdata = null,
     table_metatable_count: usize = 0,
     userdata_allocations: std.ArrayList(*Userdata) = .empty,
@@ -142,9 +192,18 @@ pub const State = struct {
     stderr: std.ArrayList(u8) = .empty,
     options: StateOptions,
     stdin_pos: usize = 0,
+    /// Set by `os.exit` while the state unwinds with `error.LuaExit`.
+    exit_request: ?host.ExitRequest = null,
+    /// Local time zone loaded on first use by the system clock.
+    local_zone: ?*timezone.Zone = null,
+    /// Advanced by filesystem mutations so buffered file handles reload contents.
+    file_generation: u64 = 0,
     last_error: ?RuntimeErrorPayload = null,
-    last_error_in_close: bool = false,
-    traceback_error_in_close: bool = false,
+    /// Lua warnings are on, as switched by `@on` and `@off` control messages.
+    warnings_on: bool = false,
+    /// The current error already went through a message handler (or must
+    /// skip one, like a memory error or an error in error handling).
+    error_handled: bool = false,
     current_thread: ?*Thread = null,
     api_callback_dispatch: ?ApiCallbackDispatchFn = null,
     api_callback_user_data: ?*anyopaque = null,
@@ -155,12 +214,18 @@ pub const State = struct {
     boolean_metatable: ?*Table = null,
     nil_metatable: ?*Table = null,
     file_metatable: ?*Table = null,
+    /// Metatable of `fs` file handles, which add the `fs` file methods.
+    fs_file_metatable: ?*Table = null,
+    /// Default files of `io.read`/`io.write`, rooted outside Lua-visible tables.
+    io_input: ?*Userdata = null,
+    io_output: ?*Userdata = null,
     zerde_null: ?*Table = null,
     zerde_array_metatable: ?*Table = null,
     zerde_object_metatable: ?*Table = null,
     is_collecting: bool = false,
-    collect_after_instruction: bool = false,
-    step_after_instruction: bool = false,
+    stress_collect: bool = false,
+    stress_step: bool = false,
+    stress_mark: usize = 0,
     gc_running: bool = true,
     gc_mode: GcMode = .generational,
     gc_params: GcParams = .{},
@@ -174,7 +239,7 @@ pub const State = struct {
     gc_remembered: std.ArrayList(types.GcObject) = .empty,
     gc_weak: std.ArrayList(*Table) = .empty,
     gc_tables: std.ArrayList(*Table) = .empty,
-    gc_finalizers: std.ArrayList(*Table) = .empty,
+    gc_finalizers: std.ArrayList(types.FinalizerObject) = .empty,
     gc_major_pending: bool = false,
     gc_cycle_start_total: usize = 0,
     gc_found_young: bool = false,
@@ -187,7 +252,19 @@ pub const State = struct {
     mark_all_stack_registers: bool = false,
     conservative_gc_depth: usize = 0,
     random_state: [4]u64 = .{ 0x123456789abcdef0, 0xff, 0xfedcba9876543210, 0 },
+    /// Monotonic count of executed VM instructions.
     instruction_count: u64 = 0,
+    /// `instruction_count` at the last budget reset; `max_instructions` covers
+    /// the instructions executed since then.
+    instruction_budget_base: u64 = 0,
+    /// Absolute `instruction_count` deadline of the innermost budgeted host
+    /// call, already narrowed by enclosing budgeted calls.
+    call_instruction_deadline: ?u64 = null,
+    /// The dispatch loop enters `vm.executionCheckpoint` once
+    /// `instruction_count` reaches this value. Zero forces a recompute.
+    instruction_checkpoint: u64 = 0,
+    /// Interrupt request shared with host threads; allocated on first use.
+    interrupt: ?*vm_mod.InterruptControl = null,
 
     pub fn registerAllocation(self: *State, comptime field: []const u8, item: anytype) !void {
         if (self.rollback) |journal| try journal.prepareAllocation(self);
@@ -220,10 +297,11 @@ pub const State = struct {
             .string_allocation_index = PointerAllocationIndex.init(allocator),
             .table_allocation_index = PointerAllocationIndex.init(allocator),
             .options = options,
+            .warnings_on = options.warnings,
         };
         errdefer state.deinit();
 
-        const hints = stdlib.initHintsWithStdin(options.stdlib, options.stdin);
+        const hints = stdlib.initHints(options.stdlib);
         try state.strings.ensureTotalCapacity(@intCast(hints.strings));
         try state.string_allocations.ensureTotalCapacity(allocator, hints.strings);
         try state.string_allocation_index.ensureTotalCapacity(@intCast(hints.strings));
@@ -247,6 +325,10 @@ pub const State = struct {
         return if (self.options.max_stack_values) |limit| @min(limit, default_max_stack_values) else default_max_stack_values;
     }
 
+    fn stressPending(self: *const State) bool {
+        return (self.stress_collect or self.stress_step) and self.gc_known_total != self.stress_mark;
+    }
+
     pub fn callFrameLimit(self: *const State) usize {
         return if (self.options.max_call_frames) |limit| @min(limit, default_max_call_frames) else default_max_call_frames;
     }
@@ -254,22 +336,71 @@ pub const State = struct {
     pub fn fileMetatable(state: *State) !*Table {
         if (state.file_metatable) |metatable| return metatable;
 
-        const value = try state.newTableWithHints(0, 11);
-        const metatable = value.table;
+        const metatable = (try state.newTableWithHints(0, 5)).table;
         state.file_metatable = metatable;
         errdefer state.file_metatable = null;
+        const methods = try state.newTableWithHints(0, 7);
+        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("__index") }, methods);
         try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("__name") }, .{ .string = stdlib_static_strings.get("FILE*") });
-        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("__index") }, value);
-        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("__close") }, .{ .native = .io_file_close });
-        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("__gc") }, .{ .native = .io_file_close });
-        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("read") }, .{ .native = .io_file_read });
-        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("write") }, .{ .native = .io_file_write });
-        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("close") }, .{ .native = .io_file_close });
-        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("seek") }, .{ .native = .io_file_seek });
-        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("flush") }, .{ .native = .io_file_flush });
-        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("lines") }, .{ .native = .io_file_lines });
-        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("setvbuf") }, .{ .native = .io_file_setvbuf });
+        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("__tostring") }, .{ .native = .io_file_tostring });
+        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("__close") }, .{ .native = .io_file_gc });
+        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("__gc") }, .{ .native = .io_file_gc });
+        try setFileMethods(state, methods.table);
         return metatable;
+    }
+
+    /// `fs` file handles share the `FILE*` metamethods, and their method table
+    /// adds `stat`, `tell`, `truncate`, `path`, and `sync`.
+    pub fn fsFileMetatable(state: *State) !*Table {
+        if (state.fs_file_metatable) |metatable| return metatable;
+        const file_metatable = try state.fileMetatable();
+        const metatable = (try state.newTableWithHints(0, 5)).table;
+        state.fs_file_metatable = metatable;
+        errdefer state.fs_file_metatable = null;
+        for (file_metatable.entries.items) |entry| {
+            if (entry.value != .nil) try state.setTableRaw(metatable, entry.key, entry.value);
+        }
+        const methods = try state.newTableWithHints(0, 12);
+        try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("__index") }, methods);
+        try setFileMethods(state, methods.table);
+        try state.setTableRaw(methods.table, .{ .string = try state.intern("stat") }, .{ .native = .fs_file_stat });
+        try state.setTableRaw(methods.table, .{ .string = try state.intern("tell") }, .{ .native = .fs_file_tell });
+        try state.setTableRaw(methods.table, .{ .string = try state.intern("truncate") }, .{ .native = .fs_file_truncate });
+        try state.setTableRaw(methods.table, .{ .string = stdlib_static_strings.get("path") }, .{ .native = .fs_file_path });
+        try state.setTableRaw(methods.table, .{ .string = try state.intern("sync") }, .{ .native = .io_file_flush });
+        return metatable;
+    }
+
+    fn setFileMethods(state: *State, methods: *Table) !void {
+        try state.setTableRaw(methods, .{ .string = stdlib_static_strings.get("read") }, .{ .native = .io_file_read });
+        try state.setTableRaw(methods, .{ .string = stdlib_static_strings.get("write") }, .{ .native = .io_file_write });
+        try state.setTableRaw(methods, .{ .string = stdlib_static_strings.get("close") }, .{ .native = .io_file_close });
+        try state.setTableRaw(methods, .{ .string = stdlib_static_strings.get("seek") }, .{ .native = .io_file_seek });
+        try state.setTableRaw(methods, .{ .string = stdlib_static_strings.get("flush") }, .{ .native = .io_file_flush });
+        try state.setTableRaw(methods, .{ .string = stdlib_static_strings.get("lines") }, .{ .native = .io_file_lines });
+        try state.setTableRaw(methods, .{ .string = stdlib_static_strings.get("setvbuf") }, .{ .native = .io_file_setvbuf });
+    }
+
+    /// True for userdata types implemented by the runtime, such as files.
+    pub fn isBuiltinUserdata(userdata: *const Userdata) bool {
+        return userdata.type_id == stdlib.io.fileTypeId();
+    }
+
+    /// Runs the finalizer of a userdata type implemented by the runtime, which
+    /// needs the state. Returns false for other userdata.
+    pub fn finalizeBuiltinUserdata(self: *State, userdata: *Userdata) bool {
+        if (!isBuiltinUserdata(userdata)) return false;
+        stdlib.io.finalizeFile(self, userdata);
+        return true;
+    }
+
+    pub fn closeFinalizerOrder(userdata: *Userdata) ?u64 {
+        return stdlib.io.closeFinalizerOrder(userdata);
+    }
+
+    /// The creation order of runtime userdata, on the finalizer order scale.
+    pub fn builtinFinalizerOrder(userdata: *Userdata) u64 {
+        return stdlib.io.fileOf(.{ .userdata = userdata }).?.finalizer_order;
     }
 
     pub fn discard(self: *State) void {
@@ -277,9 +408,32 @@ pub const State = struct {
         self.deinit();
     }
 
+    /// Frees the state like `lua_close`: first calls every pending finalizer,
+    /// running `__gc` metamethods and closing open files, newest first. The
+    /// instruction budget restarts for each one. Discarded states, such as
+    /// snapshot images, call none.
     pub fn deinit(self: *State) void {
+        self.deinitClosing(true);
+    }
+
+    /// Frees the state without calling Lua `__gc` metamethods, as a process
+    /// exiting without `lua_close` does; open files are still flushed and closed.
+    pub fn deinitWithoutFinalizers(self: *State) void {
+        self.deinitClosing(false);
+    }
+
+    fn deinitClosing(self: *State, run_finalizers: bool) void {
         if (self.rollback) |journal| journal.abandon(self);
+        if (!self.discarding) {
+            if (run_finalizers) self.runCloseFinalizers();
+            stdlib.io.closeOpenFiles(self);
+        }
         self.snapshot_busy = true;
+        if (self.local_zone) |zone| {
+            zone.deinit();
+            self.allocator.destroy(zone);
+        }
+        if (self.interrupt) |control| self.allocator.destroy(control);
         self.stdout.deinit(self.allocator);
         self.stderr.deinit(self.allocator);
         self.strings.deinit();
@@ -319,8 +473,9 @@ pub const State = struct {
         self.* = undefined;
     }
 
-    pub fn execute(self: *State, proto: *const proto_mod.Proto) !void {
-        try self.executeClosure(try self.newRootClosure(proto));
+    pub fn execute(self: *State, proto: *proto_mod.Proto) !void {
+        try value_mod.prepareProtoTree(proto);
+        try self.executeClosure(try self.newRootClosure(proto), .{ .host_frame = true });
     }
 
     // Host frames must have stable identities when coroutine.running() exposes
@@ -369,6 +524,11 @@ pub const State = struct {
     }
 
     pub fn callLoadedClosure(self: *State, closure: *Closure, args: []const Value) ![]Value {
+        return self.callLoadedClosureHandled(closure, args, .{});
+    }
+
+    /// Like `callLoadedClosure`; `handler` runs at the error point before frames unwind.
+    pub fn callLoadedClosureHandled(self: *State, closure: *Closure, args: []const Value, handler: HostErrorHandler) ![]Value {
         const thread = self.newHostThread(closure) catch |err| switch (err) {
             error.StackOverflow => return self.fail("stack overflow"),
             else => return err,
@@ -376,14 +536,12 @@ pub const State = struct {
         defer self.retireHostThread(thread);
         try self.setRootThreadArgs(thread, args);
         thread.frames.items[0].return_count = bytecode.multret_count;
+        installHostErrorHandler(thread, handler);
         const previous_thread = self.current_thread;
         self.current_thread = thread;
         defer self.current_thread = previous_thread;
         self.runThreadUntil(thread, 0) catch |err| {
-            if (err == error.StackOverflow and self.last_error == null) self.last_error = .{ .diagnostic = "stack overflow" };
-            if (self.options.debug_errors and isRuntimeError(err)) self.appendUnhandledErrorDebugDump(thread, err) catch {};
-            self.closeFramesTo(thread, 0, self.currentErrorValue()) catch |close_err| return close_err;
-            thread.status = .dead;
+            try self.unwindHostThread(thread, err, handler);
             return err;
         };
         thread.status = .dead;
@@ -391,6 +549,11 @@ pub const State = struct {
     }
 
     pub fn protectedCallLoadedClosure(self: *State, closure: *Closure, args: []const Value) !ProtectedCallResult {
+        return self.protectedCallLoadedClosureHandled(closure, args, .{});
+    }
+
+    /// Like `protectedCallLoadedClosure`; `handler` runs at the error point before frames unwind.
+    pub fn protectedCallLoadedClosureHandled(self: *State, closure: *Closure, args: []const Value, handler: HostErrorHandler) !ProtectedCallResult {
         const thread = self.newHostThread(closure) catch |err| switch (err) {
             error.StackOverflow => return .{ .failure = .{ .string = try self.intern("stack overflow") } },
             else => return err,
@@ -398,16 +561,20 @@ pub const State = struct {
         defer self.retireHostThread(thread);
         try self.setRootThreadArgs(thread, args);
         thread.frames.items[0].return_count = bytecode.multret_count;
+        installHostErrorHandler(thread, handler);
         const previous_thread = self.current_thread;
         self.current_thread = thread;
         defer self.current_thread = previous_thread;
 
         self.last_error = null;
-        self.last_error_in_close = false;
         self.runThreadUntil(thread, 0) catch |err| switch (err) {
             error.RuntimeError, error.StackOverflow, error.UnsupportedOpcode => {
-                if (err == error.StackOverflow and self.last_error == null) self.last_error = .{ .diagnostic = "stack overflow" };
+                self.noteCaughtError(err);
                 if (self.options.debug_errors) self.appendUnhandledErrorDebugDump(thread, err) catch {};
+                self.applyHostErrorHandler(thread, handler) catch |handler_err| {
+                    thread.status = .dead;
+                    return handler_err;
+                };
                 var failure = self.currentErrorValue();
                 self.closeFramesTo(thread, 0, failure) catch |close_err| switch (close_err) {
                     error.RuntimeError, error.StackOverflow, error.UnsupportedOpcode => failure = self.currentErrorValue(),
@@ -416,14 +583,27 @@ pub const State = struct {
                 thread.status = .dead;
                 return .{ .failure = failure };
             },
-            else => return err,
+            error.LuaExit => {
+                try self.finishExitUnwind(thread);
+                thread.status = .dead;
+                return err;
+            },
+            else => {
+                thread.status = .dead;
+                return err;
+            },
         };
         thread.status = .dead;
         return .{ .success = try self.copyStackSlice(thread, thread.last_result_base, thread.last_result_count) };
     }
 
     pub fn callFunction(self: *State, function: Value, args: []const Value) ![]Value {
-        if (function == .closure) return self.callLoadedClosure(function.closure, args);
+        return self.callFunctionHandled(function, args, .{});
+    }
+
+    /// Like `callFunction`; `handler` runs at the error point before frames unwind.
+    pub fn callFunctionHandled(self: *State, function: Value, args: []const Value, handler: HostErrorHandler) ![]Value {
+        if (function == .closure) return self.callLoadedClosureHandled(function.closure, args, handler);
         // Native calls still need a stack frame for arguments, errors, and
         // reentrant Lua calls, but no compiled wrapper or state-owned proto.
         var proto = proto_mod.Proto.init(self.allocator);
@@ -435,21 +615,26 @@ pub const State = struct {
             else => return err,
         };
         defer self.retireHostThread(thread);
+        installHostErrorHandler(thread, handler);
         const previous_thread = self.current_thread;
         self.current_thread = thread;
         defer self.current_thread = previous_thread;
         self.last_error = null;
-        self.last_error_in_close = false;
         return self.callCollect(thread, function, args) catch |err| {
-            if (err == error.StackOverflow and self.last_error == null) self.last_error = .{ .diagnostic = "stack overflow" };
-            self.closeFramesTo(thread, 0, self.currentErrorValue()) catch |close_err| return close_err;
+            if (err == error.Interrupted and self.execution_depth == 0) self.consumeInterrupt();
+            try self.unwindHostThread(thread, err, handler);
             return err;
         };
     }
 
     pub fn protectedCallFunction(self: *State, function: Value, args: []const Value) !ProtectedCallResult {
-        if (function == .closure) return self.protectedCallLoadedClosure(function.closure, args);
-        const values = self.callFunction(function, args) catch |err| switch (err) {
+        return self.protectedCallFunctionHandled(function, args, .{});
+    }
+
+    /// Like `protectedCallFunction`; `handler` runs at the error point before frames unwind.
+    pub fn protectedCallFunctionHandled(self: *State, function: Value, args: []const Value, handler: HostErrorHandler) !ProtectedCallResult {
+        if (function == .closure) return self.protectedCallLoadedClosureHandled(function.closure, args, handler);
+        const values = self.callFunctionHandled(function, args, handler) catch |err| switch (err) {
             error.RuntimeError, error.StackOverflow, error.UnsupportedOpcode => return .{ .failure = self.currentErrorValue() },
             else => return err,
         };
@@ -458,56 +643,229 @@ pub const State = struct {
 
     pub fn executeSourceChunk(self: *State, source: []const u8) !void {
         const loaded = try self.loadSourceAsClosure(source);
-        try self.executeClosure(loaded.closure);
+        try self.executeClosure(loaded.closure, .{});
     }
 
     pub fn executeSourceChunkNamed(self: *State, source: []const u8, source_name: []const u8) !void {
-        const loaded = try self.loadSourceAsClosureNamed(source, source_name);
-        try self.executeClosure(loaded.closure);
+        return self.executeSourceChunkNamedHandled(source, source_name, .{});
     }
 
-    fn executeClosure(self: *State, closure: *Closure) !void {
+    /// Like `executeSourceChunkNamed`; `handler` runs at a runtime error point before frames unwind.
+    pub fn executeSourceChunkNamedHandled(self: *State, source: []const u8, source_name: []const u8, handler: HostErrorHandler) !void {
+        const loaded = try self.loadSourceAsClosureNamed(source, source_name);
+        try self.executeClosure(loaded.closure, handler);
+    }
+
+    fn executeClosure(self: *State, closure: *Closure, handler: HostErrorHandler) !void {
         const thread = self.newHostThread(closure) catch |err| switch (err) {
             error.StackOverflow => return self.fail("stack overflow"),
             else => return err,
         };
         defer self.retireHostThread(thread);
+        installHostErrorHandler(thread, handler);
         const previous_thread = self.current_thread;
         self.current_thread = thread;
         defer self.current_thread = previous_thread;
         self.runThreadUntil(thread, 0) catch |err| {
-            if (err == error.StackOverflow and self.last_error == null) self.last_error = .{ .diagnostic = "stack overflow" };
-            if (self.options.debug_errors and isRuntimeError(err)) self.appendUnhandledErrorDebugDump(thread, err) catch {};
-            self.closeFramesTo(thread, 0, self.currentErrorValue()) catch |close_err| return close_err;
-            thread.status = .dead;
+            try self.unwindHostThread(thread, err, handler);
             return err;
         };
         thread.status = .dead;
     }
 
+    fn installHostErrorHandler(thread: *Thread, handler: HostErrorHandler) void {
+        thread.error_handler = handler.message_handler;
+        thread.host_frame = handler.host_frame;
+    }
+
+    fn unwindHostThread(self: *State, thread: *Thread, err: anyerror, handler: HostErrorHandler) !void {
+        defer thread.status = .dead;
+        if (err == error.LuaExit) return self.finishExitUnwind(thread);
+        if (err == error.Interrupted) return;
+        self.noteCaughtError(err);
+        if (self.options.debug_errors and isRuntimeError(err)) self.appendUnhandledErrorDebugDump(thread, err) catch {};
+        if (isRuntimeError(err)) try self.applyHostErrorHandler(thread, handler);
+        try self.closeFramesTo(thread, 0, self.currentErrorValue());
+    }
+
+    fn applyHostErrorHandler(self: *State, thread: *Thread, handler: HostErrorHandler) !void {
+        if (handler.traceback) |out| {
+            if (out.*) |previous| self.allocator.free(previous);
+            out.* = null;
+            out.* = try debug_mod.formatTraceback(State, self, thread, handler.host_frame);
+        }
+        if (thread.frames.items.len != 0) try self.applyMessageHandler(thread);
+    }
+
+    /// Records the error for a Zig error caught from Lua execution: a stack
+    /// overflow that has no message yet, or a memory error, which skips
+    /// message handlers as in Lua.
+    pub fn noteCaughtError(self: *State, err: anyerror) void {
+        switch (err) {
+            error.StackOverflow => if (self.last_error == null) {
+                self.last_error = .{ .diagnostic = "stack overflow" };
+                self.error_handled = false;
+            },
+            error.OutOfMemory => {
+                if (self.last_error == null) self.last_error = .{ .diagnostic = "not enough memory" };
+                self.error_handled = true;
+            },
+            else => {},
+        }
+    }
+
+    /// Runs the thread's message handler for the current error at the error
+    /// point, like `luaG_errormsg`, unless the error already went through
+    /// one. The handler runs on top of the live failing frames; an error in
+    /// it is handled again on top of the handler's frames. The retries model
+    /// Lua's C-call limit: the handler sees "C stack overflow" at
+    /// `LUAI_MAXCCALLS` and the error becomes "error in error handling" a
+    /// little later.
+    pub fn applyMessageHandler(self: *State, thread: *Thread) !void {
+        if (self.error_handled) return;
+        self.error_handled = true;
+        const handler = thread.error_handler;
+        if (handler == .nil) return;
+        var error_value = self.currentErrorValue();
+        const mark_count = thread.native_mark_count;
+        defer thread.native_mark_count = mark_count;
+        const start_frames = thread.frames.items.len;
+        var c_calls = self.execution_depth + 2;
+        var overflowed = false;
+        var native_calls: usize = 0;
+        while (true) {
+            c_calls = @max(c_calls + 1, self.execution_depth + 3 + native_calls + debug_mod.indirectFrameCount(thread, start_frames));
+            if (c_calls >= lua_max_c_calls and !overflowed) {
+                overflowed = true;
+                error_value = try self.cStackOverflowValue(thread);
+                native_calls += 1;
+                continue;
+            }
+            if (c_calls >= lua_max_c_calls / 10 * 11) {
+                error_value = .{ .string = try self.intern("error in error handling") };
+                break;
+            }
+            if (handler != .closure) native_calls += 1;
+            const frame_count = thread.frames.items.len;
+            if (try self.callMessageHandler(thread, handler, error_value)) |result| {
+                error_value = result;
+                break;
+            }
+            if (handler != .closure and thread.frames.items.len > frame_count) pushNativeMark(thread, frame_count, handler);
+            error_value = self.currentErrorValue();
+            if (self.error_handled) break;
+        }
+        self.last_error = .{ .lua_value = error_value };
+        self.error_handled = true;
+    }
+
+    fn callMessageHandler(self: *State, thread: *Thread, handler: Value, error_value: Value) !?Value {
+        const context = self.protectedCallContext(thread);
+        thread.ensureStack(self.allocator, context.absolute_base + 2, self.stackValueLimit() + stack_error_values) catch |err| switch (err) {
+            error.StackOverflow => return self.errorInErrorHandling(),
+            else => return err,
+        };
+        thread.stack.items[context.absolute_base] = handler;
+        thread.stack.items[context.absolute_base + 1] = error_value;
+        thread.native_call_depth += 1;
+        defer thread.native_call_depth -= 1;
+        const previous_native_call = thread.native_call;
+        defer thread.native_call = previous_native_call;
+        if (!debug_mod.errorRaisedByLuaCode(thread)) thread.native_call = runtimeNativeCall(thread);
+        const name = debug_mod.messageHandlerCallName(thread);
+        thread.next_call_name = if (name) |known| known.name else null;
+        thread.next_call_namewhat = if (name) |known| known.namewhat else null;
+        self.invokeValue(thread, .{ .base = context.relative_base, .arg_count = 1, .return_count = bytecode.multret_count }, 0) catch |err| return self.messageHandlerFailure(err);
+        self.runThreadUntil(thread, context.frame_count) catch |err| return self.messageHandlerFailure(err);
+        const result = if (thread.last_result_count == 0) Value.nil else thread.stack.items[thread.last_result_base];
+        thread.stack.items.len = context.stack_len;
+        thread.last_result_base = context.last_result_base;
+        thread.last_result_count = context.last_result_count;
+        return result;
+    }
+
+    fn cStackOverflowValue(self: *State, thread: *Thread) !Value {
+        const message = "C stack overflow";
+        if (!debug_mod.errorRaisedByLuaCode(thread)) return .{ .string = try self.intern(message) };
+        const frame = thread.frames.items[thread.frames.items.len - 1];
+        const site = self.instructionErrorSite(thread) orelse return .{ .string = try self.intern(message) };
+        var out = std.ArrayList(u8).empty;
+        defer out.deinit(self.allocator);
+        try appendFmt(self.allocator, &out, "{s}:{d}: {s}", .{ runtimeSourceName(frame.proto.source_name), site.line, message });
+        return .{ .string = try self.intern(out.items) };
+    }
+
+    /// Records a native function without a calling instruction for tracebacks.
+    pub fn pushNativeMark(thread: *Thread, frame_count: usize, callee: Value) void {
+        if (thread.native_mark_count == thread.native_marks.len) return;
+        thread.native_marks[thread.native_mark_count] = .{ .frame_count = @intCast(frame_count), .callee = callee };
+        thread.native_mark_count += 1;
+    }
+
+    fn messageHandlerFailure(self: *State, err: anyerror) !?Value {
+        switch (err) {
+            error.RuntimeError, error.StackOverflow, error.UnsupportedOpcode, error.OutOfMemory => {
+                self.noteCaughtError(err);
+                return null;
+            },
+            else => return err,
+        }
+    }
+
+    fn checkCStack(self: *State, thread: *Thread) !void {
+        if (self.execution_depth >= lua_max_c_calls / 10 * 11) {
+            _ = try self.errorInErrorHandling();
+            return error.RuntimeError;
+        }
+        if (self.execution_depth != lua_max_c_calls) return;
+        const frame_count = thread.frames.items.len;
+        if (frame_count > 1) thread.frames.items.len = frame_count - 1;
+        const value = self.cStackOverflowValue(thread);
+        thread.frames.items.len = frame_count;
+        return self.failValue(try value);
+    }
+
+    fn errorInErrorHandling(self: *State) !?Value {
+        self.last_error = .{ .lua_value = .{ .string = try self.intern("error in error handling") } };
+        self.error_handled = true;
+        return null;
+    }
+
     pub fn runThreadUntil(self: *State, thread: *Thread, target_frame_count: usize) anyerror!void {
+        self.runThreadLoop(thread, target_frame_count) catch |err| {
+            if (err == error.Interrupted and self.execution_depth == 0) self.consumeInterrupt();
+            return err;
+        };
+    }
+
+    fn runThreadLoop(self: *State, thread: *Thread, target_frame_count: usize) anyerror!void {
         defer gc_mod.syncThreadStorage(State, self, thread);
         gc_mod.rememberObject(State, self, .{ .thread = thread });
         self.execution_depth += 1;
         defer self.execution_depth -= 1;
+        if (self.execution_depth >= lua_max_c_calls) try self.checkCStack(thread);
         try rollback_mod.threadWritable(thread);
         while (thread.frames.items.len > target_frame_count) {
-            if (thread.pending_unwind_error != null and thread.frames.items.len == thread.pending_unwind_resume_frame_count) {
-                const error_value = thread.pending_unwind_error.?;
-                const target = thread.pending_unwind_target_frame_count;
-                thread.pending_unwind_error = null;
-                try self.closeFramesTo(thread, target, error_value);
-                return self.throwValue(error_value);
-            }
-            if (try self.completeReadyPairsContinuation(thread)) continue;
-            if (try self.completeReadyCallOneContinuation(thread)) continue;
-            if (try self.completeReadyProtectedContinuation(thread)) continue;
-            if (try self.completeReadyTailCallContinuation(thread)) continue;
-            if (try self.completeReadyGenericForContinuation(thread)) continue;
-            if (thread.pending_yield_hook_return) {
-                thread.pending_yield_hook_return = false;
-                try self.callHook(thread, "return");
-                continue;
+            if (thread.pending_unwind_error != null or thread.pending_yield_hook_return or hasPendingContinuations(thread)) {
+                if (thread.pending_unwind_error != null and thread.frames.items.len == thread.pending_unwind_resume_frame_count) {
+                    const error_value = thread.pending_unwind_error.?;
+                    const target = thread.pending_unwind_target_frame_count;
+                    thread.pending_unwind_error = null;
+                    try self.closeFramesTo(thread, target, error_value);
+                    return self.rethrowValue(error_value);
+                }
+                if (thread.frames.items.len <= thread.continuation_frame_count) {
+                    if (try self.completeReadyPairsContinuation(thread)) continue;
+                    if (try self.completeReadyCallOneContinuation(thread)) continue;
+                    if (try self.completeReadyProtectedContinuation(thread)) continue;
+                    if (try self.completeReadyTailCallContinuation(thread)) continue;
+                    if (try self.completeReadyGenericForContinuation(thread)) continue;
+                }
+                if (thread.pending_yield_hook_return) {
+                    thread.pending_yield_hook_return = false;
+                    try self.callHook(thread, "return");
+                    continue;
+                }
             }
             var frame = &thread.frames.items[thread.frames.items.len - 1];
             const proto = frame.proto;
@@ -517,12 +875,14 @@ pub const State = struct {
             }
             const pc = frame.pc;
             const instruction = proto.instructions.items[pc];
-            if (plainFastLoopCanStart(instruction) and self.runPlainFastLoop(thread, target_frame_count)) continue;
+            if (proto.fast_loop_entry and plainFastLoopCanStart(instruction) and self.runPlainFastLoop(thread, target_frame_count)) continue;
             frame.pc += 1;
             try self.checkExecutionLimits(thread);
             if (self.options.trace_vm) try self.traceInstruction(frame.*, pc, instruction);
-            try self.callLineHook(thread);
-            try self.callCountHook(thread);
+            if (thread.hook != .nil) {
+                try self.callLineHook(thread);
+                try self.callCountHook(thread);
+            }
 
             frame = &thread.frames.items[thread.frames.items.len - 1];
             const base = frame.base;
@@ -531,7 +891,7 @@ pub const State = struct {
             switch (instruction) {
                 .load_nil => |dest| stack[base + dest] = .nil,
                 .load_bool => |op| stack[base + op.dest] = .{ .boolean = op.value },
-                .load_const => |op| stack[base + op.dest] = try self.closureConstant(frame.closure, op.constant),
+                .load_const => |op| stack[base + op.dest] = try self.protoConstant(frame.closure, proto, op.constant),
                 .move => |op| stack[base + op.dest] = stack[base + op.source],
                 .get_global => |op| stack[base + op.register] = self.getGlobalValue(constantString(proto, op.name)),
                 .set_global => |op| try self.setGlobal(constantString(proto, op.name), stack[base + op.register]),
@@ -639,6 +999,7 @@ pub const State = struct {
                 .unm => |op| try self.unaryOpToRegister(thread, op, .unm),
                 .bnot => |op| try self.unaryOpToRegister(thread, op, .bnot),
                 .concat => |op| try self.binaryOpToRegister(thread, op, .concat),
+                .concat_range => |op| try self.concatRangeToRegister(thread, op),
                 .eq => |op| {
                     const lhs = stack[base + op.left];
                     const rhs = stack[base + op.right];
@@ -764,38 +1125,40 @@ pub const State = struct {
                 thread.last_transfer_count = 0;
             }
 
-            if (self.gc_running and (self.collect_after_instruction or self.step_after_instruction or self.shouldRunAutoGc())) try gc_mod.autoStep(State, self, thread);
+            if (self.gc_running and (self.shouldRunAutoGc() or self.stressPending())) try gc_mod.autoStep(State, self, thread);
         }
     }
 
     fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bool {
         if (thread.frames.items.len <= target_frame_count) return false;
-        if (self.options.max_instructions != null or self.options.trace_vm) return false;
-        if (self.collect_after_instruction or self.step_after_instruction) return false;
+        if (self.instructionBudgetActive() or self.options.trace_vm) return false;
+        if (self.fastLoopInterrupted()) return false;
+        if (self.stressPending()) return false;
         if (thread.hook != .nil and (thread.hook_line or thread.hook_count != 0 or thread.hook_running)) return false;
         if (self.gc_running and self.shouldRunAutoGc()) return false;
 
-        var did_work = false;
+        const stack_limit = @min(thread.stack.items.len, self.stackValueLimit());
+        const frame_limit = @min(thread.frames.capacity, self.callFrameLimit());
+        const return_floor: usize = if (thread.pending_unwind_error != null or thread.pending_yield_hook_return or thread.hook_return)
+            std.math.maxInt(usize)
+        else if (hasPendingContinuations(thread))
+            @max(target_frame_count, thread.continuation_frame_count)
+        else
+            target_frame_count;
+
+        var frame_index = thread.frames.items.len - 1;
+        var frame = &thread.frames.items[frame_index];
+        var proto = frame.proto;
+        var pc = frame.pc;
+        var base = frame.base;
+        var count_bias: u64 = 0 -% pc;
+        defer self.instruction_count = self.instruction_count +| (pc +% count_bias);
+        var segment_start: u64 = 0;
         frames: while (true) {
-            const frame_index = thread.frames.items.len - 1;
-            const frame = &thread.frames.items[frame_index];
-            if (frame.proto.has_to_close_locals) return did_work;
-            const proto = frame.proto;
+            if (!proto.fast_loop_entry) return segment_start != 0;
             const instructions = proto.instructions.items;
-            var pc = frame.pc;
-            if (pc >= instructions.len) return did_work;
-            // Check the end once for sequential dispatch. The last opcode
-            // must stop dispatch or check the bound itself, as CLOSE does.
-            // Branches still check their targets; other prototypes fall back.
-            switch (instructions[instructions.len - 1]) {
-                .ret, .tail_call, .close => {},
-                else => return did_work,
-            }
-            const stack = thread.stack.items[frame.base..];
-            var executed_count: u64 = 0;
-            // Straight-line instructions advance PC. Count their span at a
-            // branch or exit instead of saturating a counter at every opcode.
-            var block_start = pc;
+            if (pc >= instructions.len) return segment_start != 0;
+            const stack = thread.stack.items[base..];
 
             // Dispatch at each opcode keeps the next branch specific to its
             // predecessor instead of routing every instruction through one loop.
@@ -816,8 +1179,15 @@ pub const State = struct {
                 },
                 .load_const => {
                     const op = instructions[pc].load_const;
-                    const constants = frame.closure.constants orelse break :fast_loop;
-                    stack[op.dest] = constants[op.constant] orelse break :fast_loop;
+                    const decoded = &proto.constant_values[op.constant];
+                    if (decoded.* != .string) {
+                        stack[op.dest] = decoded.*;
+                    } else {
+                        const constants = frame.closure.constants orelse break :fast_loop;
+                        const cached = &constants[op.constant];
+                        if (cached.* == null) break :fast_loop;
+                        stack[op.dest] = cached.*.?;
+                    }
                     pc += 1;
                     continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
@@ -841,6 +1211,7 @@ pub const State = struct {
                         if (upvalue.owner.rollback) |record| if (!record.header.detached) break :fast_loop;
                         rollback_mod.touch(upvalue);
                         upvalue.owner.stack.items[upvalue.stack_index] = stack[op.register];
+                        if (upvalue.owner != thread) gc_mod.rememberObject(State, self, .{ .thread = upvalue.owner });
                     } else {
                         rollback_mod.touch(upvalue);
                         upvalue.closed = stack[op.register];
@@ -1041,37 +1412,43 @@ pub const State = struct {
                     const op = instructions[pc].compare_branch;
                     const result = rawCompareBranchResult(stack[op.left], stack[op.right], op.op) orelse break :fast_loop;
                     pc += 1;
-                    executed_count = executed_count +| (pc - block_start);
                     if (result == op.jump_if_truthy) {
                         const source_pc = pc;
                         pc = jumpTarget(source_pc, op.offset);
-                        if (pc < source_pc) frame.last_hook_line = null;
+                        count_bias +%= source_pc -% pc;
+                        if (pc < source_pc) {
+                            frame.last_hook_line = null;
+                            if (self.fastLoopInterrupted()) break :fast_loop;
+                        }
                     }
-                    block_start = pc;
                     if (pc >= instructions.len) break :fast_loop;
                     continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
                 .jmp => {
                     const offset = instructions[pc].jmp;
                     pc += 1;
-                    executed_count = executed_count +| (pc - block_start);
                     const source_pc = pc;
                     pc = jumpTarget(source_pc, offset);
-                    if (pc < source_pc) frame.last_hook_line = null;
-                    block_start = pc;
+                    count_bias +%= source_pc -% pc;
+                    if (pc < source_pc) {
+                        frame.last_hook_line = null;
+                        if (self.fastLoopInterrupted()) break :fast_loop;
+                    }
                     if (pc >= instructions.len) break :fast_loop;
                     continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
                 .test_op => {
                     const op = instructions[pc].test_op;
                     pc += 1;
-                    executed_count = executed_count +| (pc - block_start);
                     if (truthy(stack[op.register]) == op.jump_if_truthy) {
                         const source_pc = pc;
                         pc = jumpTarget(source_pc, op.offset);
-                        if (pc < source_pc) frame.last_hook_line = null;
+                        count_bias +%= source_pc -% pc;
+                        if (pc < source_pc) {
+                            frame.last_hook_line = null;
+                            if (self.fastLoopInterrupted()) break :fast_loop;
+                        }
                     }
-                    block_start = pc;
                     if (pc >= instructions.len) break :fast_loop;
                     continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
@@ -1080,13 +1457,15 @@ pub const State = struct {
                     const value = stack[op.source];
                     stack[op.dest] = value;
                     pc += 1;
-                    executed_count = executed_count +| (pc - block_start);
                     if (truthy(value) == op.jump_if_truthy) {
                         const source_pc = pc;
                         pc = jumpTarget(source_pc, op.offset);
-                        if (pc < source_pc) frame.last_hook_line = null;
+                        count_bias +%= source_pc -% pc;
+                        if (pc < source_pc) {
+                            frame.last_hook_line = null;
+                            if (self.fastLoopInterrupted()) break :fast_loop;
+                        }
                     }
-                    block_start = pc;
                     if (pc >= instructions.len) break :fast_loop;
                     continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
@@ -1107,38 +1486,38 @@ pub const State = struct {
                         break :blk forLoopContinuesNumber(next, limit.number, step.number);
                     } else break :fast_loop;
                     pc += 1;
-                    executed_count = executed_count +| (pc - block_start);
                     if (continues) {
                         const source_pc = pc;
                         pc = jumpTarget(source_pc, op.offset);
-                        if (pc < source_pc) frame.last_hook_line = null;
+                        count_bias +%= source_pc -% pc;
+                        if (pc < source_pc) {
+                            frame.last_hook_line = null;
+                            if (self.fastLoopInterrupted()) break :fast_loop;
+                        }
                     }
-                    block_start = pc;
                     if (pc >= instructions.len) break :fast_loop;
                     continue :fast_loop std.meta.activeTag(instructions[pc]);
                 },
                 .call => {
                     var op = instructions[pc].call;
                     if (thread.hook_call) break :fast_loop;
-                    if (op.arg_count == bytecode.multret_count) {
+                    if (op.arg_count == bytecode.multret_arg_count) {
                         // A preceding call/vararg must still own the last-result
                         // state. Otherwise the general path clears and resolves it.
-                        if (executed_count != 0 or pc != block_start) break :fast_loop;
-                        const expected_base = frame.base + op.base + 1;
+                        if (pc +% count_bias != segment_start) break :fast_loop;
+                        const expected_base = base + op.base + 1;
                         if (thread.last_result_base < expected_base) break :fast_loop;
                         const result_end = thread.last_result_base + thread.last_result_count;
-                        const count = result_end -| expected_base;
-                        if (count >= bytecode.multret_count) break :fast_loop;
-                        op.arg_count = @intCast(count);
+                        op.arg_count = @intCast(result_end -| expected_base);
                     }
                     const callee = stack[op.base];
                     if (callee == .native and !thread.hook_return) {
                         if (op.arg_count == 0 or @as(usize, op.base) + 1 >= stack.len) break :fast_loop;
                         const result = stdlib.math.fastUnaryResult(callee.native, stack[op.base + 1]) orelse break :fast_loop;
                         const return_count: usize = if (op.return_count == bytecode.multret_count) 1 else op.return_count;
-                        const absolute_base = frame.base + op.base;
+                        const absolute_base = base + op.base;
                         const stored_end = absolute_base + @max(return_count, 1);
-                        if (stored_end > thread.stack.items.len or stored_end > self.stackValueLimit()) break :fast_loop;
+                        if (stored_end > stack_limit) break :fast_loop;
                         stack[op.base] = result;
                         if (return_count > 1) @memset(thread.stack.items[absolute_base + 1 .. stored_end], .nil);
                         thread.last_result_base = absolute_base;
@@ -1147,9 +1526,9 @@ pub const State = struct {
                         thread.last_transfer_count = 1;
                         thread.next_call_name = null;
                         thread.next_call_namewhat = null;
-                        frame.pc = pc + 1;
-                        self.instruction_count = self.instruction_count +| (executed_count +| (pc - block_start) +| 1);
-                        did_work = true;
+                        pc += 1;
+                        frame.pc = pc;
+                        segment_start = pc +% count_bias;
                         continue :frames;
                     }
                     if (callee != .closure) break :fast_loop;
@@ -1157,83 +1536,80 @@ pub const State = struct {
                     const callee_proto = closure.proto;
                     // Reuse existing storage; growth, varargs and hooks use
                     // the general call path, which can allocate or reenter Lua.
-                    if (callee_proto.is_vararg or callee_proto.named_vararg or callee_proto.has_to_close_locals) break :fast_loop;
-                    if (thread.frames.items.len >= thread.frames.capacity or
-                        thread.frames.items.len >= self.callFrameLimit()) break :fast_loop;
-                    const callee_base = frame.base + op.base;
+                    if (!callee_proto.fast_loop_call) break :fast_loop;
+                    const callee_index = frame_index + 1;
+                    if (callee_index >= frame_limit) break :fast_loop;
+                    const function_slot = base + op.base;
+                    const callee_base = function_slot + 1;
                     const register_count = @max(callee_proto.max_registers, 1);
                     const stack_end = callee_base + register_count;
-                    if (stack_end > thread.stack.items.len or stack_end > self.stackValueLimit()) break :fast_loop;
+                    if (stack_end > stack_limit) break :fast_loop;
 
-                    executed_count = executed_count +| (pc - block_start);
+                    const executed_count = pc +% count_bias -% segment_start;
                     const copied = @min(op.arg_count, callee_proto.param_count);
-                    for (0..copied) |index| stack[op.base + index] = stack[op.base + 1 + index];
                     @memset(thread.stack.items[callee_base + copied .. stack_end], .nil);
                     frame.pc = pc + 1;
-                    thread.frames.appendAssumeCapacity(.{
+                    frame = &@as([*]CallFrame, @ptrCast(frame))[1];
+                    frame.* = .{
                         .closure = closure,
                         .proto = callee_proto,
                         .base = callee_base,
                         .pc = 0,
-                        .return_start = callee_base,
+                        .return_start = function_slot,
                         .return_count = op.return_count,
                         .varargs = &.{},
                         .debug_name_override = thread.next_call_name,
                         .debug_namewhat_override = thread.next_call_namewhat,
-                    });
+                    };
+                    thread.frames.items.len = callee_index + 1;
                     thread.next_call_name = null;
                     thread.next_call_namewhat = null;
                     if (executed_count != 0) {
                         thread.last_result_count = 0;
                         thread.last_transfer_count = 0;
                     }
-                    self.instruction_count = self.instruction_count +| (executed_count +| 1);
-                    did_work = true;
+                    frame_index = callee_index;
+                    proto = callee_proto;
+                    segment_start = pc +% count_bias +% 1;
+                    count_bias = segment_start;
+                    pc = 0;
+                    base = callee_base;
+                    if (self.fastLoopInterrupted()) return true;
                     continue :frames;
                 },
                 .ret => {
                     const op = instructions[pc].ret;
-                    // The outer interpreter completes continuations and
-                    // stops at host call boundaries before executing a caller.
-                    const can_return = thread.pending_unwind_error == null and
-                        !thread.pending_yield_hook_return and
-                        thread.pairs_continuations.items.len == 0 and
-                        thread.call_one_continuations.items.len == 0 and
-                        thread.protected_continuations.items.len == 0 and
-                        thread.tail_call_continuations.items.len == 0 and
-                        thread.generic_for_continuations.items.len == 0;
-                    if (!can_return or thread.hook_return or frame_index <= target_frame_count) break :fast_loop;
+                    if (frame_index <= return_floor) break :fast_loop;
                     if (op.count == bytecode.multret_count or frame.return_count == bytecode.multret_count or
                         frame.owns_varargs or frame.pending_returns != null) break :fast_loop;
-                    var current = thread.open_upvalues;
-                    while (current) |upvalue| : (current = upvalue.next) {
-                        if (upvalue.is_open and upvalue.stack_index >= frame.base) break :fast_loop;
-                    }
+                    if (thread.open_upvalues) |upvalue| if (upvalue.stack_index >= base) break :fast_loop;
                     const return_start = frame.return_start;
                     const return_count = frame.return_count;
-                    if (return_start + return_count > thread.stack.items.len or
-                        return_start + return_count > self.stackValueLimit()) break :fast_loop;
-                    executed_count = executed_count +| (pc - block_start);
+                    if (return_start + return_count > stack_limit) break :fast_loop;
+                    const executed_count = pc +% count_bias -% segment_start;
                     const copied = @min(return_count, op.count);
                     for (0..copied) |index| thread.stack.items[return_start + index] = stack[op.first + index];
                     @memset(thread.stack.items[return_start + copied .. return_start + return_count], .nil);
-                    thread.frames.items.len -= 1;
+                    thread.frames.items.len = frame_index;
                     thread.last_result_base = return_start;
                     thread.last_result_count = return_count;
                     if (executed_count != 0) thread.last_transfer_count = 0;
-                    self.instruction_count = self.instruction_count +| (executed_count +| 1);
-                    did_work = true;
+                    segment_start = pc +% count_bias +% 1;
+                    frame_index -= 1;
+                    frame = &(@as([*]CallFrame, @ptrCast(frame)) - 1)[0];
+                    proto = frame.proto;
+                    pc = frame.pc;
+                    count_bias = segment_start -% pc;
+                    base = frame.base;
+                    if (self.fastLoopInterrupted()) return true;
                     continue :frames;
                 },
                 .close => {
                     const register = instructions[pc].close;
                     // An open upvalue in an outer scope does not require work at
                     // this boundary. Only leave the loop when something closes.
-                    const first = frame.base + register;
-                    var current = thread.open_upvalues;
-                    while (current) |upvalue| : (current = upvalue.next) {
-                        if (upvalue.is_open and upvalue.stack_index >= first) break :fast_loop;
-                    }
+                    const first = base + register;
+                    if (thread.open_upvalues) |upvalue| if (upvalue.stack_index >= first) break :fast_loop;
                     pc += 1;
                     if (pc >= instructions.len) break :fast_loop;
                     continue :fast_loop std.meta.activeTag(instructions[pc]);
@@ -1241,18 +1617,89 @@ pub const State = struct {
                 else => break :fast_loop,
             }
 
-            executed_count = executed_count +| (pc - block_start);
-            if (executed_count == 0) return did_work;
+            if (pc +% count_bias == segment_start) return segment_start != 0;
             frame.pc = pc;
-            self.instruction_count = self.instruction_count +| executed_count;
             thread.last_result_count = 0;
             thread.last_transfer_count = 0;
             return true;
         }
     }
 
-    pub fn checkExecutionLimits(self: *State, thread: *Thread) !void {
+    pub inline fn checkExecutionLimits(self: *State, thread: *Thread) !void {
         return vm_mod.checkExecutionLimits(State, self, thread);
+    }
+
+    /// Returns the interrupt control shared with host threads, allocating it
+    /// on first use. Polling starts at the next safepoint.
+    pub fn interruptControl(self: *State) !*vm_mod.InterruptControl {
+        if (self.interrupt) |control| return control;
+        const control = try self.allocator.create(vm_mod.InterruptControl);
+        control.* = .{};
+        self.interrupt = control;
+        self.instruction_checkpoint = 0;
+        return control;
+    }
+
+    /// Reports a pending host interrupt. Safe to call on the owning thread at any time.
+    pub inline fn interruptRequested(self: *const State) bool {
+        const control = self.interrupt orelse return false;
+        return control.requested.load(.monotonic);
+    }
+
+    /// Clears a pending interrupt request.
+    pub fn clearInterrupt(self: *State) void {
+        if (self.interrupt) |control| control.clear();
+        self.instruction_checkpoint = 0;
+    }
+
+    /// Raises `error.Interrupted` when a host interrupt is pending. Native
+    /// functions with long internal loops call this periodically.
+    pub fn checkInterrupt(self: *State) !void {
+        return vm_mod.checkInterrupt(State, self);
+    }
+
+    inline fn fastLoopInterrupted(self: *State) bool {
+        if (!self.interruptRequested()) return false;
+        self.instruction_checkpoint = 0;
+        return true;
+    }
+
+    /// True while any instruction budget applies; the uncounted fast loop is then disabled.
+    pub inline fn instructionBudgetActive(self: *const State) bool {
+        return self.options.max_instructions != null or self.call_instruction_deadline != null;
+    }
+
+    /// Instructions counted against `max_instructions` since the last budget reset.
+    pub fn instructionBudgetUsed(self: *const State) u64 {
+        return self.instruction_count -| self.instruction_budget_base;
+    }
+
+    /// Restarts the cumulative `max_instructions` budget.
+    pub fn resetInstructionBudget(self: *State) void {
+        self.instruction_budget_base = self.instruction_count;
+        self.instruction_checkpoint = 0;
+    }
+
+    /// Narrows the instruction budget for a host call to at most `max`
+    /// further instructions, including nested calls and coroutines. Returns
+    /// the enclosing deadline for `endCallInstructionBudget`.
+    pub fn beginCallInstructionBudget(self: *State, max: u64) ?u64 {
+        const previous = self.call_instruction_deadline;
+        const deadline = self.instruction_count +| max;
+        self.call_instruction_deadline = if (previous) |outer| @min(outer, deadline) else deadline;
+        self.instruction_checkpoint = 0;
+        return previous;
+    }
+
+    /// Restores the deadline returned by `beginCallInstructionBudget`.
+    pub fn endCallInstructionBudget(self: *State, previous: ?u64) void {
+        self.call_instruction_deadline = previous;
+        self.instruction_checkpoint = 0;
+    }
+
+    fn consumeInterrupt(self: *State) void {
+        if (self.interrupt) |control| control.clear();
+        self.instruction_checkpoint = 0;
     }
 
     pub fn noteAllocation(self: *State, bytes: usize) void {
@@ -1304,12 +1751,12 @@ pub const State = struct {
         if (table.rollback) |record| if (!record.header.detached) return false;
         if (index <= table.array.items.len) {
             const slot = &table.array.items[index - 1];
-            if (slot.* == .nil and table.metatable != null) return false;
+            if (slot.* == .nil and !noNewindexMetamethod(table)) return false;
             slot.* = value;
             self.writeTableBarrier(table, key_value, value);
             return true;
         }
-        if (table.metatable != null or value == .nil) return false;
+        if (value == .nil or !noNewindexMetamethod(table)) return false;
         if (index == table.array.items.len + 1 and index <= table.array.capacity) {
             table.array.appendAssumeCapacity(value);
             table.removeHashKey(key_value);
@@ -1325,12 +1772,15 @@ pub const State = struct {
         if (table.rollback) |record| if (!record.header.detached) return false;
         if (table.findEntry(key)) |index| {
             const slot = &table.entries.items[index].value;
-            if (slot.* == .nil and table.metatable != null) return false;
+            if (slot.* == .nil) {
+                if (!noNewindexMetamethod(table)) return false;
+                table.invalidateMetaEvents();
+            }
             slot.* = value;
             self.writeTableBarrier(table, key, value);
             return true;
         }
-        if (table.metatable != null or !table.insertHashEntryNoAlloc(key, value)) return false;
+        if (!noNewindexMetamethod(table) or !table.insertHashEntryNoAlloc(key, value)) return false;
         self.writeTableBarrier(table, key, value);
         return true;
     }
@@ -1344,14 +1794,14 @@ pub const State = struct {
         try rollback_mod.tableWritable(table);
         if (index <= table.array.items.len) {
             const slot = &table.array.items[index - 1];
-            if (slot.* != .nil or table.metatable == null) {
+            if (slot.* != .nil or noNewindexMetamethod(table)) {
                 slot.* = value;
                 self.writeTableBarrier(table, key_value, value);
                 return true;
             }
             return false;
         }
-        if (table.metatable != null or value == .nil) return false;
+        if (value == .nil or !noNewindexMetamethod(table)) return false;
         if (index == table.array.items.len + 1) {
             const old_capacity_bytes = tableCapacityBytes(table);
             try table.array.append(self.allocator, value);
@@ -1416,7 +1866,7 @@ pub const State = struct {
             self.writeTableBarrier(table, key, value);
             return true;
         }
-        if (table.metatable != null) return false;
+        if (!noNewindexMetamethod(table)) return false;
         if (value == .nil) return true;
         try self.setTableRaw(table, key, value);
         self.writeTableBarrier(table, key, value);
@@ -1428,7 +1878,7 @@ pub const State = struct {
         try appendFmt(self.allocator, &self.stderr, "[trace-vm] {s}:{d} pc={d} op={s}\n", .{ frame.proto.source_name, line, pc, @tagName(instruction) });
     }
 
-    fn get(_: *State, thread: *Thread, register: bytecode.Register) Value {
+    fn get(_: *State, thread: *Thread, register: usize) Value {
         const frame = thread.frames.items[thread.frames.items.len - 1];
         return thread.stack.items[frame.base + register];
     }
@@ -1445,12 +1895,12 @@ pub const State = struct {
         try self.setTable(table_value, key, self.get(thread, value_register));
     }
 
-    fn set(_: *State, thread: *Thread, register: bytecode.Register, value: Value) void {
+    fn set(_: *State, thread: *Thread, register: usize, value: Value) void {
         const frame = thread.frames.items[thread.frames.items.len - 1];
         thread.stack.items[frame.base + register] = value;
     }
 
-    fn absoluteRegister(_: *State, thread: *Thread, register: bytecode.Register) usize {
+    fn absoluteRegister(_: *State, thread: *Thread, register: usize) usize {
         const frame = thread.frames.items[thread.frames.items.len - 1];
         return frame.base + @as(usize, register);
     }
@@ -1596,7 +2046,7 @@ pub const State = struct {
             thread.last_result_base = previous_result_base;
             thread.last_result_count = previous_result_count;
         }
-        _ = try self.callOneResult(thread, thread.hook, args);
+        _ = try call_mod.callOneNamed(State, self, thread, "?", "hook", thread.hook, args);
     }
 
     fn callLineHook(self: *State, thread: *Thread) !void {
@@ -1646,6 +2096,16 @@ pub const State = struct {
         if (index < self.api_roots.items.len) self.api_roots.items[index] = .nil;
     }
 
+    pub fn pushValueRoots(self: *State, roots: *types.ValueRoots, values: []const Value) void {
+        roots.* = .{ .values = values, .previous = self.value_roots };
+        self.value_roots = roots;
+    }
+
+    pub fn popValueRoots(self: *State, roots: *types.ValueRoots) void {
+        std.debug.assert(self.value_roots == roots);
+        self.value_roots = roots.previous;
+    }
+
     pub fn rootedValue(self: *const State, index: usize) Value {
         if (index >= self.api_roots.items.len) return .nil;
         return self.api_roots.items[index];
@@ -1683,53 +2143,113 @@ pub const State = struct {
             error.HostCallbackYield => return coroutine_mod.suspendCoroutine(State, self, thread, op, context.returns.items()),
             error.RuntimeError, error.StackOverflow, error.UnsupportedOpcode => return err,
             error.LuaError => return self.failValue(context.error_value orelse .{ .string = try self.intern("host callback raised an error") }),
-            error.OutOfMemory => return err,
+            error.OutOfMemory, error.LuaExit, error.Interrupted => return err,
             else => return self.fail(@errorName(err)),
         };
 
         try self.returnValues(thread, op.base, op.return_count, context.returns.items());
     }
 
+    /// Reads a whole file through the filesystem capability, limited by
+    /// `max_file_bytes`. Failures raise PUC `loadfile`-style messages such as
+    /// "cannot open name.lua: No such file or directory".
     pub fn readFileAlloc(self: *State, path: []const u8) ![]const u8 {
-        switch (self.options.filesystem) {
-            .disabled => return self.fail("filesystem access disabled"),
-            .memory => |files| {
-                const normalized_path = host.MemoryFilesystem.normalizePathAlloc(self.allocator, path, host.MemoryFilesystem.default_max_path_len) catch return self.fail("cannot open file");
-                defer self.allocator.free(normalized_path);
-                for (files) |file| {
-                    if (std.mem.eql(u8, file.path, normalized_path)) return self.allocator.dupe(u8, file.contents);
-                }
-                return self.fail("cannot open file");
-            },
-            .memory_rw => |filesystem| return filesystem.readFileAlloc(self.allocator, path) catch return self.fail("cannot open file"),
-            .custom => |filesystem| return filesystem.read_file_alloc(filesystem.context, self.allocator, path) catch return self.fail("cannot open file"),
-            .host_cwd => if (comptime builtin.os.tag == .freestanding) {
-                return self.fail("host filesystem unavailable");
-            } else {
-                const io = try self.requireIo("filesystem I/O unavailable");
-                return Dir.cwd().readFileAlloc(io, path, self.allocator, .limited(1024 * 1024)) catch return self.fail("cannot open file");
-            },
-            .host_dir => |root| if (comptime builtin.os.tag == .freestanding) {
-                return self.fail("host filesystem unavailable");
-            } else {
-                const io = try self.requireIo("filesystem I/O unavailable");
-                const normalized = host.MemoryFilesystem.normalizePathAlloc(self.allocator, path, host.MemoryFilesystem.default_max_path_len) catch return self.fail("cannot open file");
-                defer self.allocator.free(normalized);
-                return root.dir.readFileAlloc(io, normalized, self.allocator, .limited(1024 * 1024)) catch return self.fail("cannot open file");
-            },
-        }
+        return self.readFileRaw(path) catch |err| {
+            if (err == error.OutOfMemory) return error.OutOfMemory;
+            const info = host.fileError(err);
+            const message = if (err == error.IsDir)
+                try std.fmt.allocPrint(self.allocator, "cannot read {s}", .{path})
+            else
+                try std.fmt.allocPrint(self.allocator, "cannot {s} {s}: {s}", .{ if (info.read_phase) "read" else "open", path, info.message });
+            defer self.allocator.free(message);
+            return self.fail(try self.intern(message));
+        };
+    }
+
+    /// Reads a whole file through the filesystem capability, limited by
+    /// `max_file_bytes`, returning filesystem errors unchanged.
+    pub fn readFileRaw(self: *State, path: []const u8) anyerror![]const u8 {
+        return self.fsReadFileAlloc(path, self.options.max_file_bytes);
+    }
+
+    /// Raises "<path>: <strerror message>" for a failed file operation.
+    pub fn failFileOperation(self: *State, path: []const u8, err: anyerror) anyerror {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        const message = try std.fmt.allocPrint(self.allocator, "{s}: {s}", .{ path, host.fileError(err).message });
+        defer self.allocator.free(message);
+        return self.fail(try self.intern(message));
     }
 
     pub fn writeStdout(self: *State, bytes: []const u8) !void {
-        if (self.rollback) |journal| try journal.outputWritable(self);
-        try self.stdout.appendSlice(self.allocator, bytes);
-        if (self.options.stdout) |writer| try writer.writeAll(bytes);
+        if (self.options.capture_output) {
+            if (self.rollback) |journal| try journal.outputWritable(self);
+            try self.stdout.appendSlice(self.allocator, bytes);
+        }
+        if (self.options.stdout) |writer| try writeOutput(writer, self.options.stdout_flush, bytes);
+    }
+
+    /// Emits one warning made of `parts`, like consecutive `lua_warning`
+    /// calls that continue every part but the last. A single part starting
+    /// with `@` is a control message: `@on` and `@off` switch warnings, and
+    /// other controls are ignored.
+    pub fn warn(self: *State, parts: []const []const u8) !void {
+        if (parts.len == 1 and std.mem.startsWith(u8, parts[0], "@")) {
+            const control = parts[0][1..];
+            if (std.mem.eql(u8, control, "on")) self.warnings_on = true;
+            if (std.mem.eql(u8, control, "off")) self.warnings_on = false;
+            return;
+        }
+        if (!self.warnings_on) return;
+        if (self.options.warning_handler) |handler| {
+            const message = try std.mem.concat(self.allocator, u8, parts);
+            defer self.allocator.free(message);
+            handler.emit(handler.context, message);
+            return;
+        }
+        try self.writeStderr("Lua warning: ");
+        for (parts) |part| try self.writeStderr(part);
+        try self.writeStderr("\n");
+    }
+
+    /// Warns about an error caught where Lua cannot report it, like
+    /// `luaE_warnerror`: `error in <where> (<message>)`.
+    pub fn warnError(self: *State, where: []const u8, error_value: Value) void {
+        const message = switch (error_value) {
+            .string => |text| text,
+            .nil => "<no error object>",
+            else => "error object is not a string",
+        };
+        self.warn(&.{ "error in ", where, " (", message, ")" }) catch {};
     }
 
     pub fn writeStderr(self: *State, bytes: []const u8) !void {
-        if (self.rollback) |journal| try journal.outputWritable(self);
-        try self.stderr.appendSlice(self.allocator, bytes);
-        if (self.options.stderr) |writer| try writer.writeAll(bytes);
+        if (self.options.capture_output) {
+            if (self.rollback) |journal| try journal.outputWritable(self);
+            try self.stderr.appendSlice(self.allocator, bytes);
+        }
+        if (self.options.stderr) |writer| try writeOutput(writer, self.options.stderr_flush, bytes);
+    }
+
+    fn writeOutput(writer: *std.Io.Writer, policy: OutputFlush, bytes: []const u8) !void {
+        try writer.writeAll(bytes);
+        switch (policy) {
+            .explicit, .print => {},
+            .line => if (std.mem.indexOfScalar(u8, bytes, '\n') != null) try writer.flush(),
+            .always => try writer.flush(),
+        }
+    }
+
+    fn flushStdoutAfterPrint(self: *State) !void {
+        if (self.options.stdout_flush == .print) try self.flushStdout();
+    }
+
+    /// Before blocking on host stdin, flushes a line-buffered or unbuffered
+    /// stdout writer, so interactive prompts appear as they do with C stdio.
+    pub fn flushStdoutForInput(self: *State) void {
+        switch (self.options.stdout_flush) {
+            .explicit, .print => {},
+            .line, .always => self.flushStdout() catch {},
+        }
     }
 
     pub fn flushStdout(self: *State) !void {
@@ -1741,86 +2261,20 @@ pub const State = struct {
     }
 
     pub fn writeFile(self: *State, path: []const u8, data: []const u8) !void {
-        switch (self.options.filesystem) {
-            .disabled, .memory => return self.fail("filesystem write access disabled"),
-            .memory_rw => |filesystem| filesystem.writeFile(path, data) catch return self.fail("cannot write file"),
-            .custom => |filesystem| {
-                const write = filesystem.write_file orelse return self.fail("filesystem write access disabled");
-                write(filesystem.context, path, data) catch return self.fail("cannot write file");
-            },
-            .host_cwd => if (comptime builtin.os.tag == .freestanding) {
-                return self.fail("host filesystem unavailable");
-            } else {
-                const io = try self.requireIo("filesystem I/O unavailable");
-                Dir.cwd().writeFile(io, .{ .sub_path = path, .data = data }) catch return self.fail("cannot write file");
-            },
-            .host_dir => |root| if (comptime builtin.os.tag == .freestanding) {
-                return self.fail("host filesystem unavailable");
-            } else {
-                if (root.read_only) return self.fail("filesystem write access disabled");
-                const io = try self.requireIo("filesystem I/O unavailable");
-                const normalized = host.MemoryFilesystem.normalizePathAlloc(self.allocator, path, host.MemoryFilesystem.default_max_path_len) catch return self.fail("cannot write file");
-                defer self.allocator.free(normalized);
-                root.dir.writeFile(io, .{ .sub_path = normalized, .data = data }) catch return self.fail("cannot write file");
-            },
-        }
+        self.fsWriteFile(path, data) catch |err| return self.failFileOperation(path, err);
     }
 
     pub fn removeFile(self: *State, path: []const u8) !void {
-        switch (self.options.filesystem) {
-            .disabled, .memory => return self.fail("filesystem write access disabled"),
-            .memory_rw => |filesystem| filesystem.removeFile(path) catch return self.fail("cannot remove file"),
-            .custom => |filesystem| {
-                const remove = filesystem.remove_file orelse return self.fail("filesystem write access disabled");
-                remove(filesystem.context, path) catch return self.fail("cannot remove file");
-            },
-            .host_cwd => if (comptime builtin.os.tag == .freestanding) {
-                return self.fail("host filesystem unavailable");
-            } else {
-                const io = try self.requireIo("filesystem I/O unavailable");
-                Dir.cwd().deleteFile(io, path) catch return self.fail("cannot remove file");
-            },
-            .host_dir => |root| if (comptime builtin.os.tag == .freestanding) {
-                return self.fail("host filesystem unavailable");
-            } else {
-                if (root.read_only) return self.fail("filesystem write access disabled");
-                const io = try self.requireIo("filesystem I/O unavailable");
-                const normalized = host.MemoryFilesystem.normalizePathAlloc(self.allocator, path, host.MemoryFilesystem.default_max_path_len) catch return self.fail("cannot remove file");
-                defer self.allocator.free(normalized);
-                root.dir.deleteFile(io, normalized) catch return self.fail("cannot remove file");
-            },
-        }
+        self.fsRemovePath(path, false) catch |err| return self.failFileOperation(path, err);
     }
 
     pub fn renameFile(self: *State, old_path: []const u8, new_path: []const u8) !void {
-        switch (self.options.filesystem) {
-            .disabled, .memory => return self.fail("filesystem write access disabled"),
-            .memory_rw => |filesystem| filesystem.renameFile(old_path, new_path) catch return self.fail("cannot rename file"),
-            .custom => |filesystem| {
-                const rename = filesystem.rename_file orelse return self.fail("filesystem write access disabled");
-                rename(filesystem.context, old_path, new_path) catch return self.fail("cannot rename file");
-            },
-            .host_cwd => if (comptime builtin.os.tag == .freestanding) {
-                return self.fail("host filesystem unavailable");
-            } else {
-                const io = try self.requireIo("filesystem I/O unavailable");
-                Dir.cwd().rename(old_path, Dir.cwd(), new_path, io) catch return self.fail("cannot rename file");
-            },
-            .host_dir => |root| if (comptime builtin.os.tag == .freestanding) {
-                return self.fail("host filesystem unavailable");
-            } else {
-                if (root.read_only) return self.fail("filesystem write access disabled");
-                const io = try self.requireIo("filesystem I/O unavailable");
-                const old_normalized = host.MemoryFilesystem.normalizePathAlloc(self.allocator, old_path, host.MemoryFilesystem.default_max_path_len) catch return self.fail("cannot rename file");
-                defer self.allocator.free(old_normalized);
-                const new_normalized = host.MemoryFilesystem.normalizePathAlloc(self.allocator, new_path, host.MemoryFilesystem.default_max_path_len) catch return self.fail("cannot rename file");
-                defer self.allocator.free(new_normalized);
-                root.dir.rename(old_normalized, root.dir, new_normalized, io) catch return self.fail("cannot rename file");
-            },
-        }
+        self.fsRenamePath(old_path, new_path) catch |err| return self.failFileOperation(old_path, err);
     }
 
-    pub fn fsReadFileAlloc(self: *State, path: []const u8, max_bytes: usize) anyerror![]const u8 {
+    /// Reads at most `max_bytes`, further capped by the state's `max_file_bytes`.
+    pub fn fsReadFileAlloc(self: *State, path: []const u8, requested_max_bytes: usize) anyerror![]const u8 {
+        const max_bytes = @min(requested_max_bytes, self.options.max_file_bytes);
         switch (self.options.filesystem) {
             .disabled => return error.FilesystemDisabled,
             .memory => |files| {
@@ -1831,6 +2285,9 @@ pub const State = struct {
                         if (file.contents.len > max_bytes) return error.StreamTooLong;
                         return self.allocator.dupe(u8, file.contents);
                     }
+                }
+                for (files) |file| {
+                    if (file.path.len > normalized.len and std.mem.startsWith(u8, file.path, normalized) and file.path[normalized.len] == '/') return error.IsDir;
                 }
                 return error.FileNotFound;
             },
@@ -1864,6 +2321,7 @@ pub const State = struct {
     }
 
     pub fn fsWriteFile(self: *State, path: []const u8, data: []const u8) anyerror!void {
+        self.file_generation +%= 1;
         switch (self.options.filesystem) {
             .disabled, .memory => return error.FilesystemReadOnly,
             .memory_rw => |filesystem| return filesystem.writeFile(path, data),
@@ -1882,6 +2340,116 @@ pub const State = struct {
                 defer self.allocator.free(normalized);
                 return root.dir.writeFile(io, .{ .sub_path = normalized, .data = data });
             },
+        }
+    }
+
+    /// Creates an empty file, failing with `error.PathAlreadyExists` when the
+    /// path exists, so the caller reserves the name like `mkstemp`. Host
+    /// filesystems create exclusively; memory and callback filesystems check
+    /// first, as they have no exclusive create.
+    pub fn fsCreateFileExclusive(self: *State, path: []const u8) anyerror!void {
+        switch (self.options.filesystem) {
+            .disabled => return error.FilesystemDisabled,
+            .memory => return error.FilesystemReadOnly,
+            .memory_rw => |filesystem| {
+                if (filesystem.statPath(path)) |_| return error.PathAlreadyExists else |err| if (err != error.FileNotFound) return err;
+                try filesystem.writeFile(path, "");
+            },
+            .custom => |filesystem| {
+                const write = filesystem.write_file orelse return error.OperationUnsupported;
+                if (filesystem.stat) |stat| {
+                    if (stat(filesystem.context, path, false)) |_| return error.PathAlreadyExists else |err| if (err != error.FileNotFound) return err;
+                } else if (filesystem.read_file_alloc(filesystem.context, self.allocator, path)) |bytes| {
+                    self.allocator.free(bytes);
+                    return error.PathAlreadyExists;
+                } else |err| switch (err) {
+                    error.FileNotFound => {},
+                    error.IsDir => return error.PathAlreadyExists,
+                    else => return err,
+                }
+                try write(filesystem.context, path, "");
+            },
+            .host_cwd => if (comptime builtin.os.tag == .freestanding) return error.OperationUnsupported else {
+                const io = self.options.io orelse return error.IoUnavailable;
+                const file = if (std.fs.path.isAbsolute(path))
+                    try Dir.createFileAbsolute(io, path, .{ .exclusive = true })
+                else
+                    try Dir.cwd().createFile(io, path, .{ .exclusive = true });
+                file.close(io);
+            },
+            .host_dir => |root| if (comptime builtin.os.tag == .freestanding) return error.OperationUnsupported else {
+                if (root.read_only) return error.FilesystemReadOnly;
+                const io = self.options.io orelse return error.IoUnavailable;
+                const normalized = try host.MemoryFilesystem.normalizePathAlloc(self.allocator, path, host.MemoryFilesystem.default_max_path_len);
+                defer self.allocator.free(normalized);
+                const file = try root.dir.createFile(io, normalized, .{ .exclusive = true });
+                file.close(io);
+            },
+        }
+        self.file_generation +%= 1;
+    }
+
+    /// Writes `data` at `offset` of an existing file without truncating it, so
+    /// buffered handles can flush only their unsynced suffix. Returns
+    /// `error.OperationUnsupported` when the capability has no positional
+    /// write; callers then rewrite the whole file with `fsWriteFile`.
+    pub fn fsWriteFileAt(self: *State, path: []const u8, offset: usize, data: []const u8) anyerror!void {
+        return self.fsWritePositioned(path, offset, data);
+    }
+
+    /// Writes `data` at the current end of an existing file, as a stream
+    /// opened for appending does. Custom filesystems have no positional
+    /// write, so the file is read and written back with `data` added.
+    pub fn fsAppendFile(self: *State, path: []const u8, data: []const u8) anyerror!void {
+        if (self.options.filesystem != .custom) return self.fsWritePositioned(path, null, data);
+        const old = try self.readFileRaw(path);
+        defer self.allocator.free(old);
+        const joined = try std.mem.concat(self.allocator, u8, &.{ old, data });
+        defer self.allocator.free(joined);
+        try self.fsWriteFile(path, joined);
+    }
+
+    /// Writes at `offset`, or at the end of the file when it is null.
+    fn fsWritePositioned(self: *State, path: []const u8, offset: ?usize, data: []const u8) anyerror!void {
+        switch (self.options.filesystem) {
+            .disabled, .memory => return error.FilesystemReadOnly,
+            .memory_rw => |filesystem| {
+                const position = offset orelse std.math.cast(usize, (try filesystem.statPath(path)).size) orelse return error.FileTooBig;
+                try filesystem.writeAt(path, position, data);
+                self.file_generation +%= 1;
+            },
+            .custom => return error.OperationUnsupported,
+            .host_cwd, .host_dir => {
+                if (comptime builtin.os.tag == .freestanding) return error.OperationUnsupported;
+                const io = self.options.io orelse return error.IoUnavailable;
+                const root: Dir = switch (self.options.filesystem) {
+                    .host_cwd => Dir.cwd(),
+                    .host_dir => |value| blk: {
+                        if (value.read_only) return error.FilesystemReadOnly;
+                        break :blk value.dir;
+                    },
+                    else => unreachable,
+                };
+                const owned = if (self.options.filesystem == .host_dir) try host.MemoryFilesystem.normalizePathAlloc(self.allocator, path, host.MemoryFilesystem.default_max_path_len) else null;
+                defer if (owned) |normalized| self.allocator.free(normalized);
+                const sub_path = owned orelse path;
+                // Zig 0.16 sizes a Windows handle with a query write-only handles may not make.
+                const position: u64 = offset orelse (try root.statFile(io, sub_path, .{})).size;
+                var file = try root.openFile(io, sub_path, .{ .mode = .write_only, .allow_directory = false });
+                defer file.close(io);
+                self.file_generation +%= 1;
+                try file.writePositionalAll(io, data, position);
+            },
+        }
+    }
+
+    /// Checks that an existing file can be opened for writing, as `fopen`
+    /// does for append modes, without changing its bytes. Custom filesystems
+    /// only report whether they accept writes.
+    pub fn fsCheckWritable(self: *State, path: []const u8) anyerror!void {
+        switch (self.options.filesystem) {
+            .custom => |filesystem| if (filesystem.write_file == null) return error.OperationUnsupported,
+            else => try self.fsWriteFileAt(path, 0, ""),
         }
     }
 
@@ -1988,6 +2556,7 @@ pub const State = struct {
     }
 
     pub fn fsRemovePath(self: *State, path: []const u8, recursive: bool) anyerror!void {
+        self.file_generation +%= 1;
         switch (self.options.filesystem) {
             .disabled, .memory => return error.FilesystemReadOnly,
             .memory_rw => |filesystem| return filesystem.removePath(path, recursive),
@@ -2018,6 +2587,7 @@ pub const State = struct {
     }
 
     pub fn fsRenamePath(self: *State, old_path: []const u8, new_path: []const u8) anyerror!void {
+        self.file_generation +%= 1;
         switch (self.options.filesystem) {
             .disabled, .memory => return error.FilesystemReadOnly,
             .memory_rw => |filesystem| return filesystem.renamePath(old_path, new_path),
@@ -2046,6 +2616,7 @@ pub const State = struct {
     }
 
     pub fn fsCopyFile(self: *State, source: []const u8, destination: []const u8, overwrite: bool) anyerror!void {
+        self.file_generation +%= 1;
         switch (self.options.filesystem) {
             .disabled, .memory => return error.FilesystemReadOnly,
             .memory_rw => |filesystem| return filesystem.copyFile(source, destination, overwrite),
@@ -2094,8 +2665,77 @@ pub const State = struct {
                 const io = try self.requireIo("clock I/O unavailable");
                 return @intCast(@divTrunc(Clock.real.now(io).nanoseconds, std.time.ns_per_s));
             },
+            .fixed_local => |clock| clock.now,
             .custom => |clock| clock.now(clock.context) catch return self.fail("clock unavailable"),
         };
+    }
+
+    /// Processor time for `os.clock`, in seconds. A disabled or fixed clock reports 0.
+    pub fn cpuTime(self: *State) !f64 {
+        return switch (self.options.clock) {
+            .disabled, .fixed => 0,
+            .fixed_local => |clock| clock.cpu_seconds,
+            .system => if (comptime builtin.os.tag == .freestanding) {
+                return self.fail("host clock unavailable");
+            } else {
+                const io = try self.requireIo("clock I/O unavailable");
+                const nanoseconds: f64 = @floatFromInt(Clock.cpu_process.now(io).nanoseconds);
+                return nanoseconds / std.time.ns_per_s;
+            },
+            .custom => |clock| if (clock.cpu) |cpu| cpu(clock.context) catch return self.fail("clock unavailable") else 0,
+        };
+    }
+
+    /// Local-time offset at a Unix timestamp. Clocks without a time zone use UTC.
+    pub fn localOffset(self: *State, timestamp: i64) !timezone.LocalOffset {
+        return switch (self.options.clock) {
+            .disabled, .fixed => .{},
+            .fixed_local => |clock| .{ .offset = clock.utc_offset, .is_dst = clock.is_dst },
+            .system => (try self.systemZone()).offsetAt(timestamp),
+            .custom => |clock| if (clock.utc_offset) |utc_offset| blk: {
+                const result = utc_offset(clock.context, timestamp) catch return self.fail("clock unavailable");
+                break :blk .{ .offset = result.offset, .is_dst = result.is_dst };
+            } else .{},
+        };
+    }
+
+    fn localOffsetCallback(self: *State, timestamp: i64) anyerror!timezone.LocalOffset {
+        return self.localOffset(timestamp);
+    }
+
+    /// Converts local wall-clock seconds to a Unix timestamp, like `mktime`.
+    pub fn localToUtc(self: *State, local: i64, is_dst: ?bool) !i64 {
+        return timezone.localToUtc(self, localOffsetCallback, local, is_dst);
+    }
+
+    fn systemZone(self: *State) !*const timezone.Zone {
+        if (self.local_zone) |zone| return zone;
+        const zone = try self.allocator.create(timezone.Zone);
+        errdefer self.allocator.destroy(zone);
+        zone.* = try self.loadSystemZone();
+        self.local_zone = zone;
+        return zone;
+    }
+
+    fn loadSystemZone(self: *State) !timezone.Zone {
+        const utc = timezone.Zone.utc(self.allocator);
+        if (comptime builtin.os.tag == .freestanding or builtin.os.tag == .windows or builtin.os.tag == .wasi) return utc;
+        const io = self.options.io orelse return utc;
+        var spec = self.getenv("TZ") orelse "/etc/localtime";
+        if (spec.len == 0) return utc;
+        if (spec[0] == ':') spec = spec[1..];
+        if (spec.len != 0 and std.mem.indexOf(u8, spec, "..") == null) {
+            const path = if (spec[0] == '/')
+                try self.allocator.dupe(u8, spec)
+            else
+                try std.fmt.allocPrint(self.allocator, "/usr/share/zoneinfo/{s}", .{spec});
+            defer self.allocator.free(path);
+            if (Dir.cwd().readFileAlloc(io, path, self.allocator, .limited(1024 * 1024))) |bytes| {
+                defer self.allocator.free(bytes);
+                if (timezone.Zone.parseTzif(self.allocator, bytes)) |zone| return zone else |err| if (err == error.OutOfMemory) return err;
+            } else |err| if (err == error.OutOfMemory) return err;
+        }
+        return timezone.Zone.fromRule(self.allocator, spec) orelse utc;
     }
 
     pub fn executeProcess(self: *State, command: []const u8) !ProcessResult {
@@ -2106,20 +2746,122 @@ pub const State = struct {
                 return self.fail("host process unavailable");
             } else {
                 const io = try self.requireIo("process I/O unavailable");
-                const argv = [_][]const u8{ "/bin/sh", "-c", command };
-                const result = std.process.run(self.allocator, io, .{
+                try self.flushOutputForChild();
+                const argv = shellArgv(command);
+                var child = std.process.spawn(io, .{
                     .argv = &argv,
                     .environ_map = self.environmentMap(),
-                    .stdout_limit = .limited(1024 * 1024),
-                    .stderr_limit = .limited(1024 * 1024),
                 }) catch return self.fail("process execution failed");
-                defer self.allocator.free(result.stdout);
-                defer self.allocator.free(result.stderr);
-                return switch (result.term) {
-                    .exited => |code| .{ .status = .exit, .code = code },
-                    else => .{ .status = .signal, .code = 0 },
+                const term = child.wait(io) catch {
+                    child.kill(io);
+                    return self.fail("process execution failed");
                 };
+                return processResult(term);
             },
+        };
+    }
+
+    /// Runs a command for `io.popen`. Read mode (`input == null`) returns the
+    /// command's stdout; write mode feeds `input` to its stdin. Other streams
+    /// are inherited from the host process, like C `popen`.
+    pub fn popenProcess(self: *State, command: []const u8, input: ?[]const u8) !host.PopenResult {
+        switch (self.options.process) {
+            .disabled => return self.fail("'popen' not supported"),
+            .custom => |process| {
+                const popen = process.popen orelse return self.fail("'popen' not supported");
+                const result = popen(process.context, self.allocator, command, input) catch |err| {
+                    if (err == error.OutOfMemory) return error.OutOfMemory;
+                    return self.fail("process execution failed");
+                };
+                if (result.output.len > self.options.max_file_bytes) {
+                    self.allocator.free(result.output);
+                    return self.fail("process output too large");
+                }
+                return result;
+            },
+            .enabled => if (comptime builtin.os.tag == .freestanding) {
+                return self.fail("'popen' not supported");
+            } else {
+                const io = try self.requireIo("process I/O unavailable");
+                try self.flushOutputForChild();
+                const argv = shellArgv(command);
+                var child = std.process.spawn(io, .{
+                    .argv = &argv,
+                    .environ_map = self.environmentMap(),
+                    .stdin = if (input == null) .inherit else .pipe,
+                    .stdout = if (input == null) .pipe else .inherit,
+                }) catch return self.fail("process execution failed");
+                var output: []const u8 = "";
+                errdefer self.allocator.free(output);
+                if (input) |bytes| {
+                    const stdin = child.stdin.?;
+                    stdin.writeStreamingAll(io, bytes) catch {};
+                    stdin.close(io);
+                    child.stdin = null;
+                } else {
+                    var buffer: [4096]u8 = undefined;
+                    var reader = child.stdout.?.readerStreaming(io, &buffer);
+                    output = reader.interface.allocRemaining(self.allocator, .limited(self.options.max_file_bytes)) catch |err| {
+                        child.kill(io);
+                        if (err == error.OutOfMemory) return error.OutOfMemory;
+                        return self.fail(if (err == error.StreamTooLong) "process output too large" else "process execution failed");
+                    };
+                }
+                const term = child.wait(io) catch {
+                    child.kill(io);
+                    return self.fail("process execution failed");
+                };
+                return .{ .output = output, .result = processResult(term) };
+            },
+        }
+    }
+
+    /// Records an `os.exit` request. The caller unwinds with `error.LuaExit`.
+    pub fn requestExit(self: *State, code: i32, close: bool) !void {
+        switch (self.options.process) {
+            .disabled => return self.fail("process access disabled"),
+            .enabled => {},
+            .custom => |process| if (process.exit) |exit| exit(process.context, code, close) catch |err| {
+                if (err == error.OutOfMemory) return error.OutOfMemory;
+                return self.fail("process exit failed");
+            },
+        }
+        self.flushStdout() catch {};
+        self.flushStderr() catch {};
+        self.exit_request = .{ .code = code, .close = close };
+    }
+
+    fn finishExitUnwind(self: *State, thread: *Thread) !void {
+        const request = self.exit_request orelse return;
+        if (!request.close) return;
+        self.closeFramesTo(thread, 0, null) catch |err| if (err == error.OutOfMemory) return err;
+    }
+
+    fn flushOutputForChild(self: *State) !void {
+        try self.flushStdout();
+        try self.flushStderr();
+    }
+
+    fn shellArgv(command: []const u8) [3][]const u8 {
+        return if (comptime builtin.os.tag == .windows)
+            .{ "cmd.exe", "/c", command }
+        else
+            .{ "/bin/sh", "-c", command };
+    }
+
+    fn processResult(term: std.process.Child.Term) ProcessResult {
+        return switch (term) {
+            .exited => |code| .{ .status = .exit, .code = code },
+            .signal, .stopped => |signal| .{ .status = .signal, .code = signalNumber(signal) },
+            .unknown => |code| .{ .status = .exit, .code = code },
+        };
+    }
+
+    fn signalNumber(signal: anytype) i64 {
+        return switch (@typeInfo(@TypeOf(signal))) {
+            .@"enum" => @intCast(@intFromEnum(signal)),
+            .int => @intCast(signal),
+            else => 0,
         };
     }
 
@@ -2141,22 +2883,35 @@ pub const State = struct {
         };
     }
 
-    pub fn readStdin(self: *State, spec: []const u8) !Value {
+    /// Standard input shared by `io.stdin`, `loadfile()`, and `debug.debug`:
+    /// the host `stdin_reader`, or the memory `stdin` bytes from `stdin_pos`.
+    pub const StdinSource = struct {
+        state: *State,
+        fixed: std.Io.Reader,
+        host: ?*std.Io.Reader,
+
+        pub fn reader(self: *StdinSource) *std.Io.Reader {
+            return self.host orelse &self.fixed;
+        }
+
+        /// Records the memory bytes consumed through `reader`.
+        pub fn finish(self: *StdinSource) void {
+            if (self.host == null) self.state.stdin_pos += self.fixed.seek;
+        }
+    };
+
+    /// Callers read through `reader()` and then call `finish()`.
+    pub fn stdinSource(self: *State) StdinSource {
+        if (self.options.stdin_reader) |reader| {
+            self.flushStdoutForInput();
+            return .{ .state = self, .fixed = .fixed(""), .host = reader };
+        }
         const input = self.options.stdin;
-        if (std.mem.eql(u8, spec, "*a") or std.mem.eql(u8, spec, "a")) {
-            const remaining = input[self.stdin_pos..];
-            self.stdin_pos = input.len;
-            return .{ .string = try self.intern(remaining) };
-        }
-        if (std.mem.eql(u8, spec, "*l") or std.mem.eql(u8, spec, "l")) {
-            if (self.stdin_pos >= input.len) return .nil;
-            const start = self.stdin_pos;
-            while (self.stdin_pos < input.len and input[self.stdin_pos] != '\n') self.stdin_pos += 1;
-            const line = input[start..self.stdin_pos];
-            if (self.stdin_pos < input.len and input[self.stdin_pos] == '\n') self.stdin_pos += 1;
-            return .{ .string = try self.intern(line) };
-        }
-        return self.fail("unsupported read option");
+        return .{ .state = self, .fixed = .fixed(input[@min(self.stdin_pos, input.len)..]), .host = null };
+    }
+
+    pub fn stdinIsStream(self: *const State) bool {
+        return self.options.stdin_reader != null;
     }
 
     pub fn loadSourceAsClosure(self: *State, source: []const u8) !Value {
@@ -2187,6 +2942,7 @@ pub const State = struct {
         };
         errdefer proto.deinit();
         if (source_name) |name| try setProtoSourceName(proto, name);
+        try value_mod.prepareProtoTree(proto);
         try self.registerAllocation("proto_allocations", proto);
         errdefer {
             const removed = self.proto_allocations.pop().?;
@@ -2216,6 +2972,7 @@ pub const State = struct {
             self.allocator.destroy(proto);
         }
         if (reader.pos != source.len) return self.fail("bad binary chunk");
+        try value_mod.prepareProtoTree(proto);
         try self.registerAllocation("proto_allocations", proto);
         errdefer {
             _ = self.proto_allocations.pop();
@@ -2247,14 +3004,14 @@ pub const State = struct {
         const owned_args = try self.allocator.dupe(Value, args[proto.param_count..]);
         thread.frames.items[0].varargs = owned_args;
         thread.frames.items[0].owns_varargs = true;
+        thread.frame_storage_bytes += owned_args.len * @sizeOf(Value);
     }
 
     pub fn callCollect(self: *State, thread: *Thread, callable: Value, args: []const Value) anyerror![]Value {
         const frame_count = thread.frames.items.len;
-        const frame = thread.frames.items[frame_count - 1];
-        const relative_base: bytecode.Register = frame.proto.max_registers;
-        const base = frame.base + @as(usize, relative_base);
-        try thread.ensureStack(self.allocator, base + 1 + args.len, self.stackValueLimit());
+        const relative_base = thread.scratchRegister();
+        const base = thread.frames.items[frame_count - 1].base + @as(usize, relative_base);
+        try thread.ensureStack(self.allocator, base + 1 + args.len, self.callStackValueLimit(thread));
         thread.stack.items[base] = callable;
         for (args, 0..) |arg, index| thread.stack.items[base + 1 + index] = arg;
 
@@ -2271,6 +3028,14 @@ pub const State = struct {
             .number => |lexeme| .{ .number = try parseLuaNumber(lexeme) },
             .string => |lexeme| .{ .string = try self.decodeStringLiteral(lexeme) },
         };
+    }
+
+    inline fn protoConstant(self: *State, closure: *Closure, proto: *const proto_mod.Proto, index: bytecode.ConstantIndex) !Value {
+        if (index < proto.constant_values.len) {
+            const decoded = proto.constant_values[index];
+            if (decoded != .string) return decoded;
+        }
+        return self.closureConstant(closure, index);
     }
 
     fn closureConstant(self: *State, closure: *Closure, index: bytecode.ConstantIndex) !Value {
@@ -2305,7 +3070,10 @@ pub const State = struct {
     }
 
     pub fn allocateString(self: *State, bytes: []const u8) ![]const u8 {
-        const allocated = try self.allocator.dupe(u8, bytes);
+        return self.adoptString(try self.allocator.dupe(u8, bytes));
+    }
+
+    fn adoptString(self: *State, allocated: []u8) ![]const u8 {
         errdefer self.allocator.free(allocated);
         try self.registerAllocation("string_allocations", StringAllocation{ .bytes = allocated });
         errdefer {
@@ -2361,6 +3129,7 @@ pub const State = struct {
                         value = value * 10 + lexeme[index] - '0';
                         index += 1;
                     }
+                    if (value > 255) return self.fail("decimal escape too large");
                     try out.append(self.allocator, @intCast(value));
                 },
                 'z' => while (index < lexeme.len - 1 and std.ascii.isWhitespace(lexeme[index])) : (index += 1) {},
@@ -2498,6 +3267,7 @@ pub const State = struct {
 
         const closure = try self.allocator.create(Closure);
         errdefer self.allocator.destroy(closure);
+        assertProtoPrepared(proto);
         closure.* = .{ .proto = proto, .upvalues = upvalues };
         try self.registerAllocation("closure_allocations", closure);
         self.noteAllocation(@sizeOf(Closure));
@@ -2530,6 +3300,7 @@ pub const State = struct {
         }
 
         const closure = try self.allocator.create(Closure);
+        assertProtoPrepared(proto);
         closure.* = .{ .proto = proto, .upvalues = upvalues, .stripped_debug = stripped_debug };
         errdefer self.allocator.destroy(closure);
         try self.registerAllocation("closure_allocations", closure);
@@ -2549,6 +3320,7 @@ pub const State = struct {
         }
 
         const closure = try self.allocator.create(Closure);
+        assertProtoPrepared(proto);
         closure.* = .{ .proto = proto, .upvalues = upvalues, .stripped_debug = parent.closure.stripped_debug };
         errdefer self.allocator.destroy(closure);
         try self.registerAllocation("closure_allocations", closure);
@@ -2557,17 +3329,27 @@ pub const State = struct {
     }
 
     fn captureUpvalue(self: *State, thread: *Thread, stack_index: usize) !*Upvalue {
+        var previous: ?*Upvalue = null;
         var current = thread.open_upvalues;
         while (current) |upvalue| : (current = upvalue.next) {
-            if (upvalue.is_open and upvalue.stack_index == stack_index) return upvalue;
+            if (upvalue.stack_index <= stack_index) {
+                if (upvalue.stack_index == stack_index) return upvalue;
+                break;
+            }
+            previous = upvalue;
         }
 
         const upvalue = try self.allocator.create(Upvalue);
         errdefer self.allocator.destroy(upvalue);
-        upvalue.* = .{ .owner = thread, .stack_index = stack_index, .next = thread.open_upvalues };
+        upvalue.* = .{ .owner = thread, .stack_index = stack_index, .next = current };
         try self.registerAllocation("upvalue_allocations", upvalue);
         self.noteAllocation(@sizeOf(Upvalue));
-        thread.open_upvalues = upvalue;
+        if (previous) |prev| {
+            rollback_mod.touch(prev);
+            prev.next = upvalue;
+        } else {
+            thread.open_upvalues = upvalue;
+        }
         return upvalue;
     }
 
@@ -2593,27 +3375,16 @@ pub const State = struct {
     }
 
     pub fn closeUpvalues(self: *State, thread: *Thread, first_stack_index: usize) void {
-        var previous: ?*Upvalue = null;
-        var current = thread.open_upvalues;
-        while (current) |upvalue| {
-            const next = upvalue.next;
-            if (upvalue.is_open and upvalue.stack_index >= first_stack_index) {
-                rollback_mod.touch(upvalue);
-                rollback_mod.touch(thread);
-                upvalue.closed = thread.stack.items[upvalue.stack_index];
-                self.writeBarrier(upvalue, upvalue.closed);
-                upvalue.is_open = false;
-                upvalue.next = null;
-                if (previous) |prev| {
-                    rollback_mod.touch(prev);
-                    prev.next = next;
-                } else {
-                    thread.open_upvalues = next;
-                }
-            } else {
-                previous = upvalue;
-            }
-            current = next;
+        while (thread.open_upvalues) |upvalue| {
+            if (upvalue.stack_index < first_stack_index) break;
+            std.debug.assert(upvalue.is_open);
+            rollback_mod.touch(upvalue);
+            rollback_mod.touch(thread);
+            upvalue.closed = thread.stack.items[upvalue.stack_index];
+            self.writeBarrier(upvalue, upvalue.closed);
+            upvalue.is_open = false;
+            thread.open_upvalues = upvalue.next;
+            upvalue.next = null;
         }
     }
 
@@ -2621,15 +3392,15 @@ pub const State = struct {
         const value = self.get(thread, register);
         if (value == .nil) return;
         if (value == .boolean and !value.boolean) return;
-        if ((try self.getMetamethod(value, "__close")) == null) {
+        if ((try self.getMetaEvent(value, .__close)) == null) {
             const frame = thread.frames.items[thread.frames.items.len - 1];
             thread.stack.items[frame.base + register] = .nil;
             if (self.toBeClosedLocalName(thread, register)) |name| {
                 const message = try std.fmt.allocPrint(self.allocator, "variable '{s}' got a non-closable value", .{name});
                 defer self.allocator.free(message);
-                return self.fail(try self.intern(message));
+                return self.failRuntimeDetail(thread, message);
             }
-            return self.fail("variable got a non-closable value");
+            return self.failRuntimeDetail(thread, "variable got a non-closable value");
         }
     }
 
@@ -2651,17 +3422,14 @@ pub const State = struct {
         const value = thread.stack.items[absolute_register];
         if (value == .nil) return;
         if (value == .boolean and !value.boolean) return;
-        const metamethod = (try self.getMetamethod(value, "__close")) orelse {
+        const metamethod = (try self.getMetaEvent(value, .__close)) orelse {
             thread.stack.items[absolute_register] = .nil;
             return self.fail("metamethod 'close'");
         };
-        const previous_call_name = thread.next_call_name;
-        thread.next_call_name = "close";
-        defer thread.next_call_name = previous_call_name;
         _ = (if (error_value) |err_value|
-            self.callOneResult(thread, metamethod, &.{ value, err_value })
+            call_mod.callOneNamed(State, self, thread, "close", "metamethod", metamethod, &.{ value, try self.caughtErrorValue(err_value) })
         else
-            self.callOneResult(thread, metamethod, &.{value})) catch |err| {
+            call_mod.callOneNamed(State, self, thread, "close", "metamethod", metamethod, &.{value})) catch |err| {
             if (err == error.CoroutineYield and error_value != null) {
                 thread.pending_unwind_error = error_value.?;
                 self.threadBarrier(thread, error_value.?);
@@ -2670,12 +3438,13 @@ pub const State = struct {
             }
             if (isRuntimeError(err)) {
                 var close_err = err;
+                self.noteCaughtError(err);
+                try self.applyMessageHandler(thread);
                 self.closeFramesTo(thread, frame_count, self.currentErrorValue()) catch |unwind_err| {
                     close_err = unwind_err;
                     if (!isRuntimeError(unwind_err)) return unwind_err;
                 };
                 thread.stack.items[absolute_register] = .nil;
-                self.last_error_in_close = true;
                 return close_err;
             }
             thread.stack.items[absolute_register] = .nil;
@@ -2795,7 +3564,7 @@ pub const State = struct {
             if (!local.to_close) continue;
             if (!localActiveAt(local, source_pc) or localActiveAt(local, target_pc)) continue;
             const value = thread.stack.items[frame.base + local.register];
-            if (value != .nil and !(value == .boolean and !value.boolean) and (try self.getMetamethod(value, "__close")) == null) continue;
+            if (value != .nil and !(value == .boolean and !value.boolean) and (try self.getMetaEvent(value, .__close)) == null) continue;
 
             self.closeToBeClosedRegister(thread, local.register, pending_error) catch |err| {
                 if (isRuntimeError(err)) {
@@ -2806,13 +3575,14 @@ pub const State = struct {
             };
         }
 
-        if (close_failed) return self.throwValue(pending_error.?);
+        if (close_failed) return self.rethrowValue(pending_error.?);
     }
 
     fn closeActiveToBeClosedInTopFrame(self: *State, thread: *Thread, error_value: ?Value) !void {
         const frame_index = thread.frames.items.len - 1;
         const frame = thread.frames.items[frame_index];
-        const pc = frame.pc;
+        if (frame.pc == 0) return;
+        const pc = frame.pc - 1;
         var pending_error = error_value;
         var close_failed = false;
 
@@ -2831,14 +3601,17 @@ pub const State = struct {
             };
         }
 
-        if (close_failed) return self.throwValue(pending_error.?);
+        if (close_failed) return self.rethrowValue(pending_error.?);
     }
 
     pub fn closeFramesTo(self: *State, thread: *Thread, frame_count: usize, error_value: ?Value) !void {
-        if (thread.frames.items.len > frame_count) discardPairsContinuationsTo(thread, frame_count);
+        if (thread.frames.items.len > frame_count) abandonFramesAbove(thread, frame_count);
         var pending_error = error_value;
         var close_failed = false;
+        const previous_native_call = thread.native_call;
+        defer thread.native_call = previous_native_call;
         while (thread.frames.items.len > frame_count) {
+            thread.native_call = runtimeNativeCall(thread);
             self.closeActiveToBeClosedInTopFrame(thread, pending_error) catch |err| {
                 pending_error = self.currentErrorValue();
                 close_failed = close_failed or isRuntimeError(err);
@@ -2846,30 +3619,45 @@ pub const State = struct {
             };
             const frame = thread.frames.items[thread.frames.items.len - 1];
             self.closeUpvalues(thread, frame.base);
-            thread.frames.items[thread.frames.items.len - 1].deinit(self.allocator);
+            thread.releaseFrame(&thread.frames.items[thread.frames.items.len - 1], self.allocator);
             thread.frames.items.len -= 1;
         }
-        if (close_failed) return self.throwValue(pending_error.?);
+        if (close_failed) return self.rethrowValue(pending_error.?);
     }
 
     fn discardFramesTo(self: *State, thread: *Thread, frame_count: usize) void {
-        if (thread.frames.items.len > frame_count) discardPairsContinuationsTo(thread, frame_count);
+        if (thread.frames.items.len > frame_count) abandonFramesAbove(thread, frame_count);
         while (thread.frames.items.len > frame_count) {
             const frame = thread.frames.items[thread.frames.items.len - 1];
             self.closeUpvalues(thread, frame.base);
-            thread.frames.items[thread.frames.items.len - 1].deinit(self.allocator);
+            thread.releaseFrame(&thread.frames.items[thread.frames.items.len - 1], self.allocator);
             thread.frames.items.len -= 1;
         }
     }
 
-    fn discardPairsContinuationsTo(thread: *Thread, frame_count: usize) void {
-        var index = thread.pairs_continuations.items.len;
-        while (index > 0) {
-            index -= 1;
-            if (thread.pairs_continuations.items[index].frame_count > frame_count) {
-                _ = thread.pairs_continuations.orderedRemove(index);
-            }
+    /// Drops the pending work of frames above `frame_count`, which unwinding
+    /// has abandoned: continuations of the native calls they made, and an
+    /// unwind paused by a yielding `__close`.
+    fn abandonFramesAbove(thread: *Thread, frame_count: usize) void {
+        if (thread.pending_unwind_resume_frame_count > frame_count) thread.pending_unwind_error = null;
+        if (thread.continuation_frame_count <= frame_count) return;
+        discardListAbove(&thread.pairs_continuations, frame_count);
+        discardListAbove(&thread.call_one_continuations, frame_count);
+        discardListAbove(&thread.protected_continuations, frame_count);
+        discardListAbove(&thread.tail_call_continuations, frame_count);
+        discardListAbove(&thread.generic_for_continuations, frame_count);
+        thread.refreshContinuationFrameCount();
+    }
+
+    fn discardListAbove(list: anytype, frame_count: usize) void {
+        var kept: usize = 0;
+        for (list.items) |continuation| {
+            const pending_frame_count = if (@hasField(@TypeOf(continuation), "context")) continuation.context.frame_count else continuation.frame_count;
+            if (pending_frame_count > frame_count) continue;
+            list.items[kept] = continuation;
+            kept += 1;
         }
+        list.items.len = kept;
     }
 
     fn getTable(self: *State, table_value: Value, key_value: Value) !Value {
@@ -2898,7 +3686,7 @@ pub const State = struct {
             if (value != .nil) return value;
         }
 
-        const metamethod = try self.getMetamethod(table_value, "__index") orelse {
+        const metamethod = try self.getMetaEvent(table_value, .__index) orelse {
             if (table_value == .table) return .nil;
             return self.failIndexTypeError(thread, table_value);
         };
@@ -2921,7 +3709,7 @@ pub const State = struct {
             if (value != .nil) return value;
         }
 
-        const metamethod = try self.getMetamethod(table_value, "__index") orelse {
+        const metamethod = try self.getMetaEvent(table_value, .__index) orelse {
             if (table_value == .table) return .nil;
             return self.failIndexTypeError(thread, table_value);
         };
@@ -2978,7 +3766,7 @@ pub const State = struct {
             }
         }
 
-        const metamethod = try self.getMetamethod(table_value, "__newindex") orelse {
+        const metamethod = try self.getMetaEvent(table_value, .__newindex) orelse {
             if (table_value == .table) {
                 try self.setTableRaw(table_value.table, key, value);
                 self.writeTableBarrier(table_value.table, key, value);
@@ -3013,7 +3801,7 @@ pub const State = struct {
             }
         }
 
-        const metamethod = try self.getMetamethod(table_value, "__newindex") orelse {
+        const metamethod = try self.getMetaEvent(table_value, .__newindex) orelse {
             if (table_value == .table) {
                 try self.setTableRaw(table_value.table, key, value);
                 self.writeTableBarrier(table_value.table, key, value);
@@ -3054,23 +3842,80 @@ pub const State = struct {
     pub fn lengthOf(self: *State, thread: *Thread, value: Value) !Value {
         return switch (value) {
             .string => |string| .{ .integer = @intCast(string.len) },
-            .table => |table| if ((try self.getMetamethod(value, "__len"))) |metamethod|
+            .table => |table| if ((try self.getMetaEvent(value, .__len))) |metamethod|
                 try self.callOneMetamethod(thread, "__len", metamethod, &.{ value, value })
             else
                 .{ .integer = table.len() },
-            else => if ((try self.getMetamethod(value, "__len"))) |metamethod|
+            else => if ((try self.getMetaEvent(value, .__len))) |metamethod|
                 try self.callOneMetamethod(thread, "__len", metamethod, &.{ value, value })
             else
-                self.fail("attempt to get length of a non-string value"),
+                self.failLengthTypeError(thread, value),
         };
     }
 
+    /// `luaL_len`: the length of `value`, honoring `__len`, as an integer.
+    pub fn lengthInteger(self: *State, thread: *Thread, value: Value) !i64 {
+        return self.lengthToInteger(try self.lengthOf(thread, value));
+    }
+
+    /// Converts a length result to an integer as `luaL_len` does.
+    pub fn lengthToInteger(self: *State, length: Value) !i64 {
+        return value_mod.coerceToInteger(length) orelse self.failLibrary("object length is not an integer");
+    }
+
     fn concatValues(self: *State, lhs: Value, rhs: Value) !Value {
-        var out = std.ArrayList(u8).empty;
-        defer out.deinit(self.allocator);
-        try appendLuaString(self.allocator, &out, lhs);
-        try appendLuaString(self.allocator, &out, rhs);
-        return .{ .string = try self.allocateString(out.items) };
+        return self.concatStringValues(&.{ lhs, rhs });
+    }
+
+    fn concatStringValues(self: *State, values: []const Value) !Value {
+        var scratch: [value_mod.max_number_text_len]u8 = undefined;
+        var total: usize = 0;
+        for (values) |value| total += switch (value) {
+            .string => |string| string.len,
+            else => value_mod.formatNumber(&scratch, value).len,
+        };
+        const bytes = try self.allocator.alloc(u8, total);
+        var offset: usize = 0;
+        for (values) |value| {
+            const text = switch (value) {
+                .string => |string| string,
+                else => value_mod.formatNumber(&scratch, value),
+            };
+            @memcpy(bytes[offset..][0..text.len], text);
+            offset += text.len;
+        }
+        return .{ .string = try self.adoptString(bytes) };
+    }
+
+    fn concatRangeToRegister(self: *State, thread: *Thread, op: bytecode.ConcatRange) !void {
+        const base = thread.frames.items[thread.frames.items.len - 1].base;
+        try self.finishConcatRange(thread, base + op.dest, base + op.first, op.count);
+    }
+
+    /// Joins stack slots `first..first+count` right to left like PUC
+    /// `luaV_concat`: each run of trailing strings and numbers becomes one
+    /// string, and otherwise the last two operands go to `__concat`. Partial
+    /// results stay in the operand slots so a yielding metamethod can resume.
+    pub fn finishConcatRange(self: *State, thread: *Thread, dest: usize, first: usize, count_in: usize) !void {
+        var count = count_in;
+        while (count > 1) {
+            const operands = thread.stack.items[first .. first + count];
+            var run: usize = 0;
+            while (run < count and luaStringLike(operands[count - 1 - run])) run += 1;
+            if (run >= 2) {
+                const joined = try self.concatStringValues(operands[count - run ..]);
+                thread.stack.items[first + count - run] = joined;
+                count -= run - 1;
+                continue;
+            }
+            const lhs = operands[count - 2];
+            const rhs = operands[count - 1];
+            const metamethod = (try self.getEitherMetamethod(lhs, rhs, "__concat")) orelse return self.failConcatRangeTypeError(thread, lhs, rhs, count - 2);
+            const result = try self.callOneMetamethodWithContinuation(thread, "__concat", metamethod, &.{ lhs, rhs }, .{ .concat = .{ .dest = dest, .first = first, .count = count - 1 } });
+            count -= 1;
+            thread.stack.items[first + count - 1] = result;
+        }
+        thread.stack.items[dest] = thread.stack.items[first];
     }
 
     fn callValue(self: *State, thread: *Thread, op: bytecode.Call) !void {
@@ -3087,10 +3932,34 @@ pub const State = struct {
         try self.invokeValue(thread, resolved, 0);
     }
 
+    /// Stands for the native code Lua runs on top of the current frame, such
+    /// as the error machinery: native functions it calls see a native caller
+    /// and get no position or call-site name in their errors.
+    fn runtimeNativeCall(thread: *Thread) types.NativeCall {
+        return .{ .base = thread.scratchRegister(), .arg_count = 0, .frame_count = thread.frames.items.len, .from_native = false };
+    }
+
+    fn nativeCallInfo(thread: *Thread, resolved: bytecode.Call, outer: ?types.NativeCall, name: ?[]const u8, namewhat: ?[]const u8, extra_args: usize) types.NativeCall {
+        const frame_count = thread.frames.items.len;
+        return .{
+            .base = resolved.base,
+            .arg_count = resolved.arg_count,
+            .extra_args = @intCast(extra_args),
+            .frame_count = frame_count,
+            .from_native = if (outer) |active| active.frame_count == frame_count else false,
+            .outer_frame_count = if (outer) |active| active.frame_count else null,
+            .name = name,
+            .namewhat = namewhat,
+        };
+    }
+
     pub fn invokeValue(self: *State, thread: *Thread, resolved: bytecode.Call, depth: usize) anyerror!void {
         if (depth > max_metamethod_depth) return self.fail("'__call' chain too long");
         const callee = self.get(thread, resolved.base);
         if (callee == .coroutine_wrapper) {
+            const previous_native_call = thread.native_call;
+            defer thread.native_call = previous_native_call;
+            thread.native_call = nativeCallInfo(thread, resolved, previous_native_call, null, null, depth);
             try self.callCoroutineWrapper(thread, resolved, callee.coroutine_wrapper);
             return;
         }
@@ -3104,6 +3973,11 @@ pub const State = struct {
         const call_namewhat = thread.next_call_namewhat;
         thread.next_call_name = null;
         thread.next_call_namewhat = null;
+        const previous_native_call = thread.native_call;
+        defer thread.native_call = previous_native_call;
+        if (isNativeCallable(callee) or callee == .gmatch_iterator) {
+            thread.native_call = nativeCallInfo(thread, resolved, previous_native_call, call_name, call_namewhat, depth);
+        }
         const hook_native = isNativeCallable(callee) and !thread.hook_running;
         if (hook_native and thread.hook_call) {
             const previous_hook_func = thread.hook_level2_func;
@@ -3131,10 +4005,11 @@ pub const State = struct {
             .native_print => {
                 for (0..resolved.arg_count) |index| {
                     if (index != 0) try self.writeStdout("\t");
-                    const text = try self.valueToString(thread, self.get(thread, resolved.base + 1 + @as(bytecode.Register, @intCast(index))));
+                    const text = try self.valueToString(thread, argValue(self, thread, resolved, @intCast(index)));
                     try self.writeStdout(text);
                 }
                 try self.writeStdout("\n");
+                try self.flushStdoutAfterPrint();
                 try self.returnValues(thread, resolved.base, resolved.return_count, &.{});
             },
             .native_tostring => {
@@ -3142,29 +4017,49 @@ pub const State = struct {
                 const value = self.get(thread, resolved.base + 1);
                 try self.returnValues(thread, resolved.base, resolved.return_count, &.{.{ .string = try self.valueToString(thread, value) }});
             },
-            .native_getmetatable => try self.returnValues(thread, resolved.base, resolved.return_count, &.{try self.getMetatableValue(argValue(self, thread, resolved, 0))}),
+            .native_getmetatable => {
+                if (resolved.arg_count == 0) return self.failArgumentMessage("getmetatable", 1, "value expected");
+                try self.returnValues(thread, resolved.base, resolved.return_count, &.{try self.getMetatableValue(argValue(self, thread, resolved, 0))});
+            },
             .native_setmetatable => {
                 const table_value = argValue(self, thread, resolved, 0);
                 if (table_value != .table) return self.failArgumentType("setmetatable", 1, "table", table_value);
+                const metatable_value = argValue(self, thread, resolved, 1);
+                if (metatable_value != .nil and metatable_value != .table) return self.failArgumentType("setmetatable", 2, "nil or table", metatable_value);
                 try self.setMetatableValue(table_value, argValue(self, thread, resolved, 1));
                 try self.returnValues(thread, resolved.base, resolved.return_count, &.{table_value});
             },
-            .native_rawequal => try self.returnValues(thread, resolved.base, resolved.return_count, &.{.{ .boolean = valuesEqual(argValue(self, thread, resolved, 0), argValue(self, thread, resolved, 1)) }}),
-            .native_rawget => try self.returnValues(thread, resolved.base, resolved.return_count, &.{try self.rawGet(argValue(self, thread, resolved, 0), argValue(self, thread, resolved, 1))}),
+            .native_rawequal => {
+                if (resolved.arg_count < 2) return self.failArgumentMessage("rawequal", resolved.arg_count + 1, "value expected");
+                try self.returnValues(thread, resolved.base, resolved.return_count, &.{.{ .boolean = valuesEqual(argValue(self, thread, resolved, 0), argValue(self, thread, resolved, 1)) }});
+            },
+            .native_rawget => {
+                _ = try self.expectArgumentTable(thread, resolved, "rawget", 0);
+                if (resolved.arg_count < 2) return self.failArgumentMessage("rawget", 2, "value expected");
+                try self.returnValues(thread, resolved.base, resolved.return_count, &.{try self.rawGet(argValue(self, thread, resolved, 0), argValue(self, thread, resolved, 1))});
+            },
             .native_rawset => {
                 const table = argValue(self, thread, resolved, 0);
+                _ = try self.expectArgumentTable(thread, resolved, "rawset", 0);
+                if (resolved.arg_count < 3) return self.failArgumentMessage("rawset", @max(resolved.arg_count + 1, 2), "value expected");
                 try self.rawSet(table, argValue(self, thread, resolved, 1), argValue(self, thread, resolved, 2));
                 try self.returnValues(thread, resolved.base, resolved.return_count, &.{table});
             },
-            .native_rawlen => try self.returnValues(thread, resolved.base, resolved.return_count, &.{try self.rawLen(argValue(self, thread, resolved, 0))}),
+            .native_rawlen => {
+                const value = argValue(self, thread, resolved, 0);
+                if (value != .string and value != .table) return self.failArgumentType("rawlen", 1, "table or string", value);
+                try self.returnValues(thread, resolved.base, resolved.return_count, &.{try self.rawLen(value)});
+            },
             .native_next => {
+                _ = try self.expectArgumentTable(thread, resolved, "next", 0);
                 const values = try self.nextValues(argValue(self, thread, resolved, 0), argValue(self, thread, resolved, 1));
-                try self.returnValues(thread, resolved.base, resolved.return_count, &values);
+                const count: usize = if (values[0] == .nil) 1 else 2;
+                try self.returnValues(thread, resolved.base, resolved.return_count, values[0..count]);
             },
             .native_pairs => {
                 if (resolved.arg_count == 0) return self.failArgumentMessage("pairs", 1, "value expected");
                 const value = argValue(self, thread, resolved, 0);
-                if (try self.getMetamethod(value, "__pairs")) |metamethod| {
+                if (try self.getMetaEvent(value, .__pairs)) |metamethod| {
                     thread.native_call_depth -= 1;
                     defer thread.native_call_depth += 1;
                     try self.callPairsMetamethod(thread, resolved, metamethod, value);
@@ -3182,9 +4077,8 @@ pub const State = struct {
                 try self.returnValues(thread, resolved.base, resolved.return_count, values[0..if (values[0] == .nil) @as(usize, 1) else 2]);
             },
             .native_table_create => {
-                const array_hint = try self.tableCreateHint(argValue(self, thread, resolved, 0), 1);
-                const hash_hint = if (resolved.arg_count >= 2) try self.tableCreateHint(argValue(self, thread, resolved, 1), 2) else 0;
-                if (hash_hint == std.math.maxInt(i32)) return self.fail("table overflow");
+                const array_hint, const hash_hint = try self.tableCreateHints(thread, resolved);
+                if (hash_hint > 1 << 30) return self.fail("table overflow");
                 try self.returnValues(thread, resolved.base, resolved.return_count, &.{try self.newTableWithHints(array_hint, hash_hint)});
             },
             .native_select => try self.selectValues(thread, resolved),
@@ -3205,6 +4099,7 @@ pub const State = struct {
             .gmatch_iterator => |state_table| {
                 if (state_table.get(.{ .string = "__zlua_lines_iterator" }) != .nil) {
                     const values = try stdlib.io.linesNext(self, .{ .table = state_table });
+                    defer if (values.len != 0) self.allocator.free(values);
                     try self.returnValues(thread, resolved.base, resolved.return_count, values);
                 } else if (state_table.get(.{ .string = "__zlua_fs_iterator" }) != .nil) {
                     const values = try stdlib.fs.iteratorNext(self, .{ .table = state_table });
@@ -3212,13 +4107,15 @@ pub const State = struct {
                     try self.returnValues(thread, resolved.base, resolved.return_count, values);
                 } else {
                     const values = try stdlib.string.gmatchNext(self, .{ .table = state_table });
-                    try self.returnValues(thread, resolved.base, resolved.return_count, values[0..2]);
+                    try self.returnValues(thread, resolved.base, resolved.return_count, values.slice());
                 }
             },
             .native => |native| try self.callNative(native, thread, resolved),
             else => {
-                const metamethod = try self.getMetamethod(callee, "__call") orelse return self.failCallTypeError(thread, callee, call_name, call_namewhat);
+                const metamethod = try self.getMetaEvent(callee, .__call) orelse return self.failCallTypeError(thread, callee, call_name, call_namewhat);
                 try self.prependCallArgument(thread, resolved, metamethod, callee);
+                thread.next_call_name = call_name;
+                thread.next_call_namewhat = call_namewhat;
                 try self.invokeValue(thread, .{ .base = resolved.base, .arg_count = resolved.arg_count + 1, .return_count = resolved.return_count }, depth + 1);
             },
         }
@@ -3247,7 +4144,7 @@ pub const State = struct {
     fn prependCallArgument(self: *State, thread: *Thread, resolved: bytecode.Call, metamethod: Value, receiver: Value) !void {
         const frame = thread.frames.items[thread.frames.items.len - 1];
         const base = frame.base + resolved.base;
-        try thread.ensureStack(self.allocator, base + 2 + resolved.arg_count, self.stackValueLimit());
+        try thread.ensureStack(self.allocator, base + 2 + resolved.arg_count, self.callStackValueLimit(thread));
         var index: usize = resolved.arg_count;
         while (index > 0) {
             index -= 1;
@@ -3325,12 +4222,14 @@ pub const State = struct {
         thread.stack.items.len = context.stack_len;
         thread.last_result_base = context.last_result_base;
         thread.last_result_count = context.last_result_count;
+        thread.error_handler = context.previous_error_handler;
+        if (thread.frames.items.len < self.callFrameLimit() and context.stack_len < self.stackValueLimit()) thread.stack_error_space = false;
         self.last_error = context.last_error;
         return failure;
     }
 
-    pub fn pushProtectedContinuation(self: *State, thread: *Thread, context: ProtectedCallContext, base: bytecode.Register, return_count: u16, kind: ProtectedContinuationKind, handler: Value, handler_depth: usize) !void {
-        return call_mod.pushProtectedContinuation(State, self, thread, context, base, return_count, kind, handler, handler_depth);
+    pub fn pushProtectedContinuation(self: *State, thread: *Thread, context: ProtectedCallContext, base: u32, return_count: u16) !void {
+        return call_mod.pushProtectedContinuation(State, self, thread, context, base, return_count);
     }
 
     pub fn readyProtectedContinuationIndex(thread: *Thread) ?usize {
@@ -3345,8 +4244,8 @@ pub const State = struct {
         return call_mod.completeReadyProtectedContinuation(State, self, thread);
     }
 
-    pub fn completeProtectedContinuationError(self: *State, thread: *Thread, error_value: Value) !bool {
-        return call_mod.completeProtectedContinuationError(State, self, thread, error_value);
+    pub fn completeProtectedContinuationError(self: *State, thread: *Thread) !bool {
+        return call_mod.completeProtectedContinuationError(State, self, thread);
     }
 
     pub fn returnProtectedContinuationSuccess(self: *State, thread: *Thread, continuation: ProtectedContinuation, values: []Value) !void {
@@ -3358,23 +4257,19 @@ pub const State = struct {
     }
 
     pub fn valueToString(self: *State, thread: *Thread, value: Value) anyerror![]const u8 {
-        if (isFileValue(value)) {
-            if (isClosedFileValue(value)) return self.intern("file (closed)");
-            var file_name = std.ArrayList(u8).empty;
-            defer file_name.deinit(self.allocator);
-            try appendFmt(self.allocator, &file_name, "file (0x{x})", .{@intFromPtr(value.table)});
-            return self.intern(file_name.items);
-        }
-
-        if (try self.getMetamethod(value, "__tostring")) |metamethod| {
+        if (try self.getMetaEvent(value, .__tostring)) |metamethod| {
             const result = try self.callOneResult(thread, metamethod, &.{value});
             return switch (result) {
                 .string => |string| string,
-                else => self.fail("'__tostring' must return a string"),
+                .integer, .number => {
+                    var buffer: [value_mod.max_number_text_len]u8 = undefined;
+                    return self.intern(value_mod.formatNumber(&buffer, result));
+                },
+                else => self.failLibrary("'__tostring' must return a string"),
             };
         }
 
-        if (try self.getMetamethod(value, "__name")) |name| {
+        if (try self.getMetaEvent(value, .__name)) |name| {
             if (name == .string) {
                 var named = std.ArrayList(u8).empty;
                 defer named.deinit(self.allocator);
@@ -3385,8 +4280,22 @@ pub const State = struct {
 
         var out = std.ArrayList(u8).empty;
         defer out.deinit(self.allocator);
-        try appendValue(self.allocator, &out, value);
+        try value_mod.appendValue(self.allocator, &out, value);
         return self.intern(out.items);
+    }
+
+    /// Returns a value's metatable without honoring `__metatable`, as `debug.getmetatable` does.
+    pub fn rawMetatableValue(self: *State, value: Value) Value {
+        const metatable = switch (value) {
+            .table => |table| table.metatable,
+            .userdata => |userdata| userdata.metatable,
+            .string => self.string_metatable,
+            .integer, .number => self.number_metatable,
+            .boolean => self.boolean_metatable,
+            .nil => self.nil_metatable,
+            else => null,
+        };
+        return if (metatable) |table| .{ .table = table } else .nil;
     }
 
     fn getMetatableValue(self: *State, value: Value) !Value {
@@ -3407,7 +4316,7 @@ pub const State = struct {
     fn setMetatableValue(self: *State, table_value: Value, metatable_value: Value) !void {
         const table = try self.expectTable(table_value);
         if (table.metatable) |metatable| {
-            if (metatable.get(.{ .string = "__metatable" }) != .nil) return self.fail("cannot change a protected metatable");
+            if (metatable.get(.{ .string = "__metatable" }) != .nil) return self.failLibrary("cannot change a protected metatable");
         }
         const metatable = switch (metatable_value) {
             .nil => null,
@@ -3433,6 +4342,7 @@ pub const State = struct {
                 rollback_mod.touch(userdata);
                 userdata.metatable = metatable;
                 if (metatable) |mt| self.writeBarrier(userdata, .{ .table = mt });
+                self.checkUserdataFinalizer(userdata);
             },
             .string => self.string_metatable = metatable,
             .integer, .number => self.number_metatable = metatable,
@@ -3444,6 +4354,7 @@ pub const State = struct {
     }
 
     pub fn getMetamethod(self: *State, value: Value, name: []const u8) !?Value {
+        if (types.MetaEvent.fromName(name)) |event| return self.getMetaEvent(value, event);
         const metatable = switch (value) {
             .table => |table| table.metatable orelse return null,
             .userdata => |userdata| userdata.metatable orelse return null,
@@ -3457,12 +4368,39 @@ pub const State = struct {
         return if (metamethod == .nil) null else metamethod;
     }
 
+    /// `getMetamethod` for a known event; metatables cache absent events.
+    pub fn getMetaEvent(self: *State, value: Value, event: types.MetaEvent) !?Value {
+        const metatable = switch (value) {
+            .table => |table| table.metatable orelse return null,
+            .userdata => |userdata| userdata.metatable orelse return null,
+            .string => self.string_metatable orelse return null,
+            .integer, .number => self.number_metatable orelse return null,
+            .boolean => self.boolean_metatable orelse return null,
+            .nil => self.nil_metatable orelse return null,
+            else => return null,
+        };
+        const metamethod = metatable.metaEvent(event);
+        return if (metamethod == .nil) null else metamethod;
+    }
+
     pub fn setTableMetatableRaw(self: *State, table: *Table, metatable: ?*Table) void {
         rollback_mod.touch(table);
         const old_has_metatable = table.metatable != null;
         table.metatable = metatable;
         self.noteTableMetatableChanged(table, old_has_metatable);
         if (metatable) |mt| self.writeBarrier(table, .{ .table = mt });
+    }
+
+    /// Registers `userdata` for its metatable's `__gc`, like
+    /// `luaC_checkfinalizer` when a metatable is set. File handles keep
+    /// their built-in close for the file metatable's own `__gc`.
+    pub fn checkUserdataFinalizer(self: *State, userdata: *Userdata) void {
+        gc_mod.checkUserdataFinalizer(State, self, userdata);
+    }
+
+    pub fn nextFinalizerOrder(self: *State) u64 {
+        self.table_finalizer_serial += 1;
+        return self.table_finalizer_serial;
     }
 
     pub fn noteTableMetatableChanged(self: *State, table: *Table, old_has_metatable: bool) void {
@@ -3474,14 +4412,17 @@ pub const State = struct {
     }
 
     pub fn luaTypeNameForError(self: *State, value: Value) []const u8 {
-        if (isFileValue(value)) return "FILE*";
-        if (self.getMetamethod(value, "__name") catch null) |name| {
+        if (self.getMetaEvent(value, .__name) catch null) |name| {
             if (name == .string) return name.string;
         }
         return luaTypeName(value);
     }
 
     fn getEitherMetamethod(self: *State, lhs: Value, rhs: Value, name: []const u8) !?Value {
+        if (types.MetaEvent.fromName(name)) |event| {
+            if (try self.getMetaEvent(lhs, event)) |metamethod| return metamethod;
+            return self.getMetaEvent(rhs, event);
+        }
         if (try self.getMetamethod(lhs, name)) |metamethod| return metamethod;
         return self.getMetamethod(rhs, name);
     }
@@ -3494,7 +4435,7 @@ pub const State = struct {
             return;
         }
         const raw = rawBinaryOp(lhs, rhs, kind) catch |err| switch (err) {
-            error.RuntimeError => if ((kind == .idiv or kind == .mod) and (toInteger(rhs) orelse 1) == 0) return self.failRuntimeDetail(thread, if (kind == .mod) "attempt to perform 'n%0'" else "attempt to divide by zero") else return err,
+            error.RuntimeError => if ((kind == .idiv or kind == .mod) and (toInteger(rhs) orelse 1) == 0) return self.failDivisionByZero(thread, lhs, rhs, kind) else return err,
         };
         if (raw) |value| {
             self.set(thread, op.dest, value);
@@ -3503,7 +4444,6 @@ pub const State = struct {
 
         const metamethod_name = binaryMetamethod(kind);
         const metamethod = (try self.getEitherMetamethod(lhs, rhs, metamethod_name)) orelse {
-            if (bitwiseIntegerError(lhs, rhs, kind)) |message| return self.failRuntimeDetail(thread, message);
             return self.failBinaryTypeError(thread, lhs, rhs, kind);
         };
         const result = try self.callOneMetamethodWithContinuation(thread, metamethod_name, metamethod, &.{ lhs, rhs }, .{ .value = self.absoluteRegister(thread, op.dest) });
@@ -3515,9 +4455,6 @@ pub const State = struct {
         if (rawUnaryOp(value, kind)) |result| {
             self.set(thread, op.dest, result);
             return;
-        }
-        if (kind == .bnot) {
-            if (bitwiseValueError(value)) |message| return self.failRuntimeDetail(thread, message);
         }
         const metamethod = (try self.getMetamethod(value, unaryMetamethod(kind))) orelse return self.failUnaryTypeError(thread, value, kind);
         const result = try self.callOneMetamethodWithContinuation(thread, unaryMetamethod(kind), metamethod, &.{ value, value }, .{ .value = self.absoluteRegister(thread, op.dest) });
@@ -3613,13 +4550,13 @@ pub const State = struct {
         const value = self.get(thread, op.source);
         switch (value) {
             .string => |string| self.set(thread, op.dest, .{ .integer = @intCast(string.len) }),
-            .table => |table| if ((try self.getMetamethod(value, "__len"))) |metamethod| {
+            .table => |table| if ((try self.getMetaEvent(value, .__len))) |metamethod| {
                 const result = try self.callOneMetamethodWithContinuation(thread, "__len", metamethod, &.{ value, value }, .{ .value = self.absoluteRegister(thread, op.dest) });
                 self.set(thread, op.dest, result);
             } else {
                 self.set(thread, op.dest, .{ .integer = table.len() });
             },
-            else => if ((try self.getMetamethod(value, "__len"))) |metamethod| {
+            else => if ((try self.getMetaEvent(value, .__len))) |metamethod| {
                 const result = try self.callOneMetamethodWithContinuation(thread, "__len", metamethod, &.{ value, value }, .{ .value = self.absoluteRegister(thread, op.dest) });
                 self.set(thread, op.dest, result);
             } else {
@@ -3631,7 +4568,7 @@ pub const State = struct {
     fn rawLen(self: *State, value: Value) !Value {
         return switch (value) {
             .string => |string| .{ .integer = @intCast(string.len) },
-            .table => |table| if (isFileValue(value)) self.fail("table or string expected") else .{ .integer = table.len() },
+            .table => |table| .{ .integer = table.len() },
             else => self.fail("table or string expected"),
         };
     }
@@ -3639,12 +4576,11 @@ pub const State = struct {
     fn binaryOp(self: *State, thread: *Thread, lhs: Value, rhs: Value, op: BinaryOp) !Value {
         if (op == .concat and luaStringLike(lhs) and luaStringLike(rhs)) return self.concatValues(lhs, rhs);
         const raw = rawBinaryOp(lhs, rhs, op) catch |err| switch (err) {
-            error.RuntimeError => if ((op == .idiv or op == .mod) and (toInteger(rhs) orelse 1) == 0) return self.failRuntimeDetail(thread, if (op == .mod) "attempt to perform 'n%0'" else "attempt to divide by zero") else return err,
+            error.RuntimeError => if ((op == .idiv or op == .mod) and (toInteger(rhs) orelse 1) == 0) return self.failDivisionByZero(thread, lhs, rhs, op) else return err,
         };
         if (raw) |value| return value;
         const metamethod_name = binaryMetamethod(op);
         const metamethod = (try self.getEitherMetamethod(lhs, rhs, metamethod_name)) orelse {
-            if (bitwiseIntegerError(lhs, rhs, op)) |message| return self.failRuntimeDetail(thread, message);
             return self.failBinaryTypeError(thread, lhs, rhs, op);
         };
         return self.callOneMetamethod(thread, metamethod_name, metamethod, &.{ lhs, rhs });
@@ -3652,9 +4588,6 @@ pub const State = struct {
 
     fn unaryOp(self: *State, thread: *Thread, value: Value, op: UnaryMetamethodOp) !Value {
         if (rawUnaryOp(value, op)) |result| return result;
-        if (op == .bnot) {
-            if (bitwiseValueError(value)) |message| return self.failRuntimeDetail(thread, message);
-        }
         const metamethod_name = unaryMetamethod(op);
         const metamethod = (try self.getMetamethod(value, metamethod_name)) orelse return self.failUnaryTypeError(thread, value, op);
         return self.callOneMetamethod(thread, metamethod_name, metamethod, &.{ value, value });
@@ -3684,15 +4617,48 @@ pub const State = struct {
         }
     }
 
+    fn checkStackValueOverflow(self: *State, thread: *Thread, needed: usize) !void {
+        if (!thread.stack_error_space) {
+            thread.stack_error_space = true;
+            return self.failRuntimeDetail(thread, "stack overflow");
+        }
+        if (needed <= self.stackValueLimit() + stack_error_values) return;
+        _ = try self.errorInErrorHandling();
+        return error.RuntimeError;
+    }
+
+    /// Whether `count` values fit on the stack above the arguments of the
+    /// native call `op`, like `lua_checkstack`.
+    pub fn nativeStackFits(self: *const State, thread: *const Thread, op: bytecode.Call, count: usize) bool {
+        const frame = thread.frames.items[thread.frames.items.len - 1];
+        const top = frame.base + op.base + 1 + op.arg_count;
+        return count <= self.stackValueLimit() -| top;
+    }
+
+    pub fn callStackValueLimit(self: *const State, thread: *const Thread) usize {
+        return self.stackValueLimit() + if (thread.stack_error_space) stack_error_values else 0;
+    }
+
+    fn checkFrameOverflow(self: *State, thread: *Thread) !void {
+        if (!thread.stack_error_space) {
+            thread.stack_error_space = true;
+            return self.failRuntimeDetail(thread, "stack overflow");
+        }
+        if (thread.frames.items.len < self.callFrameLimit() + stack_error_frames) return;
+        _ = try self.errorInErrorHandling();
+        return error.RuntimeError;
+    }
+
     fn callClosure(self: *State, thread: *Thread, op: bytecode.Call, closure: *Closure, debug_name_override: ?[]const u8, debug_namewhat_override: ?[]const u8) !void {
-        if (thread.frames.items.len >= self.callFrameLimit()) return self.fail("stack overflow");
+        if (thread.frames.items.len >= self.callFrameLimit()) try self.checkFrameOverflow(thread);
 
         const caller = thread.frames.items[thread.frames.items.len - 1];
         const base = caller.base + op.base;
-        var frame = try self.prepareClosureFrame(thread, closure, base, base, @intCast(op.arg_count), base, op.return_count);
+        if (base + 1 + @max(closure.proto.max_registers, 1) > self.stackValueLimit()) try self.checkStackValueOverflow(thread, base + 1 + @max(closure.proto.max_registers, 1));
+        var frame = try self.prepareClosureFrame(thread, closure, base, base + 1, @intCast(op.arg_count), base, op.return_count);
         frame.debug_name_override = debug_name_override;
         frame.debug_namewhat_override = debug_namewhat_override;
-        errdefer frame.deinit(self.allocator);
+        errdefer thread.releaseFrame(&frame, self.allocator);
         try thread.frames.append(self.allocator, frame);
         if (thread.hook_call and !thread.hook_running) try self.callHook(thread, "call");
     }
@@ -3709,7 +4675,7 @@ pub const State = struct {
             }
 
             if (depth > max_metamethod_depth) return self.fail("'__call' chain too long");
-            const metamethod = try self.getMetamethod(callee, "__call") orelse break;
+            const metamethod = try self.getMetaEvent(callee, .__call) orelse break;
             try self.prependCallArgument(thread, resolved, metamethod, callee);
             resolved.arg_count += 1;
             depth += 1;
@@ -3724,7 +4690,7 @@ pub const State = struct {
                 const new_frame = try self.prepareClosureFrame(thread, closure, frame.base + resolved.base, frame.base, @intCast(resolved.arg_count), frame.return_start, frame.return_count);
                 var tail_frame = new_frame;
                 tail_frame.is_tail_call = true;
-                thread.frames.items[thread.frames.items.len - 1].deinit(self.allocator);
+                thread.releaseFrame(&thread.frames.items[thread.frames.items.len - 1], self.allocator);
                 thread.frames.items[thread.frames.items.len - 1] = tail_frame;
                 if (thread.hook_call and !thread.hook_running) {
                     const previous_transfer_index_base = thread.hook_transfer_index_base;
@@ -3747,7 +4713,7 @@ pub const State = struct {
             else => {
                 const frame = thread.frames.items[thread.frames.items.len - 1];
                 const frame_count = thread.frames.items.len;
-                self.callValue(thread, .{ .base = resolved.base, .arg_count = resolved.arg_count, .return_count = frame.return_count }) catch |err| switch (err) {
+                self.invokeValue(thread, .{ .base = resolved.base, .arg_count = resolved.arg_count, .return_count = frame.return_count }, depth) catch |err| switch (err) {
                     error.CoroutineYield => {
                         try self.pushTailCallContinuation(thread, frame_count, resolved.base, frame.return_count);
                         return err;
@@ -3760,7 +4726,7 @@ pub const State = struct {
         }
     }
 
-    fn returnFromFrame(self: *State, thread: *Thread, first: bytecode.Register, count: u16) !void {
+    fn returnFromFrame(self: *State, thread: *Thread, first: u32, count: u16) !void {
         const frame_index = thread.frames.items.len - 1;
         var frame = &thread.frames.items[frame_index];
         if (frame.pending_returns == null and !frame.proto.has_to_close_locals and (!thread.hook_return or thread.hook_running)) {
@@ -3770,17 +4736,17 @@ pub const State = struct {
             if (thread.frames.items.len == 1) {
                 thread.last_result_base = source_start;
                 thread.last_result_count = source_count;
-                frame.deinit(self.allocator);
+                thread.releaseFrame(frame, self.allocator);
                 thread.frames.items.len = 0;
                 return;
             }
 
             const return_start = frame.return_start;
             const return_count = try self.resolveReturnCount(frame.return_count, source_count);
-            frame.deinit(self.allocator);
+            thread.releaseFrame(frame, self.allocator);
             thread.frames.items.len -= 1;
 
-            try thread.ensureStack(self.allocator, return_start + return_count, self.stackValueLimit());
+            try thread.ensureStack(self.allocator, return_start + return_count, self.callStackValueLimit(thread));
             const copied = @min(return_count, source_count);
             for (0..copied) |index| thread.stack.items[return_start + index] = thread.stack.items[source_start + index];
             for (copied..return_count) |index| thread.stack.items[return_start + index] = .nil;
@@ -3795,6 +4761,7 @@ pub const State = struct {
             const values = try self.allocator.alloc(Value, source_count);
             for (values, 0..) |*value, index| value.* = thread.stack.items[source_start + index];
             frame.pending_returns = values;
+            thread.frame_storage_bytes += values.len * @sizeOf(Value);
             break :blk values;
         };
         try self.closeActiveToBeClosedInTopFrame(thread, null);
@@ -3818,39 +4785,39 @@ pub const State = struct {
         }
         frame = &thread.frames.items[frame_index];
         frame.pending_returns = null;
+        thread.frame_storage_bytes -= preserved.len * @sizeOf(Value);
+        defer self.allocator.free(preserved);
         self.closeUpvalues(thread, frame.base);
         if (thread.frames.items.len == 1) {
             const result_start = frame.base + first;
-            try thread.ensureStack(self.allocator, result_start + preserved.len, self.stackValueLimit());
+            try thread.ensureStack(self.allocator, result_start + preserved.len, self.callStackValueLimit(thread));
             for (preserved, 0..) |value, index| thread.stack.items[result_start + index] = value;
             thread.last_result_base = result_start;
             thread.last_result_count = preserved.len;
-            self.allocator.free(preserved);
-            frame.deinit(self.allocator);
+            thread.releaseFrame(frame, self.allocator);
             thread.frames.items.len = 0;
             return;
         }
 
         const return_start = frame.return_start;
         const return_count = try self.resolveReturnCount(frame.return_count, preserved.len);
-        frame.deinit(self.allocator);
+        thread.releaseFrame(frame, self.allocator);
         thread.frames.items.len -= 1;
 
-        try thread.ensureStack(self.allocator, return_start + return_count, self.stackValueLimit());
+        try thread.ensureStack(self.allocator, return_start + return_count, self.callStackValueLimit(thread));
         const copied = @min(return_count, preserved.len);
         for (preserved[0..copied], 0..) |value, index| thread.stack.items[return_start + index] = value;
         for (copied..return_count) |index| thread.stack.items[return_start + index] = .nil;
-        self.allocator.free(preserved);
         thread.last_result_base = return_start;
         thread.last_result_count = return_count;
     }
 
-    pub fn returnValues(self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, values: []const Value) !void {
+    pub fn returnValues(self: *State, thread: *Thread, base: u32, return_count: u16, values: []const Value) !void {
         const frame = thread.frames.items[thread.frames.items.len - 1];
         const actual_count = try self.resolveReturnCount(return_count, values.len);
         const absolute_base = frame.base + base;
         const stored_count = @max(actual_count, values.len);
-        try thread.ensureStack(self.allocator, absolute_base + stored_count, self.stackValueLimit());
+        try thread.ensureStack(self.allocator, absolute_base + stored_count, self.callStackValueLimit(thread));
         for (0..stored_count) |index| {
             thread.stack.items[absolute_base + index] = if (index < values.len) values[index] else .nil;
         }
@@ -3891,7 +4858,7 @@ pub const State = struct {
     }
 
     fn resolveCall(self: *State, thread: *Thread, op: bytecode.Call) !bytecode.Call {
-        if (op.arg_count != bytecode.multret_count) return op;
+        if (op.arg_count != bytecode.multret_arg_count) return op;
         const frame = thread.frames.items[thread.frames.items.len - 1];
         const expected_base = frame.base + op.base + 1;
         if (thread.last_result_base < expected_base) return self.fail("invalid multiple-return call state");
@@ -3916,7 +4883,7 @@ pub const State = struct {
         if (frame.proto.named_vararg and !frame.named_vararg_readonly) return self.loadNamedVarargs(thread, frame, op);
         const actual_count = try self.resolveReturnCount(op.count, frame.varargs.len);
         const dest = frame.base + op.dest;
-        try thread.ensureStack(self.allocator, dest + actual_count, self.stackValueLimit());
+        try thread.ensureStack(self.allocator, dest + actual_count, self.callStackValueLimit(thread));
         const copied = @min(actual_count, frame.varargs.len);
         for (0..copied) |index| thread.stack.items[dest + index] = frame.varargs[index];
         for (copied..actual_count) |index| thread.stack.items[dest + index] = .nil;
@@ -3930,7 +4897,7 @@ pub const State = struct {
         const count = try self.namedVarargCount(table);
         const actual_count = try self.resolveReturnCount(op.count, count);
         const dest = frame.base + op.dest;
-        try thread.ensureStack(self.allocator, dest + actual_count, self.stackValueLimit());
+        try thread.ensureStack(self.allocator, dest + actual_count, self.callStackValueLimit(thread));
         const copied = @min(actual_count, count);
         for (0..copied) |index| thread.stack.items[dest + index] = table.get(.{ .integer = @intCast(index + 1) });
         for (copied..actual_count) |index| thread.stack.items[dest + index] = .nil;
@@ -3996,14 +4963,13 @@ pub const State = struct {
     }
 
     fn selectValues(self: *State, thread: *Thread, op: bytecode.Call) !void {
-        if (op.arg_count == 0) return self.failArgumentMessage("select", 1, "value expected");
         const first = argValue(self, thread, op, 0);
         if (first == .string and std.mem.eql(u8, first.string, "#")) {
             try self.returnValues(thread, op.base, op.return_count, &.{.{ .integer = @intCast(op.arg_count - 1) }});
             return;
         }
 
-        var index = toInteger(first) orelse return self.failArgumentType("select", 1, "number", first);
+        var index = try self.argumentInteger(thread, op, "select", 0);
         const count: i64 = @intCast(op.arg_count - 1);
         if (index < 0) index = count + index + 1;
         if (index < 1 or index > count + 1) return self.failArgumentMessage("select", 1, "index out of range");
@@ -4023,8 +4989,9 @@ pub const State = struct {
 
         const condition = argValue(self, thread, op, 0);
         if (!truthy(condition)) {
-            if (op.arg_count >= 2) return self.throwValue(try self.errorObjectValue(argValue(self, thread, op, 1)));
-            return self.throwStringWithLocation(thread, "assertion failed!", 1);
+            const message = if (op.arg_count >= 2) argValue(self, thread, op, 1) else Value{ .string = "assertion failed!" };
+            if (message == .string) return self.throwStringWithLocation(thread, message.string, 1);
+            return self.throwValue(message);
         }
 
         const values = try self.allocator.alloc(Value, op.arg_count);
@@ -4034,16 +5001,25 @@ pub const State = struct {
     }
 
     fn errorValue(self: *State, thread: *Thread, op: bytecode.Call) !void {
-        const raw_value = argValue(self, thread, op, 0);
-        const value = try self.errorObjectValue(raw_value);
+        const value = argValue(self, thread, op, 0);
         const level = if (op.arg_count >= 2) toInteger(argValue(self, thread, op, 1)) orelse 1 else 1;
-        if (level <= 0 or value != .string or raw_value == .nil) return self.throwValue(value);
+        if (level <= 0 or value != .string) return self.throwValue(value);
 
         const level_index = std.math.cast(usize, level) orelse return self.throwValue(value);
         return self.throwStringWithLocation(thread, value.string, level_index);
     }
 
-    fn throwStringWithLocation(self: *State, thread: *Thread, message_text: []const u8, level: usize) !void {
+    fn throwStringWithLocation(self: *State, thread: *Thread, message_text: []const u8, requested_level: usize) !void {
+        var level = requested_level;
+        if (activeNativeCall(thread)) |call| {
+            if (call.from_native) {
+                if (level == 1) return self.throwValue(.{ .string = try self.intern(message_text) });
+                level -= 1;
+            } else if (level >= 2 and call.outer_frame_count != null and call.outer_frame_count.? + 1 == call.frame_count) {
+                if (level == 2) return self.throwValue(.{ .string = try self.intern(message_text) });
+                level -= 1;
+            }
+        }
         const line = self.lineForErrorLevel(thread, level) orelse return self.throwValue(.{ .string = try self.intern(message_text) });
         const source = self.sourceForErrorLevel(thread, level) orelse "zlua";
         const message = try std.fmt.allocPrint(self.allocator, "{s}:{d}: {s}", .{ source, line, message_text });
@@ -4051,7 +5027,9 @@ pub const State = struct {
         return self.throwValue(.{ .string = try self.intern(message) });
     }
 
-    fn errorObjectValue(self: *State, value: Value) !Value {
+    /// The error object Lua sees where an error is caught without a message
+    /// handler: like `luaG_errormsg`, nil becomes `<no error object>`.
+    pub fn caughtErrorValue(self: *State, value: Value) !Value {
         if (value == .nil) return .{ .string = try self.intern("<no error object>") };
         return value;
     }
@@ -4060,85 +5038,29 @@ pub const State = struct {
         if (op.arg_count == 0) return self.failArgumentMessage("pcall", 1, "value expected");
         const args = try self.collectArgs(thread, op, 1);
         defer self.allocator.free(args);
+        try self.protectedCallValues(thread, op, argValue(self, thread, op, 0), args, .nil);
+    }
 
-        const context = self.protectedCallContextWithErrors(thread);
-        const previous_traceback_native_name = thread.traceback_native_name;
-        thread.traceback_native_name = "pcall";
-        defer thread.traceback_native_name = previous_traceback_native_name;
-        const result = self.runProtectedCall(thread, context, argValue(self, thread, op, 0), args) catch |err| switch (err) {
+    fn xpcallValues(self: *State, thread: *Thread, op: bytecode.Call) !void {
+        const handler = argValue(self, thread, op, 1);
+        if (!functionLike(handler)) return self.failArgumentType("xpcall", 2, "function", handler);
+        const args = try self.collectArgs(thread, op, 2);
+        defer self.allocator.free(args);
+        try self.protectedCallValues(thread, op, argValue(self, thread, op, 0), args, handler);
+    }
+
+    fn protectedCallValues(self: *State, thread: *Thread, op: bytecode.Call, callable: Value, args: []const Value, handler: Value) !void {
+        var context = self.protectedCallContextWithErrors(thread);
+        context.error_handler = handler;
+        const result = self.runProtectedCall(thread, context, callable, args) catch |err| switch (err) {
             error.CoroutineYield => {
-                try self.pushProtectedContinuation(thread, context, op.base, op.return_count, .pcall, .nil, 0);
+                try self.pushProtectedContinuation(thread, context, op.base, op.return_count);
                 return err;
             },
             else => return err,
         };
         defer freeProtectedResult(self.allocator, result);
         try self.returnProtectedResult(thread, op.base, op.return_count, result);
-    }
-
-    fn xpcallValues(self: *State, thread: *Thread, op: bytecode.Call) !void {
-        if (op.arg_count < 2) return self.failArgumentMessage("xpcall", 2, "value expected");
-        const handler = argValue(self, thread, op, 1);
-        const args = try self.collectArgs(thread, op, 2);
-        defer self.allocator.free(args);
-
-        const context = self.protectedCallContextWithErrors(thread);
-        const result = self.runProtectedCall(thread, context, argValue(self, thread, op, 0), args) catch |err| switch (err) {
-            error.CoroutineYield => {
-                try self.pushProtectedContinuation(thread, context, op.base, op.return_count, .xpcall, handler, 0);
-                return err;
-            },
-            else => return err,
-        };
-        defer freeProtectedResult(self.allocator, result);
-        switch (result) {
-            .success => try self.returnProtectedResult(thread, op.base, op.return_count, result),
-            .failure => |error_value| try self.returnXpcallFailure(thread, op.base, op.return_count, handler, error_value),
-        }
-    }
-
-    pub fn returnXpcallFailure(self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, handler: Value, error_value: Value) !void {
-        try self.returnXpcallFailureFromDepth(thread, base, return_count, handler, error_value, 0);
-    }
-
-    pub fn returnXpcallFailureFromDepth(self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, handler: Value, error_value: Value, initial_depth: usize) !void {
-        var current_error = error_value;
-        var depth = initial_depth;
-        while (true) : (depth += 1) {
-            const handler_error = if (depth >= max_error_handler_depth)
-                Value{ .string = try self.intern("C stack overflow") }
-            else
-                current_error;
-            const context = self.protectedCallContextWithErrors(thread);
-            const previous_traceback_close = self.traceback_error_in_close;
-            self.traceback_error_in_close = self.last_error_in_close;
-            const handler_result = self.runProtectedCall(thread, context, handler, &.{handler_error}) catch |err| switch (err) {
-                error.CoroutineYield => {
-                    try self.pushProtectedContinuation(thread, context, base, return_count, .xpcall_handler, handler, depth);
-                    return err;
-                },
-                else => {
-                    self.traceback_error_in_close = previous_traceback_close;
-                    return err;
-                },
-            };
-            self.traceback_error_in_close = previous_traceback_close;
-            switch (handler_result) {
-                .success => |values| {
-                    defer self.allocator.free(values);
-                    const handled = if (values.len == 0) Value.nil else values[0];
-                    try self.returnValues(thread, base, return_count, &.{ .{ .boolean = false }, handled });
-                    return;
-                },
-                .failure => |failure| {
-                    if (depth >= max_error_handler_depth) {
-                        try self.returnValues(thread, base, return_count, &.{ .{ .boolean = false }, .{ .string = try self.intern("error in error handling") } });
-                        return;
-                    }
-                    current_error = failure;
-                },
-            }
-        }
     }
 
     fn tracebackValue(self: *State, thread: *Thread, op: bytecode.Call) !void {
@@ -4159,63 +5081,69 @@ pub const State = struct {
             try out.appendSlice(self.allocator, "stack traceback:");
             if (has_yield_trace) try out.appendSlice(self.allocator, "\n\t'yield'");
             const skip = if (coroutine_level <= 1) @as(usize, 0) else @as(usize, @intCast(coroutine_level - 1));
-            var remaining = if (skip >= target.frames.items.len) @as(usize, 0) else target.frames.items.len - skip;
-            if (remaining == 0 and target.status != .dead and target.yield_values.items.len != 0 and !has_coroutine_level) {
+            const count = if (skip >= target.frames.items.len) @as(usize, 0) else target.frames.items.len - skip;
+            if (count == 0 and target.status != .dead and target.yield_values.items.len != 0 and !has_coroutine_level) {
                 try out.appendSlice(self.allocator, "\n\t@db.lua: in function <");
             }
-            while (remaining > 0) {
-                remaining -= 1;
-                const level = target.frames.items.len - remaining;
-                const frame = target.frames.items[remaining];
-                try self.appendCoroutineTracebackFrame(&out, target, frame, @intCast(level));
-            }
+            try self.appendCoroutineTracebackFrames(&out, target, count, @intFromBool(has_yield_trace));
             try self.returnValues(thread, op.base, op.return_count, &.{.{ .string = try self.intern(out.items) }});
             return;
         }
-        if (message != .nil and message != .string) {
+        if (message != .nil and message != .string and message != .integer and message != .number) {
             try self.returnValues(thread, op.base, op.return_count, &.{message});
             return;
         }
-        if (message != .nil) {
-            try appendValue(self.allocator, &out, message);
-            try out.append(self.allocator, '\n');
-        }
-        try out.appendSlice(self.allocator, "stack traceback:");
-        if (thread.traceback_native_name) |name| try appendFmt(self.allocator, &out, "\n\t{s}", .{name});
-        if (self.traceback_error_in_close) try out.appendSlice(self.allocator, "\n\tzlua:?: in metamethod 'close'");
+        const text: ?[]const u8 = if (message == .nil) null else try self.valueToString(thread, message);
         const level = if (op.arg_count >= 2) toInteger(argValue(self, thread, op, 1)) orelse 1 else 1;
-        if (level <= 0) try out.appendSlice(self.allocator, "\n\t'traceback'");
-        const skip = if (level <= 0) thread.frames.items.len else std.math.cast(usize, level - 1) orelse thread.frames.items.len;
-        var index = if (skip >= thread.frames.items.len) @as(usize, 0) else thread.frames.items.len - skip;
-        if (index > 21) {
-            var first = index;
-            var emitted: usize = 0;
-            while (emitted < 10) : (emitted += 1) {
-                first -= 1;
-                try self.appendThreadTracebackFrame(&out, thread, first);
-            }
-            try out.appendSlice(self.allocator, "\n\t...\t(skip)");
-            var tail: usize = 11;
-            while (tail > 0) {
-                tail -= 1;
-                try self.appendThreadTracebackFrame(&out, thread, tail);
-            }
-        } else {
-            while (index > 0) {
-                index -= 1;
-                try self.appendThreadTracebackFrame(&out, thread, index);
-            }
+        if (level < 0) {
+            try appendFmt(self.allocator, &out, "{s}{s}stack traceback:", .{ text orelse "", if (text == null) "" else "\n" });
+            try self.returnValues(thread, op.base, op.return_count, &.{.{ .string = try self.intern(out.items) }});
+            return;
         }
-
-        try self.returnValues(thread, op.base, op.return_count, &.{.{ .string = try self.intern(out.items) }});
+        const traceback = try debug_mod.formatTracebackWith(State, self, thread, .{
+            .message = text,
+            .level = std.math.cast(usize, level) orelse std.math.maxInt(usize),
+            .level_zero_is_callee = calledByTopInstruction(thread, op),
+            .level_zero = .native_debug_traceback,
+            .host_frame = thread.host_frame,
+        });
+        defer self.allocator.free(traceback);
+        try self.returnValues(thread, op.base, op.return_count, &.{.{ .string = try self.intern(traceback) }});
     }
 
-    fn appendThreadTracebackFrame(self: *State, out: *std.ArrayList(u8), thread: *Thread, frame_index: usize) !void {
-        const frame = thread.frames.items[frame_index];
-        const line = lineForFrame(frame) orelse 0;
-        try out.appendSlice(self.allocator, "\n\tzlua:");
-        try appendFmt(self.allocator, out, "{d}", .{line});
-        try out.appendSlice(self.allocator, if (thread.hook_running and frame_index == thread.frames.items.len - 1) ": in hook" else ": in function");
+    /// The standalone interpreter's message handler (`msghandler` in
+    /// `lua.c`): adds a traceback to the error message, or reports an error
+    /// object by its `__tostring` result or its type.
+    pub fn tracebackMessageHandler(self: *State, thread: *Thread, op: bytecode.Call) !void {
+        const message = argValue(self, thread, op, 0);
+        const text = switch (message) {
+            .string => |bytes| bytes,
+            .integer, .number => try self.valueToString(thread, message),
+            else => blk: {
+                if (try self.getMetaEvent(message, .__tostring)) |metamethod| {
+                    const result = try self.callOneResult(thread, metamethod, &.{message});
+                    if (result == .string) return self.returnValues(thread, op.base, op.return_count, &.{result});
+                }
+                var out = std.ArrayList(u8).empty;
+                defer out.deinit(self.allocator);
+                try appendFmt(self.allocator, &out, "(error object is a {s} value)", .{luaTypeName(message)});
+                break :blk try self.intern(out.items);
+            },
+        };
+        const traceback = try debug_mod.formatTracebackWith(State, self, thread, .{ .message = text, .host_frame = thread.host_frame });
+        defer self.allocator.free(traceback);
+        try self.returnValues(thread, op.base, op.return_count, &.{.{ .string = try self.intern(traceback) }});
+    }
+
+    fn calledByTopInstruction(thread: *Thread, op: bytecode.Call) bool {
+        const frames = thread.frames.items;
+        if (frames.len == 0) return false;
+        const frame = frames[frames.len - 1];
+        if (frame.pc == 0 or frame.pc > frame.proto.instructions.items.len) return false;
+        return switch (frame.proto.instructions.items[frame.pc - 1]) {
+            .call, .tail_call => |call| call.base == op.base,
+            else => false,
+        };
     }
 
     fn appendCoroutineTracebackFrame(self: *State, out: *std.ArrayList(u8), target: *Thread, frame: CallFrame, level: i64) !void {
@@ -4229,16 +5157,37 @@ pub const State = struct {
         }
     }
 
+    /// Appends the innermost `count` frames of `target` after `leading` levels
+    /// already written, skipping middle levels like `luaL_traceback`.
+    fn appendCoroutineTracebackFrames(self: *State, out: *std.ArrayList(u8), target: *Thread, count: usize, leading: usize) !void {
+        if (count == 0) return;
+        const head = debug_mod.traceback_levels_head;
+        const tail = debug_mod.traceback_levels_tail;
+        const last = leading + count - 1;
+        var level: usize = 0;
+        var limit: isize = if (last > head + tail) head else -1;
+        while (level <= last) {
+            const current = level;
+            level += 1;
+            const show_skip = limit == 0;
+            limit -= 1;
+            if (show_skip) {
+                const skipped = last - level - tail + 1;
+                try appendFmt(self.allocator, out, "\n\t...\t(skipping {d} levels)", .{skipped});
+                level += skipped;
+                continue;
+            }
+            if (current < leading) continue;
+            const index = count - 1 - (current - leading);
+            try self.appendCoroutineTracebackFrame(out, target, target.frames.items[index], @intCast(target.frames.items.len - index));
+        }
+    }
+
     pub fn snapshotCoroutineErrorTraceback(self: *State, target: *Thread) ![]const u8 {
         var out = std.ArrayList(u8).empty;
         defer out.deinit(self.allocator);
         try out.appendSlice(self.allocator, "stack traceback:\n\t'error'");
-        var remaining = target.frames.items.len;
-        while (remaining > 0) {
-            remaining -= 1;
-            const level = target.frames.items.len - remaining;
-            try self.appendCoroutineTracebackFrame(&out, target, target.frames.items[remaining], @intCast(level));
-        }
+        try self.appendCoroutineTracebackFrames(&out, target, target.frames.items.len, 1);
         return self.intern(out.items);
     }
 
@@ -4278,7 +5227,7 @@ pub const State = struct {
         return coroutine_mod.callCoroutineWrapper(State, self, thread, op, target);
     }
 
-    pub fn callCoroutineWrapperWithArgs(self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, target: *Thread, args: []const Value) !void {
+    pub fn callCoroutineWrapperWithArgs(self: *State, thread: *Thread, base: u32, return_count: u16, target: *Thread, args: []const Value) !void {
         return coroutine_mod.callCoroutineWrapperWithArgs(State, self, thread, base, return_count, target, args);
     }
 
@@ -4307,7 +5256,7 @@ pub const State = struct {
         return coroutine_mod.setCoroutineResumeValues(State, self, target, args);
     }
 
-    pub fn returnCoroutineResumeResult(self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, result: CoroutineResumeResult) !void {
+    pub fn returnCoroutineResumeResult(self: *State, thread: *Thread, base: u32, return_count: u16, result: CoroutineResumeResult) !void {
         return coroutine_mod.returnCoroutineResumeResult(State, self, thread, base, return_count, result);
     }
 
@@ -4334,11 +5283,11 @@ pub const State = struct {
         return source_name;
     }
 
-    pub fn collectArgs(self: *State, thread: *Thread, op: bytecode.Call, first: u16) ![]Value {
+    pub fn collectArgs(self: *State, thread: *Thread, op: bytecode.Call, first: u32) ![]Value {
         return call_mod.collectArgs(State, self, thread, op, first);
     }
 
-    pub fn returnProtectedResult(self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, result: ProtectedCallResult) !void {
+    pub fn returnProtectedResult(self: *State, thread: *Thread, base: u32, return_count: u16, result: ProtectedCallResult) !void {
         return call_mod.returnProtectedResult(State, self, thread, base, return_count, result);
     }
 
@@ -4357,10 +5306,9 @@ pub const State = struct {
 
     fn callPairsMetamethod(self: *State, thread: *Thread, op: bytecode.Call, metamethod: Value, value: Value) !void {
         const frame_count = thread.frames.items.len;
-        const frame = thread.frames.items[frame_count - 1];
-        const relative_base = frame.proto.max_registers;
-        const source_base = frame.base + relative_base;
-        try thread.ensureStack(self.allocator, source_base + 4, self.stackValueLimit());
+        const relative_base = thread.scratchRegister();
+        const source_base = thread.frames.items[frame_count - 1].base + @as(usize, relative_base);
+        try thread.ensureStack(self.allocator, source_base + 4, self.callStackValueLimit(thread));
         thread.stack.items[source_base] = metamethod;
         thread.stack.items[source_base + 1] = value;
         const continuation: types.PairsContinuation = .{
@@ -4393,6 +5341,7 @@ pub const State = struct {
         thread.continuation_order += 1;
         pending.order = thread.continuation_order;
         try thread.pairs_continuations.append(self.allocator, pending);
+        thread.noteContinuation(pending.frame_count);
     }
 
     fn completeReadyPairsContinuation(self: *State, thread: *Thread) !bool {
@@ -4407,6 +5356,7 @@ pub const State = struct {
                 }
             }
             _ = thread.pairs_continuations.orderedRemove(index);
+            thread.refreshContinuationFrameCount();
             try self.returnPairsResults(thread, continuation);
             return true;
         }
@@ -4421,15 +5371,26 @@ pub const State = struct {
         return .{ .{ .integer = next_index }, value };
     }
 
+    fn iteratorNativeCall(thread: *Thread, op: bytecode.GenericFor) types.NativeCall {
+        return nativeCallInfo(thread, .{ .base = op.base, .arg_count = 2, .return_count = 0 }, null, "for iterator", "for iterator", 0);
+    }
+
     fn advanceGenericFor(self: *State, thread: *Thread, op: bytecode.GenericFor, jump_on_nil: bool) !bool {
         const iterator = self.get(thread, op.base);
         const state = self.get(thread, op.base + 1);
         const control = self.get(thread, op.base + 2);
         var fixed: [2]Value = undefined;
+        var gmatch_values: stdlib.string.GmatchValues = undefined;
         var owned_values: ?[]Value = null;
         defer if (owned_values) |values| self.allocator.free(values);
         const values: []const Value = switch (iterator) {
             .native_next => blk: {
+                if (state != .table) {
+                    const previous_native_call = thread.native_call;
+                    defer thread.native_call = previous_native_call;
+                    thread.native_call = iteratorNativeCall(thread, op);
+                    return self.failArgumentType("next", 1, "table", state);
+                }
                 fixed = try self.nextValues(state, control);
                 break :blk fixed[0..2];
             },
@@ -4442,10 +5403,13 @@ pub const State = struct {
             },
             .native => |native| switch (native) {
                 .string_gmatch_iter => blk: {
-                    fixed = try stdlib.string.gmatchNext(self, state);
-                    break :blk fixed[0..2];
+                    gmatch_values = try stdlib.string.gmatchNext(self, state);
+                    break :blk gmatch_values.slice();
                 },
                 .utf8_codes_iter => blk: {
+                    const previous_native_call = thread.native_call;
+                    defer thread.native_call = previous_native_call;
+                    thread.native_call = iteratorNativeCall(thread, op);
                     fixed = try stdlib.utf8.codesNext(self, state, control);
                     break :blk fixed[0..2];
                 },
@@ -4500,6 +5464,7 @@ pub const State = struct {
             .op = op,
             .jump_on_nil = jump_on_nil,
         });
+        thread.noteContinuation(frame_count);
     }
 
     fn readyGenericForContinuationIndex(thread: *Thread) ?usize {
@@ -4512,6 +5477,7 @@ pub const State = struct {
     fn completeReadyGenericForContinuation(self: *State, thread: *Thread) !bool {
         const index = readyGenericForContinuationIndex(thread) orelse return false;
         const continuation = thread.generic_for_continuations.orderedRemove(index);
+        thread.refreshContinuationFrameCount();
         const values = try self.copyStackSlice(thread, thread.last_result_base, thread.last_result_count);
         defer self.allocator.free(values);
         if (!(try self.applyGenericForValues(thread, continuation.op, values)) and continuation.jump_on_nil) {
@@ -4520,12 +5486,13 @@ pub const State = struct {
         return true;
     }
 
-    fn pushTailCallContinuation(self: *State, thread: *Thread, frame_count: usize, base: bytecode.Register, return_count: u16) !void {
+    fn pushTailCallContinuation(self: *State, thread: *Thread, frame_count: usize, base: u32, return_count: u16) !void {
         try thread.tail_call_continuations.append(self.allocator, .{
             .frame_count = frame_count,
             .base = base,
             .return_count = return_count,
         });
+        thread.noteContinuation(frame_count);
     }
 
     fn readyTailCallContinuationIndex(thread: *Thread) ?usize {
@@ -4540,6 +5507,7 @@ pub const State = struct {
     fn completeReadyTailCallContinuation(self: *State, thread: *Thread) !bool {
         const index = readyTailCallContinuationIndex(thread) orelse return false;
         const continuation = thread.tail_call_continuations.orderedRemove(index);
+        thread.refreshContinuationFrameCount();
         try self.returnFromFrame(thread, continuation.base, continuation.return_count);
         return true;
     }
@@ -4558,6 +5526,15 @@ pub const State = struct {
         };
     }
 
+    /// `getco` in lcorolib: the coroutine argument of a `coroutine` function.
+    pub fn expectArgumentThread(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) !*Thread {
+        const value = argValue(self, thread, op, index);
+        return switch (value) {
+            .thread => |target| target,
+            else => self.failArgumentType(function_name, index + 1, "thread", value),
+        };
+    }
+
     pub fn expectThread(self: *State, value: Value) !*Thread {
         return switch (value) {
             .thread => |thread| thread,
@@ -4565,12 +5542,17 @@ pub const State = struct {
         };
     }
 
-    fn tableCreateHint(self: *State, value: Value, arg_index: u8) !u32 {
-        const integer = toInteger(value) orelse return self.fail("number expected");
-        if (integer < 0 or integer > std.math.maxInt(i32)) {
-            return self.fail(if (arg_index == 1) "bad argument #1 to 'table.create' (out of range)" else "bad argument #2 to 'table.create' (out of range)");
+    fn tableCreateHints(self: *State, thread: *Thread, op: bytecode.Call) ![2]u32 {
+        const sizes = [2]i64{
+            try self.argumentInteger(thread, op, "table.create", 0),
+            try self.optionalArgumentInteger(thread, op, "table.create", 1, 0),
+        };
+        var hints: [2]u32 = undefined;
+        for (sizes, &hints, 1..) |size, *hint, arg_number| {
+            if (size < 0 or size > std.math.maxInt(i32)) return self.failArgumentMessage("table.create", @intCast(arg_number), "out of range");
+            hint.* = @intCast(size);
         }
-        return @intCast(integer);
+        return hints;
     }
 
     fn callNative(self: *State, native: NativeFn, thread: *Thread, op: bytecode.Call) !void {
@@ -4766,6 +5748,22 @@ pub const State = struct {
 
     /// Provide a protected execution frame for GC requested by an idle host.
     /// Allocate it before consuming any pending registration so OOM is retryable.
+    /// Calls every pending finalizer as `deinit` does, keeping the state.
+    /// Later finalizer registrations are left for `deinit`.
+    pub fn runCloseFinalizers(self: *State) void {
+        if (self.execution_depth != 0 or self.current_thread != null) return;
+        if (self.table_pending_finalizer_head == null and self.table_finalizer_head == null and !gc_mod.hasUserdataLuaFinalizers(State, self) and !stdlib.io.hasOpenFiles(self)) return;
+        var proto = proto_mod.Proto.init(self.allocator);
+        defer proto.deinit();
+        proto.source_name = "=[C]";
+        var closure = Closure{ .proto = &proto, .upvalues = &.{} };
+        const thread = self.newHostThread(&closure) catch return;
+        defer self.retireHostThread(thread);
+        self.current_thread = thread;
+        defer self.current_thread = null;
+        gc_mod.runCloseFinalizers(State, self, thread);
+    }
+
     pub fn runFinalizersFromHost(self: *State, limit: usize) anyerror!bool {
         var proto = proto_mod.Proto.init(self.allocator);
         defer proto.deinit();
@@ -4895,6 +5893,22 @@ pub const State = struct {
         return self.fail(self.intern(out.items) catch return self.fail(detail));
     }
 
+    fn failDivisionByZero(self: *State, thread: *Thread, lhs: Value, rhs: Value, op: BinaryOp) RuntimeError {
+        const message = if (op == .mod) "attempt to perform 'n%0'" else "attempt to divide by zero";
+        if (lhs == .string or rhs == .string) return self.fail(message);
+        return self.failRuntimeDetail(thread, message);
+    }
+
+    fn failNoIntegerRepresentation(self: *State, thread: *Thread, lhs: Value) RuntimeError {
+        var detail = std.ArrayList(u8).empty;
+        defer detail.deinit(self.allocator);
+        const operand_index: usize = if (toBitwiseInteger(lhs) == null) 0 else 1;
+        detail.appendSlice(self.allocator, "number") catch return self.fail("number has no integer representation");
+        self.appendSiteOrigin(&detail, self.currentErrorSite(thread), operand_index, false) catch return self.fail("number has no integer representation");
+        detail.appendSlice(self.allocator, " has no integer representation") catch return self.fail("number has no integer representation");
+        return self.failRuntimeDetail(thread, detail.items);
+    }
+
     fn failBinaryTypeError(self: *State, thread: *Thread, lhs: Value, rhs: Value, op: BinaryOp) RuntimeError {
         var detail = std.ArrayList(u8).empty;
         defer detail.deinit(self.allocator);
@@ -4902,7 +5916,7 @@ pub const State = struct {
         switch (op) {
             .add, .sub, .mul, .div, .idiv, .mod, .pow => {
                 if (lhs == .string or rhs == .string) {
-                    appendFmt(self.allocator, &detail, "attempt to {s} a '{s}' with a '{s}'", .{ arithmeticVerb(op), self.luaTypeNameForError(lhs), self.luaTypeNameForError(rhs) }) catch return self.fail("attempt to perform operation on unsupported values");
+                    appendFmt(self.allocator, &detail, "attempt to {s} a '{s}' with a '{s}'", .{ arithmeticVerb(op), luaTypeName(lhs), luaTypeName(rhs) }) catch return self.fail("attempt to perform operation on unsupported values");
                     return self.failRuntimeDetail(thread, detail.items);
                 }
                 const operand_index: usize = if (toNumberMaybe(lhs) == null) 0 else 1;
@@ -4911,7 +5925,8 @@ pub const State = struct {
                 self.appendSiteOrigin(&detail, site, operand_index, false) catch return self.fail("attempt to perform operation on unsupported values");
             },
             .band, .bor, .bxor, .shl, .shr => {
-                const operand_index: usize = if (toBitwiseInteger(lhs) == null) 0 else 1;
+                if (isNumber(lhs) and isNumber(rhs)) return self.failNoIntegerRepresentation(thread, lhs);
+                const operand_index: usize = if (!isNumber(lhs)) 0 else 1;
                 const bad_value = if (operand_index == 0) lhs else rhs;
                 appendFmt(self.allocator, &detail, "attempt to perform bitwise operation on a {s} value", .{self.luaTypeNameForError(bad_value)}) catch return self.fail("attempt to perform operation on unsupported values");
                 self.appendSiteOrigin(&detail, site, operand_index, true) catch return self.fail("attempt to perform operation on unsupported values");
@@ -4926,7 +5941,19 @@ pub const State = struct {
         return self.failRuntimeDetail(thread, detail.items);
     }
 
+    fn failConcatRangeTypeError(self: *State, thread: *Thread, lhs: Value, rhs: Value, lhs_index: usize) RuntimeError {
+        var detail = std.ArrayList(u8).empty;
+        defer detail.deinit(self.allocator);
+        const operand_index = if (!luaStringLike(lhs)) lhs_index else lhs_index + 1;
+        const bad_value = if (!luaStringLike(lhs)) lhs else rhs;
+        appendFmt(self.allocator, &detail, "attempt to concatenate a {s} value", .{self.luaTypeNameForError(bad_value)}) catch return self.fail("attempt to perform operation on unsupported values");
+        self.appendSiteOrigin(&detail, self.currentErrorSite(thread), operand_index, true) catch return self.fail("attempt to perform operation on unsupported values");
+        return self.failRuntimeDetail(thread, detail.items);
+    }
+
     fn failUnaryTypeError(self: *State, thread: *Thread, value: Value, op: UnaryMetamethodOp) RuntimeError {
+        if (op == .bnot and isNumber(value)) return self.failNoIntegerRepresentation(thread, value);
+        if (op == .unm and value == .string) return self.failRuntimeDetail(thread, "attempt to unm a 'string' with a 'string'");
         var detail = std.ArrayList(u8).empty;
         defer detail.deinit(self.allocator);
         const operation = switch (op) {
@@ -4998,6 +6025,7 @@ pub const State = struct {
     fn appendRuntimeErrorPrefix(self: *State, out: *std.ArrayList(u8), thread: ?*Thread) !void {
         const active = thread orelse return;
         if (active.frames.items.len == 0) return;
+        if (activeNativeCall(active) != null) return;
         if (active.frames.items[active.frames.items.len - 1].closure.stripped_debug) {
             try out.appendSlice(self.allocator, "?:?: ");
             return;
@@ -5008,6 +6036,11 @@ pub const State = struct {
     }
 
     fn currentErrorSite(self: *State, thread: *Thread) ?proto_mod.ErrorSite {
+        if (activeNativeCall(thread) != null) return null;
+        return self.instructionErrorSite(thread);
+    }
+
+    fn instructionErrorSite(self: *State, thread: *Thread) ?proto_mod.ErrorSite {
         _ = self;
         if (thread.frames.items.len == 0) return null;
         const frame = thread.frames.items[thread.frames.items.len - 1];
@@ -5049,63 +6082,243 @@ pub const State = struct {
         if (self.last_error == null) return allocator.dupe(u8, @errorName(err));
         var out = std.ArrayList(u8).empty;
         defer out.deinit(allocator);
-        try appendValue(allocator, &out, self.currentErrorValue());
+        try appendErrorValue(allocator, &out, self.currentErrorValue());
         return allocator.dupe(u8, out.items);
     }
 
     pub fn fail(self: *State, message: []const u8) RuntimeError {
         self.last_error = .{ .diagnostic = message };
+        self.error_handled = false;
         return error.RuntimeError;
     }
 
-    pub fn failArgument(self: *State, function_name: []const u8, index: u16, detail: errors.ArgumentErrorDetail) RuntimeError {
-        self.last_error = .{ .argument = .{
-            .function_name = function_name,
-            .index = index,
-            .detail = detail,
-        } };
+    /// Raises `bad argument #index to 'name' (detail)` like `luaL_argerror`.
+    /// `index` is the 1-based position among the native call's arguments;
+    /// method calls renumber it and report a bad `self` as Lua does. The
+    /// function is named from the calling instruction when Lua code made the
+    /// call, else by a search of the loaded libraries, else `function_name`.
+    pub fn failArgument(self: *State, function_name: []const u8, index: u32, detail: errors.ArgumentErrorDetail) RuntimeError {
+        self.error_handled = false;
+        const rendered = self.renderArgumentError(function_name, index, detail) catch {
+            self.last_error = .{ .argument = .{ .function_name = function_name, .index = index, .detail = detail } };
+            return error.RuntimeError;
+        };
+        self.last_error = .{ .diagnostic = rendered };
         return error.RuntimeError;
     }
 
-    pub fn failArgumentMessage(self: *State, function_name: []const u8, index: u16, message: []const u8) RuntimeError {
+    pub fn failArgumentMessage(self: *State, function_name: []const u8, index: u32, message: []const u8) RuntimeError {
         return self.failArgument(function_name, index, .{ .message = message });
     }
 
-    pub fn failArgumentType(self: *State, function_name: []const u8, index: u16, expected: []const u8, actual: Value) RuntimeError {
+    pub fn failArgumentType(self: *State, function_name: []const u8, index: u32, expected: []const u8, actual: Value) RuntimeError {
         return self.failArgument(function_name, index, .{ .expected = .{
             .expected = expected,
             .actual = self.luaTypeNameForError(actual),
         } });
     }
 
-    pub fn expectArgumentString(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16) ![]const u8 {
+    /// Raises `message` like `luaL_error`: prefixed with the position of
+    /// the Lua code that called the running library function, if any.
+    pub fn failLibrary(self: *State, message: []const u8) RuntimeError {
+        var out = std.ArrayList(u8).empty;
+        defer out.deinit(self.allocator);
+        self.appendLibraryWhere(&out) catch return self.fail(message);
+        if (out.items.len == 0) return self.fail(message);
+        out.appendSlice(self.allocator, message) catch return self.fail(message);
+        return self.fail(self.intern(out.items) catch return self.fail(message));
+    }
+
+    /// Prefixes a string error with `luaL_where(L, 1)`, as `coroutine.wrap`
+    /// does for errors raised inside the coroutine.
+    pub fn withLibraryWhere(self: *State, value: Value) !Value {
+        if (value != .string) return value;
+        var out = std.ArrayList(u8).empty;
+        defer out.deinit(self.allocator);
+        try self.appendLibraryWhere(&out);
+        if (out.items.len == 0) return value;
+        try out.appendSlice(self.allocator, value.string);
+        return .{ .string = try self.intern(out.items) };
+    }
+
+    /// `failLibrary` with a formatted message.
+    pub fn failLibraryFmt(self: *State, comptime fmt: []const u8, args: anytype) RuntimeError {
+        var out = std.ArrayList(u8).empty;
+        defer out.deinit(self.allocator);
+        appendFmt(self.allocator, &out, fmt, args) catch return self.fail(fmt);
+        const message = self.intern(out.items) catch return self.fail(fmt);
+        return self.failLibrary(message);
+    }
+
+    fn activeNativeCall(thread: *Thread) ?types.NativeCall {
+        const call = thread.native_call orelse return null;
+        if (call.frame_count == 0 or thread.frames.items.len != call.frame_count) return null;
+        return call;
+    }
+
+    fn appendLibraryWhere(self: *State, out: *std.ArrayList(u8)) !void {
+        const thread = self.current_thread orelse return;
+        const call = activeNativeCall(thread) orelse return;
+        if (calledFromNative(thread, call)) return;
+        const frame = thread.frames.items[thread.frames.items.len - 1];
+        if (frame.closure.stripped_debug or debug_mod.isCoroutineEntryFrame(frame)) return;
+        const site = self.instructionErrorSite(thread) orelse return;
+        try appendFmt(self.allocator, out, "{s}:{d}: ", .{ runtimeSourceName(frame.proto.source_name), site.line });
+    }
+
+    const CallName = struct { name: []const u8, namewhat: []const u8 };
+
+    /// Like `call.from_native`, and also true for a metamethod that the
+    /// `ipairs` iterator called during a generic-for step.
+    fn calledFromNative(thread: *Thread, call: types.NativeCall) bool {
+        if (call.from_native) return true;
+        const namewhat = call.namewhat orelse return false;
+        if (!std.mem.eql(u8, namewhat, "metamethod")) return false;
+        const frame = thread.frames.items[thread.frames.items.len - 1];
+        if (frame.pc == 0 or frame.pc > frame.proto.instructions.items.len) return false;
+        return switch (frame.proto.instructions.items[frame.pc - 1]) {
+            .tfor_prep, .tfor_call => true,
+            else => false,
+        };
+    }
+
+    fn nativeCallName(self: *State, thread: *Thread, call: types.NativeCall) ?CallName {
+        if (calledFromNative(thread, call)) return null;
+        if (call.name) |name| {
+            if (call.namewhat) |namewhat| return .{ .name = name, .namewhat = namewhat };
+            if (std.mem.eql(u8, name, "for iterator")) return .{ .name = name, .namewhat = name };
+            return .{ .name = name, .namewhat = "metamethod" };
+        }
+        const frame = thread.frames.items[thread.frames.items.len - 1];
+        if (call.base >= frame.proto.max_registers) return null;
+        const site = self.instructionErrorSite(thread) orelse return null;
+        const origin = site.call_name orelse return null;
+        return switch (origin) {
+            .temporary => null,
+            .local => |name| .{ .name = name, .namewhat = "local" },
+            .upvalue => |name| .{ .name = name, .namewhat = "upvalue" },
+            .global => |name| .{ .name = name, .namewhat = "global" },
+            .field => |name| .{ .name = name, .namewhat = "field" },
+            .method => |name| .{ .name = name, .namewhat = "method" },
+            .metamethod => |name| .{ .name = name, .namewhat = "metamethod" },
+            .constant => |name| .{ .name = name, .namewhat = "constant" },
+        };
+    }
+
+    /// Mirrors `pushglobalfuncname`: finds `callee` as a global or as a
+    /// field of a loaded module.
+    pub fn appendGlobalFunctionName(self: *State, out: *std.ArrayList(u8), callee: Value) !bool {
+        const globals = self.global_table orelse return false;
+        if (findFunctionField(globals, callee)) |key| {
+            try out.appendSlice(self.allocator, key);
+            return true;
+        }
+        const package = globals.get(.{ .string = "package" });
+        const loaded = if (package == .table) package.table.get(.{ .string = "loaded" }) else Value.nil;
+        const modules = if (loaded == .table) loaded.table else globals;
+        for (modules.entries.items) |entry| {
+            if (entry.key != .string or entry.value != .table or entry.value.table == globals) continue;
+            if (findFunctionField(entry.value.table, callee)) |key| {
+                try appendFmt(self.allocator, out, "{s}.{s}", .{ entry.key.string, key });
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn findFunctionField(table: *Table, callee: Value) ?[]const u8 {
+        for (table.entries.items) |entry| {
+            if (entry.key == .string and valuesEqual(entry.value, callee)) return entry.key.string;
+        }
+        return null;
+    }
+
+    fn renderArgumentError(self: *State, function_name: []const u8, raw_index: u32, detail: errors.ArgumentErrorDetail) ![]const u8 {
+        var out = std.ArrayList(u8).empty;
+        defer out.deinit(self.allocator);
+        const thread = self.current_thread;
+        const call: ?types.NativeCall = if (thread) |active| activeNativeCall(active) else null;
+
+        var actual_detail = detail;
+        if (call) |native| switch (actual_detail) {
+            .expected => |*expected| if (raw_index > native.arg_count and std.mem.eql(u8, expected.actual, "nil")) {
+                expected.actual = "no value";
+            },
+            .message => {},
+        };
+
+        try self.appendLibraryWhere(&out);
+        var index = raw_index;
+        const name: ?CallName = if (call) |native| self.nativeCallName(thread.?, native) else null;
+        const extra_args: u32 = if (call) |native| native.extra_args else 0;
+        const argword = if (index <= extra_args) "extra argument" else "argument";
+        if (index > extra_args) {
+            index -= extra_args;
+            if (name) |known| if (std.mem.eql(u8, known.namewhat, "method")) {
+                index -|= 1;
+                if (index == 0) {
+                    try appendFmt(self.allocator, &out, "calling '{s}' on bad self (", .{known.name});
+                    try appendArgumentDetail(self.allocator, &out, actual_detail);
+                    try out.append(self.allocator, ')');
+                    return self.intern(out.items);
+                }
+            };
+        }
+        try appendFmt(self.allocator, &out, "bad {s} #{d} to '", .{ argword, index });
+        if (name) |known| {
+            try out.appendSlice(self.allocator, known.name);
+        } else {
+            var fallback = function_name;
+            if (call) |native| {
+                const active = thread.?;
+                const frame = active.frames.items[native.frame_count - 1];
+                const callee = active.stack.items[frame.base + native.base];
+                if (try self.appendGlobalFunctionName(&out, callee)) {
+                    fallback = "";
+                } else if (callee != .api_callback) {
+                    fallback = "?";
+                }
+            }
+            try out.appendSlice(self.allocator, fallback);
+        }
+        try out.appendSlice(self.allocator, "' (");
+        try appendArgumentDetail(self.allocator, &out, actual_detail);
+        try out.append(self.allocator, ')');
+        return self.intern(out.items);
+    }
+
+    fn appendArgumentDetail(allocator: std.mem.Allocator, out: *std.ArrayList(u8), detail: errors.ArgumentErrorDetail) !void {
+        switch (detail) {
+            .message => |message| try out.appendSlice(allocator, message),
+            .expected => |expected| try appendFmt(allocator, out, "{s} expected, got {s}", .{ expected.expected, expected.actual }),
+        }
+    }
+
+    /// `luaL_checklstring`: accepts strings and numbers. A number argument is
+    /// converted in place, as Lua does, which also keeps the new string
+    /// reachable for the rest of the call.
+    pub fn expectArgumentString(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) ![]const u8 {
         const value = argValue(self, thread, op, index);
         return switch (value) {
             .string => |string| string,
-            else => if (index == 0 and self.isMethodSelfArgument(thread, function_name))
-                self.failArgumentMessage(function_name, 1, "bad self")
-            else
-                self.failArgumentType(function_name, index + 1, "string", value),
+            .integer, .number => {
+                var buffer: [value_mod.max_number_text_len]u8 = undefined;
+                const string = try self.intern(value_mod.formatNumber(&buffer, value));
+                const frame = thread.frames.items[thread.frames.items.len - 1];
+                thread.stack.items[frame.base + op.base + 1 + index] = .{ .string = string };
+                return string;
+            },
+            else => self.failArgumentType(function_name, index + 1, "string", value),
         };
     }
 
-    fn isMethodSelfArgument(self: *State, thread: *Thread, function_name: []const u8) bool {
-        const site = self.currentErrorSite(thread) orelse return false;
-        const origin = site.call_name orelse return false;
-        const method = switch (origin) {
-            .method => |name| name,
-            else => return false,
-        };
-        const dot = std.mem.lastIndexOfScalar(u8, function_name, '.') orelse return false;
-        return std.mem.eql(u8, function_name[dot + 1 ..], method);
+    /// `luaL_optlstring`: nil or an absent argument gives `null`.
+    pub fn optionalArgumentString(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) !?[]const u8 {
+        if (argValue(self, thread, op, index) == .nil) return null;
+        return try self.expectArgumentString(thread, op, function_name, index);
     }
 
-    pub fn argumentDisplayIndex(self: *State, thread: *Thread, function_name: []const u8, index: u16) u16 {
-        if (index > 0 and self.isMethodSelfArgument(thread, function_name)) return index;
-        return index + 1;
-    }
-
-    pub fn expectArgumentTable(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16) !*Table {
+    pub fn expectArgumentTable(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) !*Table {
         const value = argValue(self, thread, op, index);
         return switch (value) {
             .table => |table| table,
@@ -5113,9 +6326,24 @@ pub const State = struct {
         };
     }
 
-    pub fn argumentInteger(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16) !i64 {
+    /// `luaL_checknumber`.
+    pub fn argumentNumber(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) !f64 {
         const value = argValue(self, thread, op, index);
-        return toInteger(value) orelse self.failArgumentType(function_name, index + 1, "number", value);
+        return toNumberMaybe(value) orelse self.failArgumentType(function_name, index + 1, "number", value);
+    }
+
+    /// `luaL_optinteger`: nil or an absent argument gives `default`.
+    pub fn optionalArgumentInteger(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32, default: i64) !i64 {
+        if (argValue(self, thread, op, index) == .nil) return default;
+        return self.argumentInteger(thread, op, function_name, index);
+    }
+
+    /// `luaL_checkinteger`.
+    pub fn argumentInteger(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) !i64 {
+        const value = argValue(self, thread, op, index);
+        if (toInteger(value)) |integer| return integer;
+        const number = toNumberMaybe(value) orelse return self.failArgumentType(function_name, index + 1, "number", value);
+        return floatToInteger(number) orelse self.failArgumentMessage(function_name, index + 1, "number has no integer representation");
     }
 
     fn failLoadDiagnostic(self: *State, source_name: ?[]const u8, source_text: []const u8, diagnostic: ?errors.Diagnostic, fallback: []const u8) RuntimeError {
@@ -5129,11 +6357,20 @@ pub const State = struct {
 
     pub fn failValue(self: *State, value: Value) RuntimeError {
         self.last_error = .{ .lua_value = value };
+        self.error_handled = false;
         return error.RuntimeError;
     }
 
     pub fn throwValue(self: *State, value: Value) RuntimeError {
         return self.failValue(value);
+    }
+
+    /// Raises `value` again after closing variables for an error that
+    /// already went through any message handler at its error point.
+    pub fn rethrowValue(self: *State, value: Value) RuntimeError {
+        self.last_error = .{ .lua_value = value };
+        self.error_handled = true;
+        return error.RuntimeError;
     }
 
     pub fn currentErrorValue(self: *State) Value {
@@ -5168,7 +6405,7 @@ fn forValueName(kind: ForValueKind) []const u8 {
     };
 }
 
-fn luaTypeName(value: Value) []const u8 {
+pub fn luaTypeName(value: Value) []const u8 {
     return switch (value) {
         .nil => "nil",
         .boolean => "boolean",
@@ -5324,7 +6561,11 @@ inline fn rawIntegerBitwiseOpFast(lhs: Value, rhs: Value, comptime op: BinaryOp)
 }
 
 fn equalityHasMetamethod(lhs: Value, rhs: Value) bool {
-    return (lhs == .table and rhs == .table) or (lhs == .userdata and rhs == .userdata);
+    return switch (lhs) {
+        .table => |table| rhs == .table and !(noMetaEvent(table, .__eq) and noMetaEvent(rhs.table, .__eq)),
+        .userdata => rhs == .userdata,
+        else => false,
+    };
 }
 
 fn rawCompareBranchResult(lhs: Value, rhs: Value, op: bytecode.CompareBranchOp) ?bool {
@@ -5346,7 +6587,8 @@ fn rawUnaryOp(value: Value, op: UnaryMetamethodOp) ?Value {
         .unm => switch (value) {
             .integer => |integer| .{ .integer = -%integer },
             .number => |number| .{ .number = -number },
-            else => if (toNumberMaybe(value)) |number| .{ .number = -number } else null,
+            .string => if (toInteger(value)) |integer| .{ .integer = -%integer } else if (toNumberMaybe(value)) |number| .{ .number = -number } else null,
+            else => null,
         },
         .bnot => if (toBitwiseInteger(value)) |integer| .{ .integer = ~integer } else null,
     };
@@ -5356,9 +6598,12 @@ fn toBitwiseInteger(value: Value) ?i64 {
     return switch (value) {
         .integer => |integer| integer,
         .number => |number| floatToInteger(number),
-        .string => |string| parseIntegerStrict(string) orelse if (parseLuaNumber(string)) |number| floatToInteger(number) else |_| null,
         else => null,
     };
+}
+
+fn isNumber(value: Value) bool {
+    return value == .integer or value == .number;
 }
 
 fn rawBitwise(left: i64, right: i64, op: BinaryOp) i64 {
@@ -5370,34 +6615,6 @@ fn rawBitwise(left: i64, right: i64, op: BinaryOp) i64 {
         .shr => if (right == std.math.minInt(i64)) 0 else shiftInteger(left, -right),
         else => unreachable,
     };
-}
-
-fn bitwiseIntegerError(lhs: Value, rhs: Value, op: BinaryOp) ?[]const u8 {
-    switch (op) {
-        .band, .bor, .bxor, .shl, .shr => {},
-        else => return null,
-    }
-    if (bitwiseValueError(lhs)) |message| return message;
-    return bitwiseValueError(rhs);
-}
-
-fn bitwiseValueError(value: Value) ?[]const u8 {
-    switch (value) {
-        .integer => return null,
-        .number => |number| {
-            if (floatToInteger(number) != null) return null;
-            if (std.math.isPositiveInf(number)) return "number (field 'huge') has no integer representation";
-            return "number has no integer representation";
-        },
-        .string => |string| {
-            if (toBitwiseInteger(.{ .string = string }) != null) return null;
-            if (parseLuaNumber(string)) |number| {
-                if (floatToInteger(number) == null) return "number has no integer representation";
-            } else |_| {}
-            return null;
-        },
-        else => return null,
-    }
 }
 
 fn shiftInteger(value: i64, amount: i64) i64 {
@@ -5917,8 +7134,33 @@ fn fastTableArrayGet(table_value: Value, key_value: Value) ?Value {
     const table = table_value.table;
     if (index > table.array.items.len) return null;
     const value = table.array.items[index - 1];
-    if (value != .nil or table.metatable == null) return value;
+    if (value != .nil or noIndexMetamethod(table)) return value;
     return null;
+}
+
+inline fn noMetaEvent(table: *const Table, comptime event: types.MetaEvent) bool {
+    const metatable = table.metatable orelse return true;
+    return metatable.metaEventAbsent(event);
+}
+
+inline fn noIndexMetamethod(table: *const Table) bool {
+    return noMetaEvent(table, .__index);
+}
+
+inline fn noNewindexMetamethod(table: *const Table) bool {
+    return noMetaEvent(table, .__newindex);
+}
+
+fn assertProtoPrepared(proto: *const proto_mod.Proto) void {
+    std.debug.assert(proto.runtime_prepared or proto.constants.items.len == 0);
+}
+
+inline fn hasPendingContinuations(thread: *const Thread) bool {
+    return (thread.pairs_continuations.items.len |
+        thread.call_one_continuations.items.len |
+        thread.protected_continuations.items.len |
+        thread.tail_call_continuations.items.len |
+        thread.generic_for_continuations.items.len) != 0;
 }
 
 fn fastTableRawGet(table_value: Value, key_value: Value) ?Value {
@@ -5926,36 +7168,58 @@ fn fastTableRawGet(table_value: Value, key_value: Value) ?Value {
     if (table_value != .table or key_value != .string) return null;
     const table = table_value.table;
     const value = table.get(key_value);
-    if (value != .nil or table.metatable == null) return value;
+    if (value != .nil) return value;
+    const metatable = table.metatable orelse return value;
+    if (metatable.metaEventAbsent(.__index)) return value;
+    const handler = metatable.metaEvent(.__index);
+    if (handler == .nil) return value;
+    if (handler != .table) return null;
+    const inherited = handler.table.get(key_value);
+    if (inherited != .nil or noIndexMetamethod(handler.table)) return inherited;
     return null;
 }
 
 fn fastLengthNoMetamethod(value: Value) ?Value {
     return switch (value) {
         .string => |string| .{ .integer = @intCast(string.len) },
-        .table => |table| if (table.metatable == null) .{ .integer = table.len() } else null,
+        .table => |table| if (noMetaEvent(table, .__len)) .{ .integer = table.len() } else null,
         else => null,
     };
 }
 
-pub fn runtimeArgValue(state: *State, thread: *Thread, op: bytecode.Call, index: u16) Value {
+pub fn runtimeArgValue(state: *State, thread: *Thread, op: bytecode.Call, index: u32) Value {
     return value_mod.runtimeArgValue(state, thread, op, index);
 }
 
-pub fn argValue(state: *State, thread: *Thread, op: bytecode.Call, index: u16) Value {
+pub fn argValue(state: *State, thread: *Thread, op: bytecode.Call, index: u32) Value {
     return value_mod.argValue(state, thread, op, index);
 }
 
+/// Formats a value without metamethods. File handles format like their
+/// `__tostring`, as a Lua error object that is a file does.
+/// Appends an error object like `appendValue`, describing a nil error
+/// object as `<no error object>`, the message Lua substitutes for it.
+pub fn appendErrorValue(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: Value) !void {
+    if (value == .nil) return out.appendSlice(allocator, "<no error object>");
+    return appendValue(allocator, out, value);
+}
+
 pub fn appendValue(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: Value) !void {
+    if (stdlib.io.fileOf(value)) |file| {
+        if (file.closed) return out.appendSlice(allocator, "file (closed)");
+        return appendFmt(allocator, out, "file (0x{x})", .{@intFromPtr(value.userdata)});
+    }
     return value_mod.appendValue(allocator, out, value);
 }
 
+/// True for `FILE*` userdata from the io library.
 pub fn isFileValue(value: Value) bool {
-    return value_mod.isFileValue(value);
+    return stdlib.io.fileOf(value) != null;
 }
 
 pub fn isClosedFileValue(value: Value) bool {
-    return value_mod.isClosedFileValue(value);
+    const file = stdlib.io.fileOf(value) orelse return false;
+    return file.closed;
 }
 
 fn appendNamedValue(allocator: std.mem.Allocator, out: *std.ArrayList(u8), name: []const u8, value: Value) !void {

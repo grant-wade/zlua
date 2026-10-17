@@ -21,13 +21,12 @@
 - [compile.resolver](../compile/resolver.md)
 - [compile.bytecode](../compile/bytecode.md)
 - [compile.proto](../compile/proto.md)
-- [compile.compiler](../compile/compiler.md)
-- [compile.disasm](../compile/disasm.md)
-- [api](../api.md)
+- [runtime.types](../runtime/types.md)
 - [runtime](../runtime.md)
 - [runtime.chunk](../runtime/chunk.md)
-- [runtime.types](../runtime/types.md)
+- [reflection](../reflection.md)
 - [runtime.value](../runtime/value.md)
+- [runtime.number_format](../runtime/number_format.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
 - [runtime.state](../runtime/state.md)
@@ -37,6 +36,7 @@
 - [runtime.debug](../runtime/debug.md)
 - [runtime.gc](../runtime/gc.md)
 - [runtime.host](../runtime/host.md)
+- [runtime.timezone](../runtime/timezone.md)
 - [stdlib](../stdlib.md)
 - [stdlib.base](../stdlib/base.md)
 - [stdlib.table](../stdlib/table.md)
@@ -45,19 +45,23 @@
 - [stdlib.utf8](../stdlib/utf8.md)
 - [stdlib.coroutine](../stdlib/coroutine.md)
 - [stdlib.debug](../stdlib/debug.md)
-- [stdlib.package](../stdlib/package.md)
 - [stdlib.io](../stdlib/io.md)
+- [stdlib.static_strings](../stdlib/static_strings.md)
 - [stdlib.os](../stdlib/os.md)
+- [stdlib.package](../stdlib/package.md)
 - [stdlib.json](../stdlib/json.md)
 - [stdlib.zerde_lua](../stdlib/zerde_lua.md)
 - [stdlib.toml](../stdlib/toml.md)
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
-- [stdlib.static_strings](../stdlib/static_strings.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
+- [compile.compiler](../compile/compiler.md)
+- [compile.fold](../compile/fold.md)
+- [compile.disasm](../compile/disasm.md)
+- [api](../api.md)
 - [runtime.snapshot](../runtime/snapshot.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
@@ -86,6 +90,7 @@
 
 ## Functions
 
+- [luaTypeName](#fn-luatypename)
 - [valuesEqual](#fn-valuesequal)
 - [truthy](#fn-truthy)
 - [toInteger](#fn-tointeger)
@@ -98,6 +103,7 @@
 - [trimAscii](#fn-trimascii)
 - [runtimeArgValue](#fn-runtimeargvalue)
 - [argValue](#fn-argvalue)
+- [appendErrorValue](#fn-appenderrorvalue)
 - [appendValue](#fn-appendvalue)
 - [isFileValue](#fn-isfilevalue)
 - [isClosedFileValue](#fn-isclosedfilevalue)
@@ -107,7 +113,9 @@
 ## Types
 
 - [StartupPhase](#type-startupphase)
+- [OutputFlush](#type-outputflush)
 - [StateOptions](#type-stateoptions)
+- [HostErrorHandler](#type-hosterrorhandler)
 - [State](#type-state)
 - [CompareOp](#type-compareop)
 
@@ -381,6 +389,29 @@ pub const StartupPhase = enum {
 };
 ```
 
+<a id="type-outputflush"></a>
+
+## OutputFlush
+
+When the runtime flushes a configured stdout or stderr writer. Writers are
+always flushed by `io.flush`/`file:flush`, `os.exit`, and before
+`os.execute`/`io.popen` start a child process.
+
+```zig
+pub const OutputFlush = enum {
+    /// Only at the points above; the writer's own buffer decides the rest.
+    explicit,
+    /// Also after each `print`, like C Lua's `lua_writeline`; other writes
+    /// stay buffered like a fully buffered C stream.
+    print,
+    /// Also after each write containing a newline, like a line-buffered C
+    /// stream. This includes every `print`.
+    line,
+    /// After every write, like an unbuffered C stream.
+    always,
+};
+```
+
 <a id="type-stateoptions"></a>
 
 ## StateOptions
@@ -391,11 +422,26 @@ pub const StateOptions = struct {
     io: ?std.Io = null,
     stdout: ?*std.Io.Writer = null,
     stderr: ?*std.Io.Writer = null,
+    stdout_flush: OutputFlush = .explicit,
+    stderr_flush: OutputFlush = .explicit,
+    /// Also keep Lua stdout/stderr bytes in `State.stdout`/`State.stderr`.
+    /// Streaming hosts with writers can disable this to bound memory.
+    capture_output: bool = true,
+    /// Start with Lua warnings on. Lua's `warn("@on")` and `warn("@off")` switch them.
+    warnings: bool = false,
+    /// Receives warnings instead of stderr.
+    warning_handler: ?host.WarningHandler = null,
     filesystem: FilesystemCapability = .disabled,
     environment: EnvironmentCapability = .disabled,
     clock: ClockCapability = .system,
     process: ProcessCapability = .disabled,
     stdin: []const u8 = "",
+    /// Host stdin stream read incrementally by `io.read`, `io.lines`, and
+    /// `loadfile()`. Takes precedence over `stdin` bytes. Borrowed; reads
+    /// cannot be undone by snapshot reset.
+    stdin_reader: ?*std.Io.Reader = null,
+    /// Largest file `io`, `loadfile`, `dofile`, `require`, and `fs` read at once.
+    max_file_bytes: usize = host.default_max_file_bytes,
     /// Memory budget retained for embedding API allocator setup and snapshots.
     /// Direct runtime users must enforce this budget through their allocator.
     max_memory: ?usize = null,
@@ -407,6 +453,25 @@ pub const StateOptions = struct {
 };
 ```
 
+<a id="type-hosterrorhandler"></a>
+
+## HostErrorHandler
+
+Host handling for a runtime error escaping a host entry point. It runs
+at the error point, before the failing frames unwind or `__close` runs.
+
+```zig
+pub const HostErrorHandler = struct {
+    /// Lua message handler with `xpcall` semantics; its first result replaces the error value.
+    message_handler: Value = .nil,
+    /// Receives a traceback allocated with the state allocator. The caller
+    /// initializes it to null and frees any traceback stored there.
+    traceback: ?*?[]u8 = null,
+    /// End the traceback with `[C]: in ?` for the host entry, as `lua.c` does.
+    host_frame: bool = false,
+};
+```
+
 <a id="type-state"></a>
 
 ## State
@@ -415,6 +480,7 @@ pub const StateOptions = struct {
 pub const State = struct {
     rollback: ?*rollback_mod.Journal = null,
     userdata_scope: ?*types.UserdataScope = null,
+    value_roots: ?*types.ValueRoots = null,
     /// Includes direct interpreter entry, nested calls, and suspended host callbacks.
     execution_depth: usize = 0,
     allocator_lifetime: ?*types.AllocatorLifetime = null,
@@ -432,6 +498,9 @@ pub const State = struct {
     table_finalizer_head: ?*Table = null,
     table_finalizer_serial: u64 = 0,
     table_pending_finalizer_head: ?*Table = null,
+    /// Userdata separated for their Lua `__gc`, in queue order shared with
+    /// `table_pending_finalizer_head`.
+    userdata_lua_pending_head: ?*Userdata = null,
     userdata_pending_finalizer_head: ?*Userdata = null,
     table_metatable_count: usize = 0,
     userdata_allocations: std.ArrayList(*Userdata) = .empty,
@@ -447,9 +516,18 @@ pub const State = struct {
     stderr: std.ArrayList(u8) = .empty,
     options: StateOptions,
     stdin_pos: usize = 0,
+    /// Set by `os.exit` while the state unwinds with `error.LuaExit`.
+    exit_request: ?host.ExitRequest = null,
+    /// Local time zone loaded on first use by the system clock.
+    local_zone: ?*timezone.Zone = null,
+    /// Advanced by filesystem mutations so buffered file handles reload contents.
+    file_generation: u64 = 0,
     last_error: ?RuntimeErrorPayload = null,
-    last_error_in_close: bool = false,
-    traceback_error_in_close: bool = false,
+    /// Lua warnings are on, as switched by `@on` and `@off` control messages.
+    warnings_on: bool = false,
+    /// The current error already went through a message handler (or must
+    /// skip one, like a memory error or an error in error handling).
+    error_handled: bool = false,
     current_thread: ?*Thread = null,
     api_callback_dispatch: ?ApiCallbackDispatchFn = null,
     api_callback_user_data: ?*anyopaque = null,
@@ -460,12 +538,18 @@ pub const State = struct {
     boolean_metatable: ?*Table = null,
     nil_metatable: ?*Table = null,
     file_metatable: ?*Table = null,
+    /// Metatable of `fs` file handles, which add the `fs` file methods.
+    fs_file_metatable: ?*Table = null,
+    /// Default files of `io.read`/`io.write`, rooted outside Lua-visible tables.
+    io_input: ?*Userdata = null,
+    io_output: ?*Userdata = null,
     zerde_null: ?*Table = null,
     zerde_array_metatable: ?*Table = null,
     zerde_object_metatable: ?*Table = null,
     is_collecting: bool = false,
-    collect_after_instruction: bool = false,
-    step_after_instruction: bool = false,
+    stress_collect: bool = false,
+    stress_step: bool = false,
+    stress_mark: usize = 0,
     gc_running: bool = true,
     gc_mode: GcMode = .generational,
     gc_params: GcParams = .{},
@@ -479,7 +563,7 @@ pub const State = struct {
     gc_remembered: std.ArrayList(types.GcObject) = .empty,
     gc_weak: std.ArrayList(*Table) = .empty,
     gc_tables: std.ArrayList(*Table) = .empty,
-    gc_finalizers: std.ArrayList(*Table) = .empty,
+    gc_finalizers: std.ArrayList(types.FinalizerObject) = .empty,
     gc_major_pending: bool = false,
     gc_cycle_start_total: usize = 0,
     gc_found_young: bool = false,
@@ -491,7 +575,19 @@ pub const State = struct {
     mark_all_stack_registers: bool = false,
     conservative_gc_depth: usize = 0,
     random_state: [4]u64 = .{ 0x123456789abcdef0, 0xff, 0xfedcba9876543210, 0 },
+    /// Monotonic count of executed VM instructions.
     instruction_count: u64 = 0,
+    /// `instruction_count` at the last budget reset; `max_instructions` covers
+    /// the instructions executed since then.
+    instruction_budget_base: u64 = 0,
+    /// Absolute `instruction_count` deadline of the innermost budgeted host
+    /// call, already narrowed by enclosing budgeted calls.
+    call_instruction_deadline: ?u64 = null,
+    /// The dispatch loop enters `vm.executionCheckpoint` once
+    /// `instruction_count` reaches this value. Zero forces a recompute.
+    instruction_checkpoint: u64 = 0,
+    /// Interrupt request shared with host threads; allocated on first use.
+    interrupt: ?*vm_mod.InterruptControl = null,
 };
 ```
 
@@ -499,6 +595,7 @@ pub const State = struct {
 
 | Name | Parameters | Return Type | Description |
 | --- | --- | --- | --- |
+| [max_c_calls](#alias-state-max_c_calls) |  |  |  |
 | [registerAllocation](#fn-state-registerallocation) | `self: *State, comptime field: []const u8, item: anytype` | `!void` |  |
 | [init](#fn-state-init) | `allocator: std.mem.Allocator` | `!State` |  |
 | [initWithOptions](#fn-state-initwithoptions) | `allocator: std.mem.Allocator, options: StateOptions` | `!State` |  |
@@ -506,17 +603,40 @@ pub const State = struct {
 | [stackValueLimit](#fn-state-stackvaluelimit) | `self: *const State` | `usize` |  |
 | [callFrameLimit](#fn-state-callframelimit) | `self: *const State` | `usize` |  |
 | [fileMetatable](#fn-state-filemetatable) | `state: *State` | `!*Table` |  |
+| [fsFileMetatable](#fn-state-fsfilemetatable) | `state: *State` | `!*Table` | &#96;fs&#96; file handles share the &#96;FILE*&#96; metamethods, and their method table adds &#96;stat&#96;, &#96;tell&#96;, &#96;truncate&#96;, &#96;path&#96;, and &#96;sync&#96;. |
+| [isBuiltinUserdata](#fn-state-isbuiltinuserdata) | `userdata: *const Userdata` | `bool` | True for userdata types implemented by the runtime, such as files. |
+| [finalizeBuiltinUserdata](#fn-state-finalizebuiltinuserdata) | `self: *State, userdata: *Userdata` | `bool` | Runs the finalizer of a userdata type implemented by the runtime, which needs the state. Returns false for other userdata. |
+| [closeFinalizerOrder](#fn-state-closefinalizerorder) | `userdata: *Userdata` | `?u64` |  |
+| [builtinFinalizerOrder](#fn-state-builtinfinalizerorder) | `userdata: *Userdata` | `u64` | The creation order of runtime userdata, on the finalizer order scale. |
 | [discard](#fn-state-discard) | `self: *State` | `void` |  |
-| [deinit](#fn-state-deinit) | `self: *State` | `void` |  |
-| [execute](#fn-state-execute) | `self: *State, proto: *const proto_mod.Proto` | `!void` |  |
+| [deinit](#fn-state-deinit) | `self: *State` | `void` | Frees the state like &#96;lua_close&#96;: first calls every pending finalizer, running &#96;__gc&#96; metamethods and closing open files, newest first. The instruction budget restarts for each one. Discarded states, such as snapshot images, call none. |
+| [deinitWithoutFinalizers](#fn-state-deinitwithoutfinalizers) | `self: *State` | `void` | Frees the state without calling Lua &#96;__gc&#96; metamethods, as a process exiting without &#96;lua_close&#96; does; open files are still flushed and closed. |
+| [execute](#fn-state-execute) | `self: *State, proto: *proto_mod.Proto` | `!void` |  |
 | [callLoadedClosure](#fn-state-callloadedclosure) | `self: *State, closure: *Closure, args: []const Value` | `![]Value` |  |
+| [callLoadedClosureHandled](#fn-state-callloadedclosurehandled) | `self: *State, closure: *Closure, args: []const Value, handler: HostErrorHandler` | `![]Value` | Like &#96;callLoadedClosure&#96;; &#96;handler&#96; runs at the error point before frames unwind. |
 | [protectedCallLoadedClosure](#fn-state-protectedcallloadedclosure) | `self: *State, closure: *Closure, args: []const Value` | `!ProtectedCallResult` |  |
+| [protectedCallLoadedClosureHandled](#fn-state-protectedcallloadedclosurehandled) | `self: *State, closure: *Closure, args: []const Value, handler: HostErrorHandler` | `!ProtectedCallResult` | Like &#96;protectedCallLoadedClosure&#96;; &#96;handler&#96; runs at the error point before frames unwind. |
 | [callFunction](#fn-state-callfunction) | `self: *State, function: Value, args: []const Value` | `![]Value` |  |
+| [callFunctionHandled](#fn-state-callfunctionhandled) | `self: *State, function: Value, args: []const Value, handler: HostErrorHandler` | `![]Value` | Like &#96;callFunction&#96;; &#96;handler&#96; runs at the error point before frames unwind. |
 | [protectedCallFunction](#fn-state-protectedcallfunction) | `self: *State, function: Value, args: []const Value` | `!ProtectedCallResult` |  |
+| [protectedCallFunctionHandled](#fn-state-protectedcallfunctionhandled) | `self: *State, function: Value, args: []const Value, handler: HostErrorHandler` | `!ProtectedCallResult` | Like &#96;protectedCallFunction&#96;; &#96;handler&#96; runs at the error point before frames unwind. |
 | [executeSourceChunk](#fn-state-executesourcechunk) | `self: *State, source: []const u8` | `!void` |  |
 | [executeSourceChunkNamed](#fn-state-executesourcechunknamed) | `self: *State, source: []const u8, source_name: []const u8` | `!void` |  |
+| [executeSourceChunkNamedHandled](#fn-state-executesourcechunknamedhandled) | `self: *State, source: []const u8, source_name: []const u8, handler: HostErrorHandler` | `!void` | Like &#96;executeSourceChunkNamed&#96;; &#96;handler&#96; runs at a runtime error point before frames unwind. |
+| [noteCaughtError](#fn-state-notecaughterror) | `self: *State, err: anyerror` | `void` | Records the error for a Zig error caught from Lua execution: a stack overflow that has no message yet, or a memory error, which skips message handlers as in Lua. |
+| [applyMessageHandler](#fn-state-applymessagehandler) | `self: *State, thread: *Thread` | `!void` | Runs the thread's message handler for the current error at the error point, like &#96;luaG_errormsg&#96;, unless the error already went through one. The handler runs on top of the live failing frames; an error in it is handled again on top of the handler's frames. The retries model Lua's C-call limit: the handler sees "C stack overflow" at &#96;LUAI_MAXCCALLS&#96; and the error becomes "error in error handling" a little later. |
+| [pushNativeMark](#fn-state-pushnativemark) | `thread: *Thread, frame_count: usize, callee: Value` | `void` | Records a native function without a calling instruction for tracebacks. |
 | [runThreadUntil](#fn-state-runthreaduntil) | `self: *State, thread: *Thread, target_frame_count: usize` | `anyerror!void` |  |
 | [checkExecutionLimits](#fn-state-checkexecutionlimits) | `self: *State, thread: *Thread` | `!void` |  |
+| [interruptControl](#fn-state-interruptcontrol) | `self: *State` | `!*vm_mod.InterruptControl` | Returns the interrupt control shared with host threads, allocating it on first use. Polling starts at the next safepoint. |
+| [interruptRequested](#fn-state-interruptrequested) | `self: *const State` | `bool` | Reports a pending host interrupt. Safe to call on the owning thread at any time. |
+| [clearInterrupt](#fn-state-clearinterrupt) | `self: *State` | `void` | Clears a pending interrupt request. |
+| [checkInterrupt](#fn-state-checkinterrupt) | `self: *State` | `!void` | Raises &#96;error.Interrupted&#96; when a host interrupt is pending. Native functions with long internal loops call this periodically. |
+| [instructionBudgetActive](#fn-state-instructionbudgetactive) | `self: *const State` | `bool` | True while any instruction budget applies; the uncounted fast loop is then disabled. |
+| [instructionBudgetUsed](#fn-state-instructionbudgetused) | `self: *const State` | `u64` | Instructions counted against &#96;max_instructions&#96; since the last budget reset. |
+| [resetInstructionBudget](#fn-state-resetinstructionbudget) | `self: *State` | `void` | Restarts the cumulative &#96;max_instructions&#96; budget. |
+| [beginCallInstructionBudget](#fn-state-begincallinstructionbudget) | `self: *State, max: u64` | `?u64` | Narrows the instruction budget for a host call to at most &#96;max&#96; further instructions, including nested calls and coroutines. Returns the enclosing deadline for &#96;endCallInstructionBudget&#96;. |
+| [endCallInstructionBudget](#fn-state-endcallinstructionbudget) | `self: *State, previous: ?u64` | `void` | Restores the deadline returned by &#96;beginCallInstructionBudget&#96;. |
 | [noteAllocation](#fn-state-noteallocation) | `self: *State, bytes: usize` | `void` |  |
 | [noteAllocationFreed](#fn-state-noteallocationfreed) | `self: *State, bytes: usize` | `void` |  |
 | [refreshAllocationTotal](#fn-state-refreshallocationtotal) | `self: *State` | `usize` |  |
@@ -537,20 +657,31 @@ pub const State = struct {
 | [putGlobal](#fn-state-putglobal) | `self: *State, name: []const u8, value: Value` | `!void` |  |
 | [rootValue](#fn-state-rootvalue) | `self: *State, value: Value` | `!usize` |  |
 | [unrootValue](#fn-state-unrootvalue) | `self: *State, index: usize` | `void` |  |
+| [pushValueRoots](#fn-state-pushvalueroots) | `self: *State, roots: *types.ValueRoots, values: []const Value` | `void` |  |
+| [popValueRoots](#fn-state-popvalueroots) | `self: *State, roots: *types.ValueRoots` | `void` |  |
 | [rootedValue](#fn-state-rootedvalue) | `self: *const State, index: usize` | `Value` |  |
 | [activeRootCount](#fn-state-activerootcount) | `self: State` | `usize` |  |
 | [setApiCallbackDispatch](#fn-state-setapicallbackdispatch) | `self: *State, dispatch: ApiCallbackDispatchFn, user_data: *anyopaque` | `void` |  |
 | [callApiCallbackDispatch](#fn-state-callapicallbackdispatch) | `self: *State, thread: *Thread, op: bytecode.Call, callback_id: usize` | `!void` |  |
-| [readFileAlloc](#fn-state-readfilealloc) | `self: *State, path: []const u8` | `![]const u8` |  |
+| [readFileAlloc](#fn-state-readfilealloc) | `self: *State, path: []const u8` | `![]const u8` | Reads a whole file through the filesystem capability, limited by &#96;max_file_bytes&#96;. Failures raise PUC &#96;loadfile&#96;-style messages such as "cannot open name.lua: No such file or directory". |
+| [readFileRaw](#fn-state-readfileraw) | `self: *State, path: []const u8` | `anyerror![]const u8` | Reads a whole file through the filesystem capability, limited by &#96;max_file_bytes&#96;, returning filesystem errors unchanged. |
+| [failFileOperation](#fn-state-failfileoperation) | `self: *State, path: []const u8, err: anyerror` | `anyerror` | Raises "<path>: <strerror message>" for a failed file operation. |
 | [writeStdout](#fn-state-writestdout) | `self: *State, bytes: []const u8` | `!void` |  |
+| [warn](#fn-state-warn) | `self: *State, parts: []const []const u8` | `!void` | Emits one warning made of &#96;parts&#96;, like consecutive &#96;lua_warning&#96; calls that continue every part but the last. A single part starting with &#96;@&#96; is a control message: &#96;@on&#96; and &#96;@off&#96; switch warnings, and other controls are ignored. |
+| [warnError](#fn-state-warnerror) | `self: *State, where: []const u8, error_value: Value` | `void` | Warns about an error caught where Lua cannot report it, like &#96;luaE_warnerror&#96;: &#96;error in <where> (<message>)&#96;. |
 | [writeStderr](#fn-state-writestderr) | `self: *State, bytes: []const u8` | `!void` |  |
+| [flushStdoutForInput](#fn-state-flushstdoutforinput) | `self: *State` | `void` | Before blocking on host stdin, flushes a line-buffered or unbuffered stdout writer, so interactive prompts appear as they do with C stdio. |
 | [flushStdout](#fn-state-flushstdout) | `self: *State` | `!void` |  |
 | [flushStderr](#fn-state-flushstderr) | `self: *State` | `!void` |  |
 | [writeFile](#fn-state-writefile) | `self: *State, path: []const u8, data: []const u8` | `!void` |  |
 | [removeFile](#fn-state-removefile) | `self: *State, path: []const u8` | `!void` |  |
 | [renameFile](#fn-state-renamefile) | `self: *State, old_path: []const u8, new_path: []const u8` | `!void` |  |
-| [fsReadFileAlloc](#fn-state-fsreadfilealloc) | `self: *State, path: []const u8, max_bytes: usize` | `anyerror![]const u8` |  |
+| [fsReadFileAlloc](#fn-state-fsreadfilealloc) | `self: *State, path: []const u8, requested_max_bytes: usize` | `anyerror![]const u8` | Reads at most &#96;max_bytes&#96;, further capped by the state's &#96;max_file_bytes&#96;. |
 | [fsWriteFile](#fn-state-fswritefile) | `self: *State, path: []const u8, data: []const u8` | `anyerror!void` |  |
+| [fsCreateFileExclusive](#fn-state-fscreatefileexclusive) | `self: *State, path: []const u8` | `anyerror!void` | Creates an empty file, failing with &#96;error.PathAlreadyExists&#96; when the path exists, so the caller reserves the name like &#96;mkstemp&#96;. Host filesystems create exclusively; memory and callback filesystems check first, as they have no exclusive create. |
+| [fsWriteFileAt](#fn-state-fswritefileat) | `self: *State, path: []const u8, offset: usize, data: []const u8` | `anyerror!void` | Writes &#96;data&#96; at &#96;offset&#96; of an existing file without truncating it, so buffered handles can flush only their unsynced suffix. Returns &#96;error.OperationUnsupported&#96; when the capability has no positional write; callers then rewrite the whole file with &#96;fsWriteFile&#96;. |
+| [fsAppendFile](#fn-state-fsappendfile) | `self: *State, path: []const u8, data: []const u8` | `anyerror!void` | Writes &#96;data&#96; at the current end of an existing file, as a stream opened for appending does. Custom filesystems have no positional write, so the file is read and written back with &#96;data&#96; added. |
+| [fsCheckWritable](#fn-state-fscheckwritable) | `self: *State, path: []const u8` | `anyerror!void` | Checks that an existing file can be opened for writing, as &#96;fopen&#96; does for append modes, without changing its bytes. Custom filesystems only report whether they accept writes. |
 | [fsStat](#fn-state-fsstat) | `self: *State, path: []const u8, follow_symlinks: bool` | `anyerror!host.FileStat` |  |
 | [fsReadDirAlloc](#fn-state-fsreaddiralloc) | `self: *State, path: []const u8` | `anyerror![]host.DirectoryEntry` |  |
 | [fsMakeDir](#fn-state-fsmakedir) | `self: *State, path: []const u8, parents: bool` | `anyerror!void` |  |
@@ -559,10 +690,17 @@ pub const State = struct {
 | [fsCopyFile](#fn-state-fscopyfile) | `self: *State, source: []const u8, destination: []const u8, overwrite: bool` | `anyerror!void` |  |
 | [getenv](#fn-state-getenv) | `self: *State, name: []const u8` | `?[]const u8` |  |
 | [currentTime](#fn-state-currenttime) | `self: *State` | `!i64` |  |
+| [cpuTime](#fn-state-cputime) | `self: *State` | `!f64` | Processor time for &#96;os.clock&#96;, in seconds. A disabled or fixed clock reports 0. |
+| [localOffset](#fn-state-localoffset) | `self: *State, timestamp: i64` | `!timezone.LocalOffset` | Local-time offset at a Unix timestamp. Clocks without a time zone use UTC. |
+| [localToUtc](#fn-state-localtoutc) | `self: *State, local: i64, is_dst: ?bool` | `!i64` | Converts local wall-clock seconds to a Unix timestamp, like &#96;mktime&#96;. |
 | [executeProcess](#fn-state-executeprocess) | `self: *State, command: []const u8` | `!ProcessResult` |  |
+| [popenProcess](#fn-state-popenprocess) | `self: *State, command: []const u8, input: ?[]const u8` | `!host.PopenResult` | Runs a command for &#96;io.popen&#96;. Read mode (&#96;input == null&#96;) returns the command's stdout; write mode feeds &#96;input&#96; to its stdin. Other streams are inherited from the host process, like C &#96;popen&#96;. |
+| [requestExit](#fn-state-requestexit) | `self: *State, code: i32, close: bool` | `!void` | Records an &#96;os.exit&#96; request. The caller unwinds with &#96;error.LuaExit&#96;. |
 | [requireIo](#fn-state-requireio) | `self: *State, unavailable_message: []const u8` | `RuntimeError!std.Io` |  |
 | [processEnabled](#fn-state-processenabled) | `self: *State` | `bool` |  |
-| [readStdin](#fn-state-readstdin) | `self: *State, spec: []const u8` | `!Value` |  |
+| [StdinSource](#type-state-stdinsource) |  |  | Standard input shared by &#96;io.stdin&#96;, &#96;loadfile()&#96;, and &#96;debug.debug&#96;: the host &#96;stdin_reader&#96;, or the memory &#96;stdin&#96; bytes from &#96;stdin_pos&#96;. |
+| [stdinSource](#fn-state-stdinsource) | `self: *State` | `StdinSource` | Callers read through &#96;reader()&#96; and then call &#96;finish()&#96;. |
+| [stdinIsStream](#fn-state-stdinisstream) | `self: *const State` | `bool` |  |
 | [loadSourceAsClosure](#fn-state-loadsourceasclosure) | `self: *State, source: []const u8` | `!Value` |  |
 | [loadSourceAsClosureNamed](#fn-state-loadsourceasclosurenamed) | `self: *State, source: []const u8, source_name: ?[]const u8` | `!Value` |  |
 | [loadSourceAsClosureNamedEnv](#fn-state-loadsourceasclosurenamedenv) | `self: *State, source: []const u8, source_name: ?[]const u8, environment: Value` | `!Value` |  |
@@ -581,6 +719,9 @@ pub const State = struct {
 | [setTableValue](#fn-state-settablevalue) | `self: *State, table_value: Value, key_value: Value, value: Value` | `!void` |  |
 | [setTableFromThread](#fn-state-settablefromthread) | `self: *State, thread: *Thread, table_value: Value, key_value: Value, value: Value` | `!void` |  |
 | [lengthOf](#fn-state-lengthof) | `self: *State, thread: *Thread, value: Value` | `!Value` |  |
+| [lengthInteger](#fn-state-lengthinteger) | `self: *State, thread: *Thread, value: Value` | `!i64` | &#96;luaL_len&#96;: the length of &#96;value&#96;, honoring &#96;__len&#96;, as an integer. |
+| [lengthToInteger](#fn-state-lengthtointeger) | `self: *State, length: Value` | `!i64` | Converts a length result to an integer as &#96;luaL_len&#96; does. |
+| [finishConcatRange](#fn-state-finishconcatrange) | `self: *State, thread: *Thread, dest: usize, first: usize, count_in: usize` | `!void` | Joins stack slots &#96;first..first+count&#96; right to left like PUC &#96;luaV_concat&#96;: each run of trailing strings and numbers becomes one string, and otherwise the last two operands go to &#96;__concat&#96;. Partial results stay in the operand slots so a yielding metamethod can resume. |
 | [invokeValue](#fn-state-invokevalue) | `self: *State, thread: *Thread, resolved: bytecode.Call, depth: usize` | `anyerror!void` |  |
 | [callOneResult](#fn-state-calloneresult) | `self: *State, thread: *Thread, callable: Value, args: []const Value` | `anyerror!Value` |  |
 | [callOneResultWithContinuation](#fn-state-calloneresultwithcontinuation) | `self: *State, thread: *Thread, callable: Value, args: []const Value, result: CallOneContinuationResult` | `anyerror!Value` |  |
@@ -596,29 +737,35 @@ pub const State = struct {
 | [protectedCallContextWithErrors](#fn-state-protectedcallcontextwitherrors) | `self: *State, thread: *Thread` | `ProtectedCallContext` |  |
 | [runProtectedCall](#fn-state-runprotectedcall) | `self: *State, thread: *Thread, context: ProtectedCallContext, callable: Value, args: []const Value` | `anyerror!ProtectedCallResult` |  |
 | [restoreProtectedCall](#fn-state-restoreprotectedcall) | `self: *State,         thread: *Thread,         context: ProtectedCallContext,         error_value: Value,` | `!Value` |  |
-| [pushProtectedContinuation](#fn-state-pushprotectedcontinuation) | `self: *State, thread: *Thread, context: ProtectedCallContext, base: bytecode.Register, return_count: u16, kind: ProtectedContinuationKind, handler: Value, handler_depth: usize` | `!void` |  |
+| [pushProtectedContinuation](#fn-state-pushprotectedcontinuation) | `self: *State, thread: *Thread, context: ProtectedCallContext, base: u32, return_count: u16` | `!void` |  |
 | [readyProtectedContinuationIndex](#fn-state-readyprotectedcontinuationindex) | `thread: *Thread` | `?usize` |  |
 | [errorProtectedContinuationIndex](#fn-state-errorprotectedcontinuationindex) | `thread: *Thread` | `?usize` |  |
 | [completeReadyProtectedContinuation](#fn-state-completereadyprotectedcontinuation) | `self: *State, thread: *Thread` | `!bool` |  |
-| [completeProtectedContinuationError](#fn-state-completeprotectedcontinuationerror) | `self: *State, thread: *Thread, error_value: Value` | `!bool` |  |
+| [completeProtectedContinuationError](#fn-state-completeprotectedcontinuationerror) | `self: *State, thread: *Thread` | `!bool` |  |
 | [returnProtectedContinuationSuccess](#fn-state-returnprotectedcontinuationsuccess) | `self: *State, thread: *Thread, continuation: ProtectedContinuation, values: []Value` | `!void` |  |
 | [returnProtectedContinuationFailure](#fn-state-returnprotectedcontinuationfailure) | `self: *State, thread: *Thread, continuation: ProtectedContinuation, failure: Value` | `!void` |  |
 | [valueToString](#fn-state-valuetostring) | `self: *State, thread: *Thread, value: Value` | `anyerror![]const u8` |  |
+| [rawMetatableValue](#fn-state-rawmetatablevalue) | `self: *State, value: Value` | `Value` | Returns a value's metatable without honoring &#96;__metatable&#96;, as &#96;debug.getmetatable&#96; does. |
 | [setDebugMetatableValue](#fn-state-setdebugmetatablevalue) | `self: *State, value: Value, metatable_value: Value` | `!void` |  |
 | [getMetamethod](#fn-state-getmetamethod) | `self: *State, value: Value, name: []const u8` | `!?Value` |  |
+| [getMetaEvent](#fn-state-getmetaevent) | `self: *State, value: Value, event: types.MetaEvent` | `!?Value` | &#96;getMetamethod&#96; for a known event; metatables cache absent events. |
 | [setTableMetatableRaw](#fn-state-settablemetatableraw) | `self: *State, table: *Table, metatable: ?*Table` | `void` |  |
+| [checkUserdataFinalizer](#fn-state-checkuserdatafinalizer) | `self: *State, userdata: *Userdata` | `void` | Registers &#96;userdata&#96; for its metatable's &#96;__gc&#96;, like &#96;luaC_checkfinalizer&#96; when a metatable is set. File handles keep their built-in close for the file metatable's own &#96;__gc&#96;. |
+| [nextFinalizerOrder](#fn-state-nextfinalizerorder) | `self: *State` | `u64` |  |
 | [noteTableMetatableChanged](#fn-state-notetablemetatablechanged) | `self: *State, table: *Table, old_has_metatable: bool` | `void` |  |
 | [unlinkTableMetatable](#fn-state-unlinktablemetatable) | `self: *State, table: *Table` | `void` |  |
 | [luaTypeNameForError](#fn-state-luatypenameforerror) | `self: *State, value: Value` | `[]const u8` |  |
 | [jumpIfBranchResult](#fn-state-jumpifbranchresult) | `self: *State, thread: *Thread, result: bool, jump_if_truthy: bool, offset: bytecode.JumpOffset` | `!void` |  |
 | [compareValues](#fn-state-comparevalues) | `self: *State, thread: *Thread, lhs: Value, rhs: Value, op: CompareOp` | `!bool` |  |
-| [returnValues](#fn-state-returnvalues) | `self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, values: []const Value` | `!void` |  |
+| [nativeStackFits](#fn-state-nativestackfits) | `self: *const State, thread: *const Thread, op: bytecode.Call, count: usize` | `bool` | Whether &#96;count&#96; values fit on the stack above the arguments of the native call &#96;op&#96;, like &#96;lua_checkstack&#96;. |
+| [callStackValueLimit](#fn-state-callstackvaluelimit) | `self: *const State, thread: *const Thread` | `usize` |  |
+| [returnValues](#fn-state-returnvalues) | `self: *State, thread: *Thread, base: u32, return_count: u16, values: []const Value` | `!void` |  |
 | [prepareClosureFrame](#fn-state-prepareclosureframe) | `self: *State, thread: *Thread, closure: *Closure, source_base: usize, frame_base: usize, arg_count: usize, return_start: usize, return_count: u16` | `!CallFrame` |  |
 | [captureVarargs](#fn-state-capturevarargs) | `self: *State, thread: *Thread, source_start: usize, count: usize` | `![]const Value` |  |
 | [namedVarargTable](#fn-state-namedvarargtable) | `self: *State, varargs: []const Value` | `!Value` |  |
 | [resolveReturnCount](#fn-state-resolvereturncount) | `self: *State, count: u16, available: usize` | `!usize` |  |
-| [returnXpcallFailure](#fn-state-returnxpcallfailure) | `self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, handler: Value, error_value: Value` | `!void` |  |
-| [returnXpcallFailureFromDepth](#fn-state-returnxpcallfailurefromdepth) | `self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, handler: Value, error_value: Value, initial_depth: usize` | `!void` |  |
+| [caughtErrorValue](#fn-state-caughterrorvalue) | `self: *State, value: Value` | `!Value` | The error object Lua sees where an error is caught without a message handler: like &#96;luaG_errormsg&#96;, nil becomes &#96;<no error object>&#96;. |
+| [tracebackMessageHandler](#fn-state-tracebackmessagehandler) | `self: *State, thread: *Thread, op: bytecode.Call` | `!void` | The standalone interpreter's message handler (&#96;msghandler&#96; in &#96;lua.c&#96;): adds a traceback to the error message, or reports an error object by its &#96;__tostring&#96; result or its type. |
 | [snapshotCoroutineErrorTraceback](#fn-state-snapshotcoroutineerrortraceback) | `self: *State, target: *Thread` | `![]const u8` |  |
 | [coroutineCreate](#fn-state-coroutinecreate) | `self: *State, thread: *Thread, op: bytecode.Call` | `!void` |  |
 | [coroutineResume](#fn-state-coroutineresume) | `self: *State, thread: *Thread, op: bytecode.Call` | `!void` |  |
@@ -629,20 +776,21 @@ pub const State = struct {
 | [coroutineClose](#fn-state-coroutineclose) | `self: *State, thread: *Thread, op: bytecode.Call` | `!void` |  |
 | [coroutineWrap](#fn-state-coroutinewrap) | `self: *State, thread: *Thread, op: bytecode.Call` | `!void` |  |
 | [callCoroutineWrapper](#fn-state-callcoroutinewrapper) | `self: *State, thread: *Thread, op: bytecode.Call, target: *Thread` | `!void` |  |
-| [callCoroutineWrapperWithArgs](#fn-state-callcoroutinewrapperwithargs) | `self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, target: *Thread, args: []const Value` | `!void` |  |
+| [callCoroutineWrapperWithArgs](#fn-state-callcoroutinewrapperwithargs) | `self: *State, thread: *Thread, base: u32, return_count: u16, target: *Thread, args: []const Value` | `!void` |  |
 | [newCoroutineThread](#fn-state-newcoroutinethread) | `self: *State, entry: Value` | `!*Thread` |  |
 | [closeCoroutine](#fn-state-closecoroutine) | `self: *State, target: *Thread, error_value: ?Value` | `!?Value` |  |
 | [resumeCoroutine](#fn-state-resumecoroutine) | `self: *State, target: *Thread, args: []const Value` | `!CoroutineResumeResult` |  |
 | [startCoroutine](#fn-state-startcoroutine) | `self: *State, target: *Thread, args: []const Value` | `!void` |  |
 | [callableEntryClosure](#fn-state-callableentryclosure) | `self: *State` | `!*Closure` |  |
 | [setCoroutineResumeValues](#fn-state-setcoroutineresumevalues) | `self: *State, target: *Thread, args: []const Value` | `!void` |  |
-| [returnCoroutineResumeResult](#fn-state-returncoroutineresumeresult) | `self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, result: CoroutineResumeResult` | `!void` |  |
+| [returnCoroutineResumeResult](#fn-state-returncoroutineresumeresult) | `self: *State, thread: *Thread, base: u32, return_count: u16, result: CoroutineResumeResult` | `!void` |  |
 | [copyValues](#fn-state-copyvalues) | `self: *State, values: []const Value` | `![]Value` |  |
 | [copyStackSlice](#fn-state-copystackslice) | `self: *State, thread: *Thread, base: usize, count: usize` | `![]Value` |  |
-| [collectArgs](#fn-state-collectargs) | `self: *State, thread: *Thread, op: bytecode.Call, first: u16` | `![]Value` |  |
-| [returnProtectedResult](#fn-state-returnprotectedresult) | `self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, result: ProtectedCallResult` | `!void` |  |
+| [collectArgs](#fn-state-collectargs) | `self: *State, thread: *Thread, op: bytecode.Call, first: u32` | `![]Value` |  |
+| [returnProtectedResult](#fn-state-returnprotectedresult) | `self: *State, thread: *Thread, base: u32, return_count: u16, result: ProtectedCallResult` | `!void` |  |
 | [expectTable](#fn-state-expecttable) | `self: *State, value: Value` | `!*Table` |  |
 | [expectString](#fn-state-expectstring) | `self: *State, value: Value` | `![]const u8` |  |
+| [expectArgumentThread](#fn-state-expectargumentthread) | `self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32` | `!*Thread` | &#96;getco&#96; in lcorolib: the coroutine argument of a &#96;coroutine&#96; function. |
 | [expectThread](#fn-state-expectthread) | `self: *State, value: Value` | `!*Thread` |  |
 | [collectGarbageValue](#fn-state-collectgarbagevalue) | `self: *State, thread: *Thread, op: bytecode.Call` | `!void` |  |
 | [collectGarbageParam](#fn-state-collectgarbageparam) | `self: *State, value: Value` | `!GcParam` |  |
@@ -689,7 +837,8 @@ pub const State = struct {
 | [upvalueBarrier](#fn-state-upvaluebarrier) | `self: *State, closure: *Closure, upvalue: *Upvalue` | `void` |  |
 | [threadBarrier](#fn-state-threadbarrier) | `self: *State, thread: *Thread, value: Value` | `void` |  |
 | [writeBarrier](#fn-state-writebarrier) | `self: *State, parent: anytype, child: Value` | `void` |  |
-| [runFinalizersFromHost](#fn-state-runfinalizersfromhost) | `self: *State, limit: usize` | `anyerror!bool` | Provide a protected execution frame for GC requested by an idle host. Allocate it before consuming any pending registration so OOM is retryable. |
+| [runCloseFinalizers](#fn-state-runclosefinalizers) | `self: *State` | `void` | Provide a protected execution frame for GC requested by an idle host. Allocate it before consuming any pending registration so OOM is retryable. Calls every pending finalizer as &#96;deinit&#96; does, keeping the state. Later finalizer registrations are left for &#96;deinit&#96;. |
+| [runFinalizersFromHost](#fn-state-runfinalizersfromhost) | `self: *State, limit: usize` | `anyerror!bool` |  |
 | [runPendingFinalizers](#fn-state-runpendingfinalizers) | `self: *State, thread: ?*Thread` | `!void` |  |
 | [runPendingUserdataFinalizers](#fn-state-runpendinguserdatafinalizers) | `self: *State` | `!void` |  |
 | [callableValue](#fn-state-callablevalue) | `self: *State, value: Value` | `bool` |  |
@@ -713,16 +862,31 @@ pub const State = struct {
 | [failRuntimeDetail](#fn-state-failruntimedetail) | `self: *State, thread: ?*Thread, detail: []const u8` | `RuntimeError` |  |
 | [errorDetailAlloc](#fn-state-errordetailalloc) | `self: *State, allocator: std.mem.Allocator, err: anyerror` | `![]const u8` |  |
 | [fail](#fn-state-fail) | `self: *State, message: []const u8` | `RuntimeError` |  |
-| [failArgument](#fn-state-failargument) | `self: *State, function_name: []const u8, index: u16, detail: errors.ArgumentErrorDetail` | `RuntimeError` |  |
-| [failArgumentMessage](#fn-state-failargumentmessage) | `self: *State, function_name: []const u8, index: u16, message: []const u8` | `RuntimeError` |  |
-| [failArgumentType](#fn-state-failargumenttype) | `self: *State, function_name: []const u8, index: u16, expected: []const u8, actual: Value` | `RuntimeError` |  |
-| [expectArgumentString](#fn-state-expectargumentstring) | `self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16` | `![]const u8` |  |
-| [argumentDisplayIndex](#fn-state-argumentdisplayindex) | `self: *State, thread: *Thread, function_name: []const u8, index: u16` | `u16` |  |
-| [expectArgumentTable](#fn-state-expectargumenttable) | `self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16` | `!*Table` |  |
-| [argumentInteger](#fn-state-argumentinteger) | `self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16` | `!i64` |  |
+| [failArgument](#fn-state-failargument) | `self: *State, function_name: []const u8, index: u32, detail: errors.ArgumentErrorDetail` | `RuntimeError` | Raises &#96;bad argument #index to 'name' (detail)&#96; like &#96;luaL_argerror&#96;. &#96;index&#96; is the 1-based position among the native call's arguments; method calls renumber it and report a bad &#96;self&#96; as Lua does. The function is named from the calling instruction when Lua code made the call, else by a search of the loaded libraries, else &#96;function_name&#96;. |
+| [failArgumentMessage](#fn-state-failargumentmessage) | `self: *State, function_name: []const u8, index: u32, message: []const u8` | `RuntimeError` |  |
+| [failArgumentType](#fn-state-failargumenttype) | `self: *State, function_name: []const u8, index: u32, expected: []const u8, actual: Value` | `RuntimeError` |  |
+| [failLibrary](#fn-state-faillibrary) | `self: *State, message: []const u8` | `RuntimeError` | Raises &#96;message&#96; like &#96;luaL_error&#96;: prefixed with the position of the Lua code that called the running library function, if any. |
+| [withLibraryWhere](#fn-state-withlibrarywhere) | `self: *State, value: Value` | `!Value` | Prefixes a string error with &#96;luaL_where(L, 1)&#96;, as &#96;coroutine.wrap&#96; does for errors raised inside the coroutine. |
+| [failLibraryFmt](#fn-state-faillibraryfmt) | `self: *State, comptime fmt: []const u8, args: anytype` | `RuntimeError` | &#96;failLibrary&#96; with a formatted message. |
+| [appendGlobalFunctionName](#fn-state-appendglobalfunctionname) | `self: *State, out: *std.ArrayList(u8), callee: Value` | `!bool` | Mirrors &#96;pushglobalfuncname&#96;: finds &#96;callee&#96; as a global or as a field of a loaded module. |
+| [expectArgumentString](#fn-state-expectargumentstring) | `self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32` | `![]const u8` | &#96;luaL_checklstring&#96;: accepts strings and numbers. A number argument is converted in place, as Lua does, which also keeps the new string reachable for the rest of the call. |
+| [optionalArgumentString](#fn-state-optionalargumentstring) | `self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32` | `!?[]const u8` | &#96;luaL_optlstring&#96;: nil or an absent argument gives &#96;null&#96;. |
+| [expectArgumentTable](#fn-state-expectargumenttable) | `self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32` | `!*Table` |  |
+| [argumentNumber](#fn-state-argumentnumber) | `self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32` | `!f64` | &#96;luaL_checknumber&#96;. |
+| [optionalArgumentInteger](#fn-state-optionalargumentinteger) | `self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32, default: i64` | `!i64` | &#96;luaL_optinteger&#96;: nil or an absent argument gives &#96;default&#96;. |
+| [argumentInteger](#fn-state-argumentinteger) | `self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32` | `!i64` | &#96;luaL_checkinteger&#96;. |
 | [failValue](#fn-state-failvalue) | `self: *State, value: Value` | `RuntimeError` |  |
 | [throwValue](#fn-state-throwvalue) | `self: *State, value: Value` | `RuntimeError` |  |
+| [rethrowValue](#fn-state-rethrowvalue) | `self: *State, value: Value` | `RuntimeError` | Raises &#96;value&#96; again after closing variables for an error that already went through any message handler at its error point. |
 | [currentErrorValue](#fn-state-currenterrorvalue) | `self: *State` | `Value` |  |
+
+<a id="alias-state-max_c_calls"></a>
+
+### State.max_c_calls
+
+```zig
+pub const max_c_calls = lua_max_c_calls;
+```
 
 <a id="fn-state-registerallocation"></a>
 
@@ -799,6 +963,66 @@ pub fn fileMetatable(state: *State) !*Table
 
 References: [`State`](#type-state), [`Table`](#alias-table)
 
+<a id="fn-state-fsfilemetatable"></a>
+
+### State.fsFileMetatable
+
+`fs` file handles share the `FILE*` metamethods, and their method table
+adds `stat`, `tell`, `truncate`, `path`, and `sync`.
+
+```zig
+pub fn fsFileMetatable(state: *State) !*Table
+```
+
+References: [`State`](#type-state), [`Table`](#alias-table)
+
+<a id="fn-state-isbuiltinuserdata"></a>
+
+### State.isBuiltinUserdata
+
+True for userdata types implemented by the runtime, such as files.
+
+```zig
+pub fn isBuiltinUserdata(userdata: *const Userdata) bool
+```
+
+References: [`Userdata`](#alias-userdata)
+
+<a id="fn-state-finalizebuiltinuserdata"></a>
+
+### State.finalizeBuiltinUserdata
+
+Runs the finalizer of a userdata type implemented by the runtime, which
+needs the state. Returns false for other userdata.
+
+```zig
+pub fn finalizeBuiltinUserdata(self: *State, userdata: *Userdata) bool
+```
+
+References: [`State`](#type-state), [`Userdata`](#alias-userdata)
+
+<a id="fn-state-closefinalizerorder"></a>
+
+### State.closeFinalizerOrder
+
+```zig
+pub fn closeFinalizerOrder(userdata: *Userdata) ?u64
+```
+
+References: [`Userdata`](#alias-userdata)
+
+<a id="fn-state-builtinfinalizerorder"></a>
+
+### State.builtinFinalizerOrder
+
+The creation order of runtime userdata, on the finalizer order scale.
+
+```zig
+pub fn builtinFinalizerOrder(userdata: *Userdata) u64
+```
+
+References: [`Userdata`](#alias-userdata)
+
 <a id="fn-state-discard"></a>
 
 ### State.discard
@@ -813,8 +1037,26 @@ References: [`State`](#type-state)
 
 ### State.deinit
 
+Frees the state like `lua_close`: first calls every pending finalizer,
+running `__gc` metamethods and closing open files, newest first. The
+instruction budget restarts for each one. Discarded states, such as
+snapshot images, call none.
+
 ```zig
 pub fn deinit(self: *State) void
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-deinitwithoutfinalizers"></a>
+
+### State.deinitWithoutFinalizers
+
+Frees the state without calling Lua `__gc` metamethods, as a process
+exiting without `lua_close` does; open files are still flushed and closed.
+
+```zig
+pub fn deinitWithoutFinalizers(self: *State) void
 ```
 
 References: [`State`](#type-state)
@@ -824,7 +1066,7 @@ References: [`State`](#type-state)
 ### State.execute
 
 ```zig
-pub fn execute(self: *State, proto: *const proto_mod.Proto) !void
+pub fn execute(self: *State, proto: *proto_mod.Proto) !void
 ```
 
 References: [`State`](#type-state)
@@ -839,6 +1081,18 @@ pub fn callLoadedClosure(self: *State, closure: *Closure, args: []const Value) !
 
 References: [`State`](#type-state), [`Closure`](#alias-closure), [`Value`](#alias-value)
 
+<a id="fn-state-callloadedclosurehandled"></a>
+
+### State.callLoadedClosureHandled
+
+Like `callLoadedClosure`; `handler` runs at the error point before frames unwind.
+
+```zig
+pub fn callLoadedClosureHandled(self: *State, closure: *Closure, args: []const Value, handler: HostErrorHandler) ![]Value
+```
+
+References: [`State`](#type-state), [`Closure`](#alias-closure), [`Value`](#alias-value), [`HostErrorHandler`](#type-hosterrorhandler)
+
 <a id="fn-state-protectedcallloadedclosure"></a>
 
 ### State.protectedCallLoadedClosure
@@ -848,6 +1102,18 @@ pub fn protectedCallLoadedClosure(self: *State, closure: *Closure, args: []const
 ```
 
 References: [`State`](#type-state), [`Closure`](#alias-closure), [`Value`](#alias-value), [`ProtectedCallResult`](#alias-protectedcallresult)
+
+<a id="fn-state-protectedcallloadedclosurehandled"></a>
+
+### State.protectedCallLoadedClosureHandled
+
+Like `protectedCallLoadedClosure`; `handler` runs at the error point before frames unwind.
+
+```zig
+pub fn protectedCallLoadedClosureHandled(self: *State, closure: *Closure, args: []const Value, handler: HostErrorHandler) !ProtectedCallResult
+```
+
+References: [`State`](#type-state), [`Closure`](#alias-closure), [`Value`](#alias-value), [`HostErrorHandler`](#type-hosterrorhandler), [`ProtectedCallResult`](#alias-protectedcallresult)
 
 <a id="fn-state-callfunction"></a>
 
@@ -859,6 +1125,18 @@ pub fn callFunction(self: *State, function: Value, args: []const Value) ![]Value
 
 References: [`State`](#type-state), [`Value`](#alias-value)
 
+<a id="fn-state-callfunctionhandled"></a>
+
+### State.callFunctionHandled
+
+Like `callFunction`; `handler` runs at the error point before frames unwind.
+
+```zig
+pub fn callFunctionHandled(self: *State, function: Value, args: []const Value, handler: HostErrorHandler) ![]Value
+```
+
+References: [`State`](#type-state), [`Value`](#alias-value), [`HostErrorHandler`](#type-hosterrorhandler)
+
 <a id="fn-state-protectedcallfunction"></a>
 
 ### State.protectedCallFunction
@@ -868,6 +1146,18 @@ pub fn protectedCallFunction(self: *State, function: Value, args: []const Value)
 ```
 
 References: [`State`](#type-state), [`Value`](#alias-value), [`ProtectedCallResult`](#alias-protectedcallresult)
+
+<a id="fn-state-protectedcallfunctionhandled"></a>
+
+### State.protectedCallFunctionHandled
+
+Like `protectedCallFunction`; `handler` runs at the error point before frames unwind.
+
+```zig
+pub fn protectedCallFunctionHandled(self: *State, function: Value, args: []const Value, handler: HostErrorHandler) !ProtectedCallResult
+```
+
+References: [`State`](#type-state), [`Value`](#alias-value), [`HostErrorHandler`](#type-hosterrorhandler), [`ProtectedCallResult`](#alias-protectedcallresult)
 
 <a id="fn-state-executesourcechunk"></a>
 
@@ -889,6 +1179,62 @@ pub fn executeSourceChunkNamed(self: *State, source: []const u8, source_name: []
 
 References: [`State`](#type-state)
 
+<a id="fn-state-executesourcechunknamedhandled"></a>
+
+### State.executeSourceChunkNamedHandled
+
+Like `executeSourceChunkNamed`; `handler` runs at a runtime error point before frames unwind.
+
+```zig
+pub fn executeSourceChunkNamedHandled(self: *State, source: []const u8, source_name: []const u8, handler: HostErrorHandler) !void
+```
+
+References: [`State`](#type-state), [`HostErrorHandler`](#type-hosterrorhandler)
+
+<a id="fn-state-notecaughterror"></a>
+
+### State.noteCaughtError
+
+Records the error for a Zig error caught from Lua execution: a stack
+overflow that has no message yet, or a memory error, which skips
+message handlers as in Lua.
+
+```zig
+pub fn noteCaughtError(self: *State, err: anyerror) void
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-applymessagehandler"></a>
+
+### State.applyMessageHandler
+
+Runs the thread's message handler for the current error at the error
+point, like `luaG_errormsg`, unless the error already went through
+one. The handler runs on top of the live failing frames; an error in
+it is handled again on top of the handler's frames. The retries model
+Lua's C-call limit: the handler sees "C stack overflow" at
+`LUAI_MAXCCALLS` and the error becomes "error in error handling" a
+little later.
+
+```zig
+pub fn applyMessageHandler(self: *State, thread: *Thread) !void
+```
+
+References: [`State`](#type-state), [`Thread`](#alias-thread)
+
+<a id="fn-state-pushnativemark"></a>
+
+### State.pushNativeMark
+
+Records a native function without a calling instruction for tracebacks.
+
+```zig
+pub fn pushNativeMark(thread: *Thread, frame_count: usize, callee: Value) void
+```
+
+References: [`Thread`](#alias-thread), [`Value`](#alias-value)
+
 <a id="fn-state-runthreaduntil"></a>
 
 ### State.runThreadUntil
@@ -904,10 +1250,122 @@ References: [`State`](#type-state), [`Thread`](#alias-thread)
 ### State.checkExecutionLimits
 
 ```zig
-pub fn checkExecutionLimits(self: *State, thread: *Thread) !void
+pub inline fn checkExecutionLimits(self: *State, thread: *Thread) !void
 ```
 
 References: [`State`](#type-state), [`Thread`](#alias-thread)
+
+<a id="fn-state-interruptcontrol"></a>
+
+### State.interruptControl
+
+Returns the interrupt control shared with host threads, allocating it
+on first use. Polling starts at the next safepoint.
+
+```zig
+pub fn interruptControl(self: *State) !*vm_mod.InterruptControl
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-interruptrequested"></a>
+
+### State.interruptRequested
+
+Reports a pending host interrupt. Safe to call on the owning thread at any time.
+
+```zig
+pub inline fn interruptRequested(self: *const State) bool
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-clearinterrupt"></a>
+
+### State.clearInterrupt
+
+Clears a pending interrupt request.
+
+```zig
+pub fn clearInterrupt(self: *State) void
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-checkinterrupt"></a>
+
+### State.checkInterrupt
+
+Raises `error.Interrupted` when a host interrupt is pending. Native
+functions with long internal loops call this periodically.
+
+```zig
+pub fn checkInterrupt(self: *State) !void
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-instructionbudgetactive"></a>
+
+### State.instructionBudgetActive
+
+True while any instruction budget applies; the uncounted fast loop is then disabled.
+
+```zig
+pub inline fn instructionBudgetActive(self: *const State) bool
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-instructionbudgetused"></a>
+
+### State.instructionBudgetUsed
+
+Instructions counted against `max_instructions` since the last budget reset.
+
+```zig
+pub fn instructionBudgetUsed(self: *const State) u64
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-resetinstructionbudget"></a>
+
+### State.resetInstructionBudget
+
+Restarts the cumulative `max_instructions` budget.
+
+```zig
+pub fn resetInstructionBudget(self: *State) void
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-begincallinstructionbudget"></a>
+
+### State.beginCallInstructionBudget
+
+Narrows the instruction budget for a host call to at most `max`
+further instructions, including nested calls and coroutines. Returns
+the enclosing deadline for `endCallInstructionBudget`.
+
+```zig
+pub fn beginCallInstructionBudget(self: *State, max: u64) ?u64
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-endcallinstructionbudget"></a>
+
+### State.endCallInstructionBudget
+
+Restores the deadline returned by `beginCallInstructionBudget`.
+
+```zig
+pub fn endCallInstructionBudget(self: *State, previous: ?u64) void
+```
+
+References: [`State`](#type-state)
 
 <a id="fn-state-noteallocation"></a>
 
@@ -1109,6 +1567,26 @@ pub fn unrootValue(self: *State, index: usize) void
 
 References: [`State`](#type-state)
 
+<a id="fn-state-pushvalueroots"></a>
+
+### State.pushValueRoots
+
+```zig
+pub fn pushValueRoots(self: *State, roots: *types.ValueRoots, values: []const Value) void
+```
+
+References: [`State`](#type-state), [`Value`](#alias-value)
+
+<a id="fn-state-popvalueroots"></a>
+
+### State.popValueRoots
+
+```zig
+pub fn popValueRoots(self: *State, roots: *types.ValueRoots) void
+```
+
+References: [`State`](#type-state)
+
 <a id="fn-state-rootedvalue"></a>
 
 ### State.rootedValue
@@ -1153,8 +1631,37 @@ References: [`State`](#type-state), [`Thread`](#alias-thread)
 
 ### State.readFileAlloc
 
+Reads a whole file through the filesystem capability, limited by
+`max_file_bytes`. Failures raise PUC `loadfile`-style messages such as
+"cannot open name.lua: No such file or directory".
+
 ```zig
 pub fn readFileAlloc(self: *State, path: []const u8) ![]const u8
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-readfileraw"></a>
+
+### State.readFileRaw
+
+Reads a whole file through the filesystem capability, limited by
+`max_file_bytes`, returning filesystem errors unchanged.
+
+```zig
+pub fn readFileRaw(self: *State, path: []const u8) anyerror![]const u8
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-failfileoperation"></a>
+
+### State.failFileOperation
+
+Raises "<path>: <strerror message>" for a failed file operation.
+
+```zig
+pub fn failFileOperation(self: *State, path: []const u8, err: anyerror) anyerror
 ```
 
 References: [`State`](#type-state)
@@ -1169,12 +1676,53 @@ pub fn writeStdout(self: *State, bytes: []const u8) !void
 
 References: [`State`](#type-state)
 
+<a id="fn-state-warn"></a>
+
+### State.warn
+
+Emits one warning made of `parts`, like consecutive `lua_warning`
+calls that continue every part but the last. A single part starting
+with `@` is a control message: `@on` and `@off` switch warnings, and
+other controls are ignored.
+
+```zig
+pub fn warn(self: *State, parts: []const []const u8) !void
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-warnerror"></a>
+
+### State.warnError
+
+Warns about an error caught where Lua cannot report it, like
+`luaE_warnerror`: `error in <where> (<message>)`.
+
+```zig
+pub fn warnError(self: *State, where: []const u8, error_value: Value) void
+```
+
+References: [`State`](#type-state), [`Value`](#alias-value)
+
 <a id="fn-state-writestderr"></a>
 
 ### State.writeStderr
 
 ```zig
 pub fn writeStderr(self: *State, bytes: []const u8) !void
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-flushstdoutforinput"></a>
+
+### State.flushStdoutForInput
+
+Before blocking on host stdin, flushes a line-buffered or unbuffered
+stdout writer, so interactive prompts appear as they do with C stdio.
+
+```zig
+pub fn flushStdoutForInput(self: *State) void
 ```
 
 References: [`State`](#type-state)
@@ -1233,8 +1781,10 @@ References: [`State`](#type-state)
 
 ### State.fsReadFileAlloc
 
+Reads at most `max_bytes`, further capped by the state's `max_file_bytes`.
+
 ```zig
-pub fn fsReadFileAlloc(self: *State, path: []const u8, max_bytes: usize) anyerror![]const u8
+pub fn fsReadFileAlloc(self: *State, path: []const u8, requested_max_bytes: usize) anyerror![]const u8
 ```
 
 References: [`State`](#type-state)
@@ -1245,6 +1795,64 @@ References: [`State`](#type-state)
 
 ```zig
 pub fn fsWriteFile(self: *State, path: []const u8, data: []const u8) anyerror!void
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-fscreatefileexclusive"></a>
+
+### State.fsCreateFileExclusive
+
+Creates an empty file, failing with `error.PathAlreadyExists` when the
+path exists, so the caller reserves the name like `mkstemp`. Host
+filesystems create exclusively; memory and callback filesystems check
+first, as they have no exclusive create.
+
+```zig
+pub fn fsCreateFileExclusive(self: *State, path: []const u8) anyerror!void
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-fswritefileat"></a>
+
+### State.fsWriteFileAt
+
+Writes `data` at `offset` of an existing file without truncating it, so
+buffered handles can flush only their unsynced suffix. Returns
+`error.OperationUnsupported` when the capability has no positional
+write; callers then rewrite the whole file with `fsWriteFile`.
+
+```zig
+pub fn fsWriteFileAt(self: *State, path: []const u8, offset: usize, data: []const u8) anyerror!void
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-fsappendfile"></a>
+
+### State.fsAppendFile
+
+Writes `data` at the current end of an existing file, as a stream
+opened for appending does. Custom filesystems have no positional
+write, so the file is read and written back with `data` added.
+
+```zig
+pub fn fsAppendFile(self: *State, path: []const u8, data: []const u8) anyerror!void
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-fscheckwritable"></a>
+
+### State.fsCheckWritable
+
+Checks that an existing file can be opened for writing, as `fopen`
+does for append modes, without changing its bytes. Custom filesystems
+only report whether they accept writes.
+
+```zig
+pub fn fsCheckWritable(self: *State, path: []const u8) anyerror!void
 ```
 
 References: [`State`](#type-state)
@@ -1329,6 +1937,42 @@ pub fn currentTime(self: *State) !i64
 
 References: [`State`](#type-state)
 
+<a id="fn-state-cputime"></a>
+
+### State.cpuTime
+
+Processor time for `os.clock`, in seconds. A disabled or fixed clock reports 0.
+
+```zig
+pub fn cpuTime(self: *State) !f64
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-localoffset"></a>
+
+### State.localOffset
+
+Local-time offset at a Unix timestamp. Clocks without a time zone use UTC.
+
+```zig
+pub fn localOffset(self: *State, timestamp: i64) !timezone.LocalOffset
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-localtoutc"></a>
+
+### State.localToUtc
+
+Converts local wall-clock seconds to a Unix timestamp, like `mktime`.
+
+```zig
+pub fn localToUtc(self: *State, local: i64, is_dst: ?bool) !i64
+```
+
+References: [`State`](#type-state)
+
 <a id="fn-state-executeprocess"></a>
 
 ### State.executeProcess
@@ -1338,6 +1982,32 @@ pub fn executeProcess(self: *State, command: []const u8) !ProcessResult
 ```
 
 References: [`State`](#type-state), [`ProcessResult`](#alias-processresult)
+
+<a id="fn-state-popenprocess"></a>
+
+### State.popenProcess
+
+Runs a command for `io.popen`. Read mode (`input == null`) returns the
+command's stdout; write mode feeds `input` to its stdin. Other streams
+are inherited from the host process, like C `popen`.
+
+```zig
+pub fn popenProcess(self: *State, command: []const u8, input: ?[]const u8) !host.PopenResult
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-requestexit"></a>
+
+### State.requestExit
+
+Records an `os.exit` request. The caller unwinds with `error.LuaExit`.
+
+```zig
+pub fn requestExit(self: *State, code: i32, close: bool) !void
+```
+
+References: [`State`](#type-state)
 
 <a id="fn-state-requireio"></a>
 
@@ -1359,15 +2029,71 @@ pub fn processEnabled(self: *State) bool
 
 References: [`State`](#type-state)
 
-<a id="fn-state-readstdin"></a>
+<a id="type-state-stdinsource"></a>
 
-### State.readStdin
+### State.StdinSource
+
+Standard input shared by `io.stdin`, `loadfile()`, and `debug.debug`:
+the host `stdin_reader`, or the memory `stdin` bytes from `stdin_pos`.
 
 ```zig
-pub fn readStdin(self: *State, spec: []const u8) !Value
+pub const StdinSource = struct {
+    state: *State,
+    fixed: std.Io.Reader,
+    host: ?*std.Io.Reader,
+};
 ```
 
-References: [`State`](#type-state), [`Value`](#alias-value)
+#### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [reader](#fn-stdinsource-reader) | `self: *StdinSource` | `*std.Io.Reader` |  |
+| [finish](#fn-stdinsource-finish) | `self: *StdinSource` | `void` | Records the memory bytes consumed through &#96;reader&#96;. |
+
+<a id="fn-stdinsource-reader"></a>
+
+#### StdinSource.reader
+
+```zig
+pub fn reader(self: *StdinSource) *std.Io.Reader
+```
+
+References: [`StdinSource`](#type-state-stdinsource)
+
+<a id="fn-stdinsource-finish"></a>
+
+#### StdinSource.finish
+
+Records the memory bytes consumed through `reader`.
+
+```zig
+pub fn finish(self: *StdinSource) void
+```
+
+References: [`StdinSource`](#type-state-stdinsource)
+
+<a id="fn-state-stdinsource"></a>
+
+### State.stdinSource
+
+Callers read through `reader()` and then call `finish()`.
+
+```zig
+pub fn stdinSource(self: *State) StdinSource
+```
+
+References: [`State`](#type-state), [`StdinSource`](#type-state-stdinsource)
+
+<a id="fn-state-stdinisstream"></a>
+
+### State.stdinIsStream
+
+```zig
+pub fn stdinIsStream(self: *const State) bool
+```
+
+References: [`State`](#type-state)
 
 <a id="fn-state-loadsourceasclosure"></a>
 
@@ -1549,6 +2275,45 @@ pub fn lengthOf(self: *State, thread: *Thread, value: Value) !Value
 
 References: [`State`](#type-state), [`Thread`](#alias-thread), [`Value`](#alias-value)
 
+<a id="fn-state-lengthinteger"></a>
+
+### State.lengthInteger
+
+`luaL_len`: the length of `value`, honoring `__len`, as an integer.
+
+```zig
+pub fn lengthInteger(self: *State, thread: *Thread, value: Value) !i64
+```
+
+References: [`State`](#type-state), [`Thread`](#alias-thread), [`Value`](#alias-value)
+
+<a id="fn-state-lengthtointeger"></a>
+
+### State.lengthToInteger
+
+Converts a length result to an integer as `luaL_len` does.
+
+```zig
+pub fn lengthToInteger(self: *State, length: Value) !i64
+```
+
+References: [`State`](#type-state), [`Value`](#alias-value)
+
+<a id="fn-state-finishconcatrange"></a>
+
+### State.finishConcatRange
+
+Joins stack slots `first..first+count` right to left like PUC
+`luaV_concat`: each run of trailing strings and numbers becomes one
+string, and otherwise the last two operands go to `__concat`. Partial
+results stay in the operand slots so a yielding metamethod can resume.
+
+```zig
+pub fn finishConcatRange(self: *State, thread: *Thread, dest: usize, first: usize, count_in: usize) !void
+```
+
+References: [`State`](#type-state), [`Thread`](#alias-thread)
+
 <a id="fn-state-invokevalue"></a>
 
 ### State.invokeValue
@@ -1707,10 +2472,10 @@ References: [`State`](#type-state), [`Thread`](#alias-thread), [`Value`](#alias-
 ### State.pushProtectedContinuation
 
 ```zig
-pub fn pushProtectedContinuation(self: *State, thread: *Thread, context: ProtectedCallContext, base: bytecode.Register, return_count: u16, kind: ProtectedContinuationKind, handler: Value, handler_depth: usize) !void
+pub fn pushProtectedContinuation(self: *State, thread: *Thread, context: ProtectedCallContext, base: u32, return_count: u16) !void
 ```
 
-References: [`State`](#type-state), [`Thread`](#alias-thread), [`Value`](#alias-value)
+References: [`State`](#type-state), [`Thread`](#alias-thread)
 
 <a id="fn-state-readyprotectedcontinuationindex"></a>
 
@@ -1747,10 +2512,10 @@ References: [`State`](#type-state), [`Thread`](#alias-thread)
 ### State.completeProtectedContinuationError
 
 ```zig
-pub fn completeProtectedContinuationError(self: *State, thread: *Thread, error_value: Value) !bool
+pub fn completeProtectedContinuationError(self: *State, thread: *Thread) !bool
 ```
 
-References: [`State`](#type-state), [`Thread`](#alias-thread), [`Value`](#alias-value)
+References: [`State`](#type-state), [`Thread`](#alias-thread)
 
 <a id="fn-state-returnprotectedcontinuationsuccess"></a>
 
@@ -1782,6 +2547,18 @@ pub fn valueToString(self: *State, thread: *Thread, value: Value) anyerror![]con
 
 References: [`State`](#type-state), [`Thread`](#alias-thread), [`Value`](#alias-value)
 
+<a id="fn-state-rawmetatablevalue"></a>
+
+### State.rawMetatableValue
+
+Returns a value's metatable without honoring `__metatable`, as `debug.getmetatable` does.
+
+```zig
+pub fn rawMetatableValue(self: *State, value: Value) Value
+```
+
+References: [`State`](#type-state), [`Value`](#alias-value)
+
 <a id="fn-state-setdebugmetatablevalue"></a>
 
 ### State.setDebugMetatableValue
@@ -1802,6 +2579,18 @@ pub fn getMetamethod(self: *State, value: Value, name: []const u8) !?Value
 
 References: [`State`](#type-state), [`Value`](#alias-value)
 
+<a id="fn-state-getmetaevent"></a>
+
+### State.getMetaEvent
+
+`getMetamethod` for a known event; metatables cache absent events.
+
+```zig
+pub fn getMetaEvent(self: *State, value: Value, event: types.MetaEvent) !?Value
+```
+
+References: [`State`](#type-state), [`Value`](#alias-value)
+
 <a id="fn-state-settablemetatableraw"></a>
 
 ### State.setTableMetatableRaw
@@ -1811,6 +2600,30 @@ pub fn setTableMetatableRaw(self: *State, table: *Table, metatable: ?*Table) voi
 ```
 
 References: [`State`](#type-state), [`Table`](#alias-table)
+
+<a id="fn-state-checkuserdatafinalizer"></a>
+
+### State.checkUserdataFinalizer
+
+Registers `userdata` for its metatable's `__gc`, like
+`luaC_checkfinalizer` when a metatable is set. [File](../stdlib/io.md#type-file) handles keep
+their built-in close for the file metatable's own `__gc`.
+
+```zig
+pub fn checkUserdataFinalizer(self: *State, userdata: *Userdata) void
+```
+
+References: [`State`](#type-state), [`Userdata`](#alias-userdata)
+
+<a id="fn-state-nextfinalizerorder"></a>
+
+### State.nextFinalizerOrder
+
+```zig
+pub fn nextFinalizerOrder(self: *State) u64
+```
+
+References: [`State`](#type-state)
 
 <a id="fn-state-notetablemetatablechanged"></a>
 
@@ -1862,12 +2675,35 @@ pub fn compareValues(self: *State, thread: *Thread, lhs: Value, rhs: Value, op: 
 
 References: [`State`](#type-state), [`Thread`](#alias-thread), [`Value`](#alias-value), [`CompareOp`](#type-compareop)
 
+<a id="fn-state-nativestackfits"></a>
+
+### State.nativeStackFits
+
+Whether `count` values fit on the stack above the arguments of the
+native call `op`, like `lua_checkstack`.
+
+```zig
+pub fn nativeStackFits(self: *const State, thread: *const Thread, op: bytecode.Call, count: usize) bool
+```
+
+References: [`State`](#type-state), [`Thread`](#alias-thread)
+
+<a id="fn-state-callstackvaluelimit"></a>
+
+### State.callStackValueLimit
+
+```zig
+pub fn callStackValueLimit(self: *const State, thread: *const Thread) usize
+```
+
+References: [`State`](#type-state), [`Thread`](#alias-thread)
+
 <a id="fn-state-returnvalues"></a>
 
 ### State.returnValues
 
 ```zig
-pub fn returnValues(self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, values: []const Value) !void
+pub fn returnValues(self: *State, thread: *Thread, base: u32, return_count: u16, values: []const Value) !void
 ```
 
 References: [`State`](#type-state), [`Thread`](#alias-thread), [`Value`](#alias-value)
@@ -1912,25 +2748,32 @@ pub fn resolveReturnCount(self: *State, count: u16, available: usize) !usize
 
 References: [`State`](#type-state)
 
-<a id="fn-state-returnxpcallfailure"></a>
+<a id="fn-state-caughterrorvalue"></a>
 
-### State.returnXpcallFailure
+### State.caughtErrorValue
 
-```zig
-pub fn returnXpcallFailure(self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, handler: Value, error_value: Value) !void
-```
-
-References: [`State`](#type-state), [`Thread`](#alias-thread), [`Value`](#alias-value)
-
-<a id="fn-state-returnxpcallfailurefromdepth"></a>
-
-### State.returnXpcallFailureFromDepth
+The error object Lua sees where an error is caught without a message
+handler: like `luaG_errormsg`, nil becomes `<no error object>`.
 
 ```zig
-pub fn returnXpcallFailureFromDepth(self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, handler: Value, error_value: Value, initial_depth: usize) !void
+pub fn caughtErrorValue(self: *State, value: Value) !Value
 ```
 
-References: [`State`](#type-state), [`Thread`](#alias-thread), [`Value`](#alias-value)
+References: [`State`](#type-state), [`Value`](#alias-value)
+
+<a id="fn-state-tracebackmessagehandler"></a>
+
+### State.tracebackMessageHandler
+
+The standalone interpreter's message handler (`msghandler` in
+`lua.c`): adds a traceback to the error message, or reports an error
+object by its `__tostring` result or its type.
+
+```zig
+pub fn tracebackMessageHandler(self: *State, thread: *Thread, op: bytecode.Call) !void
+```
+
+References: [`State`](#type-state), [`Thread`](#alias-thread)
 
 <a id="fn-state-snapshotcoroutineerrortraceback"></a>
 
@@ -2037,7 +2880,7 @@ References: [`State`](#type-state), [`Thread`](#alias-thread)
 ### State.callCoroutineWrapperWithArgs
 
 ```zig
-pub fn callCoroutineWrapperWithArgs(self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, target: *Thread, args: []const Value) !void
+pub fn callCoroutineWrapperWithArgs(self: *State, thread: *Thread, base: u32, return_count: u16, target: *Thread, args: []const Value) !void
 ```
 
 References: [`State`](#type-state), [`Thread`](#alias-thread), [`Value`](#alias-value)
@@ -2107,7 +2950,7 @@ References: [`State`](#type-state), [`Thread`](#alias-thread), [`Value`](#alias-
 ### State.returnCoroutineResumeResult
 
 ```zig
-pub fn returnCoroutineResumeResult(self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, result: CoroutineResumeResult) !void
+pub fn returnCoroutineResumeResult(self: *State, thread: *Thread, base: u32, return_count: u16, result: CoroutineResumeResult) !void
 ```
 
 References: [`State`](#type-state), [`Thread`](#alias-thread)
@@ -2137,7 +2980,7 @@ References: [`State`](#type-state), [`Thread`](#alias-thread), [`Value`](#alias-
 ### State.collectArgs
 
 ```zig
-pub fn collectArgs(self: *State, thread: *Thread, op: bytecode.Call, first: u16) ![]Value
+pub fn collectArgs(self: *State, thread: *Thread, op: bytecode.Call, first: u32) ![]Value
 ```
 
 References: [`State`](#type-state), [`Thread`](#alias-thread), [`Value`](#alias-value)
@@ -2147,7 +2990,7 @@ References: [`State`](#type-state), [`Thread`](#alias-thread), [`Value`](#alias-
 ### State.returnProtectedResult
 
 ```zig
-pub fn returnProtectedResult(self: *State, thread: *Thread, base: bytecode.Register, return_count: u16, result: ProtectedCallResult) !void
+pub fn returnProtectedResult(self: *State, thread: *Thread, base: u32, return_count: u16, result: ProtectedCallResult) !void
 ```
 
 References: [`State`](#type-state), [`Thread`](#alias-thread), [`ProtectedCallResult`](#alias-protectedcallresult)
@@ -2171,6 +3014,18 @@ pub fn expectString(self: *State, value: Value) ![]const u8
 ```
 
 References: [`State`](#type-state), [`Value`](#alias-value)
+
+<a id="fn-state-expectargumentthread"></a>
+
+### State.expectArgumentThread
+
+`getco` in lcorolib: the coroutine argument of a `coroutine` function.
+
+```zig
+pub fn expectArgumentThread(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) !*Thread
+```
+
+References: [`State`](#type-state), [`Thread`](#alias-thread)
 
 <a id="fn-state-expectthread"></a>
 
@@ -2632,12 +3487,24 @@ pub fn writeBarrier(self: *State, parent: anytype, child: Value) void
 
 References: [`State`](#type-state), [`Value`](#alias-value)
 
-<a id="fn-state-runfinalizersfromhost"></a>
+<a id="fn-state-runclosefinalizers"></a>
 
-### State.runFinalizersFromHost
+### State.runCloseFinalizers
 
 Provide a protected execution frame for GC requested by an idle host.
 Allocate it before consuming any pending registration so OOM is retryable.
+Calls every pending finalizer as `deinit` does, keeping the state.
+Later finalizer registrations are left for `deinit`.
+
+```zig
+pub fn runCloseFinalizers(self: *State) void
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-runfinalizersfromhost"></a>
+
+### State.runFinalizersFromHost
 
 ```zig
 pub fn runFinalizersFromHost(self: *State, limit: usize) anyerror!bool
@@ -2879,8 +3746,14 @@ References: [`State`](#type-state), [`RuntimeError`](#alias-runtimeerror)
 
 ### State.failArgument
 
+Raises `bad argument #index to 'name' (detail)` like `luaL_argerror`.
+`index` is the 1-based position among the native call's arguments;
+method calls renumber it and report a bad `self` as Lua does. The
+function is named from the calling instruction when Lua code made the
+call, else by a search of the loaded libraries, else `function_name`.
+
 ```zig
-pub fn failArgument(self: *State, function_name: []const u8, index: u16, detail: errors.ArgumentErrorDetail) RuntimeError
+pub fn failArgument(self: *State, function_name: []const u8, index: u32, detail: errors.ArgumentErrorDetail) RuntimeError
 ```
 
 References: [`State`](#type-state), [`errors.ArgumentErrorDetail`](../errors.md#type-argumenterrordetail), [`RuntimeError`](#alias-runtimeerror)
@@ -2890,7 +3763,7 @@ References: [`State`](#type-state), [`errors.ArgumentErrorDetail`](../errors.md#
 ### State.failArgumentMessage
 
 ```zig
-pub fn failArgumentMessage(self: *State, function_name: []const u8, index: u16, message: []const u8) RuntimeError
+pub fn failArgumentMessage(self: *State, function_name: []const u8, index: u32, message: []const u8) RuntimeError
 ```
 
 References: [`State`](#type-state), [`RuntimeError`](#alias-runtimeerror)
@@ -2900,27 +3773,84 @@ References: [`State`](#type-state), [`RuntimeError`](#alias-runtimeerror)
 ### State.failArgumentType
 
 ```zig
-pub fn failArgumentType(self: *State, function_name: []const u8, index: u16, expected: []const u8, actual: Value) RuntimeError
+pub fn failArgumentType(self: *State, function_name: []const u8, index: u32, expected: []const u8, actual: Value) RuntimeError
 ```
 
 References: [`State`](#type-state), [`Value`](#alias-value), [`RuntimeError`](#alias-runtimeerror)
+
+<a id="fn-state-faillibrary"></a>
+
+### State.failLibrary
+
+Raises `message` like `luaL_error`: prefixed with the position of
+the Lua code that called the running library function, if any.
+
+```zig
+pub fn failLibrary(self: *State, message: []const u8) RuntimeError
+```
+
+References: [`State`](#type-state), [`RuntimeError`](#alias-runtimeerror)
+
+<a id="fn-state-withlibrarywhere"></a>
+
+### State.withLibraryWhere
+
+Prefixes a string error with `luaL_where(L, 1)`, as `coroutine.wrap`
+does for errors raised inside the coroutine.
+
+```zig
+pub fn withLibraryWhere(self: *State, value: Value) !Value
+```
+
+References: [`State`](#type-state), [`Value`](#alias-value)
+
+<a id="fn-state-faillibraryfmt"></a>
+
+### State.failLibraryFmt
+
+`failLibrary` with a formatted message.
+
+```zig
+pub fn failLibraryFmt(self: *State, comptime fmt: []const u8, args: anytype) RuntimeError
+```
+
+References: [`State`](#type-state), [`RuntimeError`](#alias-runtimeerror)
+
+<a id="fn-state-appendglobalfunctionname"></a>
+
+### State.appendGlobalFunctionName
+
+Mirrors `pushglobalfuncname`: finds `callee` as a global or as a
+field of a loaded module.
+
+```zig
+pub fn appendGlobalFunctionName(self: *State, out: *std.ArrayList(u8), callee: Value) !bool
+```
+
+References: [`State`](#type-state), [`Value`](#alias-value)
 
 <a id="fn-state-expectargumentstring"></a>
 
 ### State.expectArgumentString
 
+`luaL_checklstring`: accepts strings and numbers. A number argument is
+converted in place, as Lua does, which also keeps the new string
+reachable for the rest of the call.
+
 ```zig
-pub fn expectArgumentString(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16) ![]const u8
+pub fn expectArgumentString(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) ![]const u8
 ```
 
 References: [`State`](#type-state), [`Thread`](#alias-thread)
 
-<a id="fn-state-argumentdisplayindex"></a>
+<a id="fn-state-optionalargumentstring"></a>
 
-### State.argumentDisplayIndex
+### State.optionalArgumentString
+
+`luaL_optlstring`: nil or an absent argument gives `null`.
 
 ```zig
-pub fn argumentDisplayIndex(self: *State, thread: *Thread, function_name: []const u8, index: u16) u16
+pub fn optionalArgumentString(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) !?[]const u8
 ```
 
 References: [`State`](#type-state), [`Thread`](#alias-thread)
@@ -2930,17 +3860,43 @@ References: [`State`](#type-state), [`Thread`](#alias-thread)
 ### State.expectArgumentTable
 
 ```zig
-pub fn expectArgumentTable(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16) !*Table
+pub fn expectArgumentTable(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) !*Table
 ```
 
 References: [`State`](#type-state), [`Thread`](#alias-thread), [`Table`](#alias-table)
+
+<a id="fn-state-argumentnumber"></a>
+
+### State.argumentNumber
+
+`luaL_checknumber`.
+
+```zig
+pub fn argumentNumber(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) !f64
+```
+
+References: [`State`](#type-state), [`Thread`](#alias-thread)
+
+<a id="fn-state-optionalargumentinteger"></a>
+
+### State.optionalArgumentInteger
+
+`luaL_optinteger`: nil or an absent argument gives `default`.
+
+```zig
+pub fn optionalArgumentInteger(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32, default: i64) !i64
+```
+
+References: [`State`](#type-state), [`Thread`](#alias-thread)
 
 <a id="fn-state-argumentinteger"></a>
 
 ### State.argumentInteger
 
+`luaL_checkinteger`.
+
 ```zig
-pub fn argumentInteger(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u16) !i64
+pub fn argumentInteger(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) !i64
 ```
 
 References: [`State`](#type-state), [`Thread`](#alias-thread)
@@ -2965,6 +3921,19 @@ pub fn throwValue(self: *State, value: Value) RuntimeError
 
 References: [`State`](#type-state), [`Value`](#alias-value), [`RuntimeError`](#alias-runtimeerror)
 
+<a id="fn-state-rethrowvalue"></a>
+
+### State.rethrowValue
+
+Raises `value` again after closing variables for an error that
+already went through any message handler at its error point.
+
+```zig
+pub fn rethrowValue(self: *State, value: Value) RuntimeError
+```
+
+References: [`State`](#type-state), [`Value`](#alias-value), [`RuntimeError`](#alias-runtimeerror)
+
 <a id="fn-state-currenterrorvalue"></a>
 
 ### State.currentErrorValue
@@ -2985,6 +3954,16 @@ pub const CompareOp = enum {
     le,
 };
 ```
+
+<a id="fn-luatypename"></a>
+
+## luaTypeName
+
+```zig
+pub fn luaTypeName(value: Value) []const u8
+```
+
+References: [`Value`](#alias-value)
 
 <a id="fn-valuesequal"></a>
 
@@ -3081,7 +4060,7 @@ pub fn trimAscii(text: []const u8) []const u8
 ## runtimeArgValue
 
 ```zig
-pub fn runtimeArgValue(state: *State, thread: *Thread, op: bytecode.Call, index: u16) Value
+pub fn runtimeArgValue(state: *State, thread: *Thread, op: bytecode.Call, index: u32) Value
 ```
 
 References: [`State`](#type-state), [`Thread`](#alias-thread), [`Value`](#alias-value)
@@ -3091,10 +4070,25 @@ References: [`State`](#type-state), [`Thread`](#alias-thread), [`Value`](#alias-
 ## argValue
 
 ```zig
-pub fn argValue(state: *State, thread: *Thread, op: bytecode.Call, index: u16) Value
+pub fn argValue(state: *State, thread: *Thread, op: bytecode.Call, index: u32) Value
 ```
 
 References: [`State`](#type-state), [`Thread`](#alias-thread), [`Value`](#alias-value)
+
+<a id="fn-appenderrorvalue"></a>
+
+## appendErrorValue
+
+Formats a value without metamethods. [File](../stdlib/io.md#type-file) handles format like their
+`__tostring`, as a Lua error object that is a file does.
+Appends an error object like `appendValue`, describing a nil error
+object as `<no error object>`, the message Lua substitutes for it.
+
+```zig
+pub fn appendErrorValue(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: Value) !void
+```
+
+References: [`Value`](#alias-value)
 
 <a id="fn-appendvalue"></a>
 
@@ -3109,6 +4103,8 @@ References: [`Value`](#alias-value)
 <a id="fn-isfilevalue"></a>
 
 ## isFileValue
+
+True for `FILE*` userdata from the io library.
 
 ```zig
 pub fn isFileValue(value: Value) bool

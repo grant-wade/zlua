@@ -2,12 +2,23 @@ const std = @import("std");
 const reflection = @import("../reflection.zig");
 const compile = @import("../compile.zig");
 const types = @import("types.zig");
+const value_mod = @import("value.zig");
 
 const bytecode = compile.bytecode;
 const proto_mod = compile.proto;
 
 pub const binary_chunk_signature = "\x1bLua";
 pub const binary_chunk_payload_magic = "zlua\x00bc1";
+
+const max_proto_depth: usize = 200;
+
+const min_proto_bytes: usize = 1 + 1 + 8 + 8 + 2 + 2 + 1 + 1 + 6 * 4;
+const min_constant_bytes: usize = 1;
+const min_instruction_bytes: usize = 1 + 8;
+const min_local_bytes: usize = 4 + 2 + 8 + 8 + 1;
+const min_upvalue_bytes: usize = 4 + 1 + 2;
+const min_error_site_bytes: usize = 8 + 8 + 1 + 4 + 1;
+const min_origin_bytes: usize = 1;
 
 pub fn appendBinaryChunkHeader(allocator: std.mem.Allocator, out: *std.ArrayList(u8)) !void {
     try out.appendSlice(allocator, binary_chunk_signature);
@@ -184,8 +195,8 @@ fn appendBinaryInstruction(allocator: std.mem.Allocator, out: *std.ArrayList(u8)
             try appendBinaryI32(allocator, out, op.offset);
         },
         .call, .tail_call => |op| {
-            try appendBinaryU16(allocator, out, op.base);
-            try appendBinaryU16(allocator, out, op.arg_count);
+            try appendBinaryU16(allocator, out, @intCast(op.base));
+            try appendBinaryU16(allocator, out, if (op.arg_count == bytecode.multret_arg_count) bytecode.multret_count else @intCast(op.arg_count));
             try appendBinaryU16(allocator, out, op.return_count);
         },
         .ret => |op| {
@@ -209,6 +220,11 @@ fn appendBinaryInstruction(allocator: std.mem.Allocator, out: *std.ArrayList(u8)
             try appendBinaryU16(allocator, out, op.base);
             try appendBinaryU16(allocator, out, op.variable_count);
             try appendBinaryI32(allocator, out, op.offset);
+        },
+        .concat_range => |op| {
+            try appendBinaryU16(allocator, out, op.dest);
+            try appendBinaryU16(allocator, out, op.first);
+            try appendBinaryU16(allocator, out, op.count);
         },
     }
 }
@@ -276,20 +292,137 @@ fn appendBinaryU64(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value:
     try out.appendSlice(allocator, bytes[0..]);
 }
 
+/// Checks the operand invariants the compiler guarantees and the VM relies on
+/// without bounds checks: registers within `max_registers`, constant, upvalue
+/// and child indexes in range, and jump targets within the code. Children are
+/// verified separately; this level checks the upvalue descriptors they
+/// resolve against it.
+pub fn verifyProto(proto: *const proto_mod.Proto) bool {
+    const registers: usize = proto.max_registers;
+    const code_len = proto.instructions.items.len;
+    if (proto.param_count > registers) return false;
+    if (proto.named_vararg and proto.param_count >= registers) return false;
+    if (proto.line_info.items.len != code_len) return false;
+    if (!validLine(proto.defined_line) or !validLine(proto.last_defined_line)) return false;
+    for (proto.line_info.items) |info| if (!validLine(info.line)) return false;
+
+    for (proto.constants.items) |constant| if (!validConstant(constant)) return false;
+    for (proto.locals.items) |local| {
+        if (local.register >= registers or local.start_pc > code_len or local.end_pc > code_len) return false;
+    }
+    var previous_site_pc: usize = 0;
+    for (proto.error_sites.items) |entry| {
+        if (entry.pc >= code_len or entry.pc < previous_site_pc or !validLine(entry.site.line)) return false;
+        previous_site_pc = entry.pc;
+    }
+    for (proto.children.items) |child| {
+        for (child.upvalues.items) |upvalue| {
+            const limit = if (upvalue.in_stack) registers else proto.upvalues.items.len;
+            if (upvalue.index >= limit) return false;
+        }
+    }
+
+    for (proto.instructions.items, 0..) |instruction, pc| {
+        if (!verifyInstruction(proto, instruction, pc)) return false;
+    }
+    return true;
+}
+
+fn verifyInstruction(proto: *const proto_mod.Proto, instruction: bytecode.Instruction, pc: usize) bool {
+    const registers: usize = proto.max_registers;
+    return switch (instruction) {
+        .load_nil => |dest| dest < registers,
+        .load_bool => |op| op.dest < registers,
+        .load_const => |op| op.dest < registers and op.constant < proto.constants.items.len,
+        .move => |op| op.dest < registers and op.source < registers,
+        .get_global, .set_global => |op| op.register < registers and isStringConstant(proto, op.name),
+        .declare_global => |op| op.table < registers and op.value < registers and isStringConstant(proto, op.name),
+        .get_upvalue, .set_upvalue => |op| op.register < registers and op.upvalue < proto.upvalues.items.len,
+        .get_table => |op| op.dest < registers and op.table < registers and op.key < registers,
+        .set_table => |op| op.table < registers and op.key < registers and op.value < registers,
+        .set_array => |op| op.table < registers and op.value < registers and op.index != 0,
+        .get_field => |op| op.dest < registers and op.table < registers and isStringConstant(proto, op.name),
+        .set_field => |op| op.table < registers and op.value < registers and isStringConstant(proto, op.name),
+        .new_table => |op| op.dest < registers and @as(u64, op.array_hint) + op.hash_hint <= proto.instructions.items.len,
+        .set_list => |op| op.table < registers and op.start_index != 0 and
+            (if (op.count == bytecode.multret_count) op.first < registers else registerRange(registers, op.first, op.count)),
+        .add, .sub, .mul, .div, .idiv, .mod, .pow, .band, .bor, .bxor, .shl, .shr, .eq, .lt, .le, .concat => |op| op.dest < registers and op.left < registers and op.right < registers,
+        .unm, .bnot, .not, .len => |op| op.dest < registers and op.source < registers,
+        .concat_range => |op| op.dest < registers and op.count >= 2 and registerRange(registers, op.first, op.count),
+        .jmp => |offset| validJump(proto, pc, offset),
+        .compare_branch => |op| op.left < registers and op.right < registers and validJump(proto, pc, op.offset),
+        .test_op => |op| op.register < registers and validJump(proto, pc, op.offset),
+        .test_set => |op| op.dest < registers and op.source < registers and validJump(proto, pc, op.offset),
+        .call, .tail_call => |op| op.base < registers and
+            (op.arg_count == bytecode.multret_arg_count or registerRange(registers, @as(usize, op.base) + 1, op.arg_count)) and
+            (op.return_count == bytecode.multret_count or registerRange(registers, op.base, op.return_count)),
+        .ret => |op| if (op.count == bytecode.multret_count) op.first < registers else registerRange(registers, op.first, op.count),
+        .vararg => |op| if (op.count == bytecode.multret_count) op.dest < registers else registerRange(registers, op.dest, op.count),
+        .closure => |op| op.dest < registers and op.proto < proto.children.items.len,
+        .close => |register| register <= registers,
+        .check_close, .close_tbc => |register| register < registers,
+        .for_prep, .for_loop => |op| registerRange(registers, op.base, 3) and validJump(proto, pc, op.offset),
+        .tfor_prep, .tfor_call, .tfor_loop => |op| registerRange(registers, op.base, 4 + @as(usize, op.variable_count)) and validJump(proto, pc, op.offset),
+    };
+}
+
+fn registerRange(registers: usize, first: usize, count: usize) bool {
+    return first <= registers and count <= registers - first;
+}
+
+fn validJump(proto: *const proto_mod.Proto, pc: usize, offset: bytecode.JumpOffset) bool {
+    const target = @as(i64, @intCast(pc)) + 1 + offset;
+    return target >= 0 and target <= @as(i64, @intCast(proto.instructions.items.len));
+}
+
+fn isStringConstant(proto: *const proto_mod.Proto, index: bytecode.ConstantIndex) bool {
+    return index < proto.constants.items.len and proto.constants.items[index] == .string;
+}
+
+fn validLine(line: usize) bool {
+    return @as(u64, line) <= std.math.maxInt(i64);
+}
+
+fn validConstant(constant: bytecode.Constant) bool {
+    return switch (constant) {
+        .nil, .boolean => true,
+        .integer => |lexeme| if (value_mod.parseIntegerLiteral(lexeme)) |_| true else |_| false,
+        .number => |lexeme| if (value_mod.parseLuaNumber(lexeme)) |_| true else |_| false,
+        .string => |lexeme| lexeme.len < 2 or lexeme[0] != '[' or validLongBracket(lexeme),
+    };
+}
+
+fn validLongBracket(lexeme: []const u8) bool {
+    var level: usize = 0;
+    while (1 + level < lexeme.len and lexeme[1 + level] == '=') level += 1;
+    if (lexeme.len < 2 * level + 4 or lexeme[level + 1] != '[') return false;
+    const close = lexeme[lexeme.len - level - 2 ..];
+    if (close[0] != ']' or close[close.len - 1] != ']') return false;
+    for (close[1 .. close.len - 1]) |byte| if (byte != '=') return false;
+    return true;
+}
+
 pub fn BinaryChunkReader(comptime State: type) type {
     return struct {
         state: *State,
         source: []const u8,
         pos: usize,
+        depth: usize = 0,
 
         const Self = @This();
 
+        /// Each proto is verified once its children are read, so a returned
+        /// tree is safe for the VM to execute.
         pub fn readProto(self: *Self, parent_source_name: ?[]const u8) anyerror!*proto_mod.Proto {
+            if (self.depth >= max_proto_depth) return self.state.fail("bad binary chunk");
+            self.depth += 1;
+            defer self.depth -= 1;
             const proto = try self.state.allocator.create(proto_mod.Proto);
             errdefer self.state.allocator.destroy(proto);
             proto.* = proto_mod.Proto.init(self.state.allocator);
             errdefer proto.deinit();
             try self.readProtoBody(proto, parent_source_name);
+            if (!verifyProto(proto)) return self.state.fail("bad binary chunk");
             return proto;
         }
 
@@ -308,11 +441,11 @@ pub fn BinaryChunkReader(comptime State: type) type {
             proto.is_vararg = try self.readBool();
             proto.named_vararg = try self.readBool();
 
-            const constant_count = try self.readCount();
+            const constant_count = try self.readRecordCount(min_constant_bytes);
             try proto.constants.ensureTotalCapacity(proto.allocator, constant_count);
             for (0..constant_count) |_| try proto.constants.append(proto.allocator, try self.readConstant(proto));
 
-            const instruction_count = try self.readCount();
+            const instruction_count = try self.readRecordCount(min_instruction_bytes);
             try proto.instructions.ensureTotalCapacity(proto.allocator, instruction_count);
             try proto.line_info.ensureTotalCapacity(proto.allocator, instruction_count);
             for (0..instruction_count) |_| {
@@ -320,7 +453,7 @@ pub fn BinaryChunkReader(comptime State: type) type {
                 try proto.line_info.append(proto.allocator, .{ .line = try self.readUsize() });
             }
 
-            const local_count = try self.readCount();
+            const local_count = try self.readRecordCount(min_local_bytes);
             try proto.locals.ensureTotalCapacity(proto.allocator, local_count);
             for (0..local_count) |_| {
                 const name = try self.readProtoString(proto);
@@ -338,7 +471,7 @@ pub fn BinaryChunkReader(comptime State: type) type {
                 if (to_close) proto.has_to_close_locals = true;
             }
 
-            const upvalue_count = try self.readCount();
+            const upvalue_count = try self.readRecordCount(min_upvalue_bytes);
             try proto.upvalues.ensureTotalCapacity(proto.allocator, upvalue_count);
             for (0..upvalue_count) |_| {
                 try proto.upvalues.append(proto.allocator, .{
@@ -348,7 +481,7 @@ pub fn BinaryChunkReader(comptime State: type) type {
                 });
             }
 
-            const error_site_count = try self.readCount();
+            const error_site_count = try self.readRecordCount(min_error_site_bytes);
             try proto.error_sites.ensureTotalCapacity(proto.allocator, error_site_count);
             for (0..error_site_count) |_| {
                 const pc = try self.readUsize();
@@ -356,7 +489,7 @@ pub fn BinaryChunkReader(comptime State: type) type {
                 try proto.error_sites.append(proto.allocator, .{ .pc = pc, .site = site });
             }
 
-            const child_count = try self.readCount();
+            const child_count = try self.readRecordCount(min_proto_bytes);
             try proto.children.ensureTotalCapacity(proto.allocator, child_count);
             for (0..child_count) |_| {
                 const child = try self.readProto(proto.source_name);
@@ -424,8 +557,8 @@ pub fn BinaryChunkReader(comptime State: type) type {
                 .compare_branch => .{ .compare_branch = .{ .left = try self.readU16(), .right = try self.readU16(), .op = try self.readEnum(bytecode.CompareBranchOp), .jump_if_truthy = try self.readBool(), .offset = try self.readI32() } },
                 .test_op => .{ .test_op = .{ .register = try self.readU16(), .jump_if_truthy = try self.readBool(), .offset = try self.readI32() } },
                 .test_set => .{ .test_set = .{ .dest = try self.readU16(), .source = try self.readU16(), .jump_if_truthy = try self.readBool(), .offset = try self.readI32() } },
-                .call => .{ .call = .{ .base = try self.readU16(), .arg_count = try self.readU16(), .return_count = try self.readU16() } },
-                .tail_call => .{ .tail_call = .{ .base = try self.readU16(), .arg_count = try self.readU16(), .return_count = try self.readU16() } },
+                .call => .{ .call = .{ .base = try self.readU16(), .arg_count = try self.readArgCount(), .return_count = try self.readU16() } },
+                .tail_call => .{ .tail_call = .{ .base = try self.readU16(), .arg_count = try self.readArgCount(), .return_count = try self.readU16() } },
                 .ret => .{ .ret = .{ .first = try self.readU16(), .count = try self.readU16() } },
                 .vararg => .{ .vararg = .{ .dest = try self.readU16(), .count = try self.readU16() } },
                 .closure => .{ .closure = .{ .dest = try self.readU16(), .proto = try self.readU32() } },
@@ -437,7 +570,14 @@ pub fn BinaryChunkReader(comptime State: type) type {
                 .tfor_prep => .{ .tfor_prep = .{ .base = try self.readU16(), .variable_count = try self.readU16(), .offset = try self.readI32() } },
                 .tfor_call => .{ .tfor_call = .{ .base = try self.readU16(), .variable_count = try self.readU16(), .offset = try self.readI32() } },
                 .tfor_loop => .{ .tfor_loop = .{ .base = try self.readU16(), .variable_count = try self.readU16(), .offset = try self.readI32() } },
+                .concat_range => .{ .concat_range = try self.readConcatRange() },
             };
+        }
+
+        fn readConcatRange(self: *Self) !bytecode.ConcatRange {
+            const op: bytecode.ConcatRange = .{ .dest = try self.readU16(), .first = try self.readU16(), .count = try self.readU16() };
+            if (op.count < 2) return self.state.fail("bad binary chunk");
+            return op;
         }
 
         fn readUnary(self: *Self) !bytecode.Unary {
@@ -451,7 +591,7 @@ pub fn BinaryChunkReader(comptime State: type) type {
         fn readErrorSite(self: *Self, proto: *proto_mod.Proto) !proto_mod.ErrorSite {
             const line = try self.readUsize();
             const op = try self.readEnum(proto_mod.ErrorOp);
-            const operand_count = try self.readCount();
+            const operand_count = try self.readRecordCount(min_origin_bytes);
             const operands = try proto.arena.allocator().alloc(proto_mod.OperandOrigin, operand_count);
             for (operands) |*operand| operand.* = try self.readOrigin(proto);
             const call_name = if (try self.readBool()) try self.readOrigin(proto) else null;
@@ -500,6 +640,12 @@ pub fn BinaryChunkReader(comptime State: type) type {
             return std.math.cast(usize, try self.readU32()) orelse self.state.fail("bad binary chunk");
         }
 
+        fn readRecordCount(self: *Self, min_record_bytes: usize) !usize {
+            const count = try self.readCount();
+            if (count > (self.source.len - self.pos) / min_record_bytes) return self.state.fail("truncated binary chunk");
+            return count;
+        }
+
         fn readUsize(self: *Self) !usize {
             return std.math.cast(usize, try self.readU64()) orelse self.state.fail("bad binary chunk");
         }
@@ -520,6 +666,11 @@ pub fn BinaryChunkReader(comptime State: type) type {
 
         fn readU16(self: *Self) !u16 {
             return std.mem.readInt(u16, (try self.readBytes(2))[0..2], .little);
+        }
+
+        fn readArgCount(self: *Self) !u32 {
+            const count = try self.readU16();
+            return if (count == bytecode.multret_count) bytecode.multret_arg_count else count;
         }
 
         fn readU32(self: *Self) !u32 {
