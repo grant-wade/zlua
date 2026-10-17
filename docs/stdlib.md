@@ -1,8 +1,10 @@
 # Lua Libraries and Extensions
 
-zlua targets Lua 5.5 and adds `fs`, data-format libraries, and a few string/table helpers. Opening a library only installs Lua-visible functions; host capabilities separately control filesystem, environment, clock, process, and I/O access.
+zlua targets Lua 5.5 and adds a few things on top: the `fs` library, data-format libraries, and some string and table helpers. Keep in mind that opening a library only installs its Lua-visible functions. Whether those functions can actually touch the filesystem, environment, clock, processes, or I/O is controlled separately by host capabilities.
 
 ## Library Selection
+
+You choose which libraries a state gets with one of these selections:
 
 | Selection | Libraries |
 | --- | --- |
@@ -12,7 +14,7 @@ zlua targets Lua 5.5 and adds `fs`, data-format libraries, and a few string/tabl
 | `full` | Safe plus io, os, debug, package, and fs. |
 | Explicit set | Any combination of the libraries above. |
 
-The CLI defaults to `full` with host access. `zlua.State` defaults to `safe` with sandboxed capabilities.
+The CLI defaults to `full` with host access, while `zlua.State` defaults to `safe` with sandboxed capabilities. Both accept a different selection:
 
 ```sh
 zlua --stdlib=safe script.lua
@@ -30,7 +32,7 @@ var lua = try zlua.State.init(allocator, .{
 
 ## Lua Library Surface
 
-The base library installs `_VERSION = "Lua 5.5"` and the usual core functions:
+The base library sets `_VERSION = "Lua 5.5"` and installs the usual core functions:
 
 ```text
 assert  collectgarbage  dofile  error  getmetatable  ipairs  load
@@ -38,11 +40,9 @@ loadfile  next  pairs  pcall  print  rawequal  rawget  rawlen  rawset
 select  setmetatable  tonumber  tostring  type  warn  xpcall
 ```
 
-`warn` follows Lua 5.5, including `@on` and `@off`. Warnings start off, as in the CLI without `-W`, and print to stderr as `Lua warning: <message>`.
+A few of these deserve a note. `warn` follows Lua 5.5, including the `@on` and `@off` control messages. Warnings start off, as in the CLI without `-W`, and once enabled they print to stderr as `Lua warning: <message>`. `xpcall` runs its message handler at the point of the error, before any to-be-closed variables close. `loadfile` and `dofile` read through the filesystem capability, or from stdin when no file name is given.
 
-`xpcall` runs its message handler at the error point, before to-be-closed variables close.
-
-`loadfile` and `dofile` read through the filesystem capability, or from stdin without a file name.
+The other standard libraries provide these members:
 
 | Library | Members |
 | --- | --- |
@@ -56,11 +56,13 @@ select  setmetatable  tonumber  tostring  type  warn  xpcall
 | `debug` | `debug`, `gethook`, `getinfo`, `getlocal`, `getmetatable`, `getregistry`, `getupvalue`, `getuservalue`, `sethook`, `setlocal`, `setmetatable`, `setupvalue`, `setuservalue`, `traceback`, `upvalueid`, `upvaluejoin` |
 | `package` | `config`, `cpath`, `loaded`, `loadlib`, `path`, `preload`, `searchers`, `searchpath`; also the `require` global |
 
-`table.create(nseq[, nrec])` is standard in Lua 5.5.
+Most of these are standard Lua. `table.create(nseq[, nrec])` may look like an extension, but it is part of Lua 5.5. The zlua-specific additions are covered in the next section.
 
-`collectgarbage` supports Lua 5.5's incremental and generational modes, with generational mode as the default. Use `collectgarbage("collect")` for a full collection or `collectgarbage("step", bytes)` to advance it. Explicit collection works even after `collectgarbage("stop")`. Memory counts and collection timing may differ from C Lua. For host-side controls, see [Garbage Collection](embedding.md#garbage-collection).
+`collectgarbage` supports Lua 5.5's incremental and generational modes, and generational is the default. Use `collectgarbage("collect")` for a full collection or `collectgarbage("step", bytes)` to advance one. Explicit collection still works after `collectgarbage("stop")`. Memory counts and collection timing may differ from C Lua. For controls on the host side, see [Garbage Collection](embedding.md#garbage-collection).
 
 ### zlua Additions to Core Libraries
+
+zlua adds four helpers to the `table` and `string` libraries:
 
 | Function | Behavior |
 | --- | --- |
@@ -69,13 +71,13 @@ select  setmetatable  tonumber  tostring  type  warn  xpcall
 | `string.split(value[, separator[, maxsplit]])` | Splits from the left; omitted separator means ASCII whitespace. |
 | `string.rsplit(value[, separator[, maxsplit]])` | Same operation starting from the right. |
 
-These helpers follow Python's `str.split`, `str.rsplit`, and `str.strip`. The separator is plain text, a `nil` separator splits on whitespace, `maxsplit` limits the number of splits (negative or `nil` means no limit), and `chars` is a set of bytes.
+The string helpers follow Python's `str.split`, `str.rsplit`, and `str.strip`. The separator is plain text rather than a pattern, and a `nil` separator splits on whitespace. `maxsplit` limits the number of splits, with a negative or `nil` value meaning no limit. For `strip`, `chars` is treated as a set of bytes.
 
-`table.dedup` compares values as raw table keys, so `__eq` is ignored and `1` and `1.0` are duplicates. `nil` entries are skipped.
+`table.dedup` compares values the way raw table keys are compared, so `__eq` is ignored and `1` and `1.0` count as duplicates. `nil` entries are skipped.
 
 ## Host-Facing Libraries
 
-Opening `io`, `os`, `package`, or `fs` does not grant ambient access in an embedded state.
+In an embedded state, opening `io`, `os`, `package`, or `fs` doesn't by itself give Lua code any access to the host. Each operation needs the matching capability:
 
 | Operations | Capability |
 | --- | --- |
@@ -87,35 +89,29 @@ Opening `io`, `os`, `package`, or `fs` does not grant ambient access in an embed
 | `os.remove`, `os.rename` | Filesystem. |
 | `fs.*` | Filesystem; std-backed modes also need `std.Io`. |
 
-The CLI configures host capabilities; Zig embedders opt in.
+The CLI sets these capabilities up for you, whereas Zig embedders opt in to each one.
 
-`io.tmpfile()` returns an in-memory file. It needs no filesystem capability and leaves nothing behind.
+### Files
 
-`os.tmpname()` creates an empty file with a unique `lua_XXXXXX` name, like `mkstemp`: in `TMPDIR` with the host filesystem, or at the root of a sandboxed one.
+File handles are `FILE*` userdata, as in C Lua, and their errors follow C Lua too: `io.open` returns `nil, "path: No such file or directory", 2`.
 
-File handles are `FILE*` userdata, as in C Lua.
+Writes are buffered in memory and count toward `max_memory`. A failed write returns `nil, message, errno, count`, and files can't grow past `max_file_bytes` (256 MiB by default). When you close or flush a file explicitly with `close` or `flush`, failures come back as `nil, message, errno`. Handles you don't close yourself are still cleaned up: the collector flushes and closes unreachable ones, and `State.deinit` closes any that remain open. These implicit closes ignore flush failures.
 
-Writes are buffered in memory and count toward `max_memory`.
+A few special files and temporaries are handled without the host. `/dev/null` is emulated in every filesystem mode, and `/dev/full` is emulated on Linux. `io.tmpfile()` returns an in-memory file, so it needs no filesystem capability and leaves nothing behind. `os.tmpname()` works like `mkstemp`: it creates an empty file with a unique `lua_XXXXXX` name, in `TMPDIR` when using the host filesystem or at the root of a sandboxed one.
 
-Failed writes return `nil, message, errno, count`. Files cannot grow past `max_file_bytes` (256 MiB by default).
+### Time, Processes, and Native Libraries
 
-The collector flushes and closes unreachable handles, and `State.deinit` closes any still open. Implicit closes ignore flush failures; explicit `close` and `flush` return `nil, message, errno`.
+`os.date` supports the C99 conversions. Local time comes from the clock capability (with the system clock, that means `TZ` or `/etc/localtime`), and `os.clock` reports process CPU time.
 
-`/dev/null` is emulated in every filesystem mode, and `/dev/full` on Linux.
+`io.popen` runs the whole command in one go: in read mode when the handle opens, and in write mode when it closes.
 
-File errors follow C Lua: `io.open` returns `nil, "path: No such file or directory", 2`.
+`os.exit` raises `error.LuaExit`, which `pcall` can't catch. The CLI then exits with the requested status and runs `__gc` finalizers, unless `os.exit` was called without `close`.
 
-`os.date` supports the C99 conversions. Local time comes from the clock capability (`TZ` or `/etc/localtime` with the system clock), and `os.clock` reports process CPU time.
-
-`io.popen` runs the whole command at once: read mode when the handle opens, write mode when it closes.
-
-`os.exit` raises `error.LuaExit`, which `pcall` cannot catch. The CLI exits with the requested status and runs `__gc` finalizers unless `os.exit` was called without `close`.
-
-`package.loadlib` always returns `nil, "dynamic libraries not enabled; check your Lua installation", "absent"`.
+zlua doesn't load native libraries, so `package.loadlib` always returns `nil, "dynamic libraries not enabled; check your Lua installation", "absent"`.
 
 ## Package Loading
 
-When `package` is open, zlua installs `require`. It also installs `loadfile` and `dofile` when base is not open.
+Opening `package` installs `require`. If base isn't open, it also installs `loadfile` and `dofile`. The package fields start with these defaults:
 
 | Field | Default |
 | --- | --- |
@@ -125,11 +121,11 @@ When `package` is open, zlua installs `require`. It also installs `loadfile` and
 | `package.loaded` | Opened libraries and already loaded modules. |
 | `package.preload` | Host-preloaded modules. |
 
-`require` needs a filesystem capability for Lua files. Memory files provide module loading without host filesystem access.
+Loading Lua files with `require` needs a filesystem capability. If you want module loading without host filesystem access, memory files give you that.
 
 ## Filesystem Extension
 
-`fs` is included in `full`, excluded from `safe`, and always capability-gated. With `package` open, `require("fs")` returns the same table as the `fs` global.
+`fs` is zlua's filesystem library. It's included in `full`, left out of `safe`, and always gated by the filesystem capability. With `package` open, `require("fs")` returns the same table as the `fs` global.
 
 ```lua
 local fs = require("fs")
@@ -158,21 +154,23 @@ assert(file:read("all") == "hello")
 | `mkdir`, `remove`, `copy` | Directory creation/removal/copy with their recursive and overwrite options. |
 | `rename`, `move`, `touch` | Path mutation helpers; `move` handles cross-device copy/remove. |
 
-Iterator entries include `name`, `path`, `kind`, `inode`, and `depth` while walking. Operational failures return `nil` plus a structured error; argument and iterator failures raise. `fs.path` provides lexical `join`, `normalize`, `basename`, `dirname`, `extension`, `stem`, `is_absolute`, `relative`, and `separator` helpers without touching the filesystem.
+Iterator entries include `name`, `path`, `kind`, and `inode`, plus `depth` while walking. Errors are reported in two ways: operational failures return `nil` plus a structured error, while argument and iterator failures raise.
+
+For pure path manipulation, `fs.path` provides lexical `join`, `normalize`, `basename`, `dirname`, `extension`, `stem`, `is_absolute`, `relative`, and `separator` helpers. None of them touch the filesystem.
 
 ## Data Formats
 
-`json`, `toml`, `msgpack`, and `csv` are in `safe` and `full`. If `package` is also open, `require("json")` and the other names return their existing global tables through `package.loaded`.
+`json`, `toml`, `msgpack`, and `csv` are available in both `safe` and `full`. If `package` is also open, `require("json")` and the other names return the existing global tables through `package.loaded`.
 
-All readers accept a string (bytes for MessagePack) or a Lua file handle. File input is consumed from the current position to EOF. Errors are prefixed with the library and operation name.
+The four libraries share some conventions. Every reader accepts either a string (bytes for MessagePack) or a Lua file handle, and file input is consumed from the current position to EOF. Errors are prefixed with the library and operation name.
 
-JSON, TOML, and MessagePack writers share table-shape rules:
+The JSON, TOML, and MessagePack writers also agree on how a Lua table maps to the output:
 
 - Sequential positive integer keys become arrays.
 - String-keyed tables become objects/maps.
 - Cycles, sparse arrays, mixed array/object tables, unsupported values, non-string object keys, and non-finite numbers are rejected.
 
-Integers outside the 64-bit signed range raise an error rather than becoming floats.
+Integers outside the 64-bit signed range raise an error rather than quietly becoming floats.
 
 ### JSON
 
@@ -222,7 +220,11 @@ assert(rows[2].age == csv.null)
 local text = csv.write(rows, { record_terminator = "lf" })
 ```
 
-`csv.read(input[, options])` returns an array of row tables; empty cells become `csv.null`. With `header=false`, keys are strings starting at `"0"`. `csv.write(rows[, options])` takes its schema and field order from the first row, flattens nested objects into dot-separated columns, allows later rows to omit fields, and rejects new fields or nested arrays.
+`csv.read(input[, options])` returns an array of row tables, with empty cells set to `csv.null`. With `header=false`, the keys are strings starting at `"0"`.
+
+`csv.write(rows[, options])` takes its schema and field order from the first row and flattens nested objects into dot-separated columns. Later rows may omit fields, but they can't introduce new ones, and nested arrays are rejected. Cells may be nil/null, booleans, finite numbers, or strings.
+
+Both functions accept these options:
 
 | CSV option | Values / default |
 | --- | --- |
@@ -230,5 +232,3 @@ local text = csv.write(rows, { record_terminator = "lf" })
 | `header` | Boolean, default true. |
 | `record_terminator` | `crlf` (default) or `lf`. |
 | `final_record_terminator` | Boolean, default false. |
-
-CSV cells may be nil/null, booleans, finite numbers, or strings.

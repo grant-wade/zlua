@@ -401,8 +401,7 @@ test "snapshot capture and newState allocation failures release every partial gr
         fn run(allocator: std.mem.Allocator, state: *api.State) !void {
             var snapshot = try state.snapshot(allocator);
             defer snapshot.deinit();
-            // The source retains its baseline. Release the failing allocator's
-            // storage before the allocator itself leaves scope.
+            // Free the source's baseline before the failing allocator leaves scope.
             var stable = try state.snapshot(a);
             stable.deinit();
         }
@@ -560,8 +559,7 @@ test "snapshot userdata copy allocation failures never run application finalizer
         fn run(allocator: std.mem.Allocator, state: *api.State) !void {
             var snapshot = try state.snapshot(allocator);
             defer snapshot.deinit();
-            // The source retains its baseline. Release the failing allocator's
-            // storage before the allocator itself leaves scope.
+            // Free the source's baseline before the failing allocator leaves scope.
             var stable = try state.snapshot(a);
             stable.deinit();
         }
@@ -627,7 +625,6 @@ test "snapshot successful reset disposes copied payloads without semantic finali
     ud.deinit();
     var snapshot = try lua.snapshot(a);
     try lua.reset();
-    // Original storage keeps its original finalizer/destructor contract.
     try std.testing.expectEqual(@as(usize, 1), finals);
     try lua.reset();
     try std.testing.expectEqual(@as(usize, 1), finals);
@@ -1152,13 +1149,11 @@ const ConcurrentPayload = struct {
     fn copy(allocator: std.mem.Allocator, self: *const @This()) !*@This() {
         const counters = self.counters;
         if (counters.image) |image| {
-            // Every hook invocation observes the pristine image, even while
-            // other readers are inside their copy hooks. Live capture is guarded.
+            // Concurrent copy hooks must all observe the pristine image.
             try std.testing.expect(!image.snapshot_busy);
             const arrival = counters.arrived.fetchAdd(1, .acq_rel);
             if (arrival < concurrent_workers) {
-                // Force the first workers to overlap. Failed worker attempts also
-                // unblock the barrier, so a regression reports rather than hangs.
+                // Failed workers also release the barrier, so regressions report instead of hanging.
                 while (counters.arrived.load(.acquire) + counters.failed.load(.acquire) < concurrent_workers)
                     std.atomic.spinLoopHint();
             }
@@ -1194,7 +1189,6 @@ const ConcurrentWorker = struct {
         var owned = true;
         defer if (owned) self.snapshot.deinit();
         for (0..concurrent_iterations) |iteration| {
-            // Retain/release on the same backing also races other owners here.
             var local = self.snapshot.retain();
             var worker = local.newState(a) catch |err| {
                 local.deinit();
@@ -1240,8 +1234,6 @@ const ConcurrentWorker = struct {
 
     fn waitForPublicHandles(self: *@This()) void {
         _ = self.counters.released.fetchAdd(1, .acq_rel);
-        // Every remaining worker resets after all public handles are gone.
-        // Failed workers release their handles before reporting failure.
         while (self.counters.released.load(.acquire) + self.counters.failed.load(.acquire) < concurrent_workers)
             std.atomic.spinLoopHint();
     }
@@ -1267,8 +1259,7 @@ test "retained snapshots concurrently instantiate reset and release immutable ba
     var hooked = try source.newUserdata(ConcurrentPayload, .{ .counters = &counters }, .{ .snapshot = .{ .copy = ConcurrentPayload.copy, .dispose = ConcurrentPayload.dispose } });
     try source.setGlobal("hooked", hooked);
     hooked.deinit();
-    // Both backing and hookless storage retain the source allocator. Its final
-    // destruction must happen on a worker, after the source State is gone.
+    // The source allocator must be finally released on a worker, after the source State is gone.
     var snapshot = try source.snapshot(source.allocator());
     var snapshot_owned = true;
     defer if (snapshot_owned) snapshot.deinit();
@@ -1355,7 +1346,6 @@ test "simultaneous final hookless payload releases finalize dispose and destroy 
             gate.store(true, .release);
             for (threads[0..spawned]) |thread| thread.join();
         }
-        // Transfer a reference to each thread, then release the initial owner.
         for (&threads) |*thread| {
             payload.retain();
             thread.* = std.Thread.spawn(.{}, Worker.run, .{ payload, &gate }) catch |err| {

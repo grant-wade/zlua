@@ -252,9 +252,7 @@ fn collectCase(allocator: std.mem.Allocator, io: std.Io, workload: SnapshotWorkl
         var sample: Sample = undefined;
         sample.capture = try measureCapture(io, &lua.?, &snapshot_counter);
         sample.new_state = try measureNewState(io, &snapshot, &vm_counter);
-        // Capture installs a different backing on lua. Instantiate the measured
-        // worker explicitly, outside the timer, so every sample starts with the
-        // same frozen image and fresh worker storage.
+        // Capture changes lua's backing; start every sample from the frozen image with fresh storage.
         const worker = try snapshot.newState(vm_counter.allocator());
         lua.?.deinit();
         lua = worker;

@@ -159,8 +159,7 @@ pub fn toInteger(value: Value) ?i64 {
     };
 }
 
-/// Converts like `lua_tointegerx`: floats and numeric strings convert only
-/// when their value is an exact integer.
+/// Like `lua_tointegerx`: floats and numeric strings convert only when exactly integral.
 pub fn coerceToInteger(value: Value) ?i64 {
     return switch (value) {
         .integer => |integer| integer,
@@ -309,9 +308,8 @@ pub fn appendLuaString(allocator: std.mem.Allocator, out: *std.ArrayList(u8), va
     }
 }
 
-/// Derive per-prototype runtime metadata once, before any closure of the tree
-/// runs. Prepared prototypes are never written again, so snapshot workers may
-/// share them. Prototypes that skip this keep defaults selecting general paths.
+/// Must run before any closure of the tree runs. Prepared prototypes are never
+/// written again, so snapshot workers may share them.
 pub fn prepareProtoTree(proto: *proto_mod.Proto) !void {
     if (proto.runtime_prepared) return;
     for (proto.children.items) |child| try prepareProtoTree(child);
@@ -551,11 +549,10 @@ pub fn appendNumber(allocator: std.mem.Allocator, out: *std.ArrayList(u8), numbe
     try out.appendSlice(allocator, formatNumber(&buffer, .{ .number = number }));
 }
 
-/// Fits the longest decimal rendering of any f64 (subnormals expand to
-/// about 343 bytes) plus a sign and a ".0" suffix.
+/// Fits the longest f64 rendering (subnormals reach ~343 digits) plus sign and ".0".
 pub const max_number_text_len = 400;
 
-/// Renders an integer or float value as `tostring` and concatenation do.
+/// Formats as `tostring` and concatenation do.
 pub fn formatNumber(buffer: *[max_number_text_len]u8, value: Value) []const u8 {
     switch (value) {
         .integer => |integer| return std.fmt.bufPrint(buffer, "{d}", .{integer}) catch unreachable,

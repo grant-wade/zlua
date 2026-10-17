@@ -121,8 +121,7 @@ pub fn checkIdle(source: *const State) !void
 
 ## copy
 
-`error_root` is the only host API root retained. All application handles must
-be reacquired. The caller owns destination allocator infrastructure.
+Only `error_root` survives among host API roots; application handles must be reacquired.
 
 ```zig
 pub fn copy(source: *State, allocator: std.mem.Allocator, lifetime: ?*types.AllocatorLifetime, error_root: ?usize) !State
@@ -132,8 +131,7 @@ pub fn copy(source: *State, allocator: std.mem.Allocator, lifetime: ?*types.Allo
 
 ## copyFrozen
 
-The source must be an idle, immutable backing image retained until destination
-destruction. Concurrent readers never write source VM metadata.
+The source must be an idle, immutable image that outlives the destination.
 
 ```zig
 pub fn copyFrozen(source: *const State, allocator: std.mem.Allocator, lifetime: ?*types.AllocatorLifetime, error_root: ?usize) !State

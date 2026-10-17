@@ -473,8 +473,6 @@ test "thread startup stack limits and cumulative instruction failures become Lua
 }
 
 test "allocation failures during thread creation resume and suspension leave valid lifecycle state" {
-    // Fail each allocation after setup, including callback staging, suspension,
-    // result copying and roots; a successful pass bounds the sweep.
     var offset: usize = 0;
     while (offset < 200) : (offset += 1) {
         var failing = std.testing.FailingAllocator.init(a, .{});

@@ -181,9 +181,8 @@ pub const Binary = struct {
     right: Register,
 };
 
-/// Concatenates `count` (at least 2) consecutive registers starting at
-/// `first` right to left, like PUC OP_CONCAT, and stores the result in
-/// `dest`. Operand registers are scratch space for partial results.
+/// Concatenates `count` (at least 2) registers from `first` right to left into `dest`,
+/// like PUC OP_CONCAT. Operand registers are scratch space.
 pub const ConcatRange = struct {
     dest: Register,
     first: Register,
@@ -219,8 +218,7 @@ pub const TestSet = struct {
 
 pub const Call = struct {
     base: u32,
-    /// `multret_arg_count` in bytecode when the arguments end at the last
-    /// multiple results; runtime calls always carry the resolved count.
+    /// `multret_arg_count` in bytecode when arguments end with multiple results.
     arg_count: u32,
     return_count: u16,
 };

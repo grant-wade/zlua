@@ -675,8 +675,7 @@ fn normalizeLexical(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
 
 fn joinTwo(state: *State, parent: []const u8, child: []const u8) ![]u8 {
     if (parent.len == 0 or std.mem.eql(u8, parent, ".")) return state.allocator.dupe(u8, child);
-    // Memory and rooted capabilities use slash-separated relative paths on
-    // every OS. Native joins would feed backslashes back into their validators.
+    // These capabilities validate '/'-separated paths on every OS; native joins would add backslashes.
     return switch (state.options.filesystem) {
         .memory, .memory_rw, .host_dir => std.fmt.allocPrint(state.allocator, "{s}/{s}", .{ std.mem.trimEnd(u8, parent, "/"), std.mem.trimStart(u8, child, "/") }),
         else => std.fs.path.join(state.allocator, &.{ parent, child }),

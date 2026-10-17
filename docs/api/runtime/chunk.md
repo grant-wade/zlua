@@ -136,11 +136,8 @@ pub fn dumpClosureBinary(allocator: std.mem.Allocator, out: *std.ArrayList(u8), 
 
 ## verifyProto
 
-Checks the operand invariants the compiler guarantees and the VM relies on
-without bounds checks: registers within `max_registers`, constant, upvalue
-and child indexes in range, and jump targets within the code. Children are
-verified separately; this level checks the upvalue descriptors they
-resolve against it.
+Checks the operand invariants the VM relies on without bounds checks.
+Children are verified separately, but their upvalue descriptors are checked here.
 
 ```zig
 pub fn verifyProto(proto: *const proto_mod.Proto) bool

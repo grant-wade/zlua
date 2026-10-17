@@ -106,7 +106,7 @@ pub fn isYieldable(thread: *const Thread) bool {
     return !thread.is_main and thread.status == .running and !thread.closing and thread.native_call_depth <= 1;
 }
 
-/// Returns the Lua error message explaining why `thread` cannot yield, or null when it can.
+/// Returns the Lua error message for a yield from `thread`, or null when it can yield.
 pub fn yieldRejection(thread: *const Thread) ?[]const u8 {
     if (isYieldable(thread)) return null;
     if (thread.is_main) return "attempt to yield from outside a coroutine";
@@ -219,7 +219,7 @@ pub fn newCoroutineThread(comptime State: type, self: *State, entry: Value) !*Th
     return thread;
 }
 
-/// Closes `target`. The running thread may close itself; hosts are rejected earlier by `State.closeCoroutine`.
+/// The running thread may close itself; hosts are rejected earlier by `State.closeCoroutine`.
 pub fn closeCoroutine(comptime State: type, self: *State, target: *Thread, error_value: ?Value) !?Value {
     if (target.status == .normal) return self.fail("cannot close a normal coroutine");
     if (target.is_main) return self.fail("cannot close main coroutine");

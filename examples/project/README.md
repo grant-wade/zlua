@@ -1,12 +1,12 @@
 # zlua-test
 
-`zlua-test` is a small test project for validating how a downstream Zig project consumes zlua on Zig `0.16.0` and `0.17.0`.
+`zlua-test` is a small project that checks zlua works as a dependency of another Zig project, on both Zig `0.16.0` and `0.17.0`. CI builds, runs, and tests it on every push.
 
-The project depends on this checkout of `zlua` through `.path = "../.."` in `build.zig.zon`, wires the dependency into `build.zig`, and imports it from `src/main.zig` as `@import("zlua")`.
+It depends on this checkout of `zlua` through `.path = "../.."` in `build.zig.zon`, wires the dependency into `build.zig`, and imports it in `src/main.zig` with `@import("zlua")`.
 
 ## Usage
 
-Build the executable:
+Run these commands from this directory. Build the executable:
 
 ```sh
 zig build
@@ -18,7 +18,7 @@ Run the example program:
 zig build run
 ```
 
-Run tests:
+Run the tests:
 
 ```sh
 zig build test
@@ -26,7 +26,7 @@ zig build test
 
 ## Dependency Setup
 
-When using a published release in your own project, add zlua with `zig fetch --save` as shown in the root README. The module wiring is the same for a local or fetched dependency:
+In your own project you will usually depend on a published release instead, added with `zig fetch --save` as shown in the root README. Either way, the module wiring in `build.zig` is the same:
 
 ```zig
 const zlua_dep = b.dependency("zlua", .{

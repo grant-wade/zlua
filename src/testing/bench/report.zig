@@ -133,9 +133,6 @@ pub fn human(allocator: std.mem.Allocator, out: *std.Io.Writer, suite: *const Su
                 try out.print("{s:<26} {d:>7} {d:>7} {s:>12} {s:>12} {s:>12} {s:>9} {s:>11}", .{ c.case, reset.iterations, reset.warmup, try timeText(a, median(find(suite, group, c.case, "native", "capture"))), try timeText(a, median(reset)), try timeText(a, median(find(suite, group, c.case, "native", "rebuild"))), try ratioText(a, c.ratio), try numberText(a, c.break_even_resets) });
                 try status(out, reset);
             }
-            // if (find(suite, group, "bare-api-init", "native", "init")) |r| {
-            //     try out.print("bare API initialization: {s} (n={d}, warmup={d})\n", .{ try timeText(a, median(r)), r.iterations, r.warmup });
-            // }
         }
     }
     if (verbose) {

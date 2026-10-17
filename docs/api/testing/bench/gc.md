@@ -89,9 +89,8 @@
 
 ## Overview
 
-GC work distributions. Setup is outside each measured step. The counting
-allocator reports physical VM storage, including retained rollback copies;
-runtime_bytes reports the live managed heap used by collector pacing.
+GC work distributions. Byte counts are physical VM storage, including rollback
+copies; runtime_bytes is the live managed heap that drives collector pacing.
 
 ## Functions
 

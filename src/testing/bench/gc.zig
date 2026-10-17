@@ -1,6 +1,5 @@
-//! GC work distributions. Setup is outside each measured step. The counting
-//! allocator reports physical VM storage, including retained rollback copies;
-//! runtime_bytes reports the live managed heap used by collector pacing.
+//! GC work distributions. Byte counts are physical VM storage, including rollback
+//! copies; runtime_bytes is the live managed heap that drives collector pacing.
 const std = @import("std");
 const zlua = @import("../../root.zig");
 const results = @import("results.zig");
@@ -43,8 +42,7 @@ pub fn collect(allocator: std.mem.Allocator, io: std.Io, options: Options, suite
                 try lua.reset();
                 try prepare(&lua, workload);
             }
-            // Acquiring the host handle is setup; finalizer timing includes the
-            // Lua call that supplies an execution thread to collectgarbage.
+            // Finalizer timing includes the Lua call that gives collectgarbage a thread.
             var tick = try lua.getGlobal("tick", zlua.Function);
             defer tick.deinit();
             const before = counter.beginPhase();

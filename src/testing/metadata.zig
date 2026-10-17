@@ -55,7 +55,6 @@ fn parseEnum(comptime T: type, value: []const u8) !T {
     return std.meta.stringToEnum(T, value) orelse error.InvalidMetadataValue;
 }
 
-/// Whether `os` is listed in the fixture's `skip-os` names.
 pub fn skipsOs(meta: Metadata, os: std.Target.Os.Tag) bool {
     var names = std.mem.tokenizeAny(u8, meta.skip_os, " ,");
     while (names.next()) |name| {

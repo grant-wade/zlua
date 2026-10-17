@@ -30,8 +30,7 @@ pub fn concat(state: *State, thread: *Thread, op: bytecode.Call) !void {
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(out.items) }});
 }
 
-/// Returns the unique elements from the input sequence in first-occurrence order.
-/// Equality follows raw Lua table-key equality; non-array fields are ignored.
+/// Unique sequence elements in first-occurrence order, compared by raw key equality.
 pub fn dedup(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const table_value = runtime.argValue(state, thread, op, 0);
     _ = try state.expectArgumentTable(thread, op, "table.dedup", 0);

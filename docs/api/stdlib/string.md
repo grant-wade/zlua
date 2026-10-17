@@ -177,8 +177,7 @@ pub fn gmatchIter(state: *State, thread: *Thread, op: bytecode.Call) !void
 
 ## GmatchValues
 
-Results of one `string.gmatch` step: every capture (or the whole match),
-or no values once the subject is exhausted.
+Captures (or the whole match) of one `string.gmatch` step; empty when exhausted.
 
 ```zig
 pub const GmatchValues = struct {
@@ -281,8 +280,7 @@ pub fn reverse(state: *State, thread: *Thread, op: bytecode.Call) !void
 
 ## rsplit
 
-Returns an array table split from the right. An omitted separator splits on ASCII whitespace.
-The optional maximum split count defaults to unlimited.
+Like `split`, but splits from the right.
 
 ```zig
 pub fn rsplit(state: *State, thread: *Thread, op: bytecode.Call) !void
@@ -292,8 +290,7 @@ pub fn rsplit(state: *State, thread: *Thread, op: bytecode.Call) !void
 
 ## split
 
-Returns an array table of pieces. An omitted separator splits on ASCII whitespace.
-The optional maximum split count defaults to unlimited.
+Splits on the separator, or ASCII whitespace when omitted, up to an optional maximum count.
 
 ```zig
 pub fn split(state: *State, thread: *Thread, op: bytecode.Call) !void
@@ -303,7 +300,7 @@ pub fn split(state: *State, thread: *Thread, op: bytecode.Call) !void
 
 ## strip
 
-Removes leading and trailing ASCII whitespace, or bytes in the optional character set.
+Trims ASCII whitespace, or bytes in the optional character set.
 
 ```zig
 pub fn strip(state: *State, thread: *Thread, op: bytecode.Call) !void

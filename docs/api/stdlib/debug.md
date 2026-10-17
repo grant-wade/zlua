@@ -206,8 +206,7 @@ pub fn getmetatable(state: *State, thread: *Thread, op: bytecode.Call) !void
 
 ## debugPrompt
 
-Runs commands read from the stdin capability until "cont" or end of input,
-like Lua's `debug.debug`.
+Lua's `debug.debug`: runs stdin commands until "cont" or end of input.
 
 ```zig
 pub fn debugPrompt(state: *State, thread: *Thread, op: bytecode.Call) !void

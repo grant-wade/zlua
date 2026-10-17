@@ -1,10 +1,10 @@
 # zlua
 
-zlua is a source-compatible Lua 5.5 implementation written in Zig. You can use it as a command-line interpreter or embed it in a Zig application with control over what Lua can access.
+zlua is a source-compatible Lua 5.5 implementation written in Zig. You can use it as a command-line interpreter, or embed it in a Zig application and decide exactly what Lua code is allowed to touch.
 
-zlua is pre-1.0 and supports Zig `0.16.0` and `0.17.0`. The Zig embedding API is the main public interface; internals and binary chunks may still change.
+zlua is pre-1.0 and supports Zig `0.16.0` and `0.17.0`. The Zig embedding API is the main public interface. Internals and the binary chunk format may still change between releases.
 
-Development is hosted on GitHub. Codeberg is a source mirror.
+Development happens on GitHub, and Codeberg hosts a source mirror.
 
 ## Quickstart
 
@@ -75,19 +75,19 @@ Output:
 remaining=0
 ```
 
-By default, a state opens sandbox-friendly standard libraries. Hosts can opt into filesystem access, output, clocks, processes, bytecode, callbacks, userdata, and resource limits.
+By default, a new state opens only the sandbox-friendly standard libraries. Everything else is up to the host: filesystem access, output, clocks, processes, bytecode, callbacks, userdata, and resource limits are all opt-in.
 
 ## Goals
 
-zlua follows the official Lua 5.5 implementation as closely as practical, including parser behavior, runtime semantics, standard libraries, and diagnostics. It aims to:
+zlua follows the official Lua 5.5 implementation as closely as practical, from parser behavior and runtime semantics to the standard libraries and diagnostics. Beyond compatibility, the project has three goals:
 
 - Run Lua 5.5 programs from the command line.
 - Make Lua straightforward to embed in Zig.
-- Give hosts explicit control over capabilities and resource limits.
+- Give hosts explicit control over what Lua can access and how many resources it can use.
 
 ## Common Commands
 
-Build the CLI and Lua 5.5 reference binary:
+These are the commands you will reach for most often. Build the CLI and the Lua 5.5 reference binary:
 
 ```sh
 zig build
@@ -105,7 +105,7 @@ Compile and run the Zig embedding examples:
 zig build examples
 ```
 
-Run the full check suite:
+Run the full check suite before you send a change:
 
 ```sh
 zig build ci
@@ -113,20 +113,18 @@ zig build ci
 
 ## Compatibility
 
-The build downloads the Lua 5.5 sources and official tests, then builds a local `lua5.5` as a reference. You do not need a system Lua installation.
+Compatibility is checked against the real thing. The build downloads the Lua 5.5 sources and official tests, then builds a local `lua5.5` to compare against, so you do not need Lua installed on your system.
 
-`zig build ci` runs:
+`zig build ci` brings all of this together. It runs:
 
 - Zig unit tests for the compiler, runtime, and public API.
-- Small Lua programs against both zlua and the official implementation.
+- Small Lua programs under both zlua and the official implementation, comparing the results.
 - The upstream Lua 5.5 test suite.
-- Zig embedding examples.
+- The Zig embedding examples.
 
 ## More Documentation
 
-The [documentation index](docs/README.md) covers embedding, the standard library, commands, testing, architecture, and development workflows.
-
-Release notes are in the [changelog](CHANGELOG.md).
+The [documentation index](docs/README.md) links to guides on embedding, the standard library, commands, testing, architecture, and the development workflow. Release notes are in the [changelog](CHANGELOG.md).
 
 ## License
 

@@ -1,6 +1,6 @@
 # Commands
 
-Use `just` for short local commands and `zig build` for the underlying build graph. Arguments after `zig build <step> --` are forwarded to the step's executable.
+There are two ways to drive the project. `zig build` is the underlying build graph and exposes every step and option. `just` wraps the most common steps in shorter recipes for local work. When you pass arguments after `zig build <step> --`, they are forwarded to that step's executable.
 
 ## Common Commands
 
@@ -19,58 +19,59 @@ just bench
 
 ## just Recipes
 
-Most recipes wrap a similarly named build step:
+Most recipes are thin wrappers around the build step of the same or a similar name:
 
 | Recipe | Action |
 | --- | --- |
-| `just build`, `just release` | Default build, or a ReleaseSafe build. |
-| `just docs`, `just docs-serve`, `just docs-serve-pub` | Build Zig HTML docs and optionally serve them locally. The public form binds `0.0.0.0`. |
-| `just fetch-lua` | Download Lua 5.5 source and tests. |
-| `just test`, `just ci` | Run Zig tests or the complete check. |
+| `just build`, `just release` | Run the default build, or a ReleaseSafe build. |
+| `just docs`, `just docs-serve`, `just docs-serve-pub` | Build the Zig HTML docs and optionally serve them locally. The public form binds `0.0.0.0`. |
+| `just fetch-lua` | Download the Lua 5.5 source and tests. |
+| `just test`, `just ci` | Run the Zig tests or the complete check. |
 | `just examples` | Compile and run all embedding examples. |
 | `just run [args...]` | Run the zlua CLI. |
-| `just version`, `just clua-version` | Print zlua or downloaded Lua version information. |
-| `just diff [args...]` | Run differential tests with `--debug-errors`. |
-| `just extensions [args...]` | Run zlua extension fixtures. |
-| `just official [args...]` | Run official tests with debug errors and a 256 MiB Linux child cap. |
-| `just bench [args...]` | Run the full benchmark suite, or selected cases. |
-| `just fmt` | Format top-level source, testing, build, and example files. |
+| `just version`, `just clua-version` | Print version information for zlua or the downloaded Lua. |
+| `just diff [args...]` | Run the differential tests with `--debug-errors`. |
+| `just extensions [args...]` | Run the zlua extension fixtures. |
+| `just official [args...]` | Run the official tests with debug errors and a 256 MiB child cap on Linux. |
+| `just bench [args...]` | Run the full benchmark suite, or only the cases you select. |
+| `just fmt` | Format the top-level source, testing, build, and example files. |
 | `just clean` | Remove `zig-out/` and `.zig-cache/`. |
 
-Use Zig `0.16.0` for formatting, for example `just --set zig /path/to/zig-0.16.0/zig fmt`.
-The Zig `0.17.0` formatter can introduce syntax that `0.16.0` cannot parse.
+Format with Zig `0.16.0`, because the Zig `0.17.0` formatter can introduce syntax that `0.16.0` cannot parse. If `zig` on your `PATH` is a newer version, point the recipe at a 0.16 compiler, for example `just --set zig /path/to/zig-0.16.0/zig fmt`.
 
 ## Build Options
 
 | Option | Meaning |
 | --- | --- |
-| `-Dtarget=<target>` | Zig target selection. |
-| `--release=safe`, `--release=fast`, `--release=small` | Select a release mode on either supported Zig version. The default is a debug build. |
+| `-Dtarget=<target>` | Select the Zig target. |
+| `--release=safe`, `--release=fast`, `--release=small` | Select a release mode; this spelling works on both supported Zig versions. Without it you get a debug build. |
 | `-Doptimize=<mode>` | Zig 0.16: `Debug`, `ReleaseSafe`, `ReleaseFast`, `ReleaseSmall`. Zig 0.17: `debug`, `safe`, `fast`, `small`. |
-| `-Dofficial-memory-limit-mb=<n>` | Child cap for official tests on Linux. Defaults to `256` on Linux and `0` elsewhere; `0` disables it. |
+| `-Dofficial-memory-limit-mb=<n>` | Memory cap for each official-test child process on Linux. Defaults to `256` on Linux and `0` elsewhere; `0` disables it. |
+| `-Dofficial-timeout-ms=<n>` | Timeout for each official-test child process. Defaults to `120000`; `0` disables it. |
 
 ## Build Steps
 
 | Step | Purpose |
 | --- | --- |
 | `zig build` | Install `zlua`, `lua5.5`, and the differential, extension, official, and benchmark harnesses. |
-| `fetch-lua` | Download and verify Lua 5.5 source and official tests. |
+| `fetch-lua` | Download and verify the Lua 5.5 source and official tests. |
 | `run -- [args...]` | Run the zlua CLI. |
-| `docs` | Generate Zig HTML docs under `zig-out/docs`. |
-| `docs-md` | Regenerate Markdown API docs under `docs/api/`. |
-| `check-tools` | Compile the documentation tools and run documentation-generator tests. |
+| `docs` | Generate the Zig HTML docs under `zig-out/docs`. |
+| `docs-md` | Regenerate the Markdown API docs under `docs/api/`. |
+| `check-tools` | Compile the documentation tools and run the documentation-generator tests. |
 | `docs-serve -- [host] [port]` | Serve `zig-out/docs`; defaults to `127.0.0.1:8000`. |
-| `test` | Run Zig unit tests and the freestanding smoke test. |
-| `test-freestanding` | Build the x86_64 freestanding custom-host smoke test; run it on x86_64 Linux hosts. |
+| `test` | Run the Zig unit tests and the freestanding smoke tests. |
+| `test-freestanding` | Build the x86_64 freestanding custom-host smoke test, and run it on x86_64 Linux hosts. |
+| `test-wasm` | Run the freestanding smoke test in wasm32 using Node.js. |
 | `examples` | Compile and run every embedding example. |
 | `test-diff` | Run all CLua differential fixtures. |
-| `run-test-diff -- [args...]` | Run the differential harness with filters/options. |
+| `run-test-diff -- [args...]` | Run the differential harness with your own filters and options. |
 | `test-extensions` | Run all zlua extension fixtures. |
-| `run-test-extensions -- [args...]` | Run the extension harness with filters/options. |
+| `run-test-extensions -- [args...]` | Run the extension harness with your own filters and options. |
 | `test-official` | Run the complete official-suite dashboard. |
 | `run-test-official -- [args...]` | Run selected official tests or modes. |
-| `bench -- [args...]` | Run all benchmark groups sequentially with one combined report. |
-| `ci` | Run tests, examples, differential, extension, and official checks. |
+| `bench -- [args...]` | Run all benchmark groups one after another and print one combined report. |
+| `ci` | Run the tests, examples, and the differential, extension, and official checks. |
 
 ## zlua CLI
 
@@ -78,16 +79,16 @@ The Zig `0.17.0` formatter can introduce syntax that `0.16.0` cannot parse.
 zlua [options] [script [args...]]
 ```
 
-The CLI starts with full libraries and host filesystem, environment, process, clock, and I/O access. Zig embedding defaults are sandboxed instead.
+The CLI starts with the full standard library and access to the host filesystem, environment, processes, clocks, and I/O. Zig embedding works the other way around: a state starts sandboxed, and the host opts in to what it needs.
 
 | Option | Meaning |
 | --- | --- |
 | `-h`, `--help` | Print usage. |
-| `-v`, `--version` | Print zlua and target Lua versions. With no other input on a TTY, exit afterward. |
-| `--stdlib MODE` or `--stdlib=MODE` | Select `none`, `base`, `safe`, `full`, or a comma/plus-separated library list. |
-| `-e CHUNK` or `-eCHUNK` | Execute a command-line chunk; may be repeated. |
-| `-i` | Enter the REPL after command-line chunks and a script. |
-| `-W` | Turn warnings on. Like `lua`, the CLI starts with them off and applies `-W` and `-e` in order. |
+| `-v`, `--version` | Print the zlua and target Lua versions. If there is no other input and stdin is a TTY, exit afterward. |
+| `--stdlib MODE` or `--stdlib=MODE` | Select `none`, `base`, `safe`, `full`, or a comma- or plus-separated list of libraries. |
+| `-e CHUNK` or `-eCHUNK` | Execute a chunk given on the command line. You can repeat it. |
+| `-i` | Enter the REPL after running any command-line chunks and the script. |
+| `-W` | Turn warnings on. Like `lua`, the CLI starts with warnings off and applies `-W` and `-e` in the order given. |
 | `--debug-errors` | Include internal runtime diagnostics. |
 | `--trace-vm` | Trace VM instructions. |
 | `--dump-ast` | Parse and print an AST-oriented dump. |
@@ -96,20 +97,18 @@ The CLI starts with full libraries and host filesystem, environment, process, cl
 | `--` | Stop option parsing. |
 | `-` | Read the script from stdin. |
 
-Explicit library names are `base`, `table`, `string`, `math`, `utf8`, `coroutine`, `io`, `os`, `debug`, `package`, `json`, `toml`, `msgpack`, `csv`, and `fs`.
+The library names you can list explicitly are `base`, `table`, `string`, `math`, `utf8`, `coroutine`, `io`, `os`, `debug`, `package`, `json`, `toml`, `msgpack`, `csv`, and `fs`.
 
-With no input, zlua starts a REPL on a TTY or executes piped stdin. Script and stdin reads are capped at 1 MiB, and an initial shebang is stripped. The REPL supports multiline input and `=expr` shorthand.
+If you give zlua no input, it starts a REPL when stdin is a TTY and otherwise executes whatever is piped in. Script and stdin reads are capped at 1 MiB, and a leading shebang line is stripped. The REPL accepts multiline input and the `=expr` shorthand.
 
-Lua output streams as it is produced, buffered like C `lua`:
+Lua output streams as it is produced and is buffered the same way C `lua` buffers it:
 
-- stdout is line buffered on a terminal. Otherwise it is block buffered, and `print` flushes it like `lua_writeline`.
+- On a terminal, stdout is line buffered. Otherwise it is block buffered, and `print` flushes it, as `lua_writeline` does.
 - stderr is unbuffered.
-- stdout is flushed by `io.flush`, before child processes start, and at exit.
-- Open file handles that were never closed are flushed at exit, as C `exit` flushes every stream.
+- stdout is also flushed by `io.flush`, before a child process starts, and at exit.
+- Open file handles that were never closed are flushed at exit, just as C `exit` flushes every stream.
 
-Chunks run under `lua`'s message handler, so uncaught errors print a traceback.
-
-`io.read`, `io.lines`, and `loadfile()` read stdin incrementally, so scripts can prompt for input.
+Chunks run under `lua`'s message handler, so an uncaught error prints a traceback. `io.read`, `io.lines`, and `loadfile()` read stdin incrementally, which means scripts can prompt for input.
 
 ## Harnesses
 
@@ -122,17 +121,17 @@ just diff [options] [path]
 
 | Option | Meaning |
 | --- | --- |
-| `path` | File or directory; defaults to `tests/diff`. |
+| `path` | File or directory to run; defaults to `tests/diff`. |
 | `--clua PATH`, `--clua=PATH` | Reference interpreter. |
 | `--stage=STAGE` | `lex`, `parse`, `resolve`, `compile`, `runtime`, `stdlib`, or `official`. |
-| `--feature=TAG` | Filter fixture metadata. |
+| `--feature=TAG` | Filter on fixture metadata. |
 | `--timeout-ms=N` | Per-process timeout; default `5000`. |
-| `--show-clua`, `--show-zlua` | Print engine output. |
-| `--gc-stress` | Collect aggressively during zlua execution. |
-| `--gc-step-stress` | Run incremental collection steps during zlua execution. |
+| `--show-clua`, `--show-zlua` | Print each engine's output. |
+| `--gc-stress` | Collect aggressively while zlua runs. |
+| `--gc-step-stress` | Run incremental collection steps while zlua runs. |
 | `--debug-errors` | Enable zlua internal diagnostics. |
 
-CLua discovery is: explicit option, `ZLUA_CLUA`, `zig-out/bin/lua5.5`, then a Lua 5.5 binary on `PATH`.
+The harness looks for the reference interpreter in this order: the explicit option, `ZLUA_CLUA`, `zig-out/bin/lua5.5`, and then a Lua 5.5 binary on `PATH`.
 
 ### zlua Extensions
 
@@ -143,12 +142,12 @@ just extensions [options] [path]
 
 | Option | Meaning |
 | --- | --- |
-| `path` | File or directory; defaults to `tests/extensions`. |
+| `path` | File or directory to run; defaults to `tests/extensions`. |
 | `--zlua PATH`, `--zlua=PATH` | zlua executable. |
 | `--stdlib MODE`, `--stdlib=MODE` | Library selection; defaults to `safe`. `fs` fixtures use `full`. |
 | `--timeout-ms=N` | Per-process timeout; default `5000`. |
 | `--show-output` | Print fixture stdout and stderr. |
-| `--bless` | Rewrite `.out`, `.err`, and `.exit` expectations from the actual run and list changed files. |
+| `--bless` | Rewrite the `.out`, `.err`, and `.exit` expectations from the actual run and list the files that changed. |
 
 ### Official Suite
 
@@ -159,14 +158,14 @@ just official [options] [files...]
 
 | Option | Meaning |
 | --- | --- |
-| `files...` | Test basenames/files. No arguments runs every top-level `.lua` except `all.lua`. |
+| `files...` | Test basenames or files. With no arguments, every top-level `.lua` file except `all.lua` runs. |
 | `--clua PATH`, `--clua=PATH` | Reference interpreter. |
 | `--zlua PATH`, `--zlua=PATH` | zlua executable. |
-| `--suite-path PATH`, `--suite-path=PATH` | Alternate extracted test directory. |
+| `--suite-path PATH`, `--suite-path=PATH` | Use a different extracted test directory. |
 | `--mode=basic|complete` | Prelude mode. `internal` is rejected because `testC` builds are not supported. |
 | `--timeout-ms=N` | Per-process timeout; `0` means none. |
-| `--memory-limit-mb=N` | Linux child cap; `0` means none. |
-| `--show-clua`, `--show-zlua` | Print engine output. |
+| `--memory-limit-mb=N` | Child memory cap on Linux; `0` means none. |
+| `--show-clua`, `--show-zlua` | Print each engine's output. |
 | `--debug-errors` | Enable zlua internal diagnostics. |
 
 ### Benchmarks
@@ -178,20 +177,21 @@ just bench [options] [selectors...]
 
 | Option | Meaning |
 | --- | --- |
-| `selectors...` | Group, case, or process fixture name/path. |
-| `--list` | List selected benchmark cases. |
-| `--clua PATH`, `--zlua PATH`, `--zlua-snapshot PATH` | Override process benchmark executables; `=PATH` forms also work. |
-| `--iterations N` | Override measured runs; must be positive. |
-| `--warmup N`, `--no-warmup` | Override warmup runs. |
-| `--timeout-ms N` | Positive per-process timeout. |
-| `--category NAME` | Filter metadata category. |
-| `--json PATH`, `--csv PATH` | Write reports. |
+| `selectors...` | Group, case, or process fixture name or path. |
+| `--list` | List the selected benchmark cases. |
+| `--family=NAME` | Run one group: `process`, `startup`, `snapshots`, `gc`, or `all` (the default). |
+| `--clua PATH`, `--zlua PATH`, `--zlua-snapshot PATH` | Override the process benchmark executables; the `=PATH` forms also work. |
+| `--iterations N` | Override the number of measured runs; must be positive. |
+| `--warmup N`, `--no-warmup` | Override the number of warmup runs. |
+| `--timeout-ms N` | Per-process timeout; must be positive. |
+| `--category NAME` | Filter on metadata category. |
+| `--json PATH`, `--csv PATH` | Write reports to these files. |
 | `--debug-errors` | Enable zlua internal diagnostics. |
 | `--verbose` | Show timing spread, phases, and allocation details. |
 
-The value-taking options above also accept `--name=value` forms.
+The options above that take a value also accept the `--name=value` form.
 
-With no selectors, every group runs. You can still narrow a run when needed:
+With no selectors, every group runs. You can narrow a run when you only care about part of the suite:
 
 ```sh
 zig build bench -- startup --iterations=1000 --warmup=100
@@ -201,10 +201,12 @@ zig build bench -- --json /tmp/bench.json
 
 ## Dependency Environment
 
+These variables let you point the build and harnesses at a different reference interpreter or a local mirror of the Lua archives:
+
 | Variable | Meaning |
 | --- | --- |
-| `ZLUA_CLUA` | Preferred reference interpreter when `--clua` is absent. |
+| `ZLUA_CLUA` | Preferred reference interpreter when `--clua` is not given. |
 | `ZLUA_LUA_URL` | Override the Lua source archive URL. |
 | `ZLUA_LUA_TESTS_URL` | Override the official-tests archive URL. |
 
-Downloaded Lua files live under `.zlua-deps/`; build outputs live under `zig-out/` and `.zig-cache/`.
+Downloaded Lua files are kept under `.zlua-deps/`, and build outputs go to `zig-out/` and `.zig-cache/`.

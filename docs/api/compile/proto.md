@@ -218,20 +218,15 @@ pub const Proto = struct {
     defined_line: usize = 0,
     last_defined_line: usize = 0,
     has_to_close_locals: bool = false,
-    /// Runtime metadata derived once when the runtime loads the prototype
-    /// tree (see `runtime/value.zig` `prepareProtoTree`). Prepared prototypes
-    /// are immutable afterwards and may be shared by snapshot workers. The
-    /// defaults select the general VM paths for unprepared prototypes.
+    /// Runtime metadata set once by `prepareProtoTree`; prepared prototypes are immutable
+    /// and shareable. Defaults select the general VM paths.
     runtime_prepared: bool = false,
     named_vararg_readonly: bool = false,
-    /// The plain fast loop may run this prototype: it has no to-be-closed
-    /// locals and its last opcode stops sequential dispatch.
+    /// No to-be-closed locals and a last opcode that stops dispatch, so the fast loop may run it.
     fast_loop_entry: bool = false,
-    /// `fast_loop_entry` with a fixed parameter list, so the fast loop's
-    /// call path can push a frame for it without capturing varargs.
+    /// `fast_loop_entry` with fixed parameters, so calls need not capture varargs.
     fast_loop_call: bool = false,
-    /// Decoded non-string constants, indexed like `constants`. A `.string`
-    /// slot means the value is per-State (interned) and uses the closure cache.
+    /// Decoded constants indexed like `constants`; `.string` slots are per-State via the closure cache.
     constant_values: []const RuntimeValue = &.{},
 };
 ```
@@ -243,10 +238,10 @@ pub const Proto = struct {
 | [init](#fn-proto-init) | `allocator: std.mem.Allocator` | `Proto` |  |
 | [deinit](#fn-proto-deinit) | `self: *Proto` | `void` |  |
 | [pc](#fn-proto-pc) | `self: Proto` | `usize` |  |
-| [hasReadOnlyNamedVararg](#fn-proto-hasreadonlynamedvararg) | `self: *const Proto` | `bool` | Direct reads of an unmodified named vararg can use the argument slice. Any escape, write, or capture requires the ordinary table representation. |
+| [hasReadOnlyNamedVararg](#fn-proto-hasreadonlynamedvararg) | `self: *const Proto` | `bool` | True when the named vararg is never written, captured, or escaped, so reads can use the argument slice. |
 | [emit](#fn-proto-emit) | `self: *Proto, instruction: bytecode.Instruction, line: usize` | `!usize` |  |
 | [patchJump](#fn-proto-patchjump) | `self: *Proto, index: usize, target_pc: usize` | `!void` |  |
-| [addConstant](#fn-proto-addconstant) | `self: *Proto, constant: bytecode.Constant` | `!bytecode.ConstantIndex` | Linear-time deduplicating insert. The compiler keeps its own index and calls &#96;appendConstant&#96; directly. |
+| [addConstant](#fn-proto-addconstant) | `self: *Proto, constant: bytecode.Constant` | `!bytecode.ConstantIndex` | Linear-time deduplicating insert; the compiler uses &#96;appendConstant&#96; with its own index. |
 | [appendConstant](#fn-proto-appendconstant) | `self: *Proto, constant: bytecode.Constant` | `!bytecode.ConstantIndex` | Appends an owned copy without searching for an existing entry. |
 | [addLocal](#fn-proto-addlocal) | `self: *Proto, local: LocalDebug` | `!usize` |  |
 | [addUpvalue](#fn-proto-addupvalue) | `self: *Proto, upvalue: UpvalueDesc` | `!bytecode.UpvalueIndex` |  |
@@ -289,8 +284,7 @@ References: [`Proto`](#type-proto)
 
 ### Proto.hasReadOnlyNamedVararg
 
-Direct reads of an unmodified named vararg can use the argument slice.
-Any escape, write, or capture requires the ordinary table representation.
+True when the named vararg is never written, captured, or escaped, so reads can use the argument slice.
 
 ```zig
 pub fn hasReadOnlyNamedVararg(self: *const Proto) bool
@@ -322,8 +316,7 @@ References: [`Proto`](#type-proto)
 
 ### Proto.addConstant
 
-Linear-time deduplicating insert. The compiler keeps its own index
-and calls `appendConstant` directly.
+Linear-time deduplicating insert; the compiler uses `appendConstant` with its own index.
 
 ```zig
 pub fn addConstant(self: *Proto, constant: bytecode.Constant) !bytecode.ConstantIndex

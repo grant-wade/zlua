@@ -3,15 +3,11 @@ const types = @import("types.zig");
 
 const Thread = types.Thread;
 
-/// Main-loop instructions between interrupt polls once a state has an
-/// interrupt control. The fast loop also polls at backward jumps and calls.
+/// Instructions between interrupt polls; the fast loop also polls at backward jumps and calls.
 pub const interrupt_poll_interval: u64 = 1024;
 
-/// Interrupt request shared between a state and host threads.
-///
-/// The state allocates it on first request and frees it in `deinit`, so its
-/// address stays stable when the owning state value moves. Only `requested`
-/// is touched from other threads.
+/// Interrupt request shared with host threads. Heap-allocated so its address
+/// survives moves of the owning state.
 pub const InterruptControl = struct {
     requested: std.atomic.Value(bool) = .init(false),
 
@@ -28,18 +24,14 @@ pub const InterruptControl = struct {
     }
 };
 
-/// Per-instruction safepoint for the general dispatch loop. The common case
-/// is one comparison against `instruction_checkpoint`; budgets, interrupt
-/// polls, and recomputation after a budget change share the cold path.
+/// Per-instruction safepoint; the hot path is one comparison against `instruction_checkpoint`.
 pub inline fn checkExecutionLimits(comptime State: type, self: *State, thread: *Thread) !void {
     if (self.instruction_count >= self.instruction_checkpoint) try executionCheckpoint(State, self, thread);
     self.instruction_count = self.instruction_count +| 1;
 }
 
-/// Checkpoint slow path. Interrupts and exhausted budgets leave the
-/// checkpoint in place, so every later safepoint raises again until the host
-/// clears the interrupt or the budget scope ends: Lua code cannot catch them
-/// and keep running.
+/// Interrupts and exhausted budgets leave the checkpoint in place so every later
+/// safepoint raises again; Lua code cannot catch them and keep running.
 pub noinline fn executionCheckpoint(comptime State: type, self: *State, thread: *Thread) !void {
     if (self.interruptRequested()) return error.Interrupted;
     if (instructionBudgetExhausted(State, self)) {
@@ -50,8 +42,7 @@ pub noinline fn executionCheckpoint(comptime State: type, self: *State, thread: 
     self.instruction_checkpoint = nextCheckpoint(State, self);
 }
 
-/// Raises `error.Interrupted` when a host thread has requested an interrupt.
-/// Long-running native functions call this periodically.
+/// Polled periodically by long-running native functions.
 pub fn checkInterrupt(comptime State: type, self: *State) !void {
     if (self.interruptRequested()) {
         self.instruction_checkpoint = 0;

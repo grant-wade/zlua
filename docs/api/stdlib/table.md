@@ -111,8 +111,7 @@ pub fn concat(state: *State, thread: *Thread, op: bytecode.Call) !void
 
 ## dedup
 
-Returns the unique elements from the input sequence in first-occurrence order.
-Equality follows raw Lua table-key equality; non-array fields are ignored.
+Unique sequence elements in first-occurrence order, compared by raw key equality.
 
 ```zig
 pub fn dedup(state: *State, thread: *Thread, op: bytecode.Call) !void

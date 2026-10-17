@@ -201,8 +201,7 @@ References: [`Value`](#alias-value)
 
 ## coerceToInteger
 
-Converts like `lua_tointegerx`: floats and numeric strings convert only
-when their value is an exact integer.
+Like `lua_tointegerx`: floats and numeric strings convert only when exactly integral.
 
 ```zig
 pub fn coerceToInteger(value: Value) ?i64
@@ -302,9 +301,8 @@ References: [`Value`](#alias-value)
 
 ## prepareProtoTree
 
-Derive per-prototype runtime metadata once, before any closure of the tree
-runs. Prepared prototypes are never written again, so snapshot workers may
-share them. Prototypes that skip this keep defaults selecting general paths.
+Must run before any closure of the tree runs. Prepared prototypes are never
+written again, so snapshot workers may share them.
 
 ```zig
 pub fn prepareProtoTree(proto: *proto_mod.Proto) !void
@@ -440,8 +438,7 @@ pub fn appendNumber(allocator: std.mem.Allocator, out: *std.ArrayList(u8), numbe
 
 ## max_number_text_len
 
-Fits the longest decimal rendering of any f64 (subnormals expand to
-about 343 bytes) plus a sign and a ".0" suffix.
+Fits the longest f64 rendering (subnormals reach ~343 digits) plus sign and ".0".
 
 ```zig
 pub const max_number_text_len = 400;
@@ -451,7 +448,7 @@ pub const max_number_text_len = 400;
 
 ## formatNumber
 
-Renders an integer or float value as `tostring` and concatenation do.
+Formats as `tostring` and concatenation do.
 
 ```zig
 pub fn formatNumber(buffer: *[max_number_text_len]u8, value: Value) []const u8

@@ -130,7 +130,7 @@ Local-time offset for one instant, in seconds east of UTC.
 pub const LocalOffset = struct {
     offset: i32 = 0,
     is_dst: bool = false,
-    /// Zone abbreviation when known. Borrowed from the zone that produced it.
+    /// Zone abbreviation, borrowed from the zone that produced it.
     name: ?[]const u8 = null,
 };
 ```
@@ -278,8 +278,7 @@ References: [`PosixRule`](#type-posixrule), [`LocalOffset`](#type-localoffset)
 
 ## Zone
 
-A loaded local time zone: TZif transitions with an optional POSIX footer,
-or a POSIX rule alone.
+TZif transitions with an optional POSIX footer, or a POSIX rule alone.
 
 ```zig
 pub const Zone = struct {
@@ -380,9 +379,8 @@ References: [`Zone`](#type-zone), [`LocalOffset`](#type-localoffset)
 
 ## localToUtc
 
-Converts local seconds (wall-clock seconds counted as if UTC) to a Unix
-timestamp, following `mktime`: `is_dst` null lets the zone decide, while a
-definite value prefers an offset with that daylight-saving state.
+Converts local wall-clock seconds to a Unix timestamp like `mktime`;
+a non-null `is_dst` prefers an offset with that daylight-saving state.
 
 ```zig
 pub fn localToUtc(context: anytype, comptime offsetAt: fn (@TypeOf(context), i64) anyerror!LocalOffset, local: i64, is_dst: ?bool) !i64

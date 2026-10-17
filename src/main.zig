@@ -14,8 +14,7 @@ const DumpMode = enum {
 
 const CliOptions = struct {
     evals: std.ArrayList([]const u8) = .empty,
-    /// For each `-W`, the number of `-e` chunks before it; `lua` handles
-    /// both options in order.
+    /// For each `-W`, the number of `-e` chunks before it, preserving option order.
     warning_points: std.ArrayList(usize) = .empty,
     script_path: ?[]const u8 = null,
     script_index: ?usize = null,

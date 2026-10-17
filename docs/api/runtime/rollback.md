@@ -183,7 +183,7 @@ pub const Journal = struct {
     new_objects: std.AutoHashMap(usize, Allocation),
     registries_detached: bool = false,
     output_detached: bool = false,
-    /// Counts logical restored records, independently of the size of the heap.
+    /// Logical restored records, independent of heap size.
     last_restored_objects: usize = 0,
 };
 ```

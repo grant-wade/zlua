@@ -1,8 +1,10 @@
 # Development
 
-zlua supports Zig `0.16.0` and `0.17.0`. The package depends on `zerde`; the build also downloads Lua 5.5 source and official tests into the ignored `.zlua-deps/` directory. A system Lua installation is not required.
+zlua supports Zig `0.16.0` and `0.17.0`. Its only package dependency is `zerde`. The build also downloads the Lua 5.5 source and official tests into `.zlua-deps/`, a directory Git ignores, so you don't need Lua installed on your system.
 
 ## Repository Map
+
+The source tree follows the path a Lua program takes: the frontend parses it, the compiler turns it into bytecode, and the runtime executes it with the standard libraries.
 
 | Path | Purpose |
 | --- | --- |
@@ -16,7 +18,7 @@ zlua supports Zig `0.16.0` and `0.17.0`. The package depends on `zerde`; the bui
 | `examples/` | Zig embedding examples and API smoke tests. |
 | `tests/` | Lua, extension, and benchmark fixtures. |
 
-Embedding applications should use `zlua.State` from `src/api.zig`. Runtime types are available to zlua itself and its tests but are not a stable host contract.
+Applications that embed zlua should go through `zlua.State` from `src/api.zig`. The runtime types are available to zlua itself and its tests, but they are not a stable contract for hosts.
 
 ## Everyday Commands
 
@@ -32,25 +34,27 @@ just extensions tests/extensions/string
 just bench --category table
 ```
 
-Use `zig build --help` for build steps and `docs/commands.md` for harness flags.
+For the full list of build steps, run `zig build --help`. Harness flags are documented in `docs/commands.md`.
 
 ## Source Conventions
 
-- Follow the Zig 0.16 `std.Io` model. CLI and test code pass explicit I/O handles rather than relying on process-global helpers.
+A few conventions keep the codebase consistent:
+
+- Follow the Zig 0.16 `std.Io` model. CLI and test code pass explicit I/O handles instead of relying on process-global helpers.
 - Treat Lua 5.5 `global` declarations and `<const>`/`<close>` attributes as supported language features.
 - Keep imports and commonly used type aliases at file scope.
-- Prefer a small addition to `src/api.zig` over exposing runtime internals.
-- Keep zlua binary chunks internal; they are not a stable ABI or PUC Lua `luac` format.
-- Let downloaded Lua 5.5 behavior and tests decide Lua-visible edge cases.
+- If a host needs something new, prefer a small addition to `src/api.zig` over exposing runtime internals.
+- Keep zlua binary chunks internal. They are not a stable ABI, and they are not the PUC Lua `luac` format.
+- When a Lua-visible edge case is unclear, let the downloaded Lua 5.5 behavior and tests decide it.
 
-Prefer:
+For imports, prefer this:
 
 ```zig
 const std = @import("std");
 const Dir = std.Io.Dir;
 ```
 
-rather than repeating inline imports or long qualified names throughout a file.
+over repeating inline imports or long qualified names throughout a file.
 
 ### Formatting
 
@@ -58,22 +62,22 @@ rather than repeating inline imports or long qualified names throughout a file.
 just fmt
 ```
 
-The recipe formats `build.zig`, top-level `src/*.zig`, `src/testing/*.zig`, and `examples/*.zig`. Run `zig fmt` directly for changed files in nested source directories.
+The recipe formats `build.zig`, top-level `src/*.zig`, `src/testing/*.zig`, and `examples/*.zig`, and it requires Zig 0.16. For changed files in other nested source directories, run `zig fmt` on them directly.
 
 ## Workflow
 
-For a behavior change:
+When you change behavior, work from a test outward:
 
-1. Add the smallest Lua fixture, extension fixture, Zig test, or embedding example that demonstrates it.
-2. Compare Lua-visible behavior with downloaded Lua 5.5.
-3. Make the narrowest compatible change.
-4. Run the focused test first, then `zig build ci` when the change crosses shared compiler, runtime, GC, stdlib, or API code.
+1. Add the smallest Lua fixture, extension fixture, Zig test, or embedding example that demonstrates the behavior.
+2. Compare the Lua-visible behavior with the downloaded Lua 5.5.
+3. Make the narrowest change that stays compatible.
+4. Run the focused test first. If the change touches shared compiler, runtime, GC, stdlib, or API code, run `zig build ci` as well.
 
-When an official test finds a bug, add a smaller permanent regression fixture when practical. Expected failures need a reason and should be removed as soon as the behavior works. Benchmarks are diagnostics, not correctness gates.
+When an official test turns up a bug, add a smaller permanent regression fixture if you can. Any expected failure needs a reason, and it should be removed as soon as the behavior works. Benchmarks are a diagnostic tool, not a correctness gate.
 
 ## Dependency Cache
 
-`tools/fetch-lua.sh` downloads and verifies Lua archives under `.zlua-deps/`. Local mirrors can override the URLs:
+`tools/fetch-lua.sh` downloads the Lua archives into `.zlua-deps/` and verifies them. If you use a local mirror, you can override the URLs:
 
 ```sh
 ZLUA_LUA_URL=https://example.invalid/lua-5.5.0.tar.gz \

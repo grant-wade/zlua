@@ -7,8 +7,7 @@ pub fn normalizeText(
     mode: metadata.Normalize,
     cwd: []const u8,
 ) ![]u8 {
-    // These harnesses compare text. CLua's Windows CRT and Git checkouts can
-    // produce CRLF, while the in-process VM writes LF. Preserve lone CRs.
+    // CLua on Windows and Git checkouts may produce CRLF; the VM writes LF.
     const text = try std.mem.replaceOwned(u8, allocator, input, "\r\n", "\n");
     errdefer allocator.free(text);
     switch (mode) {

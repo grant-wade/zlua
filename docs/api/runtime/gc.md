@@ -296,8 +296,7 @@ pub fn noteTableCapacityDelta(comptime State: type, self: *State, table: *Table,
 
 ## threadCapacityBytes
 
-Managed backing capacities; allocator overhead and rollback copies are
-measured separately by the embedding allocator, never used to pace GC.
+Managed backing capacity; excludes allocator overhead and rollback copies.
 
 ```zig
 pub fn threadCapacityBytes(thread: *const Thread) usize
@@ -704,11 +703,8 @@ pub fn runFinalizerBatch(comptime State: type, self: *State, thread: ?*Thread, l
 
 ## checkUserdataFinalizer
 
-Registers `userdata` for its metatable's `__gc` when it is not yet
-registered, like `luaC_checkfinalizer`. Lua registers a file handle when
-it is created, so one given another metatable calls whatever `__gc` that
-metatable has when it dies, in its creation order; with the file
-metatable it keeps the built-in close.
+Registers `userdata` for its metatable's `__gc` if needed, like `luaC_checkfinalizer`.
+[File](../stdlib/io.md#type-file) handles are registered at creation, so they finalize in creation order.
 
 ```zig
 pub fn checkUserdataFinalizer(comptime State: type, self: *State, userdata: *Userdata) void

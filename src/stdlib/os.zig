@@ -86,8 +86,7 @@ pub fn fileFailure(state: *State, thread: *Thread, op: bytecode.Call, path: ?[]c
     try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.intern(message) }, .{ .integer = info.errno } });
 }
 
-/// Like `mkstemp` in PUC's `os.tmpname`, creates an empty file with an
-/// unpredictable name and returns the name; the caller removes the file.
+/// Like PUC's `mkstemp`-based `os.tmpname`: creates the file; the caller removes it.
 pub fn tmpname(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const name = try createTempFile(state) orelse return state.fail("unable to generate a unique filename");
     defer state.allocator.free(name);
@@ -210,8 +209,7 @@ pub const DateParts = struct {
     zone: ?[]const u8,
 };
 
-/// Breaks a Unix timestamp into local calendar fields; null when the year
-/// does not fit C's `struct tm`.
+/// Null when the year does not fit C's `struct tm`.
 pub fn brokenDownTime(timestamp: i64, offset: timezone.LocalOffset) ?DateParts {
     const local = std.math.add(i64, timestamp, offset.offset) catch return null;
     const days = @divFloor(local, timezone.seconds_per_day);

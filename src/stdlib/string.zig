@@ -256,8 +256,7 @@ pub fn gmatchIter(state: *State, thread: *Thread, op: bytecode.Call) !void {
     try state.returnValues(thread, op.base, op.return_count, values.slice());
 }
 
-/// Results of one `string.gmatch` step: every capture (or the whole match),
-/// or no values once the subject is exhausted.
+/// Captures (or the whole match) of one `string.gmatch` step; empty when exhausted.
 pub const GmatchValues = struct {
     buffer: [max_captures]Value = undefined,
     len: usize = 0,
@@ -685,14 +684,12 @@ pub fn reverse(state: *State, thread: *Thread, op: bytecode.Call) !void {
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(out) }});
 }
 
-/// Returns an array table split from the right. An omitted separator splits on ASCII whitespace.
-/// The optional maximum split count defaults to unlimited.
+/// Like `split`, but splits from the right.
 pub fn rsplit(state: *State, thread: *Thread, op: bytecode.Call) !void {
     try splitImpl(state, thread, op, true);
 }
 
-/// Returns an array table of pieces. An omitted separator splits on ASCII whitespace.
-/// The optional maximum split count defaults to unlimited.
+/// Splits on the separator, or ASCII whitespace when omitted, up to an optional maximum count.
 pub fn split(state: *State, thread: *Thread, op: bytecode.Call) !void {
     try splitImpl(state, thread, op, false);
 }
@@ -790,7 +787,7 @@ fn splitWhitespaceFromRight(state: *State, pieces: *std.ArrayList([]const u8), s
     }
 }
 
-/// Removes leading and trailing ASCII whitespace, or bytes in the optional character set.
+/// Trims ASCII whitespace, or bytes in the optional character set.
 pub fn strip(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const source = try state.expectArgumentString(thread, op, "string.strip", 0);
     const chars: ?[]const u8 = if (op.arg_count < 2 or runtime.argValue(state, thread, op, 1) == .nil)

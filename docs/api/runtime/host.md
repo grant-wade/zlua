@@ -609,12 +609,10 @@ pub const ProcessCapability = union(enum) {
 pub const CustomProcess = struct {
     context: ?*anyopaque = null,
     execute: *const fn (context: ?*anyopaque, command: []const u8) anyerror!ProcessResult,
-    /// Runs a command for `io.popen`. Read mode passes null input and returns
-    /// the command's stdout allocated with `allocator`; write mode passes the
-    /// bytes written to the handle when it closes. Null makes `io.popen` unsupported.
+    /// Runs `io.popen`: read mode passes null input and returns stdout; write mode
+    /// passes the bytes written by close time. Null disables `io.popen`.
     popen: ?*const fn (context: ?*anyopaque, allocator: std.mem.Allocator, command: []const u8, input: ?[]const u8) anyerror!PopenResult = null,
-    /// Observes `os.exit` before the state unwinds with `error.LuaExit`.
-    /// Returning an error raises a Lua error instead of exiting.
+    /// Observes `os.exit`; returning an error raises a Lua error instead of exiting.
     exit: ?*const fn (context: ?*anyopaque, code: i32, close: bool) anyerror!void = null,
 };
 ```
@@ -657,9 +655,7 @@ pub const PopenResult = struct {
 
 ## WarningHandler
 
-Exit requested by `os.exit`; the state unwinds with `error.LuaExit`.
-Receives each complete Lua warning while warnings are on, without the
-`Lua warning: ` prefix or the final newline.
+Receives each complete Lua warning without the `Lua warning: ` prefix or final newline.
 
 ```zig
 pub const WarningHandler = struct {
@@ -672,10 +668,12 @@ pub const WarningHandler = struct {
 
 ## ExitRequest
 
+Exit requested by `os.exit`; the state unwinds with `error.LuaExit`.
+
 ```zig
 pub const ExitRequest = struct {
     code: i32,
-    /// Lua asked for the state to be closed before the process exits.
+    /// Close the state before exiting.
     close: bool,
 };
 ```
@@ -700,7 +698,7 @@ A strerror-style message and errno value for a failed host file operation.
 pub const FileError = struct {
     message: []const u8,
     errno: i64,
-    /// The file could be opened but not read, such as a directory or an oversized file.
+    /// Opened but not readable, such as a directory or an oversized file.
     read_phase: bool = false,
 };
 ```
@@ -709,8 +707,7 @@ pub const FileError = struct {
 
 ## fileError
 
-Maps filesystem errors from std, memory filesystems, and custom callbacks
-to C-library messages and POSIX errno values.
+Maps filesystem errors to C-library messages and POSIX errno values.
 
 ```zig
 pub fn fileError(err: anyerror) FileError

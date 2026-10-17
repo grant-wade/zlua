@@ -247,8 +247,7 @@ pub fn completeReadyProtectedContinuation(comptime State: type, self: *State, th
 pub fn completeProtectedContinuationError(comptime State: type, self: *State, thread: *Thread) !bool {
     const index = errorProtectedContinuationIndex(thread) orelse return false;
     const continuation = thread.protected_continuations.items[index];
-    // Drop pairs calls abandoned by this handler. A native protected __pairs
-    // can share its frame depth with an outer pairs call, which must survive.
+    // A native protected __pairs can share its frame depth with an outer pairs call, which must survive.
     var pairs_index = thread.pairs_continuations.items.len;
     while (pairs_index > 0) {
         pairs_index -= 1;

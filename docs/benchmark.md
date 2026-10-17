@@ -1,14 +1,15 @@
 # Benchmarking
 
-Run the whole suite with `zig build bench` (or `just bench`). It runs these groups sequentially and produces one report:
+Run the whole suite with `zig build bench` (or `just bench`). It runs each group below in turn and produces a single report:
 
 | Group | Measures |
 | --- | --- |
 | Process | Complete Lua programs under zlua, zlua snapshot, and Lua 5.5, including process launch, compilation, and shutdown. |
-| Startup | State creation, library opening, and the first chunk through the native Zig API and upstream Lua’s C API. |
-| Snapshots | Capture, new State creation (`new_state`), first-work mutation, reset-only, no-op reset, full work/reset cycles, and equivalent rebuild. |
+| Startup | State creation, library opening, and the first chunk, through both the native Zig API and upstream Lua’s C API. |
+| Snapshots | Capture, new State creation (`new_state`), first-work mutation, reset-only, no-op reset, full work/reset cycles, and an equivalent rebuild. |
+| GC | Single basic collector steps over several workloads, including transient garbage, stable heaps, weak tables, and finalizers, with setup excluded. |
 
-All benchmarks use ReleaseFast for both zlua and C Lua, including process comparisons and C startup workers, regardless of `-Doptimize`. Startup and snapshot timings exclude process launch. Startup totals sum the measured phases; they are not another independently timed operation.
+Every benchmark builds both zlua and C Lua with ReleaseFast, including the process comparisons and the C startup workers, whatever `-Doptimize` you pass. The in-process groups (startup, snapshots, and GC) don't include process launch in their timings. Startup totals are the sum of the measured phases, not a separately timed operation.
 
 ## Running a benchmark
 
@@ -21,37 +22,50 @@ zig build bench -- callbacks --verbose
 zig build bench -- --json /tmp/bench.json --csv /tmp/bench.csv
 ```
 
-All groups accept `--list`, selectors, `--iterations`, `--warmup` (or `--no-warmup`), `--verbose`, `--json`, and `--csv`. Options with values also accept `--option=value`. Process selectors match fixture names, paths, or directories. Startup and snapshot selectors match a case, engine, or the paths printed by `--list`.
+Every group accepts `--list`, selectors, `--iterations`, `--warmup` (or `--no-warmup`), `--verbose`, `--json`, and `--csv`, and options that take a value also accept `--option=value`. What a selector matches depends on the group. For process benchmarks it matches fixture names, paths, or directories. For the in-process groups it matches a case, an engine, or one of the paths printed by `--list`.
 
-Process fixtures default to 30 samples per engine and 1 warmup unless their metadata says otherwise. Startup and snapshots default to 1,000 samples and 100 warmups. `--category` selects a process metadata category or the `startup` / `snapshots` group.
+Process fixtures default to 30 samples per engine and 1 warmup unless their metadata says otherwise. The startup, snapshot, and GC groups default to 1,000 samples and 100 warmups. `--category` selects either a process metadata category or one of the `startup`, `snapshots`, or `gc` groups.
 
-Use `sustained` to measure longer-running Lua code with less influence from process startup. These fixtures default to 10 samples and 2 warmups. Keep the shorter fixtures when startup time matters to your application.
+If you want to measure longer-running Lua code without process startup dominating the result, use the `sustained` fixtures. They default to 10 samples and 2 warmups. Stick with the shorter fixtures when startup time matters to your application.
 
 ## Reading the results
 
-The main tables show medians and sample counts. For process comparisons, **ratios below 1 mean the numerator is faster**. The table shows zlua/Lua, snapshot/Lua, and snapshot/zlua. For snapshots, **speedup above 1 is faster**. Break-even estimates how many resets recover the capture cost: `ceil(capture / (rebuild - reset))`. A dash means no saving or an unavailable result.
+The main tables show medians and sample counts. The process table shows three ratios: zlua/Lua, snapshot/Lua, and snapshot/zlua. **A ratio below 1 means the numerator is faster.** The snapshot tables report speedup instead, where **a speedup above 1 is faster**. Break-even estimates how many resets it takes to recover the cost of a capture: `ceil(capture / (rebuild - reset))`. A dash means there is no saving or the result is unavailable.
 
-Use `--verbose` for phase timings, p95, spread, and allocation details. With very few samples, p95 is usually the maximum; use more samples before drawing conclusions.
+Use `--verbose` to see phase timings, p95, spread, and allocation details. With only a few samples, p95 is usually just the maximum, so collect more samples before drawing conclusions.
 
-Allocation counts and bytes are medians across samples. Requested bytes include positive resize growth. Live bytes are storage after the operation; peak includes storage already live at its start. Capture counts the new snapshot only. `new_state` counts the new worker only, excluding retained snapshot storage. Reset and rebuild count VM storage, including retained rollback storage. Reset restores the State’s own baseline using storage swaps. Worker journal storage created during capture appears in subsequent VM live totals. The native runtime column estimates GC objects separately. A dash means unavailable, not zero.
+Allocation counts and bytes are medians across samples, and each operation counts storage a little differently:
 
-JSON format 2 includes run metadata, raw samples, summaries, and comparisons for every group. Existing process records and their mean-based ratio remain under `benchmarks`. CSV format 2 has one row per operation sample; failed or skipped operations with no samples still get a row. Both formats store nanoseconds and bytes.
+- Requested bytes include positive resize growth. Live bytes are the storage held after the operation, and peak includes storage that was already live when it started.
+- Capture counts only the new snapshot. `new_state` counts only the new worker, not the retained snapshot storage.
+- Reset and rebuild count VM storage, including retained rollback storage. Reset restores the State’s own baseline by swapping storage. Worker journal storage created during capture shows up in later VM live totals.
+- The native runtime column estimates GC objects separately.
 
-Save a baseline, make the change, and repeat the same command on an otherwise idle machine. Look at the samples and spread as well as the ratio. Process runs rotate all three engines through each execution position and check both zlua variants against Lua 5.5 for every sample's exit status and output outside the timer.
+In the allocation columns, too, a dash means unavailable, not zero.
+
+Both report formats store nanoseconds and bytes. JSON format 2 includes run metadata, raw samples, summaries, and comparisons for every group, and keeps the existing process records and their mean-based ratio under `benchmarks`. CSV format 2 has one row per operation sample, and an operation that failed or was skipped still gets a row even though it has no samples.
+
+To compare a change, save a baseline, make the change, and repeat the same command on an otherwise idle machine. Look at the samples and spread, not just the ratio. Process runs rotate all three engines through each execution position. Outside the timer, they also check both zlua variants against Lua 5.5 for every sample's exit status and output.
 
 ## Snapshot program comparisons
 
-The top Process table runs every selected Lua fixture in an ordinary zlua state, a snapshot-restored zlua state, and Lua 5.5. The snapshot worker opens full libraries and installs `arg`, captures that baseline, calls `Snapshot.newState`, then loads and executes the fixture in the restored state. Snapshot tracking stays active throughout execution.
+The top Process table runs every selected Lua fixture three ways: in an ordinary zlua state, in a zlua state restored from a snapshot, and under Lua 5.5. The snapshot worker opens the full libraries and installs `arg`, captures that baseline, calls `Snapshot.newState`, and then loads and executes the fixture in the restored state. Snapshot tracking stays active for the whole run.
 
-All three columns time complete processes. The snapshot column includes baseline initialization, capture, restoration, compilation, execution, and teardown; it does not represent amortized snapshot startup savings. Use `sustained` fixtures to reduce those setup costs' influence when comparing general execution performance. Snapshot capture/reset microbenchmarks remain in their separate section.
+All three columns time complete processes. The snapshot column includes baseline initialization, capture, restoration, compilation, execution, and teardown, so it does not show the amortized startup savings you would get from reusing a snapshot. When you are comparing general execution performance, use the `sustained` fixtures to reduce the influence of those setup costs. The snapshot capture and reset microbenchmarks have their own section, described below.
 
-`zig build bench` supplies a ReleaseFast snapshot worker automatically. When invoking `zlua-test-bench` directly, it defaults to the installed sibling `zlua-bench-snapshot`; `--zlua-snapshot PATH` overrides it. JSON and CSV identify this third engine as `zlua_snapshot` and include its samples and comparisons.
+`zig build bench` supplies a ReleaseFast snapshot worker automatically. If you run `zlua-test-bench` directly, it defaults to the installed sibling `zlua-bench-snapshot`, and `--zlua-snapshot PATH` overrides that. JSON and CSV reports identify this third engine as `zlua_snapshot` and include its samples and comparisons.
 
 ## Snapshot reset measurements
 
-`reset_only` times restoration after the workload; `noop_reset` resets immediately after restoration, with no intervening Lua call or mutation. `mutation` includes the first writes and host-to-Lua call overhead. `cycle` times work plus reset so first-write copying cannot disappear from the reported cost. The existing `reset` operation continues to include teardown for comparison with `rebuild`.
+Each snapshot operation isolates a different part of the cost:
 
-Cases cover small and large unchanged baselines, sparse and dense writes across 10,000 tables, a single write to a 100,000-entry array, suspended coroutine resumes, collection of baseline objects, modules, callbacks, and both eager and scoped resource hooks. `no_op_small` and `no_op_large` expose heap-size scaling in reset time and allocations. No-op reset should allocate nothing for baselines without eager hooks. Sparse reset restores dirty records and cleans private allocations; first writes can copy a whole table or allocation registry, so compare `mutation` and `cycle` as well as `reset_only`.
+- `reset_only` times restoration after the workload.
+- `noop_reset` resets immediately after restoration, with no Lua call or mutation in between.
+- `mutation` includes the first writes and the overhead of calling from the host into Lua.
+- `cycle` times the work plus the reset, so the cost of copying on first write can't drop out of the reported number.
+- The existing `reset` operation still includes teardown, so it can be compared with `rebuild`.
+
+The cases cover small and large unchanged baselines, sparse and dense writes across 10,000 tables, a single write to a 100,000-entry array, resuming suspended coroutines, collecting baseline objects, modules, callbacks, and both eager and scoped resource hooks. `no_op_small` and `no_op_large` show how reset time and allocations scale with heap size. A no-op reset should allocate nothing for baselines without eager hooks. A sparse reset restores dirty records and cleans up private allocations, but a first write can copy a whole table or allocation registry, so compare `mutation` and `cycle` as well as `reset_only`.
 
 ```sh
 zig build bench -- --family=snapshots --iterations=20 --warmup=3 --verbose
@@ -60,7 +74,7 @@ zig build bench -- no_op_small no_op_large --json /tmp/noop-reset.json
 
 ## Adding a case
 
-Add a Lua fixture under `tests/bench/<category>/` for a complete-program comparison:
+For a complete-program comparison, add a Lua fixture under `tests/bench/<category>/`:
 
 ```lua
 -- name: table/array_reads
@@ -70,6 +84,6 @@ Add a Lua fixture under `tests/bench/<category>/` for a complete-program compari
 -- timeout-ms: 60000
 ```
 
-Without metadata, the name is the fixture path and the category is `misc`. `expect: skip` or `expect: fail` excludes a fixture and requires a `reason`.
+Without metadata, the name is the fixture path and the category is `misc`. `expect: skip` or `expect: fail` excludes a fixture, and either one requires a `reason`.
 
-For an in-process case, add it to `src/testing/bench/startup.zig` or `snapshots.zig`. Keep setup and cleanup visibly outside the timer unless they are the operation being measured. The upstream Lua worker in `tools/bench_c_api_startup.c` returns raw measurements to the same Zig reporter.
+For an in-process case, add it to `src/testing/bench/startup.zig`, `snapshots.zig`, or `gc.zig`. Keep setup and cleanup visibly outside the timer unless they are the operation you are measuring. The upstream Lua worker in `tools/bench_c_api_startup.c` returns raw measurements to the same Zig reporter.

@@ -163,9 +163,8 @@ pub const traceback_levels_tail = 11;
 const chunk_id_size = 60;
 
 const TracebackEntry = union(enum) {
-    /// A Lua frame, by index into `thread.frames`.
+    /// Index into `thread.frames`.
     lua: usize,
-    /// A native function, named from its call site when known.
     native: NativeEntry,
     /// A native function called as a generic `for` iterator.
     native_iterator,
@@ -179,30 +178,21 @@ const NativeEntry = struct {
 pub const TracebackOptions = struct {
     /// Text placed before `stack traceback:`.
     message: ?[]const u8 = null,
-    /// First level shown. Level 0 is the function producing the traceback.
+    /// First level shown; level 0 is the function producing the traceback.
     level: usize = 1,
-    /// Level 0 is the native function called by the top frame's current
-    /// instruction. Otherwise it is not on the thread, as for a message
-    /// handler, and `level_zero` names it.
+    /// Level 0 is the top frame's native callee; otherwise `level_zero` names it.
     level_zero_is_callee: bool = false,
     level_zero: Value = .nil,
-    /// End with the `[C]: in ?` entry that the standalone interpreter
-    /// reports for its own call.
+    /// Append the standalone interpreter's `[C]: in ?` entry.
     host_frame: bool = false,
 };
 
-/// Formats a `luaL_traceback`-style traceback of `thread` without a message,
-/// starting at level 1 as a message handler sees it. See `formatTracebackWith`.
+/// Formats a traceback from level 1 without a message, as a message handler sees it.
 pub fn formatTraceback(comptime State: type, self: *State, thread: *Thread, host_frame: bool) ![]u8 {
     return formatTracebackWith(State, self, thread, .{ .host_frame = host_frame });
 }
 
-/// Formats a `luaL_traceback`-style traceback: `stack traceback:` followed
-/// by one line per level, innermost first. Called at an error point it shows
-/// the native function that raised the error and the Lua frames that were
-/// active. Names come from the calling instruction, as in Lua 5.5, or else
-/// from the global and loaded-module tables. The caller owns the returned
-/// slice, allocated with `self.allocator`.
+/// Formats a `luaL_traceback`-style traceback, owned by the caller.
 pub fn formatTracebackWith(comptime State: type, self: *State, thread: *Thread, options: TracebackOptions) ![]u8 {
     var entries = std.ArrayList(TracebackEntry).empty;
     defer entries.deinit(self.allocator);
@@ -311,8 +301,7 @@ fn appendTracebackFrame(comptime State: type, self: *State, out: *std.ArrayList(
 
 pub const CallName = struct { namewhat: []const u8, name: []const u8 };
 
-/// Frames from `start` up that Lua would have entered through a C call,
-/// such as a metamethod or a message handler, rather than a call instruction.
+/// Counts frames from `start` that Lua enters through a C call rather than a call instruction.
 pub fn indirectFrameCount(thread: *Thread, start: usize) usize {
     const frames = thread.frames.items;
     var count: usize = 0;
@@ -322,8 +311,7 @@ pub fn indirectFrameCount(thread: *Thread, start: usize) usize {
     return count;
 }
 
-/// True when Lua code in the top frame raised the current error, rather
-/// than a native function it called.
+/// True when Lua code in the top frame, not a native it called, raised the current error.
 pub fn errorRaisedByLuaCode(thread: *Thread) bool {
     const frames = thread.frames.items;
     if (frames.len == 0) return false;
@@ -335,9 +323,7 @@ pub fn errorRaisedByLuaCode(thread: *Thread) bool {
     return nativeCallee(thread, frames.len - 1) == null;
 }
 
-/// Names a message handler called at an error point the way Lua names a
-/// function from its caller's current instruction (`funcnamefromcode`).
-/// An error raised inside a native function leaves the handler unnamed.
+/// Names a message handler at an error point like `funcnamefromcode`; null inside natives.
 pub fn messageHandlerCallName(thread: *Thread) ?CallName {
     const frames = thread.frames.items;
     if (frames.len == 0) return null;
@@ -417,8 +403,7 @@ fn isNativeEntryFrame(frame: CallFrame) bool {
 
 pub const coroutine_entry_source = "=(coroutine entry)";
 
-/// True for the frame that calls a coroutine's non-Lua body, which Lua
-/// does not have: the body runs as the coroutine's first function.
+/// True for the synthetic frame calling a coroutine's non-Lua body, which C Lua lacks.
 pub fn isCoroutineEntryFrame(frame: CallFrame) bool {
     return std.mem.eql(u8, frame.proto.source_name, coroutine_entry_source);
 }

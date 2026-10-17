@@ -372,8 +372,7 @@ pub fn getmetatable(state: *State, thread: *Thread, op: bytecode.Call) !void {
     try state.returnValues(thread, op.base, op.return_count, &.{state.rawMetatableValue(runtime.argValue(state, thread, op, 0))});
 }
 
-/// Runs commands read from the stdin capability until "cont" or end of input,
-/// like Lua's `debug.debug`.
+/// Lua's `debug.debug`: runs stdin commands until "cont" or end of input.
 pub fn debugPrompt(state: *State, thread: *Thread, op: bytecode.Call) !void {
     while (true) {
         try state.writeStderr("lua_debug> ");

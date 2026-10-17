@@ -500,12 +500,10 @@ pub const ProcessCapability = union(enum) {
 pub const CustomProcess = struct {
     context: ?*anyopaque = null,
     execute: *const fn (context: ?*anyopaque, command: []const u8) anyerror!ProcessResult,
-    /// Runs a command for `io.popen`. Read mode passes null input and returns
-    /// the command's stdout allocated with `allocator`; write mode passes the
-    /// bytes written to the handle when it closes. Null makes `io.popen` unsupported.
+    /// Runs `io.popen`: read mode passes null input and returns stdout; write mode
+    /// passes the bytes written by close time. Null disables `io.popen`.
     popen: ?*const fn (context: ?*anyopaque, allocator: std.mem.Allocator, command: []const u8, input: ?[]const u8) anyerror!PopenResult = null,
-    /// Observes `os.exit` before the state unwinds with `error.LuaExit`.
-    /// Returning an error raises a Lua error instead of exiting.
+    /// Observes `os.exit`; returning an error raises a Lua error instead of exiting.
     exit: ?*const fn (context: ?*anyopaque, code: i32, close: bool) anyerror!void = null,
 };
 
@@ -525,17 +523,16 @@ pub const PopenResult = struct {
     result: ProcessResult,
 };
 
-/// Exit requested by `os.exit`; the state unwinds with `error.LuaExit`.
-/// Receives each complete Lua warning while warnings are on, without the
-/// `Lua warning: ` prefix or the final newline.
+/// Receives each complete Lua warning without the `Lua warning: ` prefix or final newline.
 pub const WarningHandler = struct {
     context: ?*anyopaque = null,
     emit: *const fn (context: ?*anyopaque, message: []const u8) void,
 };
 
+/// Exit requested by `os.exit`; the state unwinds with `error.LuaExit`.
 pub const ExitRequest = struct {
     code: i32,
-    /// Lua asked for the state to be closed before the process exits.
+    /// Close the state before exiting.
     close: bool,
 };
 
@@ -546,7 +543,7 @@ pub const default_max_file_bytes: usize = 256 * 1024 * 1024;
 pub const FileError = struct {
     message: []const u8,
     errno: i64,
-    /// The file could be opened but not read, such as a directory or an oversized file.
+    /// Opened but not readable, such as a directory or an oversized file.
     read_phase: bool = false,
 };
 
@@ -559,8 +556,7 @@ const errno_values = struct {
     const overflow_message = if (bsd_like) "Value too large to be stored in data type" else "Value too large for defined data type";
 };
 
-/// Maps filesystem errors from std, memory filesystems, and custom callbacks
-/// to C-library messages and POSIX errno values.
+/// Maps filesystem errors to C-library messages and POSIX errno values.
 pub fn fileError(err: anyerror) FileError {
     return switch (err) {
         error.FileNotFound, error.NoDevice => .{ .message = "No such file or directory", .errno = 2 },

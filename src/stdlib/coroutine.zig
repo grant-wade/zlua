@@ -1,1 +1,1 @@
-// Coroutine library natives still live in runtime while coroutine execution support matures.
+// Coroutine natives live in src/runtime/coroutine.zig.

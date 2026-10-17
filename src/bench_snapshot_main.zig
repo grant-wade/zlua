@@ -33,8 +33,7 @@ fn run(init: std.process.Init) !u8 {
     }
     try baseline.raw_state.putGlobal("arg", arg_value);
 
-    // Capture libraries and CLI globals before loading the program. The whole
-    // worker lifecycle, including capture and restoration, is process-timed.
+    // Capture libraries and CLI globals before loading; the whole worker lifecycle is timed.
     var snapshot = try baseline.snapshot(allocator);
     defer snapshot.deinit();
     var worker = try snapshot.newState(allocator);

@@ -400,10 +400,8 @@ pub const NativeFn = enum {
 pub const UserdataFinalizer = *const fn (*anyopaque, ?*const anyopaque) void;
 pub const UserdataDeinit = *const fn (std.mem.Allocator, *anyopaque) void;
 
-/// Keeps allocator infrastructure alive while shared userdata outlives its VM.
-/// Shared allocator infrastructure can outlive its State and be destroyed by
-/// any retaining thread. Retain requires an existing owned reference; acq_rel
-/// release publishes prior accesses and acquires them before final destruction.
+/// Keeps allocator infrastructure alive while shared userdata outlives its State.
+/// The last release, from any thread, destroys it.
 pub const AllocatorLifetime = struct {
     references: std.atomic.Value(usize) = .init(1),
     destroy: *const fn (*AllocatorLifetime) void,
@@ -427,8 +425,7 @@ pub const UserdataPayload = struct {
     lifetime: ?*AllocatorLifetime,
     references: std.atomic.Value(usize) = .init(1),
     ptr: *anyopaque,
-    /// Known inline storage owned by this payload; external/nested storage is
-    /// accounted by the host allocator, not inferred through opaque pointers.
+    /// Inline storage owned by this payload; nested storage is accounted by the host allocator.
     managed_bytes: usize = 0,
     finalizer: ?UserdataFinalizer,
     finalizer_data: ?*const anyopaque,
@@ -445,8 +442,7 @@ pub const UserdataPayload = struct {
     }
 
     pub fn finalize(self: *UserdataPayload) void {
-        // A sole owner cannot race another legitimate retain. Acquire observes
-        // earlier releases before accessing the non-atomic finalization flag.
+        // A sole owner cannot race a retain; acquire observes earlier releases before reading `finalized`.
         if (self.references.load(.acquire) != 1) return;
         self.finalizeOwned();
     }
@@ -458,8 +454,7 @@ pub const UserdataPayload = struct {
     }
 
     pub fn release(self: *UserdataPayload, discard: bool) void {
-        // Elect the final owner before finalizing: simultaneous releases must
-        // neither miss finalization nor access storage after another frees it.
+        // Elect the final owner first so concurrent releases neither skip finalization nor use freed storage.
         const previous = self.references.fetchSub(1, .acq_rel);
         std.debug.assert(previous != 0);
         if (previous != 1) return;
@@ -478,8 +473,7 @@ pub const ProtectedCallResult = union(enum) {
 };
 
 pub const ApiCallbackDispatchFn = *const fn (*ApiCallbackContext) anyerror!void;
-/// Stores small callback results inline. GC visits each callback’s results through items().
-/// Contains no self pointers.
+/// Stores small callback results inline, without self pointers. GC visits them through `items()`.
 pub const CallbackReturns = struct {
     inline_values: [4]Value = undefined,
     inline_len: usize = 0,
@@ -647,9 +641,8 @@ pub const CallOneContinuationResult = union(enum) {
     discard,
 };
 
-/// A `concat_range` suspended in a `__concat` metamethod. Slots are
-/// absolute stack indices; the metamethod result becomes the last of the
-/// `count` operands still to be joined starting at `first`.
+/// A `concat_range` suspended in `__concat`. Slots are absolute stack indices; the
+/// metamethod result becomes the last of the `count` operands starting at `first`.
 pub const ConcatContinuation = struct {
     dest: usize,
     first: usize,
@@ -745,8 +738,7 @@ pub const MetaEvent = enum(u5) {
 };
 
 pub const Table = struct {
-    // A handful of entries is cheaper to search directly than to allocate and
-    // probe a second data structure. Larger tables retain a hash index.
+    // Up to this many entries, a linear scan beats maintaining a hash index.
     const linear_entry_limit = 4;
 
     rollback: ?*@import("rollback.zig").Record(Table) = null,
@@ -762,10 +754,8 @@ pub const Table = struct {
     finalizer_next: ?*Table = null,
     finalizer_prev: ?*Table = null,
     finalizer_order: u64 = 0,
-    /// Bit `e` set: this table, used as a metatable, has a nil raw value for
-    /// `MetaEvent` `e`. Only absence is cached. Every hash-part write that can
-    /// turn a nil value non-nil clears the whole set, so a set bit is never
-    /// stale. Array writes cannot affect string keys.
+    /// Bit `e` set: this metatable has no raw value for `MetaEvent` `e`. Hash-part
+    /// writes that may turn nil into non-nil clear the whole set.
     metamethod_absent: u32 = 0,
 
     pub inline fn init(allocator: std.mem.Allocator, array_hint: u32, hash_hint: u32) !Table {
@@ -865,8 +855,7 @@ pub const Table = struct {
             return;
         }
         if (value != .nil) {
-            // Reserve everything before publishing the entry so allocation
-            // failure cannot leave a partial index behind.
+            // Reserve everything first so allocation failure cannot leave a partial index.
             try self.entries.ensureUnusedCapacity(allocator, 1);
             if (self.entry_index.capacity() == 0 and self.entries.items.len == linear_entry_limit) {
                 try self.entry_index.ensureTotalCapacity(linear_entry_limit + 1);
@@ -987,9 +976,7 @@ pub const Userdata = struct {
     finalized: bool = false,
     finalization_pending: bool = false,
     finalizer_next: ?*Userdata = null,
-    /// Registered to call its metatable's `__gc`, as a table is with
-    /// `Table.finalizer_registered`. The host finalizer runs once the
-    /// userdata is unreachable after that.
+    /// Registered for its metatable's `__gc`, like `Table.finalizer_registered`.
     lua_finalizer_registered: bool = false,
     /// Registration order on the `Table.finalizer_order` scale, then the
     /// position in the finalizer queue once separated.
@@ -1059,9 +1046,8 @@ pub const Thread = struct {
     stack_error_space: bool = false,
     /// Tracebacks end with the `[C]: in ?` entry of a standalone host call.
     host_frame: bool = false,
-    /// Native functions with no calling instruction (called by `xpcall` or
-    /// a message handler) that are still on the stack while a message
-    /// handler runs, oldest first, so tracebacks can show them.
+    /// Native functions with no calling instruction (called by `xpcall` or a message
+    /// handler) still live while a message handler runs, oldest first, for tracebacks.
     native_marks: [4]NativeMark = undefined,
     native_mark_count: u8 = 0,
     close_error_value: ?Value = null,
@@ -1069,8 +1055,7 @@ pub const Thread = struct {
     pending_unwind_error: ?Value = null,
     pending_unwind_resume_frame_count: usize = 0,
     pending_unwind_target_frame_count: usize = 0,
-    /// Bytes of owned varargs and pending returns held by frames made for
-    /// this thread, kept current as frames gain and release them.
+    /// Bytes of owned varargs and pending returns held by this thread's frames.
     frame_storage_bytes: usize = 0,
     resume_parent: ?*Thread = null,
     entry: Value = .nil,
@@ -1111,7 +1096,6 @@ pub const Thread = struct {
         self.* = undefined;
     }
 
-    /// Frees a frame made for this thread.
     pub fn releaseFrame(self: *Thread, frame: *CallFrame, allocator: std.mem.Allocator) void {
         self.frame_storage_bytes -= frame.storageBytes();
         frame.deinit(allocator);
@@ -1139,9 +1123,8 @@ pub const Thread = struct {
         @memset(self.stack.items[old_len..], .nil);
     }
 
-    /// The register, relative to the top frame, where the runtime places a
-    /// call it makes itself: above the frame's registers and above the
-    /// arguments of any native function running on that frame.
+    /// Register, relative to the top frame, for calls the runtime makes itself: above
+    /// the frame's registers and any running native function's arguments.
     pub fn scratchRegister(self: *const Thread) u32 {
         const frame_count = self.frames.items.len;
         const registers = self.frames.items[frame_count - 1].proto.max_registers;
@@ -1158,9 +1141,8 @@ pub const ThreadStatus = enum {
     dead,
 };
 
-/// The innermost non-Lua function running on a thread. Library errors use it
-/// the way `luaL_argerror` and `luaL_where` use the C call stack: to find the
-/// calling Lua function, the call-site name, and the argument count.
+/// The innermost native function running on a thread. Library errors use it like
+/// `luaL_argerror` and `luaL_where` use the C call stack.
 pub const NativeCall = struct {
     /// Callee register, relative to the frame on top when it was called.
     base: u32,
@@ -1168,13 +1150,11 @@ pub const NativeCall = struct {
     /// Arguments prepended by `__call` metamethods, like `lua_Debug.extraargs`.
     extra_args: u8 = 0,
     frame_count: usize,
-    /// True when another native function made the call (like `pcall(f)`),
-    /// so no Lua code is the immediate caller.
+    /// Called by another native function (like `pcall(f)`) rather than Lua code.
     from_native: bool,
     /// Frame count of the enclosing native call, if any.
     outer_frame_count: ?usize = null,
-    /// Name supplied by the runtime for calls that are not CALL instructions:
-    /// metamethods, generic-for iterators, and `__close`. Always static.
+    /// Static name for calls not made by CALL instructions, such as metamethods and `__close`.
     name: ?[]const u8 = null,
     namewhat: ?[]const u8 = null,
 };
@@ -1272,9 +1252,8 @@ pub const GcParam = enum {
     stepsize,
 };
 
-/// Collection tuning. Values are percentages except `stepsize`, which is in bytes.
-/// The Zig API accepts values from 0 through maxInt(i32) without rounding.
-/// Lua's `collectgarbage("param", ...)` rounds values to Lua's parameter format.
+/// Collection tuning. Values are percentages except `stepsize`, in bytes. The Zig API accepts
+/// 0 through maxInt(i32) without the rounding `collectgarbage("param", ...)` applies.
 pub const GcParams = struct {
     /// Heap growth before the next minor collection.
     minormul: i64 = 20,

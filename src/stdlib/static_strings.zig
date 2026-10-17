@@ -1,8 +1,6 @@
 const std = @import("std");
 
-// Strings installed by the standard libraries are part of the executable and
-// live for the duration of the process. Keeping one canonical static slice for
-// each value avoids allocating and GC-tracking the same names in every state.
+// Canonical static names, so states don't allocate and GC-track their own copies.
 pub const names = [_][]const u8{
     "",
     "/",

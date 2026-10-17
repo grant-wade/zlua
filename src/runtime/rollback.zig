@@ -100,8 +100,7 @@ pub fn userdataWritable(userdata: *types.Userdata) !void {
     const j = record.header.journal;
     const copy = try copyPayload(j.allocator, j.saved.allocator_lifetime, p);
     touch(userdata);
-    // Ownership of the original payload moves from the live wrapper to its
-    // rollback record. It is neither finalized nor a live GC root.
+    // The original payload now belongs to the rollback record: never finalized, never a GC root.
     userdata.payload = copy;
     userdata.ptr = copy.ptr;
     record.header.detached = true;
@@ -149,7 +148,7 @@ pub const Journal = struct {
     new_objects: std.AutoHashMap(usize, Allocation),
     registries_detached: bool = false,
     output_detached: bool = false,
-    /// Counts logical restored records, independently of the size of the heap.
+    /// Logical restored records, independent of heap size.
     last_restored_objects: usize = 0,
 
     pub fn create(state: *State, pristine: *const State) !*Journal {

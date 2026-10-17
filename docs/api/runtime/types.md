@@ -416,10 +416,8 @@ pub const UserdataDeinit = *const fn (std.mem.Allocator, *anyopaque) void;
 
 ## AllocatorLifetime
 
-Keeps allocator infrastructure alive while shared userdata outlives its VM.
-Shared allocator infrastructure can outlive its State and be destroyed by
-any retaining thread. Retain requires an existing owned reference; acq_rel
-release publishes prior accesses and acquires them before final destruction.
+Keeps allocator infrastructure alive while shared userdata outlives its State.
+The last release, from any thread, destroys it.
 
 ```zig
 pub const AllocatorLifetime = struct {
@@ -475,8 +473,7 @@ pub const UserdataPayload = struct {
     lifetime: ?*AllocatorLifetime,
     references: std.atomic.Value(usize) = .init(1),
     ptr: *anyopaque,
-    /// Known inline storage owned by this payload; external/nested storage is
-    /// accounted by the host allocator, not inferred through opaque pointers.
+    /// Inline storage owned by this payload; nested storage is accounted by the host allocator.
     managed_bytes: usize = 0,
     finalizer: ?UserdataFinalizer,
     finalizer_data: ?*const anyopaque,
@@ -552,8 +549,7 @@ References: [`ApiCallbackContext`](#type-apicallbackcontext)
 
 ## CallbackReturns
 
-Stores small callback results inline. GC visits each callback’s results through items().
-Contains no self pointers.
+Stores small callback results inline, without self pointers. GC visits them through `items()`.
 
 ```zig
 pub const CallbackReturns = struct {
@@ -877,9 +873,8 @@ pub const CallOneContinuationResult = union(enum) {
 
 ## ConcatContinuation
 
-A `concat_range` suspended in a `__concat` metamethod. Slots are
-absolute stack indices; the metamethod result becomes the last of the
-`count` operands still to be joined starting at `first`.
+A `concat_range` suspended in `__concat`. Slots are absolute stack indices; the
+metamethod result becomes the last of the `count` operands starting at `first`.
 
 ```zig
 pub const ConcatContinuation = struct {
@@ -1038,10 +1033,8 @@ pub const Table = struct {
     finalizer_next: ?*Table = null,
     finalizer_prev: ?*Table = null,
     finalizer_order: u64 = 0,
-    /// Bit `e` set: this table, used as a metatable, has a nil raw value for
-    /// `MetaEvent` `e`. Only absence is cached. Every hash-part write that can
-    /// turn a nil value non-nil clears the whole set, so a set bit is never
-    /// stale. Array writes cannot affect string keys.
+    /// Bit `e` set: this metatable has no raw value for `MetaEvent` `e`. Hash-part
+    /// writes that may turn nil into non-nil clear the whole set.
     metamethod_absent: u32 = 0,
 };
 ```
@@ -1271,9 +1264,7 @@ pub const Userdata = struct {
     finalized: bool = false,
     finalization_pending: bool = false,
     finalizer_next: ?*Userdata = null,
-    /// Registered to call its metatable's `__gc`, as a table is with
-    /// `Table.finalizer_registered`. The host finalizer runs once the
-    /// userdata is unreachable after that.
+    /// Registered for its metatable's `__gc`, like `Table.finalizer_registered`.
     lua_finalizer_registered: bool = false,
     /// Registration order on the `Table.finalizer_order` scale, then the
     /// position in the finalizer queue once separated.
@@ -1365,9 +1356,8 @@ pub const Thread = struct {
     stack_error_space: bool = false,
     /// Tracebacks end with the `[C]: in ?` entry of a standalone host call.
     host_frame: bool = false,
-    /// Native functions with no calling instruction (called by `xpcall` or
-    /// a message handler) that are still on the stack while a message
-    /// handler runs, oldest first, so tracebacks can show them.
+    /// Native functions with no calling instruction (called by `xpcall` or a message
+    /// handler) still live while a message handler runs, oldest first, for tracebacks.
     native_marks: [4]NativeMark = undefined,
     native_mark_count: u8 = 0,
     close_error_value: ?Value = null,
@@ -1375,8 +1365,7 @@ pub const Thread = struct {
     pending_unwind_error: ?Value = null,
     pending_unwind_resume_frame_count: usize = 0,
     pending_unwind_target_frame_count: usize = 0,
-    /// Bytes of owned varargs and pending returns held by frames made for
-    /// this thread, kept current as frames gain and release them.
+    /// Bytes of owned varargs and pending returns held by this thread's frames.
     frame_storage_bytes: usize = 0,
     resume_parent: ?*Thread = null,
     entry: Value = .nil,
@@ -1396,11 +1385,11 @@ pub const Thread = struct {
 | [initRoot](#fn-thread-initroot) | `allocator: std.mem.Allocator, closure: *Closure, stack_value_limit: usize` | `!Thread` |  |
 | [initCoroutine](#fn-thread-initcoroutine) | `entry: Value` | `Thread` |  |
 | [deinit](#fn-thread-deinit) | `self: *Thread, allocator: std.mem.Allocator` | `void` |  |
-| [releaseFrame](#fn-thread-releaseframe) | `self: *Thread, frame: *CallFrame, allocator: std.mem.Allocator` | `void` | Frees a frame made for this thread. |
+| [releaseFrame](#fn-thread-releaseframe) | `self: *Thread, frame: *CallFrame, allocator: std.mem.Allocator` | `void` |  |
 | [noteContinuation](#fn-thread-notecontinuation) | `self: *Thread, frame_count: usize` | `void` |  |
 | [refreshContinuationFrameCount](#fn-thread-refreshcontinuationframecount) | `self: *Thread` | `void` |  |
 | [ensureStack](#fn-thread-ensurestack) | `self: *Thread, allocator: std.mem.Allocator, size: usize, limit: usize` | `!void` |  |
-| [scratchRegister](#fn-thread-scratchregister) | `self: *const Thread` | `u32` | The register, relative to the top frame, where the runtime places a call it makes itself: above the frame's registers and above the arguments of any native function running on that frame. |
+| [scratchRegister](#fn-thread-scratchregister) | `self: *const Thread` | `u32` | Register, relative to the top frame, for calls the runtime makes itself: above the frame's registers and any running native function's arguments. |
 
 <a id="fn-thread-initroot"></a>
 
@@ -1435,8 +1424,6 @@ References: [`Thread`](#type-thread)
 <a id="fn-thread-releaseframe"></a>
 
 ### Thread.releaseFrame
-
-Frees a frame made for this thread.
 
 ```zig
 pub fn releaseFrame(self: *Thread, frame: *CallFrame, allocator: std.mem.Allocator) void
@@ -1478,9 +1465,8 @@ References: [`Thread`](#type-thread)
 
 ### Thread.scratchRegister
 
-The register, relative to the top frame, where the runtime places a
-call it makes itself: above the frame's registers and above the
-arguments of any native function running on that frame.
+[Register](../compile/bytecode.md#alias-register), relative to the top frame, for calls the runtime makes itself: above
+the frame's registers and any running native function's arguments.
 
 ```zig
 pub fn scratchRegister(self: *const Thread) u32
@@ -1505,9 +1491,8 @@ pub const ThreadStatus = enum {
 
 ## NativeCall
 
-The innermost non-Lua function running on a thread. Library errors use it
-the way `luaL_argerror` and `luaL_where` use the C call stack: to find the
-calling Lua function, the call-site name, and the argument count.
+The innermost native function running on a thread. Library errors use it like
+`luaL_argerror` and `luaL_where` use the C call stack.
 
 ```zig
 pub const NativeCall = struct {
@@ -1517,13 +1502,11 @@ pub const NativeCall = struct {
     /// Arguments prepended by `__call` metamethods, like `lua_Debug.extraargs`.
     extra_args: u8 = 0,
     frame_count: usize,
-    /// True when another native function made the call (like `pcall(f)`),
-    /// so no Lua code is the immediate caller.
+    /// Called by another native function (like `pcall(f)`) rather than Lua code.
     from_native: bool,
     /// Frame count of the enclosing native call, if any.
     outer_frame_count: ?usize = null,
-    /// Name supplied by the runtime for calls that are not CALL instructions:
-    /// metamethods, generic-for iterators, and `__close`. Always static.
+    /// Static name for calls not made by CALL instructions, such as metamethods and `__close`.
     name: ?[]const u8 = null,
     namewhat: ?[]const u8 = null,
 };
@@ -1727,9 +1710,8 @@ pub const GcParam = enum {
 
 ## GcParams
 
-Collection tuning. Values are percentages except `stepsize`, which is in bytes.
-The Zig API accepts values from 0 through maxInt(i32) without rounding.
-Lua's `collectgarbage("param", ...)` rounds values to Lua's parameter format.
+Collection tuning. Values are percentages except `stepsize`, in bytes. The Zig API accepts
+0 through maxInt(i32) without the rounding `collectgarbage("param", ...)` applies.
 
 ```zig
 pub const GcParams = struct {

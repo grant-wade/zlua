@@ -91,6 +91,7 @@
 ## Functions
 
 - [parse](#fn-parse)
+- [skipsOs](#fn-skipsos)
 - [parseStage](#fn-parsestage)
 
 ## Types
@@ -162,6 +163,8 @@ pub const Metadata = struct {
     feature: []const u8 = "uncategorized",
     normalize: Normalize = .none,
     gc_stress: GcStress = .run,
+    /// Host OS names, as `std.Target.Os.Tag` spells them, the fixture skips.
+    skip_os: []const u8 = "",
     reason: []const u8 = "",
     issue: []const u8 = "",
 };
@@ -173,6 +176,16 @@ pub const Metadata = struct {
 
 ```zig
 pub fn parse(source: []const u8) !Metadata
+```
+
+References: [`Metadata`](#type-metadata)
+
+<a id="fn-skipsos"></a>
+
+## skipsOs
+
+```zig
+pub fn skipsOs(meta: Metadata, os: std.Target.Os.Tag) bool
 ```
 
 References: [`Metadata`](#type-metadata)

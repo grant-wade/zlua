@@ -292,11 +292,8 @@ fn appendBinaryU64(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value:
     try out.appendSlice(allocator, bytes[0..]);
 }
 
-/// Checks the operand invariants the compiler guarantees and the VM relies on
-/// without bounds checks: registers within `max_registers`, constant, upvalue
-/// and child indexes in range, and jump targets within the code. Children are
-/// verified separately; this level checks the upvalue descriptors they
-/// resolve against it.
+/// Checks the operand invariants the VM relies on without bounds checks.
+/// Children are verified separately, but their upvalue descriptors are checked here.
 pub fn verifyProto(proto: *const proto_mod.Proto) bool {
     const registers: usize = proto.max_registers;
     const code_len = proto.instructions.items.len;
@@ -411,8 +408,7 @@ pub fn BinaryChunkReader(comptime State: type) type {
 
         const Self = @This();
 
-        /// Each proto is verified once its children are read, so a returned
-        /// tree is safe for the VM to execute.
+        /// Verifies each proto once its children are read, so a returned tree is safe to execute.
         pub fn readProto(self: *Self, parent_source_name: ?[]const u8) anyerror!*proto_mod.Proto {
             if (self.depth >= max_proto_depth) return self.state.fail("bad binary chunk");
             self.depth += 1;

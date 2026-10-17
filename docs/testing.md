@@ -1,8 +1,10 @@
 # Testing
 
-Lua-visible behavior is checked against the official Lua 5.5 C implementation built by this repository. When a compatibility question comes up, compare both runtimes and keep the smallest useful fixture.
+zlua checks its Lua-visible behavior against the official Lua 5.5 C implementation, which the build compiles for you. When a compatibility question comes up, run the code under both and keep the smallest fixture that shows the difference.
 
 ## Test Layers
+
+The checks come in layers, from fast unit tests up to the full upstream suite. `zig build ci` runs all of them except the WASM smoke test.
 
 | Layer | Command | Covers |
 | --- | --- | --- |
@@ -14,28 +16,29 @@ Lua-visible behavior is checked against the official Lua 5.5 C implementation bu
 | Official suite | `zig build test-official` | Runs downloaded Lua 5.5 tests under both interpreters. |
 | Full check | `zig build ci` | Unit tests, freestanding smoke builds, examples, differential fixtures, extension fixtures, and official suite. |
 
-`just test`, `just diff`, `just extensions`, `just official`, and `just ci` are convenience wrappers.
+`just test`, `just diff`, `just extensions`, `just official`, and `just ci` are shorter wrappers around the same steps.
 
 ## GitHub Actions
 
 Every push runs `zig build ci test-wasm check-tools` with Zig `0.16.0` and `0.17.0`
-on Linux and macOS (x64 and ARM64), plus Windows x64. The full matrix can also
-be started manually. Each job also builds, runs, and tests the downstream
-embedding project in `examples/project` against the current checkout.
+on Linux and macOS (x64 and ARM64), plus Windows x64. You can also start the full
+matrix manually. Each job then builds, runs, and tests the downstream embedding
+project in `examples/project` against the current checkout.
 
-The `PR checks` job succeeds only when the entire full-suite matrix passes; failed,
-cancelled, or skipped matrix jobs prevent it from passing. Select `PR checks` as
-the required status check in the branch protection rule or ruleset for `main`.
+The `PR checks` job passes only when every job in the full-suite matrix passes. A
+failed, cancelled, or skipped matrix job makes it fail. That makes `PR checks` the
+one to select as the required status check in the branch protection rule or ruleset
+for `main`.
 
-The minimum Zig version in `build.zig.zon` stays at `0.16.0`; CI explicitly tests
-both supported versions. The setup action caches Zig downloads and build outputs,
-with separate build caches for each compiler version, OS, architecture, and
-dependency manifest. Full-suite jobs also cache Lua source and test downloads.
-New commits cancel older runs for the same event and branch.
+The minimum Zig version in `build.zig.zon` stays at `0.16.0`, and CI tests both
+supported versions explicitly. To keep runs fast, the setup action caches Zig
+downloads and build outputs, with a separate build cache for each compiler version,
+OS, architecture, and dependency manifest. Full-suite jobs also cache the Lua source
+and test downloads. A new commit cancels older runs for the same event and branch.
 
 ## Lua 5.5 Reference
 
-`zig build fetch-lua` downloads source and tests into `.zlua-deps/`; normal builds produce `zig-out/bin/lua5.5`. Harnesses find CLua in this order:
+`zig build fetch-lua` downloads the source and tests into `.zlua-deps/`, and a normal build produces `zig-out/bin/lua5.5`. The harnesses look for CLua in this order:
 
 ```text
 --clua
@@ -46,11 +49,11 @@ lua5.5.0
 lua
 ```
 
-A fallback binary is accepted only if it identifies as Lua 5.5.
+Whichever binary is found has to identify itself as Lua 5.5. If an explicit `--clua` or `ZLUA_CLUA` path doesn't, the harness reports an error; a fallback that doesn't is skipped.
 
 ## Differential Fixtures
 
-A fixture under `tests/diff/` may start with metadata comments:
+Differential fixtures are plain Lua files under `tests/diff/`. The harness runs each one under both interpreters and compares the results. A fixture can start with metadata comments that tell the harness how to treat it:
 
 ```lua
 -- expect: pass
@@ -71,11 +74,11 @@ print(({ 10, 20, 30 })[2])
 | `skip-os` | Space- or comma-separated OS names (`linux`, `macos`, `windows`, ...) | empty |
 | `reason`, `issue` | Free-form text | empty |
 
-The first four stages compare load-time acceptance while stopping zlua at the named compiler stage. Runtime-style stages also compare stdout and stderr. Normalization is opt-in and should only remove unstable paths, never semantic differences.
+The first four stages compare only whether the code loads, and stop zlua at the named compiler stage. The runtime-style stages also compare stdout and stderr. Normalization is opt-in, and it should only remove unstable paths, never hide a real semantic difference.
 
-Use `skip-os` (with a `reason`) only when the host C Lua's behavior depends on something zlua cannot see, such as the host filesystem's limits.
+Use `skip-os` (with a `reason`) only when the host C Lua's behavior depends on something zlua cannot see, such as the limits of the host filesystem.
 
-Useful focused runs:
+A few useful focused runs:
 
 ```sh
 just diff tests/diff/runtime/tables.lua
@@ -86,15 +89,15 @@ just diff --gc-step-stress
 just diff --show-clua --show-zlua tests/diff/runtime/errors.lua
 ```
 
-Both stress modes collect at every safepoint reached after an allocation. Fixtures that allocate heavily on purpose can set `gc-stress: skip` (with a `reason`) to sit out `--gc-stress`. Use `--gc-stress` to look for values that are collected too early, or `--gc-step-stress` to test changes made between collection steps. Add `--feature=gc` to run just the GC fixtures. Both modes respect Lua's stop/restart controls.
+The two GC stress modes are for collector bugs. Both collect at every safepoint reached after an allocation. Use `--gc-stress` to look for values that are collected too early, and `--gc-step-stress` to test changes made between collection steps. Add `--feature=gc` to run only the GC fixtures. Both modes respect Lua's stop/restart controls. Fixtures that allocate heavily on purpose can set `gc-stress: skip` (with a `reason`) to sit out `--gc-stress`.
 
 ### Expected Failures
 
-Expected failures can be declared in fixture metadata or `tests/fixtures/expected_failures.toml`. They require a reason, and an expected failure that starts passing is reported as a failure so stale entries are removed. The inventory is currently empty.
+You can declare an expected failure in fixture metadata or in `tests/fixtures/expected_failures.toml`. Each one needs a reason. If an expected failure starts passing, the harness reports it as a failure, so stale entries get noticed and removed. The inventory is currently empty.
 
 ## Extension Fixtures
 
-Fixtures under `tests/extensions/` cover zlua additions that cannot be compared with standard Lua, including data formats, `fs`, and string/table helpers. A fixture's expected stdout is stored in `<fixture>.lua.out`; optional `.err` and `.exit` files set stderr and exit status.
+Some zlua features have no counterpart in standard Lua, so there is nothing to compare them against. These include the data formats, `fs`, and the string and table helpers. Their fixtures live under `tests/extensions/` and are checked against stored output instead. A fixture's expected stdout is in `<fixture>.lua.out`, and optional `.err` and `.exit` files set the expected stderr and exit status.
 
 ```sh
 just extensions
@@ -102,9 +105,9 @@ just extensions tests/extensions/string
 just extensions --show-output tests/extensions/fs/basic.lua
 ```
 
-The harness uses safe libraries by default and full libraries for fixtures under `tests/extensions/fs`.
+The harness uses the safe libraries by default, and the full libraries for fixtures under `tests/extensions/fs`.
 
-`--bless` rewrites the expected `.out`, `.err`, and `.exit` files from the actual run.
+When you have changed output on purpose, `--bless` rewrites the expected `.out`, `.err`, and `.exit` files from the actual run:
 
 ```sh
 just extensions --bless tests/extensions/string/split_edges.lua
@@ -112,9 +115,9 @@ just extensions --bless tests/extensions/string/split_edges.lua
 
 ## Official Suite
 
-Downloaded tests live under `.zlua-deps/lua-5.5.0-tests`. The default run uses every top-level `.lua` file except `all.lua` with the basic compatibility prelude.
+The upstream Lua 5.5 tests are downloaded to `.zlua-deps/lua-5.5.0-tests`. By default the harness runs every top-level `.lua` file except `all.lua`, using the basic compatibility prelude.
 
-Every failure, signal, or timeout from either interpreter makes the harness exit nonzero. Failure categories are diagnostic labels only; the official harness has no automatic expected failures. Failed child output is always printed, and the summary reports `clua_failed` and `zlua_failed` separately.
+Any failure, signal, or timeout from either interpreter makes the harness exit nonzero. The failure categories it prints are labels to help you diagnose a problem; the official harness has no automatic expected failures. Output from a failed child is always printed, and the summary reports `clua_failed` and `zlua_failed` separately.
 
 ```sh
 zig build test-official
@@ -123,23 +126,27 @@ just official --mode=complete strings.lua
 zig build test-official -Dofficial-memory-limit-mb=0
 ```
 
-The build step applies a 256 MiB child-process cap on Linux by default and no cap elsewhere. It also limits each child to 120 seconds (`-Dofficial-timeout-ms=0` disables this). The allocator-exhaustion test `heavy.lua` is skipped on macOS and Windows because the harness cannot cap child memory there. The `files.lua` prelude emulates `/dev/full` on those platforms and maps `/dev/null` to `NUL` on Windows. Direct harness runs default to no timeout or memory cap. `--mode=internal` is rejected because it requires `testC` builds of both interpreters, which are not supported.
+Limits differ depending on how you run the suite. The build step caps each child process at 256 MiB on Linux by default, with no cap elsewhere, and limits each child to 120 seconds (`-Dofficial-timeout-ms=0` disables the timeout). Running the harness directly applies no timeout or memory cap by default.
 
-Differential and extension output comparisons treat CRLF and LF as equivalent; lone carriage returns, spaces, and missing final newlines remain significant. Fixtures normalize platform-dependent paths explicitly where they print or assert them.
+Some tests need help on particular platforms. The allocator-exhaustion test `heavy.lua` is skipped on macOS and Windows, because the harness cannot cap child memory there. On those platforms the `files.lua` prelude emulates `/dev/full`, and on Windows it maps `/dev/null` to `NUL`. `--mode=internal` is rejected because it requires `testC` builds of both interpreters, which are not supported.
 
-CI covers Linux and macOS on x64 and ARM64, plus Windows x64. Windows ARM64 is currently excluded because of Zig compiler and C runtime failures.
+When the differential and extension harnesses compare output, they treat CRLF and LF as equivalent. Lone carriage returns, spaces, and missing final newlines still count. Fixtures that print or assert platform-dependent paths normalize them explicitly.
+
+CI covers Linux and macOS on x64 and ARM64, plus Windows x64. Windows ARM64 is excluded for now because of Zig compiler and C runtime failures.
 
 ## Debugging a Failure
 
-1. Run the narrowest fixture with both outputs visible.
-2. Compare output, exit code, signal, and timeout.
-3. Reduce broad official failures to a small permanent fixture.
-4. Fix and rerun the focused target.
-5. Run `zig build ci` before finishing a shared runtime or API change.
+When something fails, narrow it down before you fix it:
+
+1. Run the narrowest fixture you can, with both outputs visible.
+2. Compare the output, exit code, signal, and timeout.
+3. If an official test fails broadly, reduce it to a small permanent fixture.
+4. Fix the problem and rerun the focused target.
+5. Run `zig build ci` before you finish a change to shared runtime or API code.
 
 ```sh
 just diff --show-clua --show-zlua path/to/case.lua
 just official --show-clua --show-zlua calls
 ```
 
-Benchmarks are deliberately separate from correctness checks and are not part of `zig build ci`.
+Benchmarks are kept separate from the correctness checks on purpose, and they are not part of `zig build ci`.

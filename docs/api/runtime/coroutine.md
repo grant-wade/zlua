@@ -143,7 +143,7 @@ pub fn isYieldable(thread: *const Thread) bool
 
 ## yieldRejection
 
-Returns the Lua error message explaining why `thread` cannot yield, or null when it can.
+Returns the Lua error message for a yield from `thread`, or null when it can yield.
 
 ```zig
 pub fn yieldRejection(thread: *const Thread) ?[]const u8
@@ -251,7 +251,7 @@ pub fn newCoroutineThread(comptime State: type, self: *State, entry: Value) !*Th
 
 ## closeCoroutine
 
-Closes `target`. The running thread may close itself; hosts are rejected earlier by `State.closeCoroutine`.
+The running thread may close itself; hosts are rejected earlier by `State.closeCoroutine`.
 
 ```zig
 pub fn closeCoroutine(comptime State: type, self: *State, target: *Thread, error_value: ?Value) !?Value

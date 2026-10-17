@@ -1,4 +1,3 @@
-//! Run: zig build examples
 //! Try several futures from one suspended coroutine, then replay the best one.
 const std = @import("std");
 const zlua = @import("zlua");
@@ -64,7 +63,6 @@ pub fn main() !void {
         }
     }
 
-    // Discard the last trial and leave the VM in the winning future.
     std.debug.print("\nReplay winner (HP + gold = {d}):\n", .{best_score});
     try lua.reset();
     if (try explore(&lua, best_choice) != best_score) return error.ReplayMismatch;

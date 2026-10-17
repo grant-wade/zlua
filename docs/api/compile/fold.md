@@ -90,13 +90,8 @@
 
 ## Overview
 
-Compile-time folding of numeric constant expressions.
-
-Mirrors PUC Lua 5.5 `constfolding`/`validop` in lcode.c: only numeric
-literals fold, operations that may raise errors are left for the runtime,
-and float results that are NaN or zero (either sign) are never folded.
-The arithmetic matches the VM's raw arithmetic so folded and unfolded
-evaluation agree bit for bit.
+Numeric constant folding, mirroring PUC Lua 5.5 `constfolding`/`validop`.
+Erroring operations and NaN or zero float results are left to the VM.
 
 ## Functions
 

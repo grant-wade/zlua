@@ -1,4 +1,4 @@
-//! Run: zig build examples --release=fast
+//! Benchmarks snapshot reset against rebuilding a state; run with --release=fast.
 const std = @import("std");
 const zlua = @import("zlua");
 const Timestamp = std.Io.Timestamp;
@@ -20,8 +20,7 @@ pub fn main(init: std.process.Init) !void {
     var reset_samples: [iterations]u64 = undefined;
     var rebuild_samples: [iterations]u64 = undefined;
     for (0..warmup + iterations) |i| {
-        // Alternate order to reduce systematic timing bias. Both paths start
-        // with identical initialized state and run the same request, untimed.
+        // Alternate order to avoid systematic timing bias.
         for (0..2) |j| {
             const reset = (i + j) % 2 == 0;
             try call(if (reset) &worker else &lua.?, "request");

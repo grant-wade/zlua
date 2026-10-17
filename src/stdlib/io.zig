@@ -16,37 +16,26 @@ const Userdata = runtime.Userdata;
 
 const max_line_args = 250;
 
-/// The payload of every Lua file handle. Standard streams, `io.open`,
-/// `io.tmpfile`, `io.popen`, `io.lines`, and `fs.open` all return `FILE*`
-/// userdata around one of these, so no handle state is visible from Lua.
-///
-/// A handle buffers the whole file, like a C stream with a whole-file buffer.
-/// Sequential writes append to `content`, so they cost time linear in the
-/// bytes written. Snapshots copy the payload and rollback copies it before
-/// its first change after a baseline, so changes go through `writable`.
+/// Payload of every `FILE*` userdata; buffers the whole file. Mutate only
+/// through `writable` so rollback can copy it before the first change.
 pub const File = struct {
     kind: Kind,
-    /// Regular file path or popen command, owned by the handle; empty otherwise.
+    /// Owned file path or popen command; empty otherwise.
     path: []const u8 = "",
     readable: bool,
     writable: bool,
-    /// Every write goes to the end of the file.
     append: bool = false,
     closed: bool = false,
     buffer_mode: BufferMode = .full,
-    /// The handle opened a directory: C `fopen` succeeds, then reads fail.
+    /// C `fopen` succeeds on directories; reads then fail.
     is_directory: bool = false,
-    /// `/dev/full` has buffered writes that its next flush fails to write.
     device_pending: bool = false,
     content: std.ArrayList(u8) = .empty,
-    /// Zero-based position.
     pos: usize = 0,
-    /// Bytes known to match the host file, which is no longer than that.
-    /// The handle has unflushed writes while this is below `content.len`.
+    /// Prefix of `content` known to match the host file.
     synced: usize = 0,
     /// `State.file_generation` when the handle last matched the filesystem.
     generation: u64 = 0,
-    /// The command's status once a popen command has run.
     popen_result: ?host.ProcessResult = null,
     /// Creation order on the scale of `Table.finalizer_order`.
     finalizer_order: u64 = 0,
@@ -55,15 +44,12 @@ pub const File = struct {
         stdin,
         stdout,
         stderr,
-        /// A file of the filesystem capability.
         regular,
         popen,
-        /// `/dev/null`: writes are discarded and reads see no bytes.
         null_device,
-        /// Linux `/dev/full`: reads see endless zero bytes, and writing
-        /// buffered bytes out fails with `ENOSPC`.
+        /// Linux `/dev/full`: endless zero reads; flushing fails with `ENOSPC`.
         full_device,
-        /// `io.tmpfile`: memory only; it never touches a filesystem.
+        /// `io.tmpfile`: memory only.
         anonymous,
     };
 
@@ -104,12 +90,11 @@ const Handle = struct {
 
 var file_type_token: u8 = 0;
 
-/// Userdata type identity of file handles.
 pub fn fileTypeId() usize {
     return @intFromPtr(&file_type_token);
 }
 
-/// The file behind a handle, for reading only; null for other values.
+/// Read-only view of a handle's file; null for other values.
 pub fn fileOf(value: Value) ?*const File {
     if (value != .userdata) return null;
     return fileOfUserdata(value.userdata);
@@ -160,13 +145,11 @@ pub const FileOptions = struct {
     kind: File.Kind = .regular,
     path: []const u8 = "",
     mode: ParsedMode,
-    /// Initial bytes allocated by the state allocator. `newFile` takes them,
-    /// even when it fails.
+    /// Allocated by the state allocator; `newFile` takes ownership even on failure.
     contents: []const u8 = "",
     buffer_mode: File.BufferMode = .full,
     is_directory: bool = false,
     popen_result: ?host.ProcessResult = null,
-    /// `fs` handles also have the `fs` file methods.
     fs_methods: bool = false,
 };
 
@@ -206,9 +189,7 @@ pub fn newFile(state: *State, options: FileOptions) !Value {
     return value;
 }
 
-/// Closes an unreachable open handle for the collector, like PUC's `__gc`:
-/// buffered writes are flushed and the file is closed. Failures are ignored,
-/// as `__gc` ignores the result of C `fclose`.
+/// Collector finalizer: flushes and closes an open handle, ignoring failures like PUC's `__gc`.
 pub fn finalizeFile(state: *State, userdata: *Userdata) void {
     const handle = writable(userdata) catch return;
     if (handle.file.closed or handle.file.isStandard()) return;
@@ -229,9 +210,7 @@ pub fn hasOpenFiles(state: *State) bool {
     return false;
 }
 
-/// Closes every open file handle, newest first, like `lua_close` running
-/// their `__gc`: buffered writes are flushed and failures are ignored.
-/// `State.deinit` calls this; reset discards handles without closing them.
+/// Flushes and closes every open handle, newest first, like `lua_close` running their `__gc`.
 pub fn closeOpenFiles(state: *State) void {
     var index = state.userdata_allocations.items.len;
     while (index > 0) {
@@ -300,9 +279,8 @@ pub fn open(state: *State, thread: *Thread, op: bytecode.Call) !void {
     try returnFile(state, thread, op, try newFile(state, .{ .path = path, .mode = parsed, .contents = contents }));
 }
 
-/// Readies the file of an open for its mode, like `fopen`: "w" truncates it,
-/// and "a" creates it when missing or checks it is writable without
-/// rewriting it, so bytes other writers append meanwhile survive.
+/// Like `fopen`: "w" truncates; "a" creates the file or checks it is writable
+/// without rewriting it, so concurrent appends by other writers survive.
 pub fn prepareWrite(state: *State, path: []const u8, parsed: ParsedMode, exists: bool) anyerror!void {
     switch (parsed.kind) {
         'w' => try state.fsWriteFile(path, ""),
@@ -436,8 +414,7 @@ pub fn fileClose(state: *State, thread: *Thread, op: bytecode.Call) !void {
     try closeFileValue(state, thread, op, runtime.argValue(state, thread, op, 0), "file:close");
 }
 
-/// `__gc` and `__close`: closes an open handle and ignores closed and
-/// standard ones, like PUC's `f_gc`.
+/// `__gc` and `__close`, like PUC's `f_gc`.
 pub fn fileGc(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const handle = try writable(try expectFileArgument(state, runtime.argValue(state, thread, op, 0), "file:__gc", 1));
     if (!handle.file.closed and !handle.file.isStandard()) try closeQuietly(state, handle);
@@ -482,7 +459,6 @@ pub fn fileSeek(state: *State, thread: *Thread, op: bytecode.Call) !void {
         return;
     }
 
-    // Like `fseek`, write out buffered output before moving.
     if (file.hasUnflushedWrites()) {
         if (try flushReport(state, file)) |failure| return returnResult(state, thread, op, failure, .nil);
     }
@@ -497,8 +473,6 @@ pub fn fileSeek(state: *State, thread: *Thread, op: bytecode.Call) !void {
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .integer = @intCast(new_pos) }});
 }
 
-/// The position `offset` bytes from `base`, failing like `fseek` when it is
-/// negative or overflows `lua_Integer` or the host position.
 fn seekPosition(base: usize, offset: i64) error{ InvalidArgument, ValueTooLarge }!usize {
     const start = std.math.cast(i64, base) orelse return error.ValueTooLarge;
     const target = std.math.add(i64, start, offset) catch return error.ValueTooLarge;
@@ -602,8 +576,7 @@ fn failOpenChecked(state: *State, path: []const u8, err: anyerror) anyerror {
     return state.fail(try state.intern(message));
 }
 
-/// Reads the rest of standard input for `dofile()` and `loadfile()`, sharing
-/// the `io.stdin` position. The caller owns the bytes.
+/// Reads the rest of stdin, sharing the `io.stdin` position. Caller owns the bytes.
 pub fn readAllStdin(state: *State) ![]u8 {
     var source = state.stdinSource();
     defer source.finish();
@@ -613,15 +586,13 @@ pub fn readAllStdin(state: *State) ![]u8 {
     return bytes.toOwnedSlice(state.allocator);
 }
 
-/// Reads one line, including its newline, from standard input; null at end of input.
+/// Reads one line from stdin, keeping the newline; null at end of input.
 pub fn readStdinLine(state: *State) !?[]const u8 {
     const value = try readStdinFormat(state, .{ .line = true });
     return if (value == .string) value.string else null;
 }
 
-/// Returns the unread bytes of an open, readable file and moves it to the
-/// end, for decoders that accept a FILE*. The bytes stay valid until the
-/// handle is next used.
+/// Consumes the unread bytes of a file; they stay valid until the handle is next used.
 pub fn readRemaining(state: *State, userdata: *Userdata) ![]const u8 {
     const handle = try writable(userdata);
     const file = handle.file;
@@ -637,8 +608,7 @@ pub fn readRemaining(state: *State, userdata: *Userdata) ![]const u8 {
     return content[start..];
 }
 
-/// Sets a file's size for `fs` file `truncate` and writes the result through
-/// the filesystem capability. The handle keeps its bytes if the write fails.
+/// Resizes the file through the filesystem capability; the handle is unchanged on failure.
 pub fn truncateFile(state: *State, userdata: *Userdata, size: usize) !void {
     const handle = try writable(userdata);
     const file = handle.file;
@@ -657,8 +627,7 @@ pub fn truncateFile(state: *State, userdata: *Userdata, size: usize) !void {
     handle.noteSize(state);
 }
 
-/// Writes the buffered output of every open file handle, as C `exit` flushes
-/// all streams. Used by the CLI before the process ends; errors are ignored.
+/// Flushes every open handle, as C `exit` does; errors are ignored.
 pub fn flushOpenFiles(state: *State) void {
     var index: usize = 0;
     while (index < state.userdata_allocations.items.len) : (index += 1) {
@@ -711,8 +680,7 @@ fn readFromFile(state: *State, thread: *Thread, op: bytecode.Call, handle: Handl
     try state.returnValues(thread, op.base, op.return_count, values.items);
 }
 
-/// Appends the result of one read format; false when it fails, after which
-/// `g_read` reads no further formats.
+/// Returns false when the format fails; like `g_read`, later formats are then skipped.
 fn readInto(state: *State, handle: Handle, values: *std.ArrayList(Value), spec: Value) !bool {
     const value = try readOne(state, handle, spec);
     try values.append(state.allocator, value);
@@ -722,7 +690,7 @@ fn readInto(state: *State, handle: Handle, values: *std.ArrayList(Value), spec: 
 const ReadFormat = union(enum) {
     count: usize,
     all,
-    /// Keeps the newline for "L".
+    /// True for "L", which keeps the newline.
     line: bool,
     number,
 };
@@ -891,7 +859,6 @@ fn whitespacePrefix(bytes: []const u8) usize {
 
 const NumberScan = struct {
     value: Value,
-    /// Offset after the bytes the read consumes.
     next: usize,
 };
 
@@ -1141,9 +1108,7 @@ fn expectFileArgument(state: *State, value: Value, function_name: []const u8, in
     return checkedFile(state, value) orelse state.failArgumentType(function_name, index, "FILE*", value);
 }
 
-/// The handle behind a value, checked like `luaL_testudata(L, i, "FILE*")`:
-/// a file userdata whose metatable is still a file metatable. A handle given
-/// another metatable with `debug.setmetatable` is not a file.
+/// Like `luaL_testudata(L, i, "FILE*")`: a handle whose metatable was replaced is not a file.
 pub fn checkedFile(state: *State, value: Value) ?*Userdata {
     if (fileOf(value) == null) return null;
     const metatable = value.userdata.metatable orelse return null;
@@ -1169,9 +1134,8 @@ pub const ParsedMode = struct {
         return self.kind != 'r' or self.plus;
     }
 
-    /// Whether the host's `fopen` positions the stream at the end of the
-    /// file. BSD libcs seek there for every append mode, glibc only for "a",
-    /// and musl and the Windows CRT start at zero until the first write.
+    /// Whether the host's `fopen` starts at the end: BSD for every append mode,
+    /// glibc only for "a", musl and the Windows CRT never.
     pub fn opensAtEnd(self: ParsedMode) bool {
         if (!self.append) return false;
         if (builtin.os.tag == .windows) return false;
@@ -1198,9 +1162,7 @@ fn specialDevice(path: []const u8) ?File.Kind {
     return null;
 }
 
-/// Wraps a standard stream for `io.stdin`, `io.stdout`, and `io.stderr`.
-/// Standard streams read and write through the state's stdin source and
-/// output writers, never through a buffer.
+/// Unbuffered handle over the state's stdin source or output writers.
 pub fn newStandardFile(state: *State, kind: File.Kind) !Value {
     std.debug.assert(kind == .stdin or kind == .stdout or kind == .stderr);
     return newFile(state, .{ .kind = kind, .mode = parseMode(if (kind == .stdin) "r" else "w").? });

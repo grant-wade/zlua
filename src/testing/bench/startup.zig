@@ -82,8 +82,7 @@ fn runSample(io: std.Io, selection: Selection) !Sample {
         .phase_start = Timestamp.now(io, .awake),
         .phase_before = counter.beginPhase(),
     };
-    // Wrap the observed runtime so host registration uses the embedding API
-    // without losing the individual initialization timings.
+    // Wrap the observed runtime so host registration keeps per-phase init timings.
     var api_state: zlua.State = .{
         .base_allocator = allocator,
         .raw_state = try zlua.runtime.State.initWithOptionsObserved(allocator, .{ .stdlib = selection.stdlib }, &init_observer, InitObserver.observe),

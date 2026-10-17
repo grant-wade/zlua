@@ -1,4 +1,4 @@
-//! Run: zig build examples
+//! Adversarial probes showing that snapshot reset revokes stale handles and restores state.
 const std = @import("std");
 const zlua = @import("zlua");
 
@@ -60,8 +60,7 @@ pub fn main() !void {
 
         try lua.reset();
 
-        // Force fresh root allocations before trying the stale handles: an
-        // old root index must not grant access to a new generation's object.
+        // Fresh roots may reuse old slots; stale handles must still be rejected.
         var fresh = try lua.createTable(.{});
         defer fresh.deinit();
         try fresh.set("secret", "new-generation");
@@ -98,7 +97,6 @@ pub fn main() !void {
             \\local ok, secret = coroutine.resume(co)
             \\assert(ok and secret == 'baseline')
         , .{});
-        // Restore the suspended baseline for the next attack round.
         try lua.reset();
     }
     std.debug.print("PASS: 20 rounds of stale-handle, root-reuse, closure, coroutine, module, weak-table and metatable probes\n", .{});
@@ -129,7 +127,6 @@ const Payload = struct {
 };
 
 fn userdataBoundary(allocator: std.mem.Allocator) !void {
-    // Host-owned storage outlives both the state and snapshot.
     var backing = Payload{ .value = 7 };
     var lua = try zlua.State.init(allocator, .{});
     defer lua.deinit();

@@ -172,8 +172,7 @@ pub fn build(b: *std.Build) void {
             }),
         });
         const run_example = b.addRunArtifact(example_exe);
-        // Inherit output and run on every invocation, even when compilation
-        // is cached. Run treats nonzero exits and abnormal termination as errors.
+        // Inherited stdio makes the step rerun on every invocation, even when cached.
         run_example.stdio = .inherit;
         examples_step.dependOn(&run_example.step);
     }

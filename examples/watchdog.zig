@@ -1,5 +1,4 @@
-//! A watchdog thread interrupts a runaway script, which `pcall` cannot catch.
-//! Per-call instruction budgets and tracebacks bound and diagnose other calls.
+//! Interrupt a runaway script from a watchdog thread; also per-call instruction budgets and tracebacks.
 const std = @import("std");
 const zlua = @import("zlua");
 
@@ -42,7 +41,6 @@ pub fn main(init: std.process.Init) !void {
     var runaway = try lua.getGlobal("runaway", zlua.Function);
     defer runaway.deinit();
 
-    // Start the watchdog, then run the script on this thread.
     var watchdog = Watchdog{ .io = init.io, .handle = try lua.interruptHandle() };
     const thread = try std.Thread.spawn(.{}, Watchdog.run, .{ &watchdog, 50 });
     const result = runaway.call(.{}, void);
@@ -61,7 +59,6 @@ pub fn main(init: std.process.Init) !void {
     defer validate.deinit();
     try validate.call(.{1}, void);
 
-    // A per-call budget stops the same script deterministically.
     if (runaway.callWith(.{}, void, .{ .max_instructions = 100_000 })) |_| return error.ExpectedLimit else |err| switch (err) {
         error.LuaError => {
             const message = try lua.errorMessage();
@@ -71,7 +68,6 @@ pub fn main(init: std.process.Init) !void {
         else => return err,
     }
 
-    // A traceback captured at the error point shows where validation failed.
     const checked = try validate.protectedCallWith(.{5}, void, .{ .traceback = true });
     switch (checked) {
         .ok => return error.ExpectedLuaError,

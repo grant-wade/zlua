@@ -286,8 +286,7 @@ const FunctionCompiler = struct {
     fn redirectAssignmentResult(self: *FunctionCompiler, start: usize, source: bytecode.Register, dest: bytecode.Register) bool {
         const instructions = self.proto.instructions.items[start..];
         if (instructions.len == 0) return false;
-        // Keep evaluation in temporary registers until the final operation.
-        // Short-circuit branches may bypass that operation, so keep their move.
+        // Short-circuit branches may bypass the final operation, so they need the move.
         for (instructions) |instruction| switch (instruction) {
             .jmp, .test_op, .test_set, .compare_branch => return false,
             else => {},
@@ -545,8 +544,7 @@ const FunctionCompiler = struct {
         _ = try self.declareLocalAt("(for state)", base + 1, false);
         const close_register = try self.declareLocalAt("(for state)", base + 3, true);
         _ = try self.emit(.{ .check_close = close_register });
-        // Iterator setup can yield before it produces a closing value. Activate
-        // the closing local only once check_close has actually run.
+        // Iterator setup can yield before check_close runs, so activate the closing local after it.
         self.proto.locals.items[self.locals.items[self.locals.items.len - 1].debug_index].start_pc = self.proto.pc();
         for (stmt.names) |name| _ = try self.declareLocal(name.name);
 
@@ -670,9 +668,7 @@ const FunctionCompiler = struct {
                         _ = try self.emitWithErrorSite(.{ .get_table = .{ .dest = dest, .table = table, .key = key } }, .index, &.{table_origin}, null);
                         return;
                     }
-                    // A literal key cannot change the receiver while being
-                    // evaluated. Keep direct access to named varargs so their
-                    // read-only form does not need a materialized table.
+                    // A literal key cannot change the receiver, so read-only named varargs avoid a table.
                     switch (index.key.*) {
                         .nil, .boolean, .integer, .float, .string => {
                             const mark = self.registerMark();
@@ -859,9 +855,7 @@ const FunctionCompiler = struct {
         const mark = self.registerMark();
         const direct_left = self.sourceRegister(binary.left);
         const direct_right = self.sourceRegister(binary.right);
-        // Lua keeps local operands in their registers while evaluating the
-        // right side, which may itself update a captured local. Concat copies
-        // the left operand first unless the right side cannot run code.
+        // Like Lua, concat copies a local left operand first unless the right side cannot run code.
         const use_direct_left = direct_left != null and (binary.op != .concat or self.evaluationIsInert(binary.right));
         const use_direct_right = direct_right != null and direct_right.? != dest;
         const right = if (use_direct_right) direct_right.? else try self.allocReg();
@@ -952,10 +946,8 @@ const FunctionCompiler = struct {
     }
 
     fn emitConditionJump(self: *FunctionCompiler, condition: bytecode.Register, jump_if_truthy: bool) !usize {
-        // Only truthiness survives a condition. Drop its object reference before
-        // entering either branch: automatic GC conservatively scans temporaries,
-        // and allocation inside a loop can otherwise keep its weak condition
-        // alive indefinitely. Invert the branch to use NOT's boolean result.
+        // Replace the condition with its NOT so conservative stack scanning cannot keep a weak
+        // object alive across a loop; the branch is inverted to match.
         _ = try self.emit(.{ .not = .{ .dest = condition, .source = condition } });
         return self.emit(.{ .test_op = .{ .register = condition, .jump_if_truthy = !jump_if_truthy, .offset = 0 } });
     }

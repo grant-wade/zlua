@@ -126,8 +126,7 @@ test "hand-built bytecode can fall through or jump past its final instruction" {
 }
 
 test "automatic GC clears weak values after full collection across VM dispatch paths" {
-    // The closure suite waits for this collection without a bound. Keep the
-    // allocation pattern, but fail promptly if a dispatch path retains x[1].
+    // Fail promptly, unlike the closure suite's unbounded wait, if a dispatch path retains x[1].
     const source =
         \\local A, B = 0, {g = 10}
         \\local function f(x)

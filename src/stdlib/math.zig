@@ -10,8 +10,7 @@ const Value = runtime.Value;
 const UnaryFn = enum { acos, asin, cos, exp, sin, sqrt, tan };
 const IntegerUnaryFn = enum { ceil, floor };
 
-/// A numeric-only call that cannot allocate, throw, or call back into Lua.
-/// Null delegates coercion, argument errors, and other functions to normal calls.
+/// Non-allocating, non-throwing fast path; null falls back to the normal call.
 pub fn fastUnaryResult(func: runtime.NativeFn, value: Value) ?Value {
     switch (func) {
         .math_abs => return switch (value) {

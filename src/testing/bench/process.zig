@@ -141,8 +141,7 @@ fn runOne(allocator: std.mem.Allocator, io: std.Io, benchmark: fixtures.Benchmar
     var validation: Validation = .{};
     var failure_index: ?usize = null;
     const executables = [_][]const u8{ clua_exe, zlua_exe, snapshot_exe };
-    // Rotate all three engines through first, second and third, including warmups.
-    // Output and status validation remain outside runTimed.
+    // Rotate engine order, including warmups, so no engine always runs first.
     for (0..try std.math.add(usize, iterations, warmup)) |index| {
         var runs: [3]TimedRun = undefined;
         var completed: usize = 0;
@@ -167,7 +166,6 @@ fn runOne(allocator: std.mem.Allocator, io: std.Io, benchmark: fixtures.Benchmar
             const data = &@field(report, engine);
             const run = runs[engine_index];
             if (index >= warmup) data.samples_ns[index - warmup] = run.elapsed_ns;
-            // Preserve the failing sample's exit information.
             if (failure_index == index or failure_index == null) {
                 data.exit_code = run.result.exit_code;
                 data.signal = run.result.signal;

@@ -267,8 +267,7 @@ fn syncStorage(comptime State: type, self: *State, meta: *types.GcMeta, bytes: u
     meta.storage_bytes = bytes;
 }
 
-/// Managed backing capacities; allocator overhead and rollback copies are
-/// measured separately by the embedding allocator, never used to pace GC.
+/// Managed backing capacity; excludes allocator overhead and rollback copies.
 pub fn threadCapacityBytes(thread: *const Thread) usize {
     return threadListBytes(thread) + thread.frame_storage_bytes;
 }
@@ -304,8 +303,7 @@ pub fn closureBytes(closure: *const Closure) usize {
 pub fn collectGarbageValue(comptime State: type, self: *State, thread: *Thread, op: bytecode.Call) !void {
     const option = argValue(self, thread, op, 0);
     if (self.is_collecting) {
-        // Lua rejects collector controls from finalizers, including mode and
-        // running-state changes. Argument validation still happens first.
+        // Lua rejects collector controls from finalizers, but validates arguments first.
         if (option == .string and std.mem.eql(u8, option.string, "param")) {
             _ = try collectGarbageParam(State, self, argValue(self, thread, op, 1));
             if (op.arg_count >= 3 and argValue(self, thread, op, 2) != .nil) {
@@ -421,15 +419,13 @@ fn luaFastStep(comptime State: type, self: *State) bool {
 /// Lua 5.5 expresses explicit step budgets in bytes; zero forces a basic step.
 pub fn collectGarbageStep(comptime State: type, self: *State, thread: ?*Thread, budget: i64) !bool {
     if (self.is_collecting) return false;
-    // Match luaL's integer -> size_t -> signed-memory conversion on 32-bit
-    // targets as well as native hosts.
+    // Match luaL's integer -> size_t -> signed-memory conversion, including on 32-bit targets.
     const narrowed: isize = @bitCast(@as(usize, @truncate(@as(u64, @bitCast(budget)))));
     if (narrowed > 0) {
         self.gc_next_total -|= @as(usize, @intCast(narrowed));
         if (!shouldRunAutoGc(State, self)) return false;
     }
-    // Lua's work calculation can round to zero even for nonzero parameters.
-    // That requests a full cycle, independently of the Zig step-count adapter.
+    // Lua's work calculation can round to zero for nonzero parameters, requesting a full cycle.
     if (luaFastStep(State, self)) {
         try collectGarbageWithFinalizersMode(State, self, thread, self.conservative_gc_depth != 0);
         return true;
@@ -471,8 +467,7 @@ fn beginCycle(comptime State: type, self: *State) void {
 }
 
 fn revisitMutable(comptime State: type, self: *State) void {
-    // Thread stacks and open upvalues are mutable roots. Their ordinary VM
-    // stores need no per-register barrier; revisit them at the atomic boundary.
+    // Thread stacks and open upvalues have no write barrier; revisit them at the atomic boundary.
     const thread_start = if (self.gc_cycle == .minor) self.gc_old.thread_allocations else 0;
     for (self.thread_allocations.items[thread_start..]) |thread| {
         if (isMarked(State, self, thread)) traceThread(State, self, thread);
@@ -495,8 +490,7 @@ fn atomic(comptime State: type, self: *State) !void {
     if (self.gc_cycle == .major) for (self.table_allocations.items) |table| tableCandidate(State, self, table);
     revisitMutable(State, self);
     convergeEphemerons(State, self);
-    // Complete all fallible detachment before removing weak entries or changing
-    // finalization state. Failure leaves this phase safe to retry.
+    // Finish fallible detachment before touching weak entries or finalizers so failure can retry.
     if (self.rollback) |journal| {
         try journal.prepareCollection(self);
         try prepareRollbackTableWrites(State, self);
@@ -644,15 +638,11 @@ pub fn collectGarbageWithFinalizers(comptime State: type, self: *State, thread: 
 pub fn collectGarbageWithFinalizersMode(comptime State: type, self: *State, thread: ?*Thread, mark_all_stack_registers: bool) !void {
     if (self.is_collecting) return;
     const was_major = self.gc_major_pending or (self.gc_phase != .pause and self.gc_cycle == .major);
-    // A full collection starts from current roots, including objects already
-    // separated for finalization. Abandon scratch state without running callbacks
-    // from an earlier partial cycle before the new cycle's separation phase.
+    // Restart from current roots, abandoning an earlier partial cycle's scratch state without callbacks.
     normalizeBaseline(State, self);
     self.gc_major_pending = true;
     while (!try step(State, self, thread, mark_all_stack_registers)) {}
-    // Lua's explicit full collection preserves the generational submode:
-    // fullgen re-enters minor mode, while a full collection in major mode
-    // stays there. The reclamation heuristic applies only to ordinary steps.
+    // Like Lua, an explicit full collection preserves the generational submode (minor or major).
     if (self.gc_mode == .generational) {
         self.gc_major_pending = was_major;
         resetAutoGcThreshold(State, self);
@@ -706,8 +696,7 @@ pub fn markRoots(comptime State: type, self: *State) void {
     for (self.api_roots.items) |root| markValue(State, self, root);
     var value_roots = self.value_roots;
     while (value_roots) |roots| : (value_roots = roots.previous) for (roots.values) |value| markValue(State, self, value);
-    // Native callbacks have no Lua wrapper whose varargs would keep arguments
-    // alive. Reentrant calls may collect while an outer callback is suspended.
+    // No Lua varargs keep native callback arguments alive, and outer callbacks may be suspended.
     var callback = self.active_api_callback;
     while (callback) |context| : (callback = context.parent) {
         forceEnqueue(State, self, .{ .thread = context.thread });
@@ -840,8 +829,7 @@ pub fn markWeakString(comptime State: type, self: *State, value: Value) void {
 
 pub fn markClosure(comptime State: type, self: *State, closure: *Closure) void {
     if (isTrackedClosure(State, self, closure) and !isOld(State, self, closure)) self.gc_found_young = true;
-    // Native adapters can own a closure on the host stack. Its children are
-    // managed, but its address must never survive in a persistent worklist.
+    // A native adapter's closure may live on the host stack; never keep its address in a worklist.
     if (!isTrackedClosure(State, self, closure)) {
         if (markedThisCycle(State, self, closure)) return;
         closure.gc.epoch = self.gc_epoch;
@@ -936,8 +924,7 @@ pub fn markThreadStack(comptime State: type, self: *State, thread: *Thread) void
     markStackRange(State, self, thread, thread.yield_result_base, thread.yield_result_count);
 }
 
-/// Includes the arguments of a native running from this frame, which can
-/// reach past the CALL operands when they come from multiple results.
+/// Includes a running native's arguments, which can extend past the CALL operands.
 fn innermostLiveEnd(thread: *const Thread, frame: types.CallFrame) usize {
     const end = callerLiveEnd(frame);
     const call = thread.native_call orelse return end;
@@ -1161,9 +1148,7 @@ pub fn writeBarrier(comptime State: type, self: *State, parent: anytype, child: 
 
 fn prepareLuaFinalizers(comptime State: type, self: *State) void {
     self.gc_finalizers.clearRetainingCapacity();
-    // gc_tables contains young and remembered tables in a minor collection.
-    // Doubly linked registrations let us separate those objects without walking
-    // the old registration list. Selection precedes resurrection tracing.
+    // A minor collection sees only young and remembered tables here. Selection precedes resurrection.
     for (self.gc_tables.items) |table| {
         if (!table.finalizer_registered or isMarked(State, self, table)) continue;
         self.gc_finalizers.appendAssumeCapacity(.{ .table = table });
@@ -1248,8 +1233,7 @@ pub fn runFinalizerBatch(comptime State: type, self: *State, thread: ?*Thread, l
     var count: usize = 0;
     while (nextPendingFinalizer(State, self)) |object| {
         if (count >= limit) return false;
-        // protectedCall's initial stack reservation can fail before protected
-        // execution begins. Keep the registration pending until it succeeds.
+        // Reserve before consuming the registration, as protectedCall's reservation can fail.
         const frame = active_thread.frames.items[active_thread.frames.items.len - 1];
         try active_thread.ensureStack(self.allocator, frame.base + @as(usize, active_thread.scratchRegister()) + 2, self.callStackValueLimit(active_thread));
         count += 1;
@@ -1294,11 +1278,8 @@ fn callLuaFinalizer(comptime State: type, self: *State, thread: *Thread, object:
     }
 }
 
-/// Registers `userdata` for its metatable's `__gc` when it is not yet
-/// registered, like `luaC_checkfinalizer`. Lua registers a file handle when
-/// it is created, so one given another metatable calls whatever `__gc` that
-/// metatable has when it dies, in its creation order; with the file
-/// metatable it keeps the built-in close.
+/// Registers `userdata` for its metatable's `__gc` if needed, like `luaC_checkfinalizer`.
+/// File handles are registered at creation, so they finalize in creation order.
 pub fn checkUserdataFinalizer(comptime State: type, self: *State, userdata: *Userdata) void {
     if (userdata.lua_finalizer_registered or userdata.finalized or userdata.finalization_pending) return;
     const metatable = userdata.metatable orelse return;
@@ -1419,9 +1400,7 @@ fn runUserdataFinalizerBatch(comptime State: type, self: *State, limit: usize) !
     var count: usize = 0;
     while (self.userdata_pending_finalizer_head) |userdata| {
         if (count == limit) return false;
-        // A snapshot can establish its baseline after separation. Detach that
-        // baseline payload before consuming the registration or calling out.
-        // Failure leaves this finalizer pending and safe to retry.
+        // Detach a snapshot baseline payload first so failure leaves this finalizer pending.
         try rollback.userdataWritable(userdata);
         count += 1;
         rollback.touch(userdata);

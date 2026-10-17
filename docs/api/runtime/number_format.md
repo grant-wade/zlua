@@ -90,15 +90,8 @@
 
 ## Overview
 
-C `printf`-compatible float formatting (`%e`, `%f`, `%g`, `%a`) and the
-Lua float-to-string conversion built on it.
-
-Decimal conversions are exact: the float is expanded into all of its
-decimal digits with a small big integer and then rounded half to even,
-which is what glibc and the BSD/macOS libc produce in the default rounding
-mode. The few spots where those libcs disagree (`%a` rounding and
-subnormals, the sign of NaN) follow the libc of the build target, so zlua
-prints what the reference C Lua prints on the same platform.
+Exact C `printf`-compatible float formatting and Lua's float-to-string conversion.
+Where libcs disagree (`%a` rounding, subnormals, NaN sign), the target's libc is followed.
 
 ## Functions
 
@@ -138,8 +131,7 @@ pub const Spec = struct {
 
 ## max_formatted_len
 
-Fits any conversion with a width and precision of at most 99 (the limits
-Lua's `string.format` enforces): `%.99f` of the largest double needs 410.
+Fits width and precision up to Lua's limit of 99; `%.99f` of the largest double needs 410.
 
 ```zig
 pub const max_formatted_len = 512;
@@ -159,8 +151,7 @@ pub const max_lua_float_len = 32;
 
 ## formatFloat
 
-Formats `value` like C `snprintf` with the given conversion. Widths and
-precisions above 99 are clamped so the result always fits.
+Formats `value` like C `snprintf`, clamping width and precision to 99.
 
 ```zig
 pub fn formatFloat(buffer: *[max_formatted_len]u8, spec: Spec, value: f64) []const u8
@@ -172,9 +163,8 @@ References: [`Spec`](#type-spec)
 
 ## formatLuaFloat
 
-Converts a float the way Lua's `tostring` does: `%.15g`, or `%.17g` when
-15 digits do not read back as the same float, plus `.0` when the result
-looks like an integer.
+Converts a float like Lua's `tostring`: `%.15g`, or `%.17g` when needed to round-trip,
+plus `.0` when it looks like an integer.
 
 ```zig
 pub fn formatLuaFloat(buffer: *[max_lua_float_len]u8, value: f64) []const u8

@@ -171,8 +171,7 @@ pub fn fileFailure(state: *State, thread: *Thread, op: bytecode.Call, path: ?[]c
 
 ## tmpname
 
-Like `mkstemp` in PUC's `os.tmpname`, creates an empty file with an
-unpredictable name and returns the name; the caller removes the file.
+Like PUC's `mkstemp`-based `os.tmpname`: creates the file; the caller removes it.
 
 ```zig
 pub fn tmpname(state: *State, thread: *Thread, op: bytecode.Call) !void
@@ -246,8 +245,7 @@ pub const DateParts = struct {
 
 ## brokenDownTime
 
-Breaks a Unix timestamp into local calendar fields; null when the year
-does not fit C's `struct tm`.
+Null when the year does not fit C's `struct tm`.
 
 ```zig
 pub fn brokenDownTime(timestamp: i64, offset: timezone.LocalOffset) ?DateParts

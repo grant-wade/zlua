@@ -1,40 +1,8 @@
-//! docs-md - source-based Markdown API docs for Zig 0.16 projects.
+//! Source-based Markdown API docs for Zig projects. AST only: no semantic
+//! analysis or comptime evaluation, so complex signatures are approximated.
 //!
-//! Usage:
-//!
-//!     zig run tools/docs-md.zig -- \
-//!       --root src/root.zig \
-//!       --out docs/api \
-//!       --project-root . \
-//!       --name my_package \
-//!       --emit-index \
-//!       --follow-imports
-//!
-//! Build integration example:
-//!
-//!     const docgen = b.addExecutable(.{
-//!         .name = "docs-md",
-//!         .root_source_file = b.path("tools/docs-md.zig"),
-//!         .target = b.graph.host,
-//!     });
-//!
-//!     const run_docgen = b.addRunArtifact(docgen);
-//!     run_docgen.addArgs(&.{
-//!         "--root", "src/root.zig",
-//!         "--out", "docs/api",
-//!         "--project-root", ".",
-//!         "--emit-index",
-//!         "--follow-imports",
-//!     });
-//!
-//!     const docs_step = b.step("docs-md", "Generate Markdown API docs");
-//!     docs_step.dependOn(&run_docgen.step);
-//!
-//! Limitations:
-//! - This is intentionally source/AST based and does not do semantic analysis.
-//! - It does not evaluate comptime code or fully resolve aliases.
-//! - Import strings with escapes are not decoded beyond simple quoted paths.
-//! - Complex signatures are rendered as useful approximations instead of failing.
+//!     zig run tools/zig-md-docs.zig -- --root src/root.zig --out docs/api \
+//!       --project-root . --name my_package --emit-index --follow-imports
 //!
 //! MIT License
 //!

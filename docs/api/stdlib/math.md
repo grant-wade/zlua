@@ -121,8 +121,7 @@
 
 ## fastUnaryResult
 
-A numeric-only call that cannot allocate, throw, or call back into Lua.
-Null delegates coercion, argument errors, and other functions to normal calls.
+Non-allocating, non-throwing fast path; null falls back to the normal call.
 
 ```zig
 pub fn fastUnaryResult(func: runtime.NativeFn, value: Value) ?Value

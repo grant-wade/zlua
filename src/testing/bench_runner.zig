@@ -62,7 +62,6 @@ test {
 }
 
 fn collectFamilies(allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map, zlua_exe: []const u8, options: options_module.Options, suite: *results.Suite) !void {
-    // Families run serially. Worker launch and reporting are outside in-process timers.
     if (options.family == .process or options.family == .all)
         try process.collect(allocator, io, environ_map, zlua_exe, options, suite);
     if (options.family == .startup or options.family == .all) {

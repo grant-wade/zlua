@@ -112,6 +112,8 @@
 
 ## Constants
 
+- [traceback_levels_head](#const-traceback_levels_head)
+- [traceback_levels_tail](#const-traceback_levels_tail)
 - [coroutine_entry_source](#const-coroutine_entry_source)
 
 <a id="fn-appendunhandlederrordebugdump"></a>
@@ -170,6 +172,22 @@ pub fn appendDebugStack(comptime State: type, self: *State, out: *std.ArrayList(
 pub fn appendDebugValue(comptime State: type, self: *State, out: *std.ArrayList(u8), value: Value) !void
 ```
 
+<a id="const-traceback_levels_head"></a>
+
+## traceback_levels_head
+
+```zig
+pub const traceback_levels_head = 10;
+```
+
+<a id="const-traceback_levels_tail"></a>
+
+## traceback_levels_tail
+
+```zig
+pub const traceback_levels_tail = 11;
+```
+
 <a id="type-tracebackoptions"></a>
 
 ## TracebackOptions
@@ -178,15 +196,12 @@ pub fn appendDebugValue(comptime State: type, self: *State, out: *std.ArrayList(
 pub const TracebackOptions = struct {
     /// Text placed before `stack traceback:`.
     message: ?[]const u8 = null,
-    /// First level shown. Level 0 is the function producing the traceback.
+    /// First level shown; level 0 is the function producing the traceback.
     level: usize = 1,
-    /// Level 0 is the native function called by the top frame's current
-    /// instruction. Otherwise it is not on the thread, as for a message
-    /// handler, and `level_zero` names it.
+    /// Level 0 is the top frame's native callee; otherwise `level_zero` names it.
     level_zero_is_callee: bool = false,
     level_zero: Value = .nil,
-    /// End with the `[C]: in ?` entry that the standalone interpreter
-    /// reports for its own call.
+    /// Append the standalone interpreter's `[C]: in ?` entry.
     host_frame: bool = false,
 };
 ```
@@ -195,8 +210,7 @@ pub const TracebackOptions = struct {
 
 ## formatTraceback
 
-Formats a `luaL_traceback`-style traceback of `thread` without a message,
-starting at level 1 as a message handler sees it. See `formatTracebackWith`.
+Formats a traceback from level 1 without a message, as a message handler sees it.
 
 ```zig
 pub fn formatTraceback(comptime State: type, self: *State, thread: *Thread, host_frame: bool) ![]u8
@@ -206,12 +220,7 @@ pub fn formatTraceback(comptime State: type, self: *State, thread: *Thread, host
 
 ## formatTracebackWith
 
-Formats a `luaL_traceback`-style traceback: `stack traceback:` followed
-by one line per level, innermost first. Called at an error point it shows
-the native function that raised the error and the Lua frames that were
-active. Names come from the calling instruction, as in Lua 5.5, or else
-from the global and loaded-module tables. The caller owns the returned
-slice, allocated with `self.allocator`.
+Formats a `luaL_traceback`-style traceback, owned by the caller.
 
 ```zig
 pub fn formatTracebackWith(comptime State: type, self: *State, thread: *Thread, options: TracebackOptions) ![]u8
@@ -234,8 +243,7 @@ pub const CallName = struct {
 
 ## indirectFrameCount
 
-Frames from `start` up that Lua would have entered through a C call,
-such as a metamethod or a message handler, rather than a call instruction.
+[Counts](../testing/bench/legacy_process.md#type-counts) frames from `start` that Lua enters through a C call rather than a call instruction.
 
 ```zig
 pub fn indirectFrameCount(thread: *Thread, start: usize) usize
@@ -245,8 +253,7 @@ pub fn indirectFrameCount(thread: *Thread, start: usize) usize
 
 ## errorRaisedByLuaCode
 
-True when Lua code in the top frame raised the current error, rather
-than a native function it called.
+True when Lua code in the top frame, not a native it called, raised the current error.
 
 ```zig
 pub fn errorRaisedByLuaCode(thread: *Thread) bool
@@ -256,9 +263,7 @@ pub fn errorRaisedByLuaCode(thread: *Thread) bool
 
 ## messageHandlerCallName
 
-Names a message handler called at an error point the way Lua names a
-function from its caller's current instruction (`funcnamefromcode`).
-An error raised inside a native function leaves the handler unnamed.
+Names a message handler at an error point like `funcnamefromcode`; null inside natives.
 
 ```zig
 pub fn messageHandlerCallName(thread: *Thread) ?CallName
@@ -278,8 +283,7 @@ pub const coroutine_entry_source = "=(coroutine entry)";
 
 ## isCoroutineEntryFrame
 
-True for the frame that calls a coroutine's non-Lua body, which Lua
-does not have: the body runs as the coroutine's first function.
+True for the synthetic frame calling a coroutine's non-Lua body, which C Lua lacks.
 
 ```zig
 pub fn isCoroutineEntryFrame(frame: CallFrame) bool

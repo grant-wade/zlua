@@ -18,8 +18,7 @@ pub fn checkIdle(source: *const State) !void {
     }
 }
 
-/// `error_root` is the only host API root retained. All application handles must
-/// be reacquired. The caller owns destination allocator infrastructure.
+/// Only `error_root` survives among host API roots; application handles must be reacquired.
 pub fn copy(source: *State, allocator: std.mem.Allocator, lifetime: ?*types.AllocatorLifetime, error_root: ?usize) !State {
     try checkIdle(source);
     source.snapshot_busy = true;
@@ -27,8 +26,7 @@ pub fn copy(source: *State, allocator: std.mem.Allocator, lifetime: ?*types.Allo
     return copyGraph(source, allocator, lifetime, error_root, false);
 }
 
-/// The source must be an idle, immutable backing image retained until destination
-/// destruction. Concurrent readers never write source VM metadata.
+/// The source must be an idle, immutable image that outlives the destination.
 pub fn copyFrozen(source: *const State, allocator: std.mem.Allocator, lifetime: ?*types.AllocatorLifetime, error_root: ?usize) !State {
     return copyGraph(source, allocator, lifetime, error_root, true);
 }
@@ -98,8 +96,7 @@ const Copier = struct {
         }
     }
 
-    /// Used only on POD metadata, VM references and diagnostics. Owning slices
-    /// and containers have explicit handlers below; unknown pointers fail build.
+    /// For POD metadata, VM references and diagnostics only; unknown pointers fail to compile.
     fn remap(self: *Copier, old: anytype) anyerror!@TypeOf(old) {
         const T = @TypeOf(old);
         if (T == types.Value) return self.value(old);
@@ -200,8 +197,7 @@ const Copier = struct {
         try self.shells(types.Userdata, source.userdata_allocations.items, &d.userdata_allocations, .{ .ptr = undefined, .type_id = 0, .type_name = "", .finalized = true });
         for (source.table_allocations.items, d.table_allocations.items, 0..) |old, new, index| {
             new.array = try self.list(types.Value, old.array.items);
-            // Tombstone keys can refer to objects already swept. Preserve valid
-            // keys for next(), but never dereference missing heap identities.
+            // Tombstone keys may reference swept objects; keep valid ones for next() without dereferencing.
             new.entries = try self.list(types.TableEntry, old.entries.items);
             var retained: usize = 0;
             for (new.entries.items) |entry| {
@@ -277,12 +273,10 @@ const Copier = struct {
 
     fn thread(self: *Copier, old: *const types.Thread, new: *types.Thread) !void {
         const a = self.destination.allocator;
-        // Unused stack storage may contain dangling references after collection.
-        // Only read scalar tags and pointer identities before consulting the map.
+        // Unused stack slots may dangle after collection; only inspect tags and identities.
         try new.stack.resize(a, old.stack.items.len);
         for (old.stack.items, new.stack.items, 0..) |v, *out, index| {
-            // Native diagnostic strings may be process-lifetime literals rather
-            // than interned allocations. Copy those only from live registers.
+            // Native diagnostic strings may be static literals, so copy them only from live registers.
             out.* = if (v == .string and liveSlot(old, index)) try self.value(v) else try self.storedValue(v);
         }
         try new.frames.ensureTotalCapacity(a, old.frames.items.len);
@@ -299,8 +293,7 @@ const Copier = struct {
             @field(new, name) = try self.list(std.meta.Elem(@TypeOf(items)), items);
         }
         inline for (.{ "open_upvalues", "hook", "hook_call", "hook_line", "hook_return", "hook_count", "hook_count_remaining", "pending_yield_hook_return", "continuation_order", "continuation_frame_count", "last_result_base", "last_result_count", "last_transfer_base", "last_transfer_count", "yield_result_base", "yield_result_count", "close_error_value", "error_traceback", "pending_unwind_error", "pending_unwind_resume_frame_count", "pending_unwind_target_frame_count", "entry", "started", "is_main", "closing", "status", "exposed", "error_handler", "stack_error_space", "host_frame", "frame_storage_bytes" }) |name| @field(new, name) = try self.remap(@field(old, name));
-        // Hook transfer/name pointers and native call depths belong to host call
-        // scopes, not suspended bytecode. They must not retain obsolete storage.
+        // Hook transfer/name pointers and native call depths belong to host scopes and are not copied.
     }
 
     fn userdata(self: *Copier, old: *const types.Userdata, new: *types.Userdata) !void {
@@ -346,8 +339,7 @@ const Copier = struct {
     }
 };
 
-// Explicit ownership review: adding/removing/renaming a field fails compilation
-// until its copy policy and implementation have been reviewed together.
+// Any field change fails compilation until its copy policy is reviewed.
 const Policy = struct {
     copied: []const u8 = "",
     remapped: []const u8 = "",

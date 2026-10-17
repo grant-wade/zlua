@@ -74,20 +74,15 @@ pub const Proto = struct {
     defined_line: usize = 0,
     last_defined_line: usize = 0,
     has_to_close_locals: bool = false,
-    /// Runtime metadata derived once when the runtime loads the prototype
-    /// tree (see `runtime/value.zig` `prepareProtoTree`). Prepared prototypes
-    /// are immutable afterwards and may be shared by snapshot workers. The
-    /// defaults select the general VM paths for unprepared prototypes.
+    /// Runtime metadata set once by `prepareProtoTree`; prepared prototypes are immutable
+    /// and shareable. Defaults select the general VM paths.
     runtime_prepared: bool = false,
     named_vararg_readonly: bool = false,
-    /// The plain fast loop may run this prototype: it has no to-be-closed
-    /// locals and its last opcode stops sequential dispatch.
+    /// No to-be-closed locals and a last opcode that stops dispatch, so the fast loop may run it.
     fast_loop_entry: bool = false,
-    /// `fast_loop_entry` with a fixed parameter list, so the fast loop's
-    /// call path can push a frame for it without capturing varargs.
+    /// `fast_loop_entry` with fixed parameters, so calls need not capture varargs.
     fast_loop_call: bool = false,
-    /// Decoded non-string constants, indexed like `constants`. A `.string`
-    /// slot means the value is per-State (interned) and uses the closure cache.
+    /// Decoded constants indexed like `constants`; `.string` slots are per-State via the closure cache.
     constant_values: []const RuntimeValue = &.{},
 
     pub fn init(allocator: std.mem.Allocator) Proto {
@@ -117,8 +112,7 @@ pub const Proto = struct {
         return self.instructions.items.len;
     }
 
-    /// Direct reads of an unmodified named vararg can use the argument slice.
-    /// Any escape, write, or capture requires the ordinary table representation.
+    /// True when the named vararg is never written, captured, or escaped, so reads can use the argument slice.
     pub fn hasReadOnlyNamedVararg(self: *const Proto) bool {
         if (!self.named_vararg) return false;
         const register = self.param_count;
@@ -176,8 +170,7 @@ pub const Proto = struct {
         }
     }
 
-    /// Linear-time deduplicating insert. The compiler keeps its own index
-    /// and calls `appendConstant` directly.
+    /// Linear-time deduplicating insert; the compiler uses `appendConstant` with its own index.
     pub fn addConstant(self: *Proto, constant: bytecode.Constant) !bytecode.ConstantIndex {
         for (self.constants.items, 0..) |existing, index| {
             if (bytecode.constantEql(existing, constant)) return @intCast(index);
