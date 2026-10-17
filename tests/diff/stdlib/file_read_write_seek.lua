@@ -90,7 +90,7 @@ print(f:read(4), f:read("n"))
 f:close()
 
 -- Flushed bytes are visible to another handle; unflushed ones are not
--- required to be, so only flushed states are printed.
+-- required to be, so only flushed states are printed. Seeking flushes.
 f = assert(io.open(name, "w"))
 f:write("first")
 assert(f:flush())
@@ -104,6 +104,12 @@ print(reader:read("a"))
 reader:close()
 f:setvbuf("line")
 f:write(" third\n")
+reader = assert(io.open(name, "r"))
+print(reader:read("a"))
+reader:close()
+f:setvbuf("full")
+f:write("fourth")
+f:seek("cur")
 reader = assert(io.open(name, "r"))
 print(reader:read("a"))
 reader:close()

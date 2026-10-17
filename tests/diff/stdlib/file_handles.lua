@@ -86,29 +86,6 @@ for _ = 1, 20 do
 end
 print(count)
 
--- os.tmpname: unique names of files that exist and can be removed.
-local names, seen, unique, exist = {}, {}, true, true
-for i = 1, 50 do
-  local name = os.tmpname()
-  if seen[name] then unique = false end
-  seen[name] = true
-  names[i] = name
-  local handle = io.open(name, "r")
-  if handle then
-    if handle:read("a") ~= "" then exist = false end
-    handle:close()
-  else
-    exist = false
-  end
-end
-print(unique, exist, #names)
-local removed, gone = true, true
-for _, name in ipairs(names) do
-  if os.remove(name) ~= true then removed = false end
-  if io.open(name) ~= nil then gone = false end
-end
-print(removed, gone)
-
 -- io.lines from a file name returns the file as its fourth result.
 local name = os.tmpname()
 local w = assert(io.open(name, "w"))

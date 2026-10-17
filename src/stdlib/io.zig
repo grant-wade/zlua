@@ -482,6 +482,10 @@ pub fn fileSeek(state: *State, thread: *Thread, op: bytecode.Call) !void {
         return;
     }
 
+    // Like `fseek`, write out buffered output before moving.
+    if (file.hasUnflushedWrites()) {
+        if (try flushReport(state, file)) |failure| return returnResult(state, thread, op, failure, .nil);
+    }
     try refreshReadable(state, handle);
     const base: usize = switch (kind) {
         .set => 0,
@@ -1274,6 +1278,8 @@ test "number scanning matches read_number consumption" {
 }
 
 test "Linux /dev/full emulation follows glibc stream results" {
+    // Windows streams have no line buffering.
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
     var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .full });
     defer state.deinit();
     const device = try newFile(&state, .{ .kind = .full_device, .path = "/dev/full", .mode = parseMode("w").? });
