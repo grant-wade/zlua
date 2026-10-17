@@ -4,7 +4,22 @@ const zlua = @import("zlua");
 
 var heap_buffer: [4 * 1024 * 1024]u8 align(16) = undefined;
 
-export fn _start() noreturn {
+comptime {
+    if (builtin.target.cpu.arch == .x86_64) @export(&_start, .{ .name = "_start" });
+}
+
+/// The kernel enters `_start` with a 16-byte aligned stack rather than as if by a call, so realign before running Zig code.
+fn _start() callconv(.naked) noreturn {
+    asm volatile (
+        \\ xorl %%ebp, %%ebp
+        \\ andq $-16, %%rsp
+        \\ callq %[entry:P]
+        :
+        : [entry] "X" (&entry),
+    );
+}
+
+fn entry() callconv(.c) noreturn {
     run() catch exit(1);
     exit(0);
 }
