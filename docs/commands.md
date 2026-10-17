@@ -47,6 +47,7 @@ Format with Zig `0.16.0`, because the Zig `0.17.0` formatter can introduce synta
 | `--release=safe`, `--release=fast`, `--release=small` | Select a release mode; this spelling works on both supported Zig versions. Without it you get a debug build. |
 | `-Doptimize=<mode>` | Zig 0.16: `Debug`, `ReleaseSafe`, `ReleaseFast`, `ReleaseSmall`. Zig 0.17: `debug`, `safe`, `fast`, `small`. |
 | `-Dofficial-memory-limit-mb=<n>` | Memory cap for each official-test child process on Linux. Defaults to `256` on Linux and `0` elsewhere; `0` disables it. |
+| `-Dofficial-complete-memory-limit-mb=<n>` | The same cap for `test-official-complete`. Defaults to `2048` on Linux and `0` elsewhere. |
 | `-Dofficial-timeout-ms=<n>` | Timeout for each official-test child process. Defaults to `120000`; `0` disables it. |
 
 ## Build Steps

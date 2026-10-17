@@ -140,7 +140,7 @@ zig build test-official-complete
 
 Basic mode sets `_soft` and `_port`, which shrink the stress sections and skip non-portable checks. Complete mode leaves them unset, and it skips the four files that only work under `all.lua`'s driver: `attrib.lua` and `main.lua` need the C test libraries and module paths it sets up, `big.lua` must run inside its coroutine, and `files.lua` expects a non-seekable stdin.
 
-Limits differ depending on how you run the suite. The build step caps each child process at 256 MiB on Linux by default, with no cap elsewhere, and limits each child to 120 seconds (`-Dofficial-timeout-ms=0` disables the timeout). Running the harness directly applies no timeout or memory cap by default.
+Limits differ depending on how you run the suite. The build step caps each child process at 256 MiB on Linux by default, with no cap elsewhere, and limits each child to 120 seconds (`-Dofficial-timeout-ms=0` disables the timeout). The complete-mode step caps children at 2048 MiB instead (`-Dofficial-complete-memory-limit-mb`), because its full-size sections need more memory under zlua than under C Lua. Running the harness directly applies no timeout or memory cap by default.
 
 Some tests need help on particular platforms. The allocator-exhaustion test `heavy.lua` is skipped on macOS and Windows, because the harness cannot cap child memory there. On those platforms the `files.lua` prelude emulates `/dev/full`, and on Windows it maps `/dev/null` to `NUL`. `--mode=internal` is rejected because it requires `testC` builds of both interpreters, which are not supported.
 
