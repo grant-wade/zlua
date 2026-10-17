@@ -1280,7 +1280,15 @@ test "closing the state calls each queued userdata finalizer once" {
     defer result.deinit(std.testing.allocator);
 
     try std.testing.expectEqual(@as(?u8, 0), result.exit_code);
-    try std.testing.expectEqualStrings("gc\t4\ngc\t3\ngc\t2\ngc\t1\n", result.stdout);
+    // Which finalizers run before close depends on collector pacing.
+    var seen: [4]usize = @splat(0);
+    var lines = std.mem.tokenizeScalar(u8, result.stdout, '\n');
+    while (lines.next()) |line| {
+        try std.testing.expect(std.mem.startsWith(u8, line, "gc\t"));
+        const index = try std.fmt.parseInt(usize, line[3..], 10);
+        seen[index - 1] += 1;
+    }
+    try std.testing.expectEqualSlices(usize, &.{ 1, 1, 1, 1 }, &seen);
 }
 
 test "precise collection inside a native keeps its multiple-result arguments" {

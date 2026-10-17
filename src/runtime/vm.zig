@@ -14,6 +14,7 @@ const State = @import("state.zig").State;
 const state_mod = @import("state.zig");
 const types = @import("types.zig");
 const upvalue_mod = @import("upvalue.zig");
+const table_index = @import("table_index.zig");
 const value_mod = @import("value.zig");
 
 const Thread = types.Thread;
@@ -96,8 +97,10 @@ fn runThreadLoop(self: *State, thread: *Thread, target_frame_count: usize) anyer
             .load_bool => |op| stack[base + op.dest] = .{ .boolean = op.value },
             .load_const => |op| stack[base + op.dest] = try protoConstant(self, frame.closure, proto, op.constant),
             .move => |op| stack[base + op.dest] = stack[base + op.source],
-            .get_global => |op| stack[base + op.register] = self.getGlobalValue(constantString(proto, op.name)),
-            .set_global => |op| try self.setGlobal(constantString(proto, op.name), stack[base + op.register]),
+            .get_global => |op| stack[base + op.register] = globalGet(self, proto, op.name),
+            .set_global => |op| if (!fastGlobalSetExisting(self, proto, op.name, stack[base + op.register])) {
+                try self.setGlobal(constantString(proto, op.name), stack[base + op.register]);
+            },
             .declare_global => |op| try self.declareGlobal(thread, constantString(proto, op.name), op.table, op.value),
             .add => |op| {
                 const lhs = stack[base + op.left];
@@ -272,7 +275,7 @@ fn runThreadLoop(self: *State, thread: *Thread, target_frame_count: usize) anyer
                 const key = Value{ .string = constantString(proto, op.name) };
                 if (frame.named_vararg_readonly and op.table == proto.param_count) {
                     stack[base + op.dest] = call_mod.namedVarargRead(frame.varargs, key);
-                } else if (fastTableRawGet(table_value, key)) |value| {
+                } else if (fastTableFieldGet(table_value, key.string, proto.constant_hashes[op.name])) |value| {
                     stack[base + op.dest] = value;
                 } else {
                     try index_mod.getTableToRegister(self, thread, op.dest, table_value, key);
@@ -282,7 +285,9 @@ fn runThreadLoop(self: *State, thread: *Thread, target_frame_count: usize) anyer
                 const table_value = stack[base + op.table];
                 const key = Value{ .string = constantString(proto, op.name) };
                 const value = stack[base + op.value];
-                if (!try fastTableKnownKeySet(self, table_value, key, value)) {
+                if (!fastTableKnownKeySetExistingNoAlloc(self, table_value, key, proto.constant_hashes[op.name], value) and
+                    !try fastTableKnownKeySet(self, table_value, key, value))
+                {
                     try index_mod.setTableFromThreadContinuable(self, thread, table_value, key, value);
                 }
             },
@@ -568,7 +573,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
                 const value = if (frame.named_vararg_readonly and op.table == proto.param_count)
                     call_mod.namedVarargRead(frame.varargs, key)
                 else
-                    fastTableRawGet(stack[op.table], key) orelse break :fast_loop;
+                    fastTableFieldGet(stack[op.table], key.string, proto.constant_hashes[op.name]) orelse break :fast_loop;
                 stack[op.dest] = value;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
@@ -576,7 +581,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
             .set_table => {
                 const op = instructions[pc].set_table;
                 if (!fastTableArraySetExistingNoAlloc(self, stack[op.table], stack[op.key], stack[op.value]) and
-                    !fastTableKnownKeySetExistingNoAlloc(self, stack[op.table], stack[op.key], stack[op.value])) break :fast_loop;
+                    !fastTableDynamicKeySetNoAlloc(self, stack[op.table], stack[op.key], stack[op.value])) break :fast_loop;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
@@ -604,7 +609,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
             .set_field => {
                 const op = instructions[pc].set_field;
                 const key = Value{ .string = constantString(proto, op.name) };
-                if (!fastTableKnownKeySetExistingNoAlloc(self, stack[op.table], key, stack[op.value])) break :fast_loop;
+                if (!fastTableKnownKeySetExistingNoAlloc(self, stack[op.table], key, proto.constant_hashes[op.name], stack[op.value])) break :fast_loop;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
@@ -850,11 +855,17 @@ fn fastTableArraySetExistingNoAlloc(self: *State, table_value: Value, key_value:
     return false;
 }
 
-fn fastTableKnownKeySetExistingNoAlloc(self: *State, table_value: Value, key: Value, value: Value) bool {
-    if (table_value != .table or key != .string) return false;
+noinline fn fastTableDynamicKeySetNoAlloc(self: *State, table_value: Value, key: Value, value: Value) bool {
+    if (key != .string) return false;
+    return fastTableKnownKeySetExistingNoAlloc(self, table_value, key, table_index.hashStringKey(key.string), value);
+}
+
+/// `key` must be a string and `hash` its `table_index.hashStringKey`.
+fn fastTableKnownKeySetExistingNoAlloc(self: *State, table_value: Value, key: Value, hash: u32, value: Value) bool {
+    if (table_value != .table) return false;
     const table = table_value.table;
     if (table.rollback) |record| if (!record.header.detached) return false;
-    if (table.findEntry(key)) |index| {
+    if (table.findStringEntry(key.string, hash)) |index| {
         const slot = &table.entries.items[index].value;
         if (slot.* == .nil) {
             if (!index_mod.noNewindexMetamethod(table)) return false;
@@ -1264,6 +1275,40 @@ fn fastTableArrayGet(table_value: Value, key_value: Value) ?Value {
 
 pub fn assertProtoPrepared(proto: *const proto_mod.Proto) void {
     std.debug.assert(proto.runtime_prepared or proto.constants.items.len == 0);
+}
+
+inline fn globalGet(self: *State, proto: *const proto_mod.Proto, name: bytecode.ConstantIndex) Value {
+    const table = self.global_table orelse return .nil;
+    return table.getStringHashed(constantString(proto, name), proto.constant_hashes[name]);
+}
+
+/// Overwrites an existing non-nil global in place, like `State.setGlobal` without interning.
+fn fastGlobalSetExisting(self: *State, proto: *const proto_mod.Proto, name: bytecode.ConstantIndex, value: Value) bool {
+    if (value == .nil) return false;
+    const table = self.global_table orelse return false;
+    if (table.rollback) |record| if (!record.header.detached) return false;
+    const index = table.findStringEntry(constantString(proto, name), proto.constant_hashes[name]) orelse return false;
+    const entry = &table.entries.items[index];
+    if (entry.value == .nil) return false;
+    entry.value = value;
+    self.gc.writeTableBarrier(table, entry.key, value);
+    self.gc.markValue(value);
+    return true;
+}
+
+fn fastTableFieldGet(table_value: Value, name: []const u8, hash: u32) ?Value {
+    if (table_value != .table) return null;
+    const table = table_value.table;
+    const value = table.getStringHashed(name, hash);
+    if (value != .nil) return value;
+    const metatable = table.metatable orelse return value;
+    if (metatable.metaEventAbsent(.__index)) return value;
+    const handler = metatable.metaEvent(.__index);
+    if (handler == .nil) return value;
+    if (handler != .table) return null;
+    const inherited = handler.table.getStringHashed(name, hash);
+    if (inherited != .nil or index_mod.noIndexMetamethod(handler.table)) return inherited;
+    return null;
 }
 
 fn fastTableRawGet(table_value: Value, key_value: Value) ?Value {

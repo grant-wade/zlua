@@ -84,6 +84,8 @@ pub const Proto = struct {
     fast_loop_call: bool = false,
     /// Decoded constants indexed like `constants`; `.string` slots are per-State via the closure cache.
     constant_values: []const RuntimeValue = &.{},
+    /// `table_index.hashStringKey` of each `.string` constant's bytes, for name operands.
+    constant_hashes: []const u32 = &.{},
 
     pub fn init(allocator: std.mem.Allocator) Proto {
         return .{

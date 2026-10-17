@@ -197,9 +197,7 @@ fn newStaticTable(state: *State, comptime fields: []const StaticField, extra_fie
     };
     const value = try state.newTableWithHints(0, @intCast(fields.len + @as(usize, extra_fields)));
     value.table.entries.appendSliceAssumeCapacity(&entries);
-    if (value.table.entry_index.capacity() != 0) {
-        for (entries, 0..) |entry, index| value.table.entry_index.putAssumeCapacityNoClobber(entry.key, index);
-    }
+    value.table.reindexEntries();
     return value;
 }
 

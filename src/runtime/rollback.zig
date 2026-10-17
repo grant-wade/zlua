@@ -47,7 +47,7 @@ pub fn tableWritable(table: *types.Table) !void {
     errdefer array.deinit(a);
     var entries = try duplicateList(a, table.entries);
     errdefer entries.deinit(a);
-    const index = try table.entry_index.clone();
+    const index = try table.entry_index.clone(a);
     touch(table);
     table.array = array;
     table.entries = entries;
