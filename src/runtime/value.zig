@@ -2,6 +2,7 @@ const std = @import("std");
 const compile = @import("../compile.zig");
 const types = @import("types.zig");
 const number_format = @import("number_format.zig");
+const table_index = @import("table_index.zig");
 
 const bytecode = compile.bytecode;
 const proto_mod = compile.proto;
@@ -66,81 +67,41 @@ pub fn valuesEqual(lhs: Value, rhs: Value) bool {
 
 pub fn hashValue(value: Value) u64 {
     return switch (value) {
-        .nil => hashTag(0),
-        .boolean => |payload| hashBool(1, payload),
         .integer => |payload| hashInteger(payload),
-        .number => |payload| if (floatToInteger(payload)) |integer| hashInteger(integer) else hashFloat(payload),
-        .string => |payload| hashBytes(4, payload),
-        .table => |payload| hashPointer(5, payload),
+        .number => |payload| if (floatToInteger(payload)) |integer| hashInteger(integer) else mix(@as(u64, @bitCast(payload)) ^ 0x3c6ef372fe94f82b),
+        .string => |payload| hashString(payload),
+        .table, .gmatch_iterator => |payload| hashPointer(5, payload),
         .userdata => |payload| hashPointer(6, payload),
         .closure => |payload| hashPointer(7, payload),
         .thread => |payload| hashPointer(9, payload),
         .coroutine_wrapper => |payload| hashPointer(10, payload),
-        .gmatch_iterator => |payload| hashPointer(11, payload),
-        .native_print => hashTag(12),
-        .native_tostring => hashTag(13),
-        .native_getmetatable => hashTag(14),
-        .native_setmetatable => hashTag(15),
-        .native_rawequal => hashTag(16),
-        .native_rawget => hashTag(17),
-        .native_rawset => hashTag(18),
-        .native_rawlen => hashTag(19),
-        .native_next => hashTag(20),
-        .native_pairs => hashTag(21),
-        .native_ipairs => hashTag(22),
-        .native_ipairs_iter => hashTag(23),
-        .native_table_create => hashTag(24),
-        .native_select => hashTag(25),
-        .native_assert => hashTag(26),
-        .native_error => hashTag(27),
-        .native_pcall => hashTag(28),
-        .native_xpcall => hashTag(29),
-        .native_collectgarbage => hashTag(30),
-        .native_debug_traceback => hashTag(31),
-        .native_coroutine_create => hashTag(32),
-        .native_coroutine_resume => hashTag(33),
-        .native_coroutine_yield => hashTag(34),
-        .native_coroutine_status => hashTag(35),
-        .native_coroutine_running => hashTag(36),
-        .native_coroutine_isyieldable => hashTag(37),
-        .native_coroutine_close => hashTag(38),
-        .native_coroutine_wrap => hashTag(39),
-        .native => |payload| hashEnum(40, payload),
-        .api_callback => |id| std.hash.Wyhash.hash(hashTag(41), std.mem.asBytes(&id)),
+        .boolean => |payload| mix(@as(u64, @intFromBool(payload)) + 0x9e3779b97f4a7c15),
+        .native => |payload| mix(@as(u64, @intFromEnum(payload)) +% (40 << 56)),
+        .api_callback => |id| mix(@as(u64, id) +% (41 << 56)),
+        else => mix(@as(u64, @intFromEnum(std.meta.activeTag(value))) << 48),
     };
 }
 
-fn hashTag(tag: u8) u64 {
-    return std.hash.Wyhash.hash(0, &.{tag});
+pub fn hashString(bytes: []const u8) u64 {
+    return std.hash.Wyhash.hash(0x2d358dccaa6c78a5, bytes);
 }
 
-fn hashBytes(tag: u8, bytes: []const u8) u64 {
-    return std.hash.Wyhash.hash(hashTag(tag), bytes);
+inline fn mix(input: u64) u64 {
+    var x = input;
+    x ^= x >> 30;
+    x *%= 0xbf58476d1ce4e5b9;
+    x ^= x >> 27;
+    x *%= 0x94d049bb133111eb;
+    x ^= x >> 31;
+    return x;
 }
 
-fn hashBool(tag: u8, value: bool) u64 {
-    const byte: u8 = if (value) 1 else 0;
-    return std.hash.Wyhash.hash(hashTag(tag), &.{byte});
+inline fn hashInteger(value: i64) u64 {
+    return mix(@bitCast(value));
 }
 
-fn hashInteger(value: i64) u64 {
-    const bits: u64 = @bitCast(value);
-    return std.hash.Wyhash.hash(hashTag(2), std.mem.asBytes(&bits));
-}
-
-fn hashFloat(value: f64) u64 {
-    const bits: u64 = @bitCast(value);
-    return std.hash.Wyhash.hash(hashTag(3), std.mem.asBytes(&bits));
-}
-
-fn hashPointer(tag: u8, pointer: anytype) u64 {
-    const address = @intFromPtr(pointer);
-    return std.hash.Wyhash.hash(hashTag(tag), std.mem.asBytes(&address));
-}
-
-fn hashEnum(tag: u8, value: anytype) u64 {
-    const integer = @intFromEnum(value);
-    return std.hash.Wyhash.hash(hashTag(tag), std.mem.asBytes(&integer));
+inline fn hashPointer(comptime tag: u8, pointer: anytype) u64 {
+    return mix(@as(u64, @intFromPtr(pointer)) ^ (@as(u64, tag) << 56));
 }
 
 pub fn truthy(value: Value) bool {
@@ -324,15 +285,43 @@ pub fn prepareProtoTree(proto: *proto_mod.Proto) !void {
         };
     }
     proto.constant_values = values;
+    const hashes = try proto.arena.allocator().alloc(u32, proto.constants.items.len);
+    for (proto.constants.items, hashes) |constant, *hash| {
+        hash.* = if (constant == .string) table_index.hashStringKey(constant.string) else 0;
+    }
+    proto.constant_hashes = hashes;
     proto.named_vararg_readonly = proto.hasReadOnlyNamedVararg();
     const instructions = proto.instructions.items;
     const last_stops = instructions.len != 0 and switch (instructions[instructions.len - 1]) {
         .ret, .tail_call, .close => true,
         else => false,
     };
-    proto.fast_loop_entry = last_stops and !proto.has_to_close_locals;
+    if (proto.has_to_close_locals) proto.close_exit_jumps = try closeExitJumps(proto);
+    proto.fast_loop_entry = last_stops;
     proto.fast_loop_call = proto.fast_loop_entry and !proto.is_vararg and !proto.named_vararg;
     proto.runtime_prepared = true;
+}
+
+fn closeExitJumps(proto: *proto_mod.Proto) ![]const u64 {
+    const instructions = proto.instructions.items;
+    const bits = try proto.arena.allocator().alloc(u64, (instructions.len + 63) / 64);
+    @memset(bits, 0);
+    for (instructions, 0..) |instruction, index| {
+        const offset: bytecode.JumpOffset = switch (instruction) {
+            .jmp => |offset| offset,
+            inline .compare_branch, .test_op, .test_set, .for_loop, .for_prep, .tfor_prep, .tfor_loop => |op| op.offset,
+            else => continue,
+        };
+        const source = index + 1;
+        const target = if (offset >= 0) source + @as(usize, @intCast(offset)) else source -% @as(usize, @intCast(-offset));
+        for (proto.locals.items) |local| {
+            if (local.to_close and localActiveAt(local, source) and !localActiveAt(local, target)) {
+                bits[index / 64] |= @as(u64, 1) << @intCast(index % 64);
+                break;
+            }
+        }
+    }
+    return bits;
 }
 
 pub fn localActiveAt(local: proto_mod.LocalDebug, pc: usize) bool {

@@ -47,7 +47,7 @@ pub fn tableWritable(table: *types.Table) !void {
     errdefer array.deinit(a);
     var entries = try duplicateList(a, table.entries);
     errdefer entries.deinit(a);
-    const index = try table.entry_index.clone();
+    const index = try table.entry_index.clone(a);
     touch(table);
     table.array = array;
     table.entries = entries;
@@ -145,7 +145,7 @@ pub const Journal = struct {
     userdata: []Record(types.Userdata) = &.{},
     dirty: std.ArrayList(*Header) = .empty,
     eager: std.ArrayList(*Record(types.Userdata)) = .empty,
-    new_objects: std.AutoHashMap(usize, Allocation),
+    new_objects: std.HashMap(usize, Allocation, types.AddressContext, std.hash_map.default_max_load_percentage),
     registries_detached: bool = false,
     output_detached: bool = false,
     /// Logical restored records, independent of heap size.
@@ -154,7 +154,7 @@ pub const Journal = struct {
     pub fn create(state: *State, pristine: *const State) !*Journal {
         const a = state.allocator;
         const self = try a.create(Journal);
-        self.* = .{ .allocator = a, .saved = state.*, .new_objects = std.AutoHashMap(usize, Allocation).init(a) };
+        self.* = .{ .allocator = a, .saved = state.*, .new_objects = std.HashMap(usize, Allocation, types.AddressContext, std.hash_map.default_max_load_percentage).init(a) };
         errdefer self.freeRecords();
         var count: usize = 0;
         inline for (object_types, object_lists, record_lists) |T, list, records| {
@@ -221,15 +221,15 @@ pub const Journal = struct {
         if (self.registries_detached) return;
         var replacement = state.*;
         inline for (registries) |name| @field(replacement, name) = .empty;
-        replacement.strings.map = std.StringHashMap([]const u8).init(self.allocator);
-        replacement.string_allocation_index = types.PointerAllocationIndex.init(self.allocator);
-        replacement.table_allocation_index = types.PointerAllocationIndex.init(self.allocator);
+        replacement.strings.map = @import("strings.zig").InternMap.init(self.allocator);
+        replacement.string_allocation_index = .empty;
+        replacement.table_allocation_index = .empty;
         replacement.object_allocation_index = .empty;
         errdefer freeRegistries(&replacement);
         inline for (registries) |name| @field(replacement, name) = try duplicateList(self.allocator, @field(state, name));
         replacement.strings.map = try state.strings.map.clone();
-        replacement.string_allocation_index = try state.string_allocation_index.clone();
-        replacement.table_allocation_index = try state.table_allocation_index.clone();
+        replacement.string_allocation_index = try state.string_allocation_index.clone(self.allocator);
+        replacement.table_allocation_index = try state.table_allocation_index.clone(self.allocator);
         replacement.object_allocation_index = try state.object_allocation_index.clone(self.allocator);
         inline for (registries) |name| @field(state, name) = @field(replacement, name);
         state.strings.map = replacement.strings.map;
@@ -286,7 +286,7 @@ pub const Journal = struct {
         var objects = self.new_objects.iterator();
         while (objects.next()) |entry| destroyAllocation(self.allocator, entry.key_ptr.*, entry.value_ptr.*);
         self.new_objects.deinit();
-        self.new_objects = std.AutoHashMap(usize, Allocation).init(self.allocator);
+        self.new_objects = std.HashMap(usize, Allocation, types.AddressContext, std.hash_map.default_max_load_percentage).init(self.allocator);
         for (self.dirty.items) |h| switch (h.kind) {
             inline .table, .closure, .upvalue, .thread, .userdata => |kind| {
                 const T = typeOf(kind);
@@ -392,8 +392,8 @@ pub fn retainCollected(object: anytype) bool {
 fn freeRegistries(state: *State) void {
     inline for (registries) |name| @field(state, name).deinit(state.allocator);
     state.strings.map.deinit();
-    state.string_allocation_index.deinit();
-    state.table_allocation_index.deinit();
+    state.string_allocation_index.deinit(state.allocator);
+    state.table_allocation_index.deinit(state.allocator);
     state.object_allocation_index.deinit(state.allocator);
 }
 fn freeStorage(comptime T: type, a: std.mem.Allocator, object: *T) void {

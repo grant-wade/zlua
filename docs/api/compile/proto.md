@@ -35,6 +35,7 @@
 - [runtime.rollback](../runtime/rollback.md)
 - [runtime.value](../runtime/value.md)
 - [runtime.number_format](../runtime/number_format.md)
+- [runtime.table_index](../runtime/table_index.md)
 - [runtime.host](../runtime/host.md)
 - [runtime.upvalue](../runtime/upvalue.md)
 - [runtime.failure](../runtime/failure.md)
@@ -73,6 +74,7 @@
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
 - [runtime.native_fn](../runtime/native_fn.md)
+- [runtime.address_index](../runtime/address_index.md)
 - [compile.compiler](../compile/compiler.md)
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
@@ -259,6 +261,10 @@ pub const Proto = struct {
     fast_loop_call: bool = false,
     /// Decoded constants indexed like `constants`; `.string` slots are per-State via the closure cache.
     constant_values: []const RuntimeValue = &.{},
+    /// `table_index.hashStringKey` of each `.string` constant's bytes, for name operands.
+    constant_hashes: []const u32 = &.{},
+    /// Bit per instruction: a jump that leaves a to-be-closed local's scope. Empty without such locals.
+    close_exit_jumps: []const u64 = &.{},
 };
 ```
 
@@ -266,6 +272,7 @@ pub const Proto = struct {
 
 | Name | Parameters | Return Type | Description |
 | --- | --- | --- | --- |
+| [jumpExitsToBeClosed](#fn-proto-jumpexitstobeclosed) | `self: *const Proto, pc_index: usize` | `bool` |  |
 | [init](#fn-proto-init) | `allocator: std.mem.Allocator` | `Proto` |  |
 | [deinit](#fn-proto-deinit) | `self: *Proto` | `void` |  |
 | [pc](#fn-proto-pc) | `self: Proto` | `usize` |  |
@@ -280,6 +287,16 @@ pub const Proto = struct {
 | [addErrorSite](#fn-proto-adderrorsite) | `self: *Proto, pc_index: usize, site: ErrorSite` | `!void` |  |
 | [errorSiteAt](#fn-proto-errorsiteat) | `self: Proto, pc_index: usize` | `?ErrorSite` |  |
 | [setDebugName](#fn-proto-setdebugname) | `self: *Proto, name: []const u8` | `!void` |  |
+
+<a id="fn-proto-jumpexitstobeclosed"></a>
+
+### Proto.jumpExitsToBeClosed
+
+```zig
+pub inline fn jumpExitsToBeClosed(self: *const Proto, pc_index: usize) bool
+```
+
+References: [`Proto`](#type-proto)
 
 <a id="fn-proto-init"></a>
 

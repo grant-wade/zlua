@@ -1,4 +1,5 @@
 const std = @import("std");
+const value_mod = @import("../runtime/value.zig");
 
 // Canonical static names, so states don't allocate and GC-track their own copies.
 pub const names = [_][]const u8{
@@ -204,6 +205,29 @@ const canonical_map: StaticMap = blk: {
 pub fn canonical(bytes: []const u8) ?[]const u8 {
     const index = canonical_map.get(bytes) orelse return null;
     return names[index];
+}
+
+const hashed_mask = std.math.ceilPowerOfTwoAssert(usize, names.len * 2) - 1;
+/// Open-addressed by `value.hashString`; holds name positions plus one.
+const hashed_slots: [hashed_mask + 1]u16 = blk: {
+    @setEvalBranchQuota(1_000_000);
+    var slots: [hashed_mask + 1]u16 = @splat(0);
+    for (names, 0..) |name, index| {
+        var position: usize = @intCast(value_mod.hashString(name) & hashed_mask);
+        while (slots[position] != 0) position = (position + 1) & hashed_mask;
+        slots[position] = index + 1;
+    }
+    break :blk slots;
+};
+
+/// `canonical` for callers that already computed `value.hashString(bytes)`.
+pub fn canonicalHashed(bytes: []const u8, hash: u64) ?[]const u8 {
+    var position: usize = @intCast(hash & hashed_mask);
+    while (hashed_slots[position] != 0) : (position = (position + 1) & hashed_mask) {
+        const name = names[hashed_slots[position] - 1];
+        if (name.len == bytes.len and std.mem.eql(u8, name, bytes)) return name;
+    }
+    return null;
 }
 
 pub fn get(comptime bytes: []const u8) []const u8 {

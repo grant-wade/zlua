@@ -35,6 +35,7 @@
 - [runtime.rollback](../runtime/rollback.md)
 - [runtime.value](../runtime/value.md)
 - [runtime.number_format](../runtime/number_format.md)
+- [runtime.table_index](../runtime/table_index.md)
 - [runtime.host](../runtime/host.md)
 - [runtime.upvalue](../runtime/upvalue.md)
 - [runtime.failure](../runtime/failure.md)
@@ -73,6 +74,7 @@
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
 - [runtime.native_fn](../runtime/native_fn.md)
+- [runtime.address_index](../runtime/address_index.md)
 - [compile.compiler](../compile/compiler.md)
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
@@ -530,10 +532,10 @@ pub const State = struct {
     global_table: ?*Table = null,
     strings: strings_mod.Strings,
     string_allocations: std.ArrayList(StringAllocation) = .empty,
-    string_allocation_index: PointerAllocationIndex,
+    string_allocation_index: PointerAllocationIndex = .empty,
     table_allocations: std.ArrayList(*Table) = .empty,
-    table_allocation_index: PointerAllocationIndex,
-    object_allocation_index: std.AutoHashMapUnmanaged(usize, usize) = .empty,
+    table_allocation_index: types.ObjectAllocationIndex = .empty,
+    object_allocation_index: types.ObjectAllocationIndex = .empty,
     table_metatable_head: ?*Table = null,
     table_finalizer_head: ?*Table = null,
     table_finalizer_serial: u64 = 0,

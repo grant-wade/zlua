@@ -97,5 +97,6 @@ pub const executeSourceWithOptions = execute_mod.executeSourceWithOptions;
 
 test {
     _ = tests;
+    _ = @import("runtime/address_index.zig");
     _ = @import("runtime/number_format.zig");
 }

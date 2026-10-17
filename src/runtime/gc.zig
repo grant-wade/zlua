@@ -87,8 +87,8 @@ pub const Gc = struct {
 
     pub fn prepareRegistration(gc: *Gc, comptime field: []const u8) !void {
         const state = gc.parentState();
-        if (comptime std.mem.eql(u8, field, "string_allocations")) try state.string_allocation_index.ensureUnusedCapacity(1);
-        if (comptime std.mem.eql(u8, field, "table_allocations")) try state.table_allocation_index.ensureUnusedCapacity(1);
+        if (comptime std.mem.eql(u8, field, "string_allocations")) try state.string_allocation_index.ensureUnusedCapacity(state.allocator, 1);
+        if (comptime std.mem.eql(u8, field, "table_allocations")) try state.table_allocation_index.ensureUnusedCapacity(state.allocator, 1);
         inline for (managed_lists) |name| if (comptime std.mem.eql(u8, field, name)) {
             try gc.reserveQueues(1);
             if (comptime !std.mem.eql(u8, field, "table_allocations")) try state.object_allocation_index.ensureUnusedCapacity(state.allocator, 1);
@@ -1098,21 +1098,15 @@ pub const Gc = struct {
         const state = gc.parentState();
         for (state.gc.tables.items) |table| {
             if (!gc.isMarked(table)) continue;
-            var read_index: usize = 0;
             var write_index: usize = 0;
-            while (read_index < table.entries.items.len) : (read_index += 1) {
-                const entry = table.entries.items[read_index];
-                if (entry.value == .nil and gc.valueIsCollectableUnmarked(entry.key)) {
-                    _ = table.entry_index.remove(entry.key);
-                } else {
-                    if (write_index != read_index) {
-                        table.entries.items[write_index] = entry;
-                        if (table.entry_index.capacity() != 0) table.entry_index.getPtr(entry.key).?.* = write_index;
-                    }
-                    write_index += 1;
-                }
+            for (table.entries.items) |entry| {
+                if (entry.value == .nil and gc.valueIsCollectableUnmarked(entry.key)) continue;
+                table.entries.items[write_index] = entry;
+                write_index += 1;
             }
+            if (write_index == table.entries.items.len) continue;
             table.entries.items.len = write_index;
+            table.reindexEntries();
         }
     }
 
@@ -1120,25 +1114,23 @@ pub const Gc = struct {
         for (table.array.items) |*value| {
             if (gc.valueIsWeaklyCleared(value.*)) value.* = .nil;
         }
-        var index: usize = 0;
-        while (index < table.entries.items.len) {
-            if (gc.valueIsWeaklyCleared(table.entries.items[index].value)) {
-                table.removeEntryAt(index);
-            } else {
-                index += 1;
-            }
+        gc.removeEntriesWhere(table, "value");
+    }
+
+    fn removeEntriesWhere(gc: *Gc, table: *Table, comptime field: []const u8) void {
+        var write_index: usize = 0;
+        for (table.entries.items) |entry| {
+            if (gc.valueIsWeaklyCleared(@field(entry, field))) continue;
+            table.entries.items[write_index] = entry;
+            write_index += 1;
         }
+        if (write_index == table.entries.items.len) return;
+        table.entries.items.len = write_index;
+        table.reindexEntries();
     }
 
     fn clearWeakTableKeys(gc: *Gc, table: *Table) void {
-        var index: usize = 0;
-        while (index < table.entries.items.len) {
-            if (gc.valueIsWeaklyCleared(table.entries.items[index].key)) {
-                table.removeEntryAt(index);
-            } else {
-                index += 1;
-            }
-        }
+        gc.removeEntriesWhere(table, "key");
     }
 
     pub fn writeTableBarrier(gc: *Gc, table: *Table, key: Value, value: Value) void {
@@ -1816,7 +1808,7 @@ pub const Gc = struct {
 const managed_lists = .{ "table_allocations", "userdata_allocations", "closure_allocations", "upvalue_allocations", "thread_allocations" };
 
 pub fn tableCapacityBytes(table: *const Table) usize {
-    return table.array.capacity * @sizeOf(Value) + table.entries.capacity * @sizeOf(TableEntry) + @as(usize, table.entry_index.capacity()) * (@sizeOf(Value) + @sizeOf(usize) + 1);
+    return table.array.capacity * @sizeOf(Value) + table.entries.capacity * @sizeOf(TableEntry) + table.entry_index.capacity() * @sizeOf(types.TableEntryIndex.Slot);
 }
 
 fn protoBytes(proto: *const proto_mod.Proto) usize {

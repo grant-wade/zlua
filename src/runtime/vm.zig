@@ -14,6 +14,7 @@ const State = @import("state.zig").State;
 const state_mod = @import("state.zig");
 const types = @import("types.zig");
 const upvalue_mod = @import("upvalue.zig");
+const table_index = @import("table_index.zig");
 const value_mod = @import("value.zig");
 
 const Thread = types.Thread;
@@ -78,7 +79,7 @@ fn runThreadLoop(self: *State, thread: *Thread, target_frame_count: usize) anyer
         }
         const pc = frame.pc;
         const instruction = proto.instructions.items[pc];
-        if (proto.fast_loop_entry and plainFastLoopCanStart(instruction) and runPlainFastLoop(self, thread, target_frame_count)) continue;
+        if (proto.fast_loop_entry and plainFastLoopCanStart(instruction) and try runPlainFastLoop(self, thread, target_frame_count)) continue;
         frame.pc += 1;
         try self.budget.checkLimits(thread);
         if (self.options.trace_vm) try traceInstruction(self, frame.*, pc, instruction);
@@ -87,242 +88,7 @@ fn runThreadLoop(self: *State, thread: *Thread, target_frame_count: usize) anyer
             try debug_mod.callCountHook(self, thread);
         }
 
-        frame = &thread.frames.items[thread.frames.items.len - 1];
-        const base = frame.base;
-        const stack = thread.stack.items;
-
-        switch (instruction) {
-            .load_nil => |dest| stack[base + dest] = .nil,
-            .load_bool => |op| stack[base + op.dest] = .{ .boolean = op.value },
-            .load_const => |op| stack[base + op.dest] = try protoConstant(self, frame.closure, proto, op.constant),
-            .move => |op| stack[base + op.dest] = stack[base + op.source],
-            .get_global => |op| stack[base + op.register] = self.getGlobalValue(constantString(proto, op.name)),
-            .set_global => |op| try self.setGlobal(constantString(proto, op.name), stack[base + op.register]),
-            .declare_global => |op| try self.declareGlobal(thread, constantString(proto, op.name), op.table, op.value),
-            .add => |op| {
-                const lhs = stack[base + op.left];
-                const rhs = stack[base + op.right];
-                if (operators_mod.rawNumericBinaryOpFast(lhs, rhs, .add)) |value| {
-                    stack[base + op.dest] = value;
-                } else {
-                    try operators_mod.binaryOpToRegister(self, thread, op, .add);
-                }
-            },
-            .sub => |op| {
-                const lhs = stack[base + op.left];
-                const rhs = stack[base + op.right];
-                if (operators_mod.rawNumericBinaryOpFast(lhs, rhs, .sub)) |value| {
-                    stack[base + op.dest] = value;
-                } else {
-                    try operators_mod.binaryOpToRegister(self, thread, op, .sub);
-                }
-            },
-            .mul => |op| {
-                const lhs = stack[base + op.left];
-                const rhs = stack[base + op.right];
-                if (operators_mod.rawNumericBinaryOpFast(lhs, rhs, .mul)) |value| {
-                    stack[base + op.dest] = value;
-                } else {
-                    try operators_mod.binaryOpToRegister(self, thread, op, .mul);
-                }
-            },
-            .div => |op| {
-                const lhs = stack[base + op.left];
-                const rhs = stack[base + op.right];
-                if (operators_mod.rawNumericBinaryOpFast(lhs, rhs, .div)) |value| {
-                    stack[base + op.dest] = value;
-                } else {
-                    try operators_mod.binaryOpToRegister(self, thread, op, .div);
-                }
-            },
-            .idiv => |op| {
-                const lhs = stack[base + op.left];
-                const rhs = stack[base + op.right];
-                if (operators_mod.rawNumericBinaryOpFast(lhs, rhs, .idiv)) |value| {
-                    stack[base + op.dest] = value;
-                } else {
-                    try operators_mod.binaryOpToRegister(self, thread, op, .idiv);
-                }
-            },
-            .mod => |op| {
-                const lhs = stack[base + op.left];
-                const rhs = stack[base + op.right];
-                if (operators_mod.rawNumericBinaryOpFast(lhs, rhs, .mod)) |value| {
-                    stack[base + op.dest] = value;
-                } else {
-                    try operators_mod.binaryOpToRegister(self, thread, op, .mod);
-                }
-            },
-            .pow => |op| try operators_mod.binaryOpToRegister(self, thread, op, .pow),
-            .band => |op| {
-                const lhs = stack[base + op.left];
-                const rhs = stack[base + op.right];
-                if (operators_mod.rawIntegerBitwiseOpFast(lhs, rhs, .band)) |value| {
-                    stack[base + op.dest] = value;
-                } else {
-                    try operators_mod.binaryOpToRegister(self, thread, op, .band);
-                }
-            },
-            .bor => |op| {
-                const lhs = stack[base + op.left];
-                const rhs = stack[base + op.right];
-                if (operators_mod.rawIntegerBitwiseOpFast(lhs, rhs, .bor)) |value| {
-                    stack[base + op.dest] = value;
-                } else {
-                    try operators_mod.binaryOpToRegister(self, thread, op, .bor);
-                }
-            },
-            .bxor => |op| {
-                const lhs = stack[base + op.left];
-                const rhs = stack[base + op.right];
-                if (operators_mod.rawIntegerBitwiseOpFast(lhs, rhs, .bxor)) |value| {
-                    stack[base + op.dest] = value;
-                } else {
-                    try operators_mod.binaryOpToRegister(self, thread, op, .bxor);
-                }
-            },
-            .shl => |op| {
-                const lhs = stack[base + op.left];
-                const rhs = stack[base + op.right];
-                if (operators_mod.rawIntegerBitwiseOpFast(lhs, rhs, .shl)) |value| {
-                    stack[base + op.dest] = value;
-                } else {
-                    try operators_mod.binaryOpToRegister(self, thread, op, .shl);
-                }
-            },
-            .shr => |op| {
-                const lhs = stack[base + op.left];
-                const rhs = stack[base + op.right];
-                if (operators_mod.rawIntegerBitwiseOpFast(lhs, rhs, .shr)) |value| {
-                    stack[base + op.dest] = value;
-                } else {
-                    try operators_mod.binaryOpToRegister(self, thread, op, .shr);
-                }
-            },
-            .unm => |op| try operators_mod.unaryOpToRegister(self, thread, op, .unm),
-            .bnot => |op| try operators_mod.unaryOpToRegister(self, thread, op, .bnot),
-            .concat => |op| try operators_mod.binaryOpToRegister(self, thread, op, .concat),
-            .concat_range => |op| try operators_mod.concatRangeToRegister(self, thread, op),
-            .eq => |op| {
-                const lhs = stack[base + op.left];
-                const rhs = stack[base + op.right];
-                if (!operators_mod.equalityHasMetamethod(lhs, rhs)) {
-                    stack[base + op.dest] = .{ .boolean = valuesEqual(lhs, rhs) };
-                } else {
-                    try operators_mod.equalValuesToRegister(self, thread, op);
-                }
-            },
-            .lt => |op| {
-                const lhs = stack[base + op.left];
-                const rhs = stack[base + op.right];
-                if (operators_mod.rawCompare(lhs, rhs, .lt)) |result| {
-                    stack[base + op.dest] = .{ .boolean = result };
-                } else {
-                    try operators_mod.compareValuesToRegister(self, thread, op, .lt);
-                }
-            },
-            .le => |op| {
-                const lhs = stack[base + op.left];
-                const rhs = stack[base + op.right];
-                if (operators_mod.rawCompare(lhs, rhs, .le)) |result| {
-                    stack[base + op.dest] = .{ .boolean = result };
-                } else {
-                    try operators_mod.compareValuesToRegister(self, thread, op, .le);
-                }
-            },
-            .not => |op| {
-                const result = !truthy(stack[base + op.source]);
-                stack[base + op.dest] = .{ .boolean = result };
-            },
-            .len => |op| try operators_mod.lengthToRegister(self, thread, op),
-            .new_table => |op| stack[base + op.dest] = try self.newTableWithHints(op.array_hint, op.hash_hint),
-            .set_list => |op| try setList(self, thread, op),
-            .get_table => |op| {
-                const table_value = stack[base + op.table];
-                const key_value = stack[base + op.key];
-                if (frame.named_vararg_readonly and op.table == proto.param_count) {
-                    stack[base + op.dest] = call_mod.namedVarargRead(frame.varargs, key_value);
-                } else if (fastTableRawGet(table_value, key_value)) |value| {
-                    stack[base + op.dest] = value;
-                } else {
-                    try index_mod.getTableToRegister(self, thread, op.dest, table_value, key_value);
-                }
-            },
-            .set_table => |op| {
-                const table_value = stack[base + op.table];
-                const key_value = stack[base + op.key];
-                const value = stack[base + op.value];
-                if (!try fastTableArraySet(self, table_value, key_value, value)) {
-                    if (key_value != .string or !try fastTableKnownKeySet(self, table_value, key_value, value)) {
-                        try index_mod.setTableFromThreadContinuable(self, thread, table_value, key_value, value);
-                    }
-                }
-            },
-            .set_array => |op| {
-                const table_value = stack[base + op.table];
-                const value = stack[base + op.value];
-                if (table_value == .table and op.index != 0) {
-                    try setTableArrayRawIndex(self, table_value.table, op.index, value);
-                } else {
-                    try index_mod.setTableFromThreadContinuable(self, thread, table_value, .{ .integer = @intCast(op.index) }, value);
-                }
-            },
-            .get_field => |op| {
-                const table_value = stack[base + op.table];
-                const key = Value{ .string = constantString(proto, op.name) };
-                if (frame.named_vararg_readonly and op.table == proto.param_count) {
-                    stack[base + op.dest] = call_mod.namedVarargRead(frame.varargs, key);
-                } else if (fastTableRawGet(table_value, key)) |value| {
-                    stack[base + op.dest] = value;
-                } else {
-                    try index_mod.getTableToRegister(self, thread, op.dest, table_value, try closureConstant(self, frame.closure, op.name));
-                }
-            },
-            .set_field => |op| {
-                const table_value = stack[base + op.table];
-                // Stored keys must be collectable strings; prototype bytes are only safe for lookups.
-                const key = try closureConstant(self, frame.closure, op.name);
-                const value = stack[base + op.value];
-                if (!try fastTableKnownKeySet(self, table_value, key, value)) {
-                    try index_mod.setTableFromThreadContinuable(self, thread, table_value, key, value);
-                }
-            },
-            .jmp => |offset| try jumpThreadMaybeFast(self, thread, offset, true),
-            .compare_branch => |op| {
-                const lhs = stack[base + op.left];
-                const rhs = stack[base + op.right];
-                if (operators_mod.rawCompareBranchResult(lhs, rhs, op.op)) |result| {
-                    if (result == op.jump_if_truthy) try jumpThreadMaybeFast(self, thread, op.offset, true);
-                } else {
-                    try operators_mod.compareBranch(self, thread, op);
-                }
-            },
-            .test_op => |op| if (truthy(stack[base + op.register]) == op.jump_if_truthy) {
-                try jumpThreadMaybeFast(self, thread, op.offset, true);
-            },
-            .test_set => |op| {
-                const value = stack[base + op.source];
-                stack[base + op.dest] = value;
-                if (truthy(value) == op.jump_if_truthy) {
-                    try jumpThreadMaybeFast(self, thread, op.offset, true);
-                }
-            },
-            .call => |op| try call_mod.callValue(self, thread, op),
-            .tail_call => |op| try call_mod.tailCallValue(self, thread, op),
-            .ret => |op| try call_mod.returnFromFrame(self, thread, op.first, op.count),
-            .vararg => |op| try call_mod.loadVarargs(self, thread, op),
-            .for_prep => |op| try forPrep(self, thread, op),
-            .for_loop => |op| try forLoop(self, thread, op),
-            .tfor_prep => |op| if (!(try index_mod.advanceGenericFor(self, thread, op, true))) try jumpThread(self, thread, op.offset, false),
-            .tfor_call => |op| _ = try index_mod.advanceGenericFor(self, thread, op, false),
-            .tfor_loop => |op| try jumpThread(self, thread, op.offset, false),
-            .closure => |op| stack[base + op.dest] = try self.newClosure(thread, proto.children.items[op.proto]),
-            .get_upvalue => |op| stack[base + op.register] = upvalue_mod.readUpvalue(self, thread, op.upvalue),
-            .set_upvalue => |op| try upvalue_mod.writeUpvalue(self, thread, op.upvalue, stack[base + op.register]),
-            .close => |register| if (thread.open_upvalues != null) upvalue_mod.closeUpvalues(self, thread, base + register),
-            .check_close => |register| try upvalue_mod.checkToBeClosedRegister(self, thread, register),
-            .close_tbc => |register| try upvalue_mod.closeToBeClosedRegister(self, thread, register, null),
-        }
+        try executeInstruction(self, thread, proto, instruction);
 
         if (!instructionPreservesLastResult(instruction)) {
             thread.last_result_count = 0;
@@ -333,7 +99,249 @@ fn runThreadLoop(self: *State, thread: *Thread, target_frame_count: usize) anyer
     }
 }
 
-fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bool {
+fn executeInstruction(self: *State, thread: *Thread, proto: *const proto_mod.Proto, instruction: bytecode.Instruction) anyerror!void {
+    const frame = &thread.frames.items[thread.frames.items.len - 1];
+    const base = frame.base;
+    const stack = thread.stack.items;
+    switch (instruction) {
+        .load_nil => |dest| stack[base + dest] = .nil,
+        .load_bool => |op| stack[base + op.dest] = .{ .boolean = op.value },
+        .load_const => |op| stack[base + op.dest] = try protoConstant(self, frame.closure, proto, op.constant),
+        .move => |op| stack[base + op.dest] = stack[base + op.source],
+        .get_global => |op| stack[base + op.register] = globalGet(self, proto, op.name),
+        .set_global => |op| if (!fastGlobalSetExisting(self, proto, op.name, stack[base + op.register])) {
+            try self.setGlobal(constantString(proto, op.name), stack[base + op.register]);
+        },
+        .declare_global => |op| try self.declareGlobal(thread, constantString(proto, op.name), op.table, op.value),
+        .add => |op| {
+            const lhs = stack[base + op.left];
+            const rhs = stack[base + op.right];
+            if (operators_mod.rawNumericBinaryOpFast(lhs, rhs, .add)) |value| {
+                stack[base + op.dest] = value;
+            } else {
+                try operators_mod.binaryOpToRegister(self, thread, op, .add);
+            }
+        },
+        .sub => |op| {
+            const lhs = stack[base + op.left];
+            const rhs = stack[base + op.right];
+            if (operators_mod.rawNumericBinaryOpFast(lhs, rhs, .sub)) |value| {
+                stack[base + op.dest] = value;
+            } else {
+                try operators_mod.binaryOpToRegister(self, thread, op, .sub);
+            }
+        },
+        .mul => |op| {
+            const lhs = stack[base + op.left];
+            const rhs = stack[base + op.right];
+            if (operators_mod.rawNumericBinaryOpFast(lhs, rhs, .mul)) |value| {
+                stack[base + op.dest] = value;
+            } else {
+                try operators_mod.binaryOpToRegister(self, thread, op, .mul);
+            }
+        },
+        .div => |op| {
+            const lhs = stack[base + op.left];
+            const rhs = stack[base + op.right];
+            if (operators_mod.rawNumericBinaryOpFast(lhs, rhs, .div)) |value| {
+                stack[base + op.dest] = value;
+            } else {
+                try operators_mod.binaryOpToRegister(self, thread, op, .div);
+            }
+        },
+        .idiv => |op| {
+            const lhs = stack[base + op.left];
+            const rhs = stack[base + op.right];
+            if (operators_mod.rawNumericBinaryOpFast(lhs, rhs, .idiv)) |value| {
+                stack[base + op.dest] = value;
+            } else {
+                try operators_mod.binaryOpToRegister(self, thread, op, .idiv);
+            }
+        },
+        .mod => |op| {
+            const lhs = stack[base + op.left];
+            const rhs = stack[base + op.right];
+            if (operators_mod.rawNumericBinaryOpFast(lhs, rhs, .mod)) |value| {
+                stack[base + op.dest] = value;
+            } else {
+                try operators_mod.binaryOpToRegister(self, thread, op, .mod);
+            }
+        },
+        .pow => |op| try operators_mod.binaryOpToRegister(self, thread, op, .pow),
+        .band => |op| {
+            const lhs = stack[base + op.left];
+            const rhs = stack[base + op.right];
+            if (operators_mod.rawIntegerBitwiseOpFast(lhs, rhs, .band)) |value| {
+                stack[base + op.dest] = value;
+            } else {
+                try operators_mod.binaryOpToRegister(self, thread, op, .band);
+            }
+        },
+        .bor => |op| {
+            const lhs = stack[base + op.left];
+            const rhs = stack[base + op.right];
+            if (operators_mod.rawIntegerBitwiseOpFast(lhs, rhs, .bor)) |value| {
+                stack[base + op.dest] = value;
+            } else {
+                try operators_mod.binaryOpToRegister(self, thread, op, .bor);
+            }
+        },
+        .bxor => |op| {
+            const lhs = stack[base + op.left];
+            const rhs = stack[base + op.right];
+            if (operators_mod.rawIntegerBitwiseOpFast(lhs, rhs, .bxor)) |value| {
+                stack[base + op.dest] = value;
+            } else {
+                try operators_mod.binaryOpToRegister(self, thread, op, .bxor);
+            }
+        },
+        .shl => |op| {
+            const lhs = stack[base + op.left];
+            const rhs = stack[base + op.right];
+            if (operators_mod.rawIntegerBitwiseOpFast(lhs, rhs, .shl)) |value| {
+                stack[base + op.dest] = value;
+            } else {
+                try operators_mod.binaryOpToRegister(self, thread, op, .shl);
+            }
+        },
+        .shr => |op| {
+            const lhs = stack[base + op.left];
+            const rhs = stack[base + op.right];
+            if (operators_mod.rawIntegerBitwiseOpFast(lhs, rhs, .shr)) |value| {
+                stack[base + op.dest] = value;
+            } else {
+                try operators_mod.binaryOpToRegister(self, thread, op, .shr);
+            }
+        },
+        .unm => |op| try operators_mod.unaryOpToRegister(self, thread, op, .unm),
+        .bnot => |op| try operators_mod.unaryOpToRegister(self, thread, op, .bnot),
+        .concat => |op| try operators_mod.binaryOpToRegister(self, thread, op, .concat),
+        .concat_range => |op| try operators_mod.concatRangeToRegister(self, thread, op),
+        .eq => |op| {
+            const lhs = stack[base + op.left];
+            const rhs = stack[base + op.right];
+            if (!operators_mod.equalityHasMetamethod(lhs, rhs)) {
+                stack[base + op.dest] = .{ .boolean = valuesEqual(lhs, rhs) };
+            } else {
+                try operators_mod.equalValuesToRegister(self, thread, op);
+            }
+        },
+        .lt => |op| {
+            const lhs = stack[base + op.left];
+            const rhs = stack[base + op.right];
+            if (operators_mod.rawCompare(lhs, rhs, .lt)) |result| {
+                stack[base + op.dest] = .{ .boolean = result };
+            } else {
+                try operators_mod.compareValuesToRegister(self, thread, op, .lt);
+            }
+        },
+        .le => |op| {
+            const lhs = stack[base + op.left];
+            const rhs = stack[base + op.right];
+            if (operators_mod.rawCompare(lhs, rhs, .le)) |result| {
+                stack[base + op.dest] = .{ .boolean = result };
+            } else {
+                try operators_mod.compareValuesToRegister(self, thread, op, .le);
+            }
+        },
+        .not => |op| {
+            const result = !truthy(stack[base + op.source]);
+            stack[base + op.dest] = .{ .boolean = result };
+        },
+        .len => |op| try operators_mod.lengthToRegister(self, thread, op),
+        .new_table => |op| stack[base + op.dest] = try self.newTableWithHints(op.array_hint, op.hash_hint),
+        .set_list => |op| try setList(self, thread, op),
+        .get_table => |op| {
+            const table_value = stack[base + op.table];
+            const key_value = stack[base + op.key];
+            if (frame.named_vararg_readonly and op.table == proto.param_count) {
+                stack[base + op.dest] = call_mod.namedVarargRead(frame.varargs, key_value);
+            } else if (fastTableRawGet(table_value, key_value)) |value| {
+                stack[base + op.dest] = value;
+            } else {
+                try index_mod.getTableToRegister(self, thread, op.dest, table_value, key_value);
+            }
+        },
+        .set_table => |op| {
+            const table_value = stack[base + op.table];
+            const key_value = stack[base + op.key];
+            const value = stack[base + op.value];
+            if (!try fastTableArraySet(self, table_value, key_value, value)) {
+                if (key_value != .string or !try fastTableKnownKeySet(self, table_value, key_value, value)) {
+                    try index_mod.setTableFromThreadContinuable(self, thread, table_value, key_value, value);
+                }
+            }
+        },
+        .set_array => |op| {
+            const table_value = stack[base + op.table];
+            const value = stack[base + op.value];
+            if (table_value == .table and op.index != 0) {
+                try setTableArrayRawIndex(self, table_value.table, op.index, value);
+            } else {
+                try index_mod.setTableFromThreadContinuable(self, thread, table_value, .{ .integer = @intCast(op.index) }, value);
+            }
+        },
+        .get_field => |op| {
+            const table_value = stack[base + op.table];
+            const key = Value{ .string = constantString(proto, op.name) };
+            if (frame.named_vararg_readonly and op.table == proto.param_count) {
+                stack[base + op.dest] = call_mod.namedVarargRead(frame.varargs, key);
+            } else if (fastTableFieldGet(table_value, key.string, proto.constant_hashes[op.name])) |value| {
+                stack[base + op.dest] = value;
+            } else {
+                try index_mod.getTableToRegister(self, thread, op.dest, table_value, try closureConstant(self, frame.closure, op.name));
+            }
+        },
+        .set_field => |op| {
+            const table_value = stack[base + op.table];
+            // Stored keys must be collectable strings; prototype bytes are only safe for lookups.
+            const key = try closureConstant(self, frame.closure, op.name);
+            const value = stack[base + op.value];
+            if (!fastTableKnownKeySetExistingNoAlloc(self, table_value, key, proto.constant_hashes[op.name], value) and
+                !try fastTableKnownKeySet(self, table_value, key, value))
+            {
+                try index_mod.setTableFromThreadContinuable(self, thread, table_value, key, value);
+            }
+        },
+        .jmp => |offset| try jumpThreadMaybeFast(self, thread, offset, true),
+        .compare_branch => |op| {
+            const lhs = stack[base + op.left];
+            const rhs = stack[base + op.right];
+            if (operators_mod.rawCompareBranchResult(lhs, rhs, op.op)) |result| {
+                if (result == op.jump_if_truthy) try jumpThreadMaybeFast(self, thread, op.offset, true);
+            } else {
+                try operators_mod.compareBranch(self, thread, op);
+            }
+        },
+        .test_op => |op| if (truthy(stack[base + op.register]) == op.jump_if_truthy) {
+            try jumpThreadMaybeFast(self, thread, op.offset, true);
+        },
+        .test_set => |op| {
+            const value = stack[base + op.source];
+            stack[base + op.dest] = value;
+            if (truthy(value) == op.jump_if_truthy) {
+                try jumpThreadMaybeFast(self, thread, op.offset, true);
+            }
+        },
+        .call => |op| try call_mod.callValue(self, thread, op),
+        .tail_call => |op| try call_mod.tailCallValue(self, thread, op),
+        .ret => |op| try call_mod.returnFromFrame(self, thread, op.first, op.count),
+        .vararg => |op| try call_mod.loadVarargs(self, thread, op),
+        .for_prep => |op| try forPrep(self, thread, op),
+        .for_loop => |op| try forLoop(self, thread, op),
+        .tfor_prep => |op| if (!(try index_mod.advanceGenericFor(self, thread, op, true))) try jumpThread(self, thread, op.offset, false),
+        .tfor_call => |op| _ = try index_mod.advanceGenericFor(self, thread, op, false),
+        .tfor_loop => |op| try jumpThread(self, thread, op.offset, false),
+        .closure => |op| stack[base + op.dest] = try self.newClosure(thread, proto.children.items[op.proto]),
+        .get_upvalue => |op| stack[base + op.register] = upvalue_mod.readUpvalue(self, thread, op.upvalue),
+        .set_upvalue => |op| try upvalue_mod.writeUpvalue(self, thread, op.upvalue, stack[base + op.register]),
+        .close => |register| if (thread.open_upvalues != null) upvalue_mod.closeUpvalues(self, thread, base + register),
+        .check_close => |register| try upvalue_mod.checkToBeClosedRegister(self, thread, register),
+        .close_tbc => |register| try upvalue_mod.closeToBeClosedRegister(self, thread, register, null),
+    }
+}
+
+fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) anyerror!bool {
     if (thread.frames.items.len <= target_frame_count) return false;
     if (self.budget.active() or self.options.trace_vm) return false;
     if (self.budget.fastLoopInterrupted()) return false;
@@ -341,24 +349,36 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
     if (thread.hook != .nil and (thread.hook_line or thread.hook_count != 0 or thread.hook_running)) return false;
     if (self.gc.running and self.gc.shouldRunAuto()) return false;
 
-    const stack_limit = @min(thread.stack.items.len, self.stackValueLimit());
-    const frame_limit = @min(thread.frames.capacity, self.callFrameLimit());
-    const return_floor: usize = if (thread.pending_unwind_error != null or thread.pending_yield_hook_return or thread.hook_return)
-        std.math.maxInt(usize)
-    else if (call_mod.hasPendingContinuations(thread))
-        @max(target_frame_count, thread.continuation_frame_count)
-    else
-        target_frame_count;
+    var stack_limit = @min(thread.stack.items.len, self.stackValueLimit());
+    var frame_limit = @min(thread.frames.capacity, self.callFrameLimit());
+    var return_floor = fastReturnFloor(thread, target_frame_count);
 
     var frame_index = thread.frames.items.len - 1;
     var frame = &thread.frames.items[frame_index];
     var proto = frame.proto;
     var pc = frame.pc;
     var base = frame.base;
-    var count_bias: u64 = 0 -% pc;
+    // Widen before wrapping subtraction: program counters may be only 32 bits.
+    var count_bias: u64 = 0 -% @as(u64, pc);
     defer self.budget.instructions = self.budget.instructions +| (pc +% count_bias);
     var segment_start: u64 = 0;
+    // Executed-instruction total after a general operation, which may have changed frames.
+    var resync: ?u64 = null;
     frames: while (true) {
+        if (resync) |executed| {
+            @branchHint(.unlikely);
+            resync = null;
+            if (!try fastLoopCanResume(self, thread, target_frame_count)) return true;
+            frame_index = thread.frames.items.len - 1;
+            frame = &thread.frames.items[frame_index];
+            proto = frame.proto;
+            pc = frame.pc;
+            count_bias = executed -% pc;
+            base = frame.base;
+            stack_limit = @min(thread.stack.items.len, self.stackValueLimit());
+            frame_limit = @min(thread.frames.capacity, self.callFrameLimit());
+            return_floor = fastReturnFloor(thread, target_frame_count);
+        }
         if (!proto.fast_loop_entry) return segment_start != 0;
         const instructions = proto.instructions.items;
         if (pc >= instructions.len) return segment_start != 0;
@@ -555,10 +575,14 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
             },
             .get_table => {
                 const op = instructions[pc].get_table;
+                const table_value = stack[op.table];
+                const key = stack[op.key];
                 const value = if (frame.named_vararg_readonly and op.table == proto.param_count)
-                    call_mod.namedVarargRead(frame.varargs, stack[op.key])
+                    call_mod.namedVarargRead(frame.varargs, key)
+                else if (arrayValue(table_value, key)) |hit|
+                    hit
                 else
-                    fastTableRawGet(stack[op.table], stack[op.key]) orelse break :fast_loop;
+                    fastTableRawGet(table_value, key) orelse break :fast_loop;
                 stack[op.dest] = value;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
@@ -568,16 +592,25 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
                 const key = Value{ .string = constantString(proto, op.name) };
                 const value = if (frame.named_vararg_readonly and op.table == proto.param_count)
                     call_mod.namedVarargRead(frame.varargs, key)
+                else if (stack[op.table] == .string)
+                    stringMethod(self, key.string, proto.constant_hashes[op.name]) orelse break :fast_loop
                 else
-                    fastTableRawGet(stack[op.table], key) orelse break :fast_loop;
+                    fastTableFieldGet(stack[op.table], key.string, proto.constant_hashes[op.name]) orelse break :fast_loop;
                 stack[op.dest] = value;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .set_table => {
                 const op = instructions[pc].set_table;
+                if (arraySlot(stack[op.table], stack[op.key])) |slot| {
+                    const table = stack[op.table].table;
+                    slot.* = stack[op.value];
+                    writeTableBarrierFast(self, table, stack[op.key], stack[op.value]);
+                    pc += 1;
+                    continue :fast_loop std.meta.activeTag(instructions[pc]);
+                }
                 if (!fastTableArraySetExistingNoAlloc(self, stack[op.table], stack[op.key], stack[op.value]) and
-                    !fastTableKnownKeySetExistingNoAlloc(self, stack[op.table], stack[op.key], stack[op.value])) break :fast_loop;
+                    !fastTableDynamicKeySetNoAlloc(self, stack[op.table], stack[op.key], stack[op.value])) break :fast_loop;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
@@ -606,18 +639,25 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
                 const op = instructions[pc].set_field;
                 const cache = frame.closure.constants orelse break :fast_loop;
                 const key = cache[op.name] orelse break :fast_loop;
-                if (!fastTableKnownKeySetExistingNoAlloc(self, stack[op.table], key, stack[op.value])) break :fast_loop;
+                if (!fastTableKnownKeySetExistingNoAlloc(self, stack[op.table], key, proto.constant_hashes[op.name], stack[op.value])) break :fast_loop;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .compare_branch => {
+                if (proto.jumpExitsToBeClosed(pc)) break :fast_loop;
                 const op = instructions[pc].compare_branch;
-                const result = operators_mod.rawCompareBranchResult(stack[op.left], stack[op.right], op.op) orelse break :fast_loop;
+                const lhs = stack[op.left];
+                const rhs = stack[op.right];
+                const result = if (lhs == .integer and rhs == .integer) switch (op.op) {
+                    .eq => lhs.integer == rhs.integer,
+                    .lt => lhs.integer < rhs.integer,
+                    .le => lhs.integer <= rhs.integer,
+                } else operators_mod.rawCompareBranchResult(lhs, rhs, op.op) orelse break :fast_loop;
                 pc += 1;
                 if (result == op.jump_if_truthy) {
                     const source_pc = pc;
                     pc = jumpTarget(source_pc, op.offset);
-                    count_bias +%= source_pc -% pc;
+                    count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                     if (pc < source_pc) {
                         frame.last_hook_line = null;
                         if (self.budget.fastLoopInterrupted()) break :fast_loop;
@@ -627,11 +667,12 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .jmp => {
+                if (proto.jumpExitsToBeClosed(pc)) break :fast_loop;
                 const offset = instructions[pc].jmp;
                 pc += 1;
                 const source_pc = pc;
                 pc = jumpTarget(source_pc, offset);
-                count_bias +%= source_pc -% pc;
+                count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                 if (pc < source_pc) {
                     frame.last_hook_line = null;
                     if (self.budget.fastLoopInterrupted()) break :fast_loop;
@@ -640,12 +681,13 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .test_op => {
+                if (proto.jumpExitsToBeClosed(pc)) break :fast_loop;
                 const op = instructions[pc].test_op;
                 pc += 1;
                 if (truthy(stack[op.register]) == op.jump_if_truthy) {
                     const source_pc = pc;
                     pc = jumpTarget(source_pc, op.offset);
-                    count_bias +%= source_pc -% pc;
+                    count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                     if (pc < source_pc) {
                         frame.last_hook_line = null;
                         if (self.budget.fastLoopInterrupted()) break :fast_loop;
@@ -655,6 +697,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .test_set => {
+                if (proto.jumpExitsToBeClosed(pc)) break :fast_loop;
                 const op = instructions[pc].test_set;
                 const value = stack[op.source];
                 stack[op.dest] = value;
@@ -662,7 +705,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
                 if (truthy(value) == op.jump_if_truthy) {
                     const source_pc = pc;
                     pc = jumpTarget(source_pc, op.offset);
-                    count_bias +%= source_pc -% pc;
+                    count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                     if (pc < source_pc) {
                         frame.last_hook_line = null;
                         if (self.budget.fastLoopInterrupted()) break :fast_loop;
@@ -672,6 +715,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .for_loop => {
+                if (proto.jumpExitsToBeClosed(pc)) break :fast_loop;
                 const op = instructions[pc].for_loop;
                 const absolute_base: usize = op.base;
                 const current = stack[absolute_base];
@@ -691,7 +735,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
                 if (continues) {
                     const source_pc = pc;
                     pc = jumpTarget(source_pc, op.offset);
-                    count_bias +%= source_pc -% pc;
+                    count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                     if (pc < source_pc) {
                         frame.last_hook_line = null;
                         if (self.budget.fastLoopInterrupted()) break :fast_loop;
@@ -712,13 +756,12 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
                     op.arg_count = @intCast(result_end -| expected_base);
                 }
                 const callee = stack[op.base];
-                if (callee == .native and !thread.hook_return) {
-                    if (op.arg_count == 0 or @as(usize, op.base) + 1 >= stack.len) break :fast_loop;
-                    const result = stdlib.math.fastUnaryResult(callee.native, stack[op.base + 1]) orelse break :fast_loop;
+                if (callee == .native and !thread.hook_return and op.arg_count != 0 and @as(usize, op.base) + 1 < stack.len) math: {
+                    const result = stdlib.math.fastUnaryResult(callee.native, stack[op.base + 1]) orelse break :math;
                     const return_count: usize = if (op.return_count == bytecode.multret_count) 1 else op.return_count;
                     const absolute_base = base + op.base;
                     const stored_end = absolute_base + @max(return_count, 1);
-                    if (stored_end > stack_limit) break :fast_loop;
+                    if (stored_end > stack_limit) break :math;
                     stack[op.base] = result;
                     if (return_count > 1) @memset(thread.stack.items[absolute_base + 1 .. stored_end], .nil);
                     thread.last_result_base = absolute_base;
@@ -732,11 +775,23 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
                     segment_start = pc +% count_bias;
                     continue :frames;
                 }
-                if (callee != .closure) break :fast_loop;
+                if (callee != .closure or !callee.closure.proto.fast_loop_call) {
+                    // Natives and frames needing setup run through the general call path in place.
+                    @branchHint(.unlikely);
+                    if (thread.hook != .nil) break :fast_loop;
+                    if (pc +% count_bias != segment_start) {
+                        thread.last_result_count = 0;
+                        thread.last_transfer_count = 0;
+                    }
+                    pc += 1;
+                    frame.pc = pc;
+                    segment_start = pc +% count_bias;
+                    try call_mod.callValue(self, thread, op);
+                    resync = segment_start;
+                    continue :frames;
+                }
                 const closure = callee.closure;
                 const callee_proto = closure.proto;
-                // Growth, varargs, and hooks need the general path, which can allocate or reenter Lua.
-                if (!callee_proto.fast_loop_call) break :fast_loop;
                 const callee_index = frame_index + 1;
                 if (callee_index >= frame_limit) break :fast_loop;
                 const function_slot = base + op.base;
@@ -747,7 +802,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
 
                 const executed_count = pc +% count_bias -% segment_start;
                 const copied = @min(op.arg_count, callee_proto.param_count);
-                @memset(thread.stack.items[callee_base + copied .. stack_end], .nil);
+                clearRegisters(thread.stack.items[callee_base + copied .. stack_end]);
                 frame.pc = pc + 1;
                 frame = &@as([*]CallFrame, @ptrCast(frame))[1];
                 frame.* = .{
@@ -777,19 +832,68 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
                 if (self.budget.fastLoopInterrupted()) return true;
                 continue :frames;
             },
+            .new_table => {
+                const op = instructions[pc].new_table;
+                pc += 1;
+                frame.pc = pc;
+                stack[op.dest] = try self.newTableWithHints(op.array_hint, op.hash_hint);
+                if (self.gc.running and self.gc.shouldRunAuto()) {
+                    resync = pc +% count_bias;
+                    continue :frames;
+                }
+                continue :fast_loop std.meta.activeTag(instructions[pc]);
+            },
+            .set_list => {
+                const op = instructions[pc].set_list;
+                if (op.count == bytecode.multret_count and pc +% count_bias != segment_start) break :fast_loop;
+                pc += 1;
+                frame.pc = pc;
+                try setList(self, thread, op);
+                resync = pc +% count_bias;
+                continue :frames;
+            },
+            .tail_call => {
+                const op = instructions[pc].tail_call;
+                if (thread.hook != .nil or op.arg_count == bytecode.multret_arg_count) break :fast_loop;
+                if (pc +% count_bias != segment_start) {
+                    thread.last_result_count = 0;
+                    thread.last_transfer_count = 0;
+                }
+                pc += 1;
+                frame.pc = pc;
+                segment_start = pc +% count_bias;
+                try call_mod.tailCallValue(self, thread, op);
+                resync = segment_start;
+                continue :frames;
+            },
             .ret => {
                 const op = instructions[pc].ret;
-                if (frame_index <= return_floor) break :fast_loop;
-                if (op.count == bytecode.multret_count or frame.return_count == bytecode.multret_count or
-                    frame.owns_varargs or frame.pending_returns != null) break :fast_loop;
-                if (thread.open_upvalues) |upvalue| if (upvalue.stack_index >= base) break :fast_loop;
+                // Returning onto the floor frame is fine, but the outer loop must take over afterwards.
+                if (frame_index < return_floor or frame_index == 0) break :fast_loop;
+                const open_here = if (thread.open_upvalues) |upvalue| upvalue.stack_index >= base else false;
+                if (proto.has_to_close_locals or op.count == bytecode.multret_count or frame.return_count == bytecode.multret_count or
+                    frame.owns_varargs or frame.pending_returns != null or open_here)
+                {
+                    @branchHint(.unlikely);
+                    if (thread.hook != .nil) break :fast_loop;
+                    if (pc +% count_bias != segment_start) {
+                        thread.last_result_count = 0;
+                        thread.last_transfer_count = 0;
+                    }
+                    pc += 1;
+                    frame.pc = pc;
+                    segment_start = pc +% count_bias;
+                    try call_mod.returnFromFrame(self, thread, op.first, op.count);
+                    resync = segment_start;
+                    continue :frames;
+                }
                 const return_start = frame.return_start;
                 const return_count = frame.return_count;
                 if (return_start + return_count > stack_limit) break :fast_loop;
                 const executed_count = pc +% count_bias -% segment_start;
                 const copied = @min(return_count, op.count);
                 for (0..copied) |index| thread.stack.items[return_start + index] = stack[op.first + index];
-                @memset(thread.stack.items[return_start + copied .. return_start + return_count], .nil);
+                clearRegisters(thread.stack.items[return_start + copied .. return_start + return_count]);
                 thread.frames.items.len = frame_index;
                 thread.last_result_base = return_start;
                 thread.last_result_count = return_count;
@@ -801,13 +905,12 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
                 pc = frame.pc;
                 count_bias = segment_start -% pc;
                 base = frame.base;
-                if (self.budget.fastLoopInterrupted()) return true;
+                if (frame_index + 1 == return_floor or self.budget.fastLoopInterrupted()) return true;
                 continue :frames;
             },
             .close => {
-                const register = instructions[pc].close;
-                const first = base + register;
-                if (thread.open_upvalues) |upvalue| if (upvalue.stack_index >= first) break :fast_loop;
+                const first = base + instructions[pc].close;
+                if (thread.open_upvalues) |upvalue| if (upvalue.stack_index >= first) upvalue_mod.closeUpvalues(self, thread, first);
                 pc += 1;
                 if (pc >= instructions.len) break :fast_loop;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
@@ -821,6 +924,57 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
         thread.last_transfer_count = 0;
         return true;
     }
+}
+
+/// Small frames clear their registers inline; a `memset` call costs more than the stores.
+inline fn clearRegisters(registers: []Value) void {
+    if (registers.len > 16) return @memset(registers, .nil);
+    for (registers) |*register| register.* = .nil;
+}
+
+inline fn arrayValue(table_value: Value, key: Value) ?Value {
+    if (table_value != .table or key != .integer) return null;
+    const table = table_value.table;
+    const index: u64 = @bitCast(key.integer -% 1);
+    if (index >= table.array.items.len) return null;
+    const value = table.array.items[@intCast(index)];
+    return if (value != .nil) value else null;
+}
+
+/// Slot of an existing non-nil array element that a raw write may replace.
+inline fn arraySlot(table_value: Value, key: Value) ?*Value {
+    if (table_value != .table or key != .integer) return null;
+    const table = table_value.table;
+    const index: u64 = @bitCast(key.integer -% 1);
+    if (index >= table.array.items.len) return null;
+    if (table.rollback) |record| if (!record.header.detached) return null;
+    const slot = &table.array.items[@intCast(index)];
+    return if (slot.* != .nil) slot else null;
+}
+
+/// `Gc.writeTableBarrier` for non-string keys, skipping the call when it would do nothing.
+inline fn writeTableBarrierFast(self: *State, table: *Table, key: Value, value: Value) void {
+    const meta = &table.gc;
+    if (self.gc.phase == .pause and meta.generation == self.gc.generation and (meta.age != .old or meta.remembered)) return;
+    self.gc.writeTableBarrier(table, key, value);
+}
+
+fn fastReturnFloor(thread: *const Thread, target_frame_count: usize) usize {
+    if (thread.pending_unwind_error != null or thread.pending_yield_hook_return or thread.hook_return) return std.math.maxInt(usize);
+    if (call_mod.hasPendingContinuations(thread)) return @max(target_frame_count, thread.continuation_frame_count);
+    return target_frame_count;
+}
+
+/// After a general call from the fast loop: runs a due collector step, then reports
+/// whether the fast loop may continue with the thread's new top frame.
+noinline fn fastLoopCanResume(self: *State, thread: *Thread, target_frame_count: usize) !bool {
+    if (self.gc.running and (self.gc.shouldRunAuto() or self.stressPending())) try self.gc.autoStep(thread);
+    const frame_count = thread.frames.items.len;
+    if (frame_count <= target_frame_count) return false;
+    if (thread.pending_unwind_error != null or thread.pending_yield_hook_return) return false;
+    if (call_mod.hasPendingContinuations(thread) and frame_count <= thread.continuation_frame_count) return false;
+    if (thread.hook != .nil or self.budget.active() or self.options.trace_vm or self.budget.fastLoopInterrupted() or self.stressPending()) return false;
+    return thread.frames.items[frame_count - 1].pc < thread.frames.items[frame_count - 1].proto.instructions.items.len;
 }
 
 fn fastTableArraySet(self: *State, table_value: Value, key_value: Value, value: Value) !bool {
@@ -852,11 +1006,17 @@ fn fastTableArraySetExistingNoAlloc(self: *State, table_value: Value, key_value:
     return false;
 }
 
-fn fastTableKnownKeySetExistingNoAlloc(self: *State, table_value: Value, key: Value, value: Value) bool {
-    if (table_value != .table or key != .string) return false;
+noinline fn fastTableDynamicKeySetNoAlloc(self: *State, table_value: Value, key: Value, value: Value) bool {
+    if (key != .string) return false;
+    return fastTableKnownKeySetExistingNoAlloc(self, table_value, key, table_index.hashStringKey(key.string), value);
+}
+
+/// `key` must be a string and `hash` its `table_index.hashStringKey`.
+fn fastTableKnownKeySetExistingNoAlloc(self: *State, table_value: Value, key: Value, hash: u32, value: Value) bool {
+    if (table_value != .table) return false;
     const table = table_value.table;
     if (table.rollback) |record| if (!record.header.detached) return false;
-    if (table.findEntry(key)) |index| {
+    if (table.findStringEntry(key.string, hash)) |index| {
         const slot = &table.entries.items[index].value;
         if (slot.* == .nil) {
             if (!index_mod.noNewindexMetamethod(table)) return false;
@@ -1220,7 +1380,10 @@ fn plainFastLoopCanStart(instruction: bytecode.Instruction) bool {
         .test_op,
         .test_set,
         .for_loop,
+        .new_table,
+        .set_list,
         .call,
+        .tail_call,
         .ret,
         .close,
         => true,
@@ -1268,9 +1431,54 @@ pub fn assertProtoPrepared(proto: *const proto_mod.Proto) void {
     std.debug.assert(proto.runtime_prepared or proto.constants.items.len == 0);
 }
 
+inline fn globalGet(self: *State, proto: *const proto_mod.Proto, name: bytecode.ConstantIndex) Value {
+    const table = self.global_table orelse return .nil;
+    return table.getStringHashed(constantString(proto, name), proto.constant_hashes[name]);
+}
+
+/// Overwrites an existing non-nil global in place, like `State.setGlobal` without interning.
+fn fastGlobalSetExisting(self: *State, proto: *const proto_mod.Proto, name: bytecode.ConstantIndex, value: Value) bool {
+    if (value == .nil) return false;
+    const table = self.global_table orelse return false;
+    if (table.rollback) |record| if (!record.header.detached) return false;
+    const index = table.findStringEntry(constantString(proto, name), proto.constant_hashes[name]) orelse return false;
+    const entry = &table.entries.items[index];
+    if (entry.value == .nil) return false;
+    entry.value = value;
+    self.gc.writeTableBarrier(table, entry.key, value);
+    self.gc.markValue(value);
+    return true;
+}
+
+/// A string's method through its metatable's `__index` table, when that needs no metamethod call.
+fn stringMethod(self: *State, name: []const u8, hash: u32) ?Value {
+    const metatable = self.string_metatable orelse return null;
+    const handler = metatable.metaEvent(.__index);
+    if (handler != .table) return null;
+    const value = handler.table.getStringHashed(name, hash);
+    if (value != .nil or index_mod.noIndexMetamethod(handler.table)) return value;
+    return null;
+}
+
+fn fastTableFieldGet(table_value: Value, name: []const u8, hash: u32) ?Value {
+    if (table_value != .table) return null;
+    const table = table_value.table;
+    const value = table.getStringHashed(name, hash);
+    if (value != .nil) return value;
+    const metatable = table.metatable orelse return value;
+    if (metatable.metaEventAbsent(.__index)) return value;
+    const handler = metatable.metaEvent(.__index);
+    if (handler == .nil) return value;
+    if (handler != .table) return null;
+    const inherited = handler.table.getStringHashed(name, hash);
+    if (inherited != .nil or index_mod.noIndexMetamethod(handler.table)) return inherited;
+    return null;
+}
+
 fn fastTableRawGet(table_value: Value, key_value: Value) ?Value {
     if (fastTableArrayGet(table_value, key_value)) |value| return value;
-    if (table_value != .table or key_value != .string) return null;
+    // Float keys need normalization to integers first.
+    if (table_value != .table or key_value == .number) return null;
     const table = table_value.table;
     const value = table.get(key_value);
     if (value != .nil) return value;

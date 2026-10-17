@@ -4,7 +4,22 @@ const zlua = @import("zlua");
 
 var heap_buffer: [4 * 1024 * 1024]u8 align(16) = undefined;
 
-export fn _start() noreturn {
+comptime {
+    if (builtin.target.cpu.arch == .x86_64) @export(&_start, .{ .name = "_start" });
+}
+
+/// The kernel enters `_start` with a 16-byte aligned stack rather than as if by a call, so realign before running Zig code.
+fn _start() callconv(.naked) noreturn {
+    asm volatile (
+        \\ xorl %%ebp, %%ebp
+        \\ andq $-16, %%rsp
+        \\ callq %[entry:P]
+        :
+        : [entry] "X" (&entry),
+    );
+}
+
+fn entry() callconv(.c) noreturn {
     run() catch exit(1);
     exit(0);
 }
@@ -15,6 +30,11 @@ export fn smoke() bool {
 }
 
 fn run() !void {
+    try runWithInstructionLimit(200_000);
+    try runWithInstructionLimit(null);
+}
+
+fn runWithInstructionLimit(max_instructions: ?u64) !void {
     var fixed = std.heap.FixedBufferAllocator.init(&heap_buffer);
     var host = Host{
         .filesystem = zlua.MemoryFilesystem.init(fixed.allocator()),
@@ -52,9 +72,28 @@ fn run() !void {
                 .execute = Host.execute,
             } },
         },
-        .limits = .{ .max_instructions = 200_000 },
+        .limits = .{ .max_instructions = max_instructions },
     });
     defer lua.deinit();
+
+    // An unlimited state uses the plain fast loop, whose counters must wrap at
+    // 64 bits even when program counters are 32 bits (wasm32).
+    try lua.doString("x = 1 + 2", .{ .name = "=freestanding-arithmetic" });
+    try lua.doString(
+        \\assert(x == 3)
+        \\local total = 0
+        \\for i = 1, 10 do
+        \\  if i < 5 then total = total + i else total = total + 2 * i end
+        \\end
+        \\assert(total == 100)
+        \\local flag = true
+        \\while flag do
+        \\  total = total - 1
+        \\  flag = total > 95
+        \\end
+        \\local value = flag and 1 or total
+        \\assert(value == 95)
+    , .{ .name = "=freestanding-control-flow" });
 
     try lua.doString(
         \\assert(_VERSION == 'Lua 5.5')

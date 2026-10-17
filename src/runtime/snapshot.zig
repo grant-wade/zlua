@@ -10,6 +10,8 @@ const gc_mod = @import("gc.zig");
 const State = @import("state.zig").State;
 const types = @import("types.zig");
 
+const AddressMap = std.HashMap(usize, usize, types.AddressContext, std.hash_map.default_max_load_percentage);
+
 pub fn checkIdleFast(source: *const State) !void {
     if (source.execution_depth != 0 or source.userdata_scope != null or source.current_thread != null or source.active_api_callback != null or source.gc.collecting or source.snapshot_busy) return error.SnapshotBusy;
 }
@@ -38,13 +40,11 @@ fn copyGraph(source: *const State, allocator: std.mem.Allocator, lifetime: ?*typ
     var destination = State{
         .allocator = allocator,
         .allocator_lifetime = lifetime,
-        .strings = .{ .map = std.StringHashMap([]const u8).init(allocator) },
-        .string_allocation_index = types.PointerAllocationIndex.init(allocator),
-        .table_allocation_index = types.PointerAllocationIndex.init(allocator),
+        .strings = .{ .map = @import("strings.zig").InternMap.init(allocator) },
         .options = source.options,
     };
     errdefer destination.discard();
-    var copier = Copier{ .destination = &destination, .borrow_protos = borrow_protos, .map = std.AutoHashMap(usize, usize).init(allocator) };
+    var copier = Copier{ .destination = &destination, .borrow_protos = borrow_protos, .map = AddressMap.init(allocator) };
     defer copier.map.deinit();
     try copier.populate(source, error_root);
     return destination;
@@ -53,7 +53,7 @@ fn copyGraph(source: *const State, allocator: std.mem.Allocator, lifetime: ?*typ
 const Copier = struct {
     destination: *State,
     borrow_protos: bool = false,
-    map: std.AutoHashMap(usize, usize),
+    map: AddressMap,
 
     fn mapped(self: *Copier, pointer: anytype) !@TypeOf(pointer) {
         return @ptrFromInt(self.map.get(@intFromPtr(pointer)) orelse return error.SnapshotUnsupported);
@@ -155,6 +155,8 @@ const Copier = struct {
         try self.map.put(@intFromPtr(old), @intFromPtr(new));
         inline for (.{ "max_registers", "param_count", "is_vararg", "named_vararg", "defined_line", "last_defined_line", "has_to_close_locals", "runtime_prepared", "named_vararg_readonly", "fast_loop_entry", "fast_loop_call" }) |name| @field(new, name) = @field(old, name);
         new.constant_values = try new.arena.allocator().dupe(types.Value, old.constant_values);
+        new.constant_hashes = try new.arena.allocator().dupe(u32, old.constant_hashes);
+        new.close_exit_jumps = try new.arena.allocator().dupe(u64, old.close_exit_jumps);
         new.source_name = try self.text(old.source_name);
         new.debug_name = try self.remap(old.debug_name);
         new.instructions = try self.list(@import("../compile/bytecode.zig").Instruction, old.instructions.items);
@@ -193,7 +195,7 @@ const Copier = struct {
                 d.borrowed_proto_count += 1;
             } else d.proto_allocations.appendAssumeCapacity(try self.proto(old));
         }
-        try self.shells(types.Table, source.table_allocations.items, &d.table_allocations, .{ .entry_index = types.TableEntryIndex.init(a) });
+        try self.shells(types.Table, source.table_allocations.items, &d.table_allocations, .{});
         try self.shells(types.Thread, source.thread_allocations.items, &d.thread_allocations, .{});
         try self.shells(types.Closure, source.closure_allocations.items, &d.closure_allocations, .{ .proto = undefined, .upvalues = &.{} });
         try self.shells(types.Upvalue, source.upvalue_allocations.items, &d.upvalue_allocations, .{ .owner = undefined, .stack_index = 0 });
@@ -209,9 +211,9 @@ const Copier = struct {
                 retained += 1;
             }
             new.entries.items.len = retained;
-            try new.rebuildEntryIndex();
+            try new.rebuildEntryIndex(a);
             inline for (.{ "metatable", "metatable_prev", "metatable_next", "finalizer_registered", "finalizer_next", "finalizer_prev", "finalizer_order" }) |name| @field(new, name) = try self.remap(@field(old, name));
-            try d.table_allocation_index.put(@intFromPtr(new), index);
+            try d.table_allocation_index.put(a, @intFromPtr(new), index);
         }
         for (source.closure_allocations.items, d.closure_allocations.items) |old, new| {
             new.proto = try self.mapped(old.proto);
@@ -430,7 +432,7 @@ comptime {
     });
     review(Proto, .{
         .rebuilt = "allocator arena",
-        .copied = "constants instructions line_info locals upvalues error_sites max_registers param_count is_vararg named_vararg source_name debug_name defined_line last_defined_line has_to_close_locals runtime_prepared named_vararg_readonly fast_loop_entry fast_loop_call constant_values",
+        .copied = "constants instructions line_info locals upvalues error_sites max_registers param_count is_vararg named_vararg source_name debug_name defined_line last_defined_line has_to_close_locals runtime_prepared named_vararg_readonly fast_loop_entry fast_loop_call constant_values constant_hashes close_exit_jumps",
         .remapped = "children",
     });
     review(types.Value, .{ .remapped = "string table userdata closure thread coroutine_wrapper gmatch_iterator", .external = "nil boolean integer number native_print native_tostring native_getmetatable native_setmetatable native_rawequal native_rawget native_rawset native_rawlen native_next native_pairs native_ipairs native_ipairs_iter native_table_create native_select native_assert native_error native_pcall native_xpcall native_collectgarbage native_debug_traceback native_coroutine_create native_coroutine_resume native_coroutine_yield native_coroutine_status native_coroutine_running native_coroutine_isyieldable native_coroutine_close native_coroutine_wrap native api_callback" });

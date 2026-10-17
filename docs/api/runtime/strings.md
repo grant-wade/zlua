@@ -35,6 +35,7 @@
 - [runtime.rollback](../runtime/rollback.md)
 - [runtime.value](../runtime/value.md)
 - [runtime.number_format](../runtime/number_format.md)
+- [runtime.table_index](../runtime/table_index.md)
 - [runtime.host](../runtime/host.md)
 - [runtime.upvalue](../runtime/upvalue.md)
 - [runtime.failure](../runtime/failure.md)
@@ -73,6 +74,7 @@
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
 - [runtime.native_fn](../runtime/native_fn.md)
+- [runtime.address_index](../runtime/address_index.md)
 - [compile.compiler](../compile/compiler.md)
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
@@ -123,6 +125,29 @@
 
 - [Strings](#type-strings)
 
+## Constants
+
+- [short_string_limit](#const-short_string_limit)
+- [InternMap](#const-internmap)
+
+<a id="const-short_string_limit"></a>
+
+## short_string_limit
+
+Longer strings are allocated without interning, as in Lua.
+
+```zig
+pub const short_string_limit = 40;
+```
+
+<a id="const-internmap"></a>
+
+## InternMap
+
+```zig
+pub const InternMap = std.HashMap([]const u8, []const u8, InternContext, std.hash_map.default_max_load_percentage);
+```
+
 <a id="type-strings"></a>
 
 ## Strings
@@ -131,7 +156,7 @@ String interning. The table holds strings weakly; the collector removes entries 
 
 ```zig
 pub const Strings = struct {
-    map: std.StringHashMap([]const u8),
+    map: InternMap,
 };
 ```
 
@@ -140,6 +165,7 @@ pub const Strings = struct {
 | Name | Parameters | Return Type | Description |
 | --- | --- | --- | --- |
 | [intern](#fn-strings-intern) | `strings: *Strings, bytes: []const u8` | `![]const u8` |  |
+| [internConstant](#fn-strings-internconstant) | `strings: *Strings, bytes: []const u8` | `![]const u8` | Interns at any length: identical literals share one string, as with Lua's parser. |
 | [allocate](#fn-strings-allocate) | `strings: *Strings, bytes: []const u8` | `![]const u8` | Copies &#96;bytes&#96; into a new collectable string without interning it. |
 | [adopt](#fn-strings-adopt) | `strings: *Strings, allocated: []u8` | `![]const u8` | Takes ownership of &#96;allocated&#96;, which must come from the state's allocator. |
 
@@ -149,6 +175,18 @@ pub const Strings = struct {
 
 ```zig
 pub fn intern(strings: *Strings, bytes: []const u8) ![]const u8
+```
+
+References: [`Strings`](#type-strings)
+
+<a id="fn-strings-internconstant"></a>
+
+### Strings.internConstant
+
+Interns at any length: identical literals share one string, as with Lua's parser.
+
+```zig
+pub fn internConstant(strings: *Strings, bytes: []const u8) ![]const u8
 ```
 
 References: [`Strings`](#type-strings)

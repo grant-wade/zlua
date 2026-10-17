@@ -35,6 +35,7 @@
 - [runtime.rollback](../runtime/rollback.md)
 - [runtime.value](../runtime/value.md)
 - [runtime.number_format](../runtime/number_format.md)
+- [runtime.table_index](../runtime/table_index.md)
 - [runtime.host](../runtime/host.md)
 - [runtime.upvalue](../runtime/upvalue.md)
 - [runtime.failure](../runtime/failure.md)
@@ -73,6 +74,7 @@
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
 - [runtime.native_fn](../runtime/native_fn.md)
+- [runtime.address_index](../runtime/address_index.md)
 - [compile.compiler](../compile/compiler.md)
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
@@ -122,6 +124,7 @@
 ## Functions
 
 - [canonical](#fn-canonical)
+- [canonicalHashed](#fn-canonicalhashed)
 - [get](#fn-get)
 
 ## Constants
@@ -142,6 +145,16 @@ pub const names =...;
 
 ```zig
 pub fn canonical(bytes: []const u8) ?[]const u8
+```
+
+<a id="fn-canonicalhashed"></a>
+
+## canonicalHashed
+
+`canonical` for callers that already computed `value.hashString(bytes)`.
+
+```zig
+pub fn canonicalHashed(bytes: []const u8, hash: u64) ?[]const u8
 ```
 
 <a id="fn-get"></a>
