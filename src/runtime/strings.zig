@@ -40,7 +40,7 @@ pub const Strings = struct {
             const removed = state.string_allocations.pop().?;
             if (state.rollback) |journal| journal.freed(@intFromPtr(removed.bytes.ptr));
         }
-        if (allocated.len != 0) try state.string_allocation_index.put(@intFromPtr(allocated.ptr), state.string_allocations.items.len - 1);
+        if (allocated.len != 0) try state.string_allocation_index.put(state.allocator, @intFromPtr(allocated.ptr), state.string_allocations.items.len - 1);
         state.gc.noteAllocation(@sizeOf(StringAllocation) + allocated.len);
         return allocated;
     }

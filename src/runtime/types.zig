@@ -866,7 +866,19 @@ pub const StringAllocation = struct {
     marked: bool = false,
     gc: GcMeta = .{},
 };
-pub const PointerAllocationIndex = std.AutoHashMap(usize, usize);
+pub const PointerAllocationIndex = @import("address_index.zig").AddressIndex;
+
+/// Hashes object addresses, which are distinct and aligned, without Wyhash.
+pub const AddressContext = struct {
+    pub fn hash(_: AddressContext, address: usize) u64 {
+        const product = @as(u64, address >> 3) *% 0x9e3779b97f4a7c15;
+        return product ^ (product >> 32);
+    }
+
+    pub fn eql(_: AddressContext, lhs: usize, rhs: usize) bool {
+        return lhs == rhs;
+    }
+};
 
 /// Collector scratch state never participates in logical rollback dirtiness.
 pub const GcMeta = struct {

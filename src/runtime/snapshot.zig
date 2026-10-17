@@ -10,6 +10,8 @@ const gc_mod = @import("gc.zig");
 const State = @import("state.zig").State;
 const types = @import("types.zig");
 
+const AddressMap = std.HashMap(usize, usize, types.AddressContext, std.hash_map.default_max_load_percentage);
+
 pub fn checkIdleFast(source: *const State) !void {
     if (source.execution_depth != 0 or source.userdata_scope != null or source.current_thread != null or source.active_api_callback != null or source.gc.collecting or source.snapshot_busy) return error.SnapshotBusy;
 }
@@ -39,12 +41,10 @@ fn copyGraph(source: *const State, allocator: std.mem.Allocator, lifetime: ?*typ
         .allocator = allocator,
         .allocator_lifetime = lifetime,
         .strings = .{ .map = std.StringHashMap([]const u8).init(allocator) },
-        .string_allocation_index = types.PointerAllocationIndex.init(allocator),
-        .table_allocation_index = types.PointerAllocationIndex.init(allocator),
         .options = source.options,
     };
     errdefer destination.discard();
-    var copier = Copier{ .destination = &destination, .borrow_protos = borrow_protos, .map = std.AutoHashMap(usize, usize).init(allocator) };
+    var copier = Copier{ .destination = &destination, .borrow_protos = borrow_protos, .map = AddressMap.init(allocator) };
     defer copier.map.deinit();
     try copier.populate(source, error_root);
     return destination;
@@ -53,7 +53,7 @@ fn copyGraph(source: *const State, allocator: std.mem.Allocator, lifetime: ?*typ
 const Copier = struct {
     destination: *State,
     borrow_protos: bool = false,
-    map: std.AutoHashMap(usize, usize),
+    map: AddressMap,
 
     fn mapped(self: *Copier, pointer: anytype) !@TypeOf(pointer) {
         return @ptrFromInt(self.map.get(@intFromPtr(pointer)) orelse return error.SnapshotUnsupported);
@@ -212,7 +212,7 @@ const Copier = struct {
             new.entries.items.len = retained;
             try new.rebuildEntryIndex(a);
             inline for (.{ "metatable", "metatable_prev", "metatable_next", "finalizer_registered", "finalizer_next", "finalizer_prev", "finalizer_order" }) |name| @field(new, name) = try self.remap(@field(old, name));
-            try d.table_allocation_index.put(@intFromPtr(new), index);
+            try d.table_allocation_index.put(a, @intFromPtr(new), index);
         }
         for (source.closure_allocations.items, d.closure_allocations.items) |old, new| {
             new.proto = try self.mapped(old.proto);

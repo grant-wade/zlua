@@ -148,10 +148,10 @@ pub const State = struct {
     global_table: ?*Table = null,
     strings: strings_mod.Strings,
     string_allocations: std.ArrayList(StringAllocation) = .empty,
-    string_allocation_index: PointerAllocationIndex,
+    string_allocation_index: PointerAllocationIndex = .empty,
     table_allocations: std.ArrayList(*Table) = .empty,
-    table_allocation_index: PointerAllocationIndex,
-    object_allocation_index: std.AutoHashMapUnmanaged(usize, usize) = .empty,
+    table_allocation_index: PointerAllocationIndex = .empty,
+    object_allocation_index: PointerAllocationIndex = .empty,
     table_metatable_head: ?*Table = null,
     table_finalizer_head: ?*Table = null,
     table_finalizer_serial: u64 = 0,
@@ -230,8 +230,6 @@ pub const State = struct {
         var state = State{
             .allocator = allocator,
             .strings = .{ .map = std.StringHashMap([]const u8).init(allocator) },
-            .string_allocation_index = PointerAllocationIndex.init(allocator),
-            .table_allocation_index = PointerAllocationIndex.init(allocator),
             .options = options,
             .warnings_on = options.warnings,
         };
@@ -240,9 +238,9 @@ pub const State = struct {
         const hints = stdlib.initHints(options.stdlib);
         try state.strings.map.ensureTotalCapacity(@intCast(hints.strings));
         try state.string_allocations.ensureTotalCapacity(allocator, hints.strings);
-        try state.string_allocation_index.ensureTotalCapacity(@intCast(hints.strings));
+        try state.string_allocation_index.ensureTotalCapacity(allocator, hints.strings);
         try state.table_allocations.ensureTotalCapacity(allocator, hints.tables);
-        try state.table_allocation_index.ensureTotalCapacity(@intCast(hints.tables));
+        try state.table_allocation_index.ensureTotalCapacity(allocator, hints.tables);
         observe(observer_context, .state, &state);
 
         try stdlib.installGlobalTableWithHint(&state, hints.globals);
@@ -366,8 +364,8 @@ pub const State = struct {
         self.stdout.deinit(self.allocator);
         self.stderr.deinit(self.allocator);
         self.strings.map.deinit();
-        self.string_allocation_index.deinit();
-        self.table_allocation_index.deinit();
+        self.string_allocation_index.deinit(self.allocator);
+        self.table_allocation_index.deinit(self.allocator);
         self.object_allocation_index.deinit(self.allocator);
         self.gc.work.deinit(self.allocator);
         self.gc.remembered.deinit(self.allocator);
@@ -523,7 +521,7 @@ pub const State = struct {
             const removed = self.table_allocations.pop().?;
             if (self.rollback) |journal| journal.freed(@intFromPtr(removed));
         }
-        try self.table_allocation_index.put(@intFromPtr(table), self.table_allocations.items.len - 1);
+        try self.table_allocation_index.put(self.allocator, @intFromPtr(table), self.table_allocations.items.len - 1);
         self.gc.noteAllocation(gc_mod.tableGcBytes(table));
         return .{ .table = table };
     }

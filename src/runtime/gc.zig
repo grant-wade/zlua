@@ -85,8 +85,8 @@ pub const Gc = struct {
 
     pub fn prepareRegistration(gc: *Gc, comptime field: []const u8) !void {
         const state = gc.parentState();
-        if (comptime std.mem.eql(u8, field, "string_allocations")) try state.string_allocation_index.ensureUnusedCapacity(1);
-        if (comptime std.mem.eql(u8, field, "table_allocations")) try state.table_allocation_index.ensureUnusedCapacity(1);
+        if (comptime std.mem.eql(u8, field, "string_allocations")) try state.string_allocation_index.ensureUnusedCapacity(state.allocator, 1);
+        if (comptime std.mem.eql(u8, field, "table_allocations")) try state.table_allocation_index.ensureUnusedCapacity(state.allocator, 1);
         inline for (managed_lists) |name| if (comptime std.mem.eql(u8, field, name)) {
             try gc.reserveQueues(1);
             if (comptime !std.mem.eql(u8, field, "table_allocations")) try state.object_allocation_index.ensureUnusedCapacity(state.allocator, 1);
