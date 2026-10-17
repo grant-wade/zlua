@@ -562,7 +562,7 @@ pub const State = struct {
 
         const closure = try self.allocator.create(Closure);
         vm_mod.assertProtoPrepared(proto);
-        closure.* = .{ .proto = proto, .upvalues = upvalues, .stripped_debug = parent.closure.stripped_debug };
+        closure.* = .{ .proto = proto, .root = parent.closure.root orelse parent.closure.proto, .upvalues = upvalues, .stripped_debug = parent.closure.stripped_debug };
         errdefer self.allocator.destroy(closure);
         try self.registerAllocation("closure_allocations", closure);
         self.gc.noteAllocation(@sizeOf(Closure));

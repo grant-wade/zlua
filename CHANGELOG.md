@@ -12,6 +12,7 @@
 
 ### Fixes
 
+- Function prototypes created by `load`, `loadfile`, and coroutines were never freed, so a state that kept loading chunks grew without bound. The collector now frees a chunk's prototypes with its last closure.
 - In generational mode, objects created while a major collection was sweeping, or before switching to generational mode, became old immediately, so minor collections never freed them or ran their finalizers.
 - Automatic collections kept dead values in stack slots above the running function alive.
 - An incremental sweep could fall behind objects allocated during it and never finish.

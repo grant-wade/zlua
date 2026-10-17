@@ -57,6 +57,8 @@ pub const Gc = struct {
     cycle_start_total: usize = 0,
     found_young: bool = false,
     old: types.GcGenerations = .{},
+    /// Owned prototypes before this index have survived a collection; minor cycles sweep only the rest.
+    old_protos: usize = 0,
     sweep_cursor: usize = 0,
     major_base: usize = 0,
     work_done: usize = 0,
@@ -522,6 +524,8 @@ pub const Gc = struct {
                     gc.drain();
                     state.gc.phase = .atomic;
                     try gc.atomic();
+                    gc.sweepProtos();
+                    state.gc.old_protos = state.proto_allocations.items.len;
                     state.gc.phase = .sweep_threads;
                     inline for (.{ "thread_allocations", "closure_allocations", "upvalue_allocations", "string_allocations", "userdata_allocations", "table_allocations" }) |field| {
                         state.gc.sweep_cursor = @field(state.gc.old, field);
@@ -545,7 +549,10 @@ pub const Gc = struct {
             },
             .atomic => {
                 try gc.atomic();
-                if (state.gc.cycle == .major) gc.ageAllObjects();
+                if (state.gc.cycle == .major) {
+                    gc.sweepProtos();
+                    gc.ageAllObjects();
+                }
                 state.gc.phase = .sweep_threads;
                 state.gc.sweep_cursor = if (state.gc.cycle == .minor) state.gc.old.thread_allocations else 0;
             },
@@ -640,6 +647,13 @@ pub const Gc = struct {
         return !state.gc.collecting and gc.currentAllocationTotal() >= state.gc.next_total;
     }
 
+    /// Brings the next automatic step closer by the prototype's size without adding it to the heap
+    /// total, whose growth decides the switches between minor and major collections.
+    pub fn notePrototype(gc: *Gc, proto: *const proto_mod.Proto) void {
+        const state = gc.parentState();
+        state.gc.next_total -|= protoBytes(proto);
+    }
+
     pub fn resetAutoThreshold(gc: *Gc) void {
         const state = gc.parentState();
         const total = gc.currentAllocationTotal();
@@ -659,6 +673,7 @@ pub const Gc = struct {
         state.gc.generation += 1;
         state.gc.remembered.clearRetainingCapacity();
         inline for (reflection.fieldsOf(types.GcGenerations)) |f| @field(state.gc.old, f) = @field(state, f).items.len;
+        state.gc.old_protos = state.proto_allocations.items.len;
     }
 
     fn makeAllObjectsYoung(gc: *Gc) void {
@@ -674,6 +689,7 @@ pub const Gc = struct {
             }
             @field(state.gc.old, field) = 0;
         }
+        state.gc.old_protos = 0;
     }
 
     fn finishBaseline(gc: *Gc) void {
@@ -1645,6 +1661,39 @@ pub const Gc = struct {
         };
     }
 
+    /// Frees owned prototypes no marked closure uses; minor cycles only consider those loaded since
+    /// the previous collection, whose closures are all young.
+    fn sweepProtos(gc: *Gc) void {
+        const state = gc.parentState();
+        const minor = state.gc.cycle == .minor;
+        const start = if (minor) @max(state.gc.old_protos, state.borrowed_proto_count) else state.borrowed_proto_count;
+        if (state.proto_allocations.items.len <= start) return;
+        var live = std.AutoHashMap(*const proto_mod.Proto, void).init(state.allocator);
+        defer live.deinit();
+        const closures = state.closure_allocations.items[if (minor) state.gc.old.closure_allocations else 0..];
+        for (closures) |closure| {
+            if (gc.isMarked(closure)) live.put(closure.root orelse closure.proto, {}) catch return;
+        }
+        var index = start;
+        while (index < state.proto_allocations.items.len) {
+            const proto = state.proto_allocations.items[index];
+            if (live.contains(proto)) {
+                index += 1;
+                continue;
+            }
+            if (state.rollback) |journal| {
+                if (!journal.isNew(@intFromPtr(proto))) {
+                    index += 1;
+                    continue;
+                }
+                journal.freed(@intFromPtr(proto));
+            }
+            _ = state.proto_allocations.swapRemove(index);
+            proto.deinit();
+            state.allocator.destroy(proto);
+        }
+    }
+
     pub fn noteTableMetatableChanged(gc: *Gc, table: *Table, old_has_metatable: bool) void {
         const state = gc.parentState();
         rollback.touch(table);
@@ -1768,6 +1817,19 @@ const managed_lists = .{ "table_allocations", "userdata_allocations", "closure_a
 
 pub fn tableCapacityBytes(table: *const Table) usize {
     return table.array.capacity * @sizeOf(Value) + table.entries.capacity * @sizeOf(TableEntry) + @as(usize, table.entry_index.capacity()) * (@sizeOf(Value) + @sizeOf(usize) + 1);
+}
+
+fn protoBytes(proto: *const proto_mod.Proto) usize {
+    var bytes = @sizeOf(proto_mod.Proto) + proto.arena.queryCapacity() +
+        proto.constants.capacity * @sizeOf(bytecode.Constant) +
+        proto.instructions.capacity * @sizeOf(bytecode.Instruction) +
+        proto.line_info.capacity * @sizeOf(proto_mod.LineInfo) +
+        proto.locals.capacity * @sizeOf(proto_mod.LocalDebug) +
+        proto.upvalues.capacity * @sizeOf(proto_mod.UpvalueDesc) +
+        proto.error_sites.capacity * @sizeOf(proto_mod.ErrorSiteEntry) +
+        proto.children.capacity * @sizeOf(*proto_mod.Proto);
+    for (proto.children.items) |child| bytes += protoBytes(child);
+    return bytes;
 }
 
 pub fn tableGcBytes(table: *const Table) usize {

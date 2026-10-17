@@ -215,6 +215,7 @@ const Copier = struct {
         }
         for (source.closure_allocations.items, d.closure_allocations.items) |old, new| {
             new.proto = try self.mapped(old.proto);
+            new.root = if (old.root) |root| try self.mapped(root) else null;
             new.upvalues = try self.values(*types.Upvalue, old.upvalues);
             if (old.constants) |v| new.constants = try self.values(?types.Value, v);
             new.stripped_debug = old.stripped_debug;
@@ -393,7 +394,7 @@ comptime {
     review(gc_mod.Gc, .{
         .rebuilt = "next_total known_total",
         .copied = "running mode params",
-        .transient = "epoch generation phase cycle work remembered weak tables finalizers major_pending cycle_start_total found_young old sweep_cursor major_base work_done minor_count collecting stress_collect stress_step stress_mark mark_all_stack_registers conservative_depth",
+        .transient = "epoch generation phase cycle work remembered weak tables finalizers major_pending cycle_start_total found_young old old_protos sweep_cursor major_base work_done minor_count collecting stress_collect stress_step stress_mark mark_all_stack_registers conservative_depth",
     });
     review(types.Thread, .{
         .copied = "exposed stack frames yield_values protected_continuations generic_for_continuations pairs_continuations tail_call_continuations call_one_continuations hook_call hook_line hook_return hook_count hook_count_remaining pending_yield_hook_return continuation_order continuation_frame_count last_result_base last_result_count last_transfer_base last_transfer_count yield_result_base yield_result_count pending_unwind_resume_frame_count pending_unwind_target_frame_count started is_main closing status stack_error_space host_frame frame_storage_bytes",
@@ -412,7 +413,7 @@ comptime {
         .transient = "rollback marked gc metamethod_absent",
     });
     review(types.Closure, .{
-        .remapped = "proto upvalues constants",
+        .remapped = "proto root upvalues constants",
         .copied = "stripped_debug",
         .transient = "rollback marked gc",
     });
