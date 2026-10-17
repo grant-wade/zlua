@@ -62,7 +62,22 @@
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
 - [api](../api.md)
+- [api.callbacks](../api/callbacks.md)
+- [api.convert](../api/convert.md)
+- [api.errors](../api/errors.md)
+- [api.handle](../api/handle.md)
+- [api.state](../api/state.md)
 - [runtime.snapshot](../runtime/snapshot.md)
+- [api.capabilities](../api/capabilities.md)
+- [api.options](../api/options.md)
+- [api.function](../api/function.md)
+- [api.table](../api/table.md)
+- [api.value](../api/value.md)
+- [api.userdata](../api/userdata.md)
+- [api.context](../api/context.md)
+- [api.coroutine](../api/coroutine.md)
+- [api.snapshot](../api/snapshot.md)
+- [api.memory_limit](../api/memory_limit.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
 - [testing.bench_runner](../testing/bench_runner.md)
@@ -1306,7 +1321,7 @@ References: [`State`](#type-state)
 
 ### State.beginCallInstructionBudget
 
-[Limits](../api.md#type-limits) a host call, including nested calls and coroutines, to `max` further
+Limits a host call, including nested calls and coroutines, to `max` further
 instructions. Returns the enclosing deadline for `endCallInstructionBudget`.
 
 ```zig

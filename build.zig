@@ -85,9 +85,9 @@ pub fn build(b: *std.Build) void {
     });
 
     const snapshot_bench_exe = b.addExecutable(.{
-        .name = "zlua-bench-snapshot",
+        .name = "zlua-test-bench-snapshot",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/bench_snapshot_main.zig"),
+            .root_source_file = b.path("src/test_bench_snapshot_main.zig"),
             .target = target,
             .optimize = bench_optimize,
             .imports = &.{.{ .name = "zlua", .module = bench_mod }},

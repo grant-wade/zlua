@@ -9,7 +9,7 @@ The source tree follows the path a Lua program takes: the frontend parses it, th
 | Path | Purpose |
 | --- | --- |
 | `src/root.zig` | Package facade and top-level exports. |
-| `src/api.zig` | Supported Zig embedding API. |
+| `src/api.zig`, `src/api/` | Supported Zig embedding API: the facade and the modules behind it. |
 | `src/frontend/` | Lexer, parser, AST, source spans, and diagnostics. |
 | `src/compile/` | Resolver, bytecode, protos, compiler, and disassembler. |
 | `src/runtime/` | VM, calls, coroutines, GC, host services, and chunks. |
@@ -43,7 +43,8 @@ A few conventions keep the codebase consistent:
 - Follow the Zig 0.16 `std.Io` model. CLI and test code pass explicit I/O handles instead of relying on process-global helpers.
 - Treat Lua 5.5 `global` declarations and `<const>`/`<close>` attributes as supported language features.
 - Keep imports and commonly used type aliases at file scope.
-- If a host needs something new, prefer a small addition to `src/api.zig` over exposing runtime internals.
+- If a host needs something new, prefer a small addition to the embedding API over exposing runtime internals. Put it in the matching `src/api/` module and re-export public names from `src/api.zig`.
+- Keep the public methods of API types limited to what hosts should call. Helpers that other `src/api/` files need become `pub fn`s at file scope in the module that owns the concept (for example `errors.captureLuaError(state, err)`), not `pub` methods.
 - Keep zlua binary chunks internal. They are not a stable ABI, and they are not the PUC Lua `luac` format.
 - When a Lua-visible edge case is unclear, let the downloaded Lua 5.5 behavior and tests decide it.
 

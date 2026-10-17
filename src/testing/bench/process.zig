@@ -54,9 +54,9 @@ pub fn collect(allocator: std.mem.Allocator, io: std.Io, environ_map: *const std
     const zlua_path = options.zlua orelse zlua_exe;
     if (!try validateZlua(allocator, io, zlua_path)) return error.ZluaNotRunnable;
     const default_snapshot_path = if (std.fs.path.dirname(zlua_exe)) |dir|
-        try std.fs.path.join(allocator, &.{ dir, "zlua-bench-snapshot" })
+        try std.fs.path.join(allocator, &.{ dir, "zlua-test-bench-snapshot" })
     else
-        try allocator.dupe(u8, "zlua-bench-snapshot");
+        try allocator.dupe(u8, "zlua-test-bench-snapshot");
     defer allocator.free(default_snapshot_path);
     const snapshot_path = options.zlua_snapshot orelse default_snapshot_path;
     if (!try validateZlua(allocator, io, snapshot_path)) return error.SnapshotNotRunnable;

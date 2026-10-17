@@ -1795,3 +1795,22 @@ test "snapshot reset restores userdata __gc registrations" {
     defer worker.deinit();
     try worker.doString("keep = nil collectgarbage() assert(count == 1)", .{});
 }
+
+test "api snapshot graph rollback and newState" {
+    var lua = try api.State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    try lua.doString("t = {}; t.self = t; t[t] = t; local n = 4; function inc() n = n + 1; return n end; function get() return n end", .{});
+    var stale = try lua.getGlobal("t", api.Table);
+    defer stale.deinit();
+    var snapshot = try lua.snapshot(std.testing.allocator);
+    defer snapshot.deinit();
+    try lua.doString("inc(); t.x = 12", .{});
+    try lua.reset();
+    try std.testing.expectError(error.InvalidHandle, stale.get("x", api.Value));
+    try lua.doString("assert(t.self == t and t[t] == t and t.x == nil); assert(inc() == 5 and get() == 5)", .{});
+    var another = try snapshot.newState(std.testing.allocator);
+    defer another.deinit();
+    try another.doString("assert(get() == 4); assert(inc() == 5)", .{});
+    try lua.reset();
+    try lua.doString("assert(get() == 4)", .{});
+}

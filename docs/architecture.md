@@ -9,7 +9,7 @@ The source tree splits into a handful of areas, each with a clear job:
 | Area | Source | Role |
 | --- | --- | --- |
 | Package facade | `src/root.zig` | Exports the supported Zig API and lower-level subsystems. |
-| Zig embedding API | `src/api.zig` | Typed states, handles, callbacks, userdata, capabilities, and limits. |
+| Zig embedding API | `src/api.zig`, `src/api/` | Typed states, handles, callbacks, userdata, capabilities, and limits. |
 | CLI | `src/main.zig` | REPL, scripts, `-e`, dump modes, and test commands. |
 | Frontend and compiler | `src/frontend/`, `src/compile/` | Lexes, parses, resolves, and compiles Lua source. |
 | Runtime | `src/runtime.zig`, `src/runtime/` | Values, VM execution, calls, coroutines, GC, errors, and host services. |
@@ -176,7 +176,19 @@ The memory filesystem normalizes sandbox-relative paths and rejects absolute pat
 
 ### Zig API
 
-`src/api.zig` wraps runtime values in typed, rooted handles such as `Table`, `Function`, `Ref`, `Userdata(T)`, `AnyUserdata`, `Value`, and `ErrorRef`. When a handle owns a root, you are responsible for deinitializing it.
+`src/api.zig` is a facade that re-exports the public API from the modules in `src/api/`. The API wraps runtime values in typed, rooted handles such as `Table`, `Function`, `Ref`, `Userdata(T)`, `AnyUserdata`, `Value`, and `ErrorRef`. When a handle owns a root, you are responsible for deinitializing it.
+
+| Module | Contents |
+| --- | --- |
+| `state.zig` | `State`, `InterruptHandle`, memory-file bookkeeping, and the GC boundary. |
+| `snapshot.zig` | `Snapshot`, snapshot capture, `reset`, and rollback metadata. |
+| `options.zig`, `capabilities.zig` | State, load, call, and GC options, and host capability types. |
+| `handle.zig` | `Ref` and the validation and rooting shared by every handle. |
+| `value.zig`, `table.zig`, `function.zig`, `coroutine.zig`, `userdata.zig` | `Value`, `Tuple`, and the handle types. |
+| `errors.zig` | Error sets, `ErrorRef`, `CallResult`, and last-error capture. |
+| `convert.zig` | Conversion between Zig values, API handles, and runtime values. |
+| `callbacks.zig`, `context.zig` | Host callback registration and dispatch, typed adapters, and `Context`. |
+| `memory_limit.zig` | The allocator wrapper that enforces `Limits.max_memory`. |
 
 Beyond handles, the API maps its options onto runtime options, converts values in both directions, binds host callbacks and userdata, provides module and memory-filesystem helpers, and captures Lua errors. A registered host function is a native value carrying a state-local callback ID. While a callback is active, its context roots the arguments and pending returns, so they survive reentrant calls and collection. Installing a handle into Lua gives Lua its own reference; your host handle stays valid and still needs its own cleanup.
 
