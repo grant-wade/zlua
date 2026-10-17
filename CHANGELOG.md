@@ -12,6 +12,7 @@
 
 ### Fixes
 
+- States without an instruction limit no longer hang on wasm32; fast-loop instruction accounting now wraps at 64 bits on 32-bit targets.
 - Function prototypes created by `load`, `loadfile`, and coroutines were never freed, so a state that kept loading chunks grew without bound. The collector now frees a chunk's prototypes with its last closure.
 - In generational mode, objects created while a major collection was sweeping, or before switching to generational mode, became old immediately, so minor collections never freed them or ran their finalizers.
 - Automatic collections kept dead values in stack slots above the running function alive.

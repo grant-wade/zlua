@@ -30,6 +30,11 @@ export fn smoke() bool {
 }
 
 fn run() !void {
+    try runWithInstructionLimit(200_000);
+    try runWithInstructionLimit(null);
+}
+
+fn runWithInstructionLimit(max_instructions: ?u64) !void {
     var fixed = std.heap.FixedBufferAllocator.init(&heap_buffer);
     var host = Host{
         .filesystem = zlua.MemoryFilesystem.init(fixed.allocator()),
@@ -67,9 +72,28 @@ fn run() !void {
                 .execute = Host.execute,
             } },
         },
-        .limits = .{ .max_instructions = 200_000 },
+        .limits = .{ .max_instructions = max_instructions },
     });
     defer lua.deinit();
+
+    // An unlimited state uses the plain fast loop, whose counters must wrap at
+    // 64 bits even when program counters are 32 bits (wasm32).
+    try lua.doString("x = 1 + 2", .{ .name = "=freestanding-arithmetic" });
+    try lua.doString(
+        \\assert(x == 3)
+        \\local total = 0
+        \\for i = 1, 10 do
+        \\  if i < 5 then total = total + i else total = total + 2 * i end
+        \\end
+        \\assert(total == 100)
+        \\local flag = true
+        \\while flag do
+        \\  total = total - 1
+        \\  flag = total > 95
+        \\end
+        \\local value = flag and 1 or total
+        \\assert(value == 95)
+    , .{ .name = "=freestanding-control-flow" });
 
     try lua.doString(
         \\assert(_VERSION == 'Lua 5.5')

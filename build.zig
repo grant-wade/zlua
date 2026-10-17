@@ -282,7 +282,10 @@ pub fn build(b: *std.Build) void {
         "node",
         "-e",
         \\WebAssembly.instantiate(require('node:fs').readFileSync(process.argv[1]), {})
-        \\  .then(({instance}) => { require('node:assert/strict').equal(instance.exports.smoke(), 1); })
+        \\  .then(({instance}) => {
+        \\    const result = require('node:vm').runInNewContext('instance.exports.smoke()', {instance}, {timeout: 10000});
+        \\    require('node:assert/strict').equal(result, 1);
+        \\  })
         \\  .catch(error => { console.error(error); process.exitCode = 1; });
     });
     run_wasm_test.addArtifactArg(wasm_test);

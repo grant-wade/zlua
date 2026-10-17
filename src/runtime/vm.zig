@@ -358,7 +358,8 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
     var proto = frame.proto;
     var pc = frame.pc;
     var base = frame.base;
-    var count_bias: u64 = 0 -% pc;
+    // Widen before wrapping subtraction: program counters may be only 32 bits.
+    var count_bias: u64 = 0 -% @as(u64, pc);
     defer self.budget.instructions = self.budget.instructions +| (pc +% count_bias);
     var segment_start: u64 = 0;
     // Executed-instruction total after a general operation, which may have changed frames.
@@ -656,7 +657,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 if (result == op.jump_if_truthy) {
                     const source_pc = pc;
                     pc = jumpTarget(source_pc, op.offset);
-                    count_bias +%= source_pc -% pc;
+                    count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                     if (pc < source_pc) {
                         frame.last_hook_line = null;
                         if (self.budget.fastLoopInterrupted()) break :fast_loop;
@@ -671,7 +672,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 pc += 1;
                 const source_pc = pc;
                 pc = jumpTarget(source_pc, offset);
-                count_bias +%= source_pc -% pc;
+                count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                 if (pc < source_pc) {
                     frame.last_hook_line = null;
                     if (self.budget.fastLoopInterrupted()) break :fast_loop;
@@ -686,7 +687,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 if (truthy(stack[op.register]) == op.jump_if_truthy) {
                     const source_pc = pc;
                     pc = jumpTarget(source_pc, op.offset);
-                    count_bias +%= source_pc -% pc;
+                    count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                     if (pc < source_pc) {
                         frame.last_hook_line = null;
                         if (self.budget.fastLoopInterrupted()) break :fast_loop;
@@ -704,7 +705,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 if (truthy(value) == op.jump_if_truthy) {
                     const source_pc = pc;
                     pc = jumpTarget(source_pc, op.offset);
-                    count_bias +%= source_pc -% pc;
+                    count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                     if (pc < source_pc) {
                         frame.last_hook_line = null;
                         if (self.budget.fastLoopInterrupted()) break :fast_loop;
@@ -734,7 +735,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 if (continues) {
                     const source_pc = pc;
                     pc = jumpTarget(source_pc, op.offset);
-                    count_bias +%= source_pc -% pc;
+                    count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                     if (pc < source_pc) {
                         frame.last_hook_line = null;
                         if (self.budget.fastLoopInterrupted()) break :fast_loop;
