@@ -44,6 +44,7 @@ A few conventions keep the codebase consistent:
 - Treat Lua 5.5 `global` declarations and `<const>`/`<close>` attributes as supported language features.
 - Keep imports and commonly used type aliases at file scope.
 - If a host needs something new, prefer a small addition to the embedding API over exposing runtime internals. Put it in the matching `src/api/` module and re-export public names from `src/api.zig`.
+- Keep `runtime.State` methods to its widely used core. Runtime subsystems live in their own modules as functions that take `*State`, called directly (for example `call_mod.invokeValue(state, ...)`); don't add thin `State` methods that only forward to them. A subsystem that owns state can be a field instead, like the collector's `state.gc.collect()`.
 - Keep the public methods of API types limited to what hosts should call. Helpers that other `src/api/` files need become `pub fn`s at file scope in the module that owns the concept (for example `errors.captureLuaError(state, err)`), not `pub` methods.
 - Keep zlua binary chunks internal. They are not a stable ABI, and they are not the PUC Lua `luac` format.
 - When a Lua-visible edge case is unclear, let the downloaded Lua 5.5 behavior and tests decide it.

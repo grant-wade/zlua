@@ -3,6 +3,8 @@ const zlua = @import("../../root.zig");
 const results = @import("results.zig");
 const Options = @import("options.zig").Options;
 const allocation = @import("allocation.zig");
+const entry_mod = @import("../../runtime/entry.zig");
+const load_mod = @import("../../runtime/load.zig");
 const CountingAllocator = allocation.CountingAllocator;
 const CounterSnapshot = allocation.CounterSnapshot;
 const phaseMetric = allocation.phaseMetric;
@@ -64,7 +66,7 @@ const InitObserver = struct {
 
     fn observe(self: *InitObserver, phase: zlua.runtime.StartupPhase, state: *zlua.runtime.State) void {
         const elapsed = elapsedSince(self.io, self.phase_start);
-        self.sample.phases[@intFromEnum(phase)] = phaseMetric(self.counter, self.phase_before, elapsed, state.allocationStats().bytes);
+        self.sample.phases[@intFromEnum(phase)] = phaseMetric(self.counter, self.phase_before, elapsed, state.gc.allocationStats().bytes);
         self.phase_before = self.counter.beginPhase();
         self.phase_start = Timestamp.now(self.io, .awake);
     }
@@ -95,7 +97,7 @@ fn runSample(io: std.Io, selection: Selection) !Sample {
         const before = counter.beginPhase();
         const start = Timestamp.now(io, .awake);
         try registerHostFunctions(&api_state);
-        sample.phases[@intFromEnum(Phase.register)] = phaseMetric(&counter, before, elapsedSince(io, start), state.allocationStats().bytes);
+        sample.phases[@intFromEnum(Phase.register)] = phaseMetric(&counter, before, elapsedSince(io, start), state.gc.allocationStats().bytes);
     }
 
     const startup_index = @intFromEnum(Phase.startup_total);
@@ -109,19 +111,19 @@ fn runSample(io: std.Io, selection: Selection) !Sample {
         .requested_bytes = startup_snapshot.requested_bytes,
         .live_bytes = startup_snapshot.live_bytes,
         .peak_bytes = counter.peak_bytes,
-        .runtime_bytes = state.allocationStats().bytes,
+        .runtime_bytes = state.gc.allocationStats().bytes,
     };
 
     const load_before = counter.beginPhase();
     const load_start = Timestamp.now(io, .awake);
     const source = if (selection.host_functions) host_chunk else trivial_chunk;
-    const loaded = try state.loadSourceAsClosure(source);
+    const loaded = try load_mod.loadSourceAsClosure(state, source);
     const load_elapsed = elapsedSince(io, load_start);
-    sample.phases[@intFromEnum(Phase.load)] = phaseMetric(&counter, load_before, load_elapsed, state.allocationStats().bytes);
+    sample.phases[@intFromEnum(Phase.load)] = phaseMetric(&counter, load_before, load_elapsed, state.gc.allocationStats().bytes);
 
     const call_before = counter.beginPhase();
     const call_start = Timestamp.now(io, .awake);
-    const returned = try state.callLoadedClosure(loaded.closure, &.{});
+    const returned = try entry_mod.callLoadedClosure(state, loaded.closure, &.{});
     const call_elapsed = elapsedSince(io, call_start);
     const valid = if (selection.host_functions)
         returned.len == 2 and returned[0] == .integer and returned[0].integer == 42 and
@@ -130,7 +132,7 @@ fn runSample(io: std.Io, selection: Selection) !Sample {
         returned.len == 0;
     allocator.free(returned);
     if (!valid) return error.BenchmarkUnexpectedResult;
-    sample.phases[@intFromEnum(Phase.call)] = phaseMetric(&counter, call_before, call_elapsed, state.allocationStats().bytes);
+    sample.phases[@intFromEnum(Phase.call)] = phaseMetric(&counter, call_before, call_elapsed, state.gc.allocationStats().bytes);
 
     const before_deinit = counter.snapshot();
     const first_chunk_index = @intFromEnum(Phase.first_chunk);
@@ -142,7 +144,7 @@ fn runSample(io: std.Io, selection: Selection) !Sample {
         .requested_bytes = before_deinit.requested_bytes,
         .live_bytes = before_deinit.live_bytes,
         .peak_bytes = counter.peak_bytes,
-        .runtime_bytes = state.allocationStats().bytes,
+        .runtime_bytes = state.gc.allocationStats().bytes,
     };
 
     const deinit_before = counter.beginPhase();

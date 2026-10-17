@@ -99,6 +99,25 @@ Library setup avoids repeating object layouts in the same spirit. For example, f
 
 For measurement, `State.initWithOptionsObserved` exposes the startup phases (state containers, globals, libraries, and GC baseline) to the in-process startup benchmark. Normally you won't call it: high-level callers use `zlua.State.init`, and internal runtime callers use `initWithOptions`.
 
+### Runtime Modules
+
+`runtime.State` holds the VM's data and keeps a small set of methods that the standard libraries and the Zig API use everywhere: lifecycle, roots, string interning, object allocation, globals, and argument and library errors. Everything else lives in modules that take `*State` explicitly:
+
+| Module | Contents |
+| --- | --- |
+| `vm.zig` | Instruction dispatch, jumps and numeric `for`, constants, fast table paths, interrupts, and instruction budgets. |
+| `call.zig` | Calls, returns, tail calls, varargs, protected calls, `pcall`/`xpcall`, and message handlers. |
+| `entry.zig` | Host entry points: running chunks and calling functions from Zig on host threads. |
+| `load.zig` | Loading source and binary chunks, string literal decoding, and root closures. |
+| `index.zig` | Table reads and writes through `__index`/`__newindex`, raw access, `next`/`pairs`/`ipairs`, and generic `for`. |
+| `metatable.zig` | Metatable lookup and assignment, metamethod resolution, and `__gc` registration. |
+| `operators.zig` | Arithmetic, bitwise, comparison, length, and concatenation, with their metamethods. |
+| `upvalue.zig` | Upvalues, to-be-closed variables, and frame unwinding. |
+| `io.zig`, `system.zig` | Capability-gated files, output, and filesystem operations; environment, clocks, processes, and exit. |
+| `failure.zig` | Runtime error messages with source locations. |
+| `gc.zig` | The collector as `State.gc` (`state.gc.collect()`, barriers, allocation accounting), with its own fields. |
+| `debug.zig`, `coroutine.zig` | Debug info, hooks, and tracebacks; coroutines. |
+
 ### Values and Heap Objects
 
 `runtime.types.Value` is a tagged union that holds Lua scalars, object pointers, native functions, and a few internal callable values. The heap objects it can point to are:
@@ -115,7 +134,7 @@ Tables store positive integer keys in an array part and all other keys in hash e
 
 ### Calls and Coroutines
 
-Each thread owns a value stack and a stack of `CallFrame`s. Calls go through helpers in `runtime/state.zig` and `runtime/call.zig`:
+Each thread owns a value stack and a stack of `CallFrame`s. Calls go through `runtime/call.zig`, and host code enters Lua through `runtime/entry.zig`:
 
 ```text
 value + arguments
@@ -133,7 +152,7 @@ Yielding is built on continuations. A thread keeps continuation records for prot
 
 ### VM and Limits
 
-The instruction dispatcher lives in `runtime/state.zig`, while `runtime/vm.zig` handles the limit checks that cut across it. The VM is responsible for Lua-specific result adjustment, varargs, tail calls, metamethods, to-be-closed unwinding, primitive metatables, debug hooks, and stack overflow guards.
+The instruction dispatcher and the limit checks that cut across it live in `runtime/vm.zig`. The VM is responsible for Lua-specific result adjustment, varargs, tail calls, metamethods, to-be-closed unwinding, primitive metatables, debug hooks, and stack overflow guards.
 
 Several limits keep running code in check:
 

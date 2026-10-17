@@ -24,6 +24,8 @@ const State = runtime.State;
 const Thread = runtime.Thread;
 const Value = runtime.Value;
 const TableEntry = @import("runtime/types.zig").TableEntry;
+const debug_mod = @import("runtime/debug.zig");
+const entry_mod = @import("runtime/entry.zig");
 
 pub const LibrarySelection = union(enum) {
     none,
@@ -678,7 +680,7 @@ pub fn callNative(state: *State, native: NativeFn, thread: *Thread, op: bytecode
         .debug_getuservalue => try debug.getuservalue(state, thread, op),
         .debug_getmetatable => try debug.getmetatable(state, thread, op),
         .debug_debug => try debug.debugPrompt(state, thread, op),
-        .traceback_message_handler => try state.tracebackMessageHandler(thread, op),
+        .traceback_message_handler => try debug_mod.tracebackMessageHandler(state, thread, op),
         .json_read => try json.read(state, thread, op),
         .json_write => try json.write(state, thread, op),
         .toml_read => try toml.read(state, thread, op),
@@ -749,7 +751,7 @@ test "startup keeps stdin bytes out of the string table" {
     try std.testing.expectEqual(@as(usize, 0), hints.strings);
     try std.testing.expectEqual(hints.strings, state.string_allocations.items.len);
     try std.testing.expectEqual(hints.tables, state.table_allocations.items.len);
-    try state.executeSourceChunk("first, second = io.read('a'), io.read('a')");
+    try entry_mod.executeSourceChunk(&state, "first, second = io.read('a'), io.read('a')");
     try std.testing.expectEqualStrings(stdin, state.getGlobal("first").string);
     try std.testing.expectEqualStrings("", state.getGlobal("second").string);
 }
@@ -802,7 +804,7 @@ test {
 test "bulk library tables retain ordinary lookup, iteration, and mutation" {
     var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .full });
     defer state.deinit();
-    try state.executeSourceChunk(
+    try entry_mod.executeSourceChunk(&state,
         \\assert(math.abs(-3) == 3 and math.pi > 3)
         \\assert(string.upper('abc') == 'ABC' and ('abc'):upper() == 'ABC')
         \\assert(utf8.charpattern ~= nil and fs.path.separator ~= nil)
@@ -823,7 +825,7 @@ test "bulk library tables retain ordinary lookup, iteration, and mutation" {
         \\assert(m.extra == 42 and m[1] == 'array')
     );
     try openLibraries(&state, .{ .libraries = .{ .math = true } });
-    try state.executeSourceChunk("assert(math.abs(-3) == 3 and math.extra == nil and math.pi > 3)");
+    try entry_mod.executeSourceChunk(&state, "assert(math.abs(-3) == 3 and math.extra == nil and math.pi > 3)");
 }
 
 test "library initialization releases allocations on failure" {

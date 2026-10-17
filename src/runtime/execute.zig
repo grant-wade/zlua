@@ -4,6 +4,8 @@ const errors = @import("../errors.zig");
 const frontend = @import("../frontend.zig");
 const process = @import("../testing/process.zig");
 const state_mod = @import("state.zig");
+const entry_mod = @import("entry.zig");
+const failure_mod = @import("failure.zig");
 
 pub const ExecuteOptions = struct {
     stress_collect: bool = false,
@@ -33,14 +35,14 @@ pub fn executeSourceWithOptions(allocator: std.mem.Allocator, source: []const u8
 
     var state = try state_mod.State.initWithOptions(allocator, options.state);
     defer state.deinit();
-    state.stress_collect = options.stress_collect;
-    state.stress_step = options.stress_step;
+    state.gc.stress_collect = options.stress_collect;
+    state.gc.stress_step = options.stress_step;
     if (options.stress_step) {
-        state.gc_major_pending = true;
-        state.gc_params.stepsize = 8;
-        state.gc_params.stepmul = 100;
+        state.gc.major_pending = true;
+        state.gc.params.stepsize = 8;
+        state.gc.params.stepmul = 100;
     }
-    state.execute(&proto) catch |err| {
+    entry_mod.execute(&state, &proto) catch |err| {
         if (err == error.LuaExit) {
             const request = state.exit_request;
             const code: i32 = if (request != null and request.?.close) closeExitCode(&state) orelse request.?.code else if (request) |exit| exit.code else 0;
@@ -52,7 +54,7 @@ pub fn executeSourceWithOptions(allocator: std.mem.Allocator, source: []const u8
                 .timed_out = false,
             };
         }
-        const detail = try state.errorDetailAlloc(allocator, err);
+        const detail = try failure_mod.errorDetailAlloc(&state, allocator, err);
         defer allocator.free(detail);
         const message = try std.fmt.allocPrint(allocator, "{s}\n", .{detail});
         defer allocator.free(message);
@@ -84,7 +86,7 @@ pub fn executeSourceWithOptions(allocator: std.mem.Allocator, source: []const u8
 
 fn closeExitCode(state: *state_mod.State) ?i32 {
     state.exit_request = null;
-    state.runCloseFinalizers();
+    state.gc.runCloseFinalizers();
     return if (state.exit_request) |exit| exit.code else null;
 }
 

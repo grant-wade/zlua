@@ -3,6 +3,8 @@ const compile = @import("../compile.zig");
 const runtime = @import("../runtime.zig");
 const host = @import("../runtime/host.zig");
 const io_lib = @import("io.zig");
+const io_mod = @import("../runtime/io.zig");
+const metatable_mod = @import("../runtime/metatable.zig");
 
 const bytecode = compile.bytecode;
 const State = runtime.State;
@@ -14,7 +16,7 @@ pub fn read(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const path = try state.expectArgumentString(thread, op, "fs.read", 0);
     const options = optionTable(state, thread, op, "fs.read", 1) catch |err| return err;
     const max_bytes = if (options) |table| try integerOption(state, table, "fs.read", "max_bytes", state.options.max_file_bytes) else state.options.max_file_bytes;
-    const bytes = state.fsReadFileAlloc(path, max_bytes) catch |err| return returnFailure(state, thread, op, "read", path, null, err);
+    const bytes = io_mod.fsReadFileAlloc(state, path, max_bytes) catch |err| return returnFailure(state, thread, op, "read", path, null, err);
     defer state.allocator.free(bytes);
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(bytes) }});
 }
@@ -28,11 +30,11 @@ pub fn write(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const exclusive = if (options) |table| try boolOption(state, table, "fs.write", "exclusive", false) else false;
     const atomic = if (options) |table| try boolOption(state, table, "fs.write", "atomic", false) else false;
     if (create_parents) {
-        if (std.fs.path.dirname(path)) |parent| if (parent.len != 0) state.fsMakeDir(parent, true) catch |err| return returnFailure(state, thread, op, "mkdir", parent, null, err);
+        if (std.fs.path.dirname(path)) |parent| if (parent.len != 0) io_mod.fsMakeDir(state, parent, true) catch |err| return returnFailure(state, thread, op, "mkdir", parent, null, err);
     }
     if (exclusive) {
         const already_exists = exists_check: {
-            _ = state.fsStat(path, false) catch |err| {
+            _ = io_mod.fsStat(state, path, false) catch |err| {
                 if (err == error.FileNotFound) break :exists_check false;
                 return returnFailure(state, thread, op, "write", path, null, err);
             };
@@ -41,7 +43,7 @@ pub fn write(state: *State, thread: *Thread, op: bytecode.Call) !void {
         if (already_exists) return returnFailure(state, thread, op, "write", path, null, error.PathAlreadyExists);
     }
     if (append) {
-        const existing = state.fsReadFileAlloc(path, state.options.max_file_bytes) catch |err| switch (err) {
+        const existing = io_mod.fsReadFileAlloc(state, path, state.options.max_file_bytes) catch |err| switch (err) {
             error.FileNotFound => try state.allocator.dupe(u8, ""),
             else => return returnFailure(state, thread, op, "read", path, null, err),
         };
@@ -69,7 +71,7 @@ fn openFile(state: *State, thread: *Thread, op: bytecode.Call, path: []const u8,
     var contents: []const u8 = "";
     var found = true;
     if (parsed.reads_existing or parsed.append) {
-        contents = state.fsReadFileAlloc(path, state.options.max_file_bytes) catch |err| switch (err) {
+        contents = io_mod.fsReadFileAlloc(state, path, state.options.max_file_bytes) catch |err| switch (err) {
             error.FileNotFound => if (parsed.kind == 'r') return returnFailure(state, thread, op, "open", path, null, err) else blk: {
                 found = false;
                 break :blk "";
@@ -89,7 +91,7 @@ pub fn stat(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const path = try state.expectArgumentString(thread, op, "fs.stat", 0);
     const options = try optionTable(state, thread, op, "fs.stat", 1);
     const follow = if (options) |table| try boolOption(state, table, "fs.stat", "follow_symlinks", true) else true;
-    const value = state.fsStat(path, follow) catch |err| return returnFailure(state, thread, op, "stat", path, null, err);
+    const value = io_mod.fsStat(state, path, follow) catch |err| return returnFailure(state, thread, op, "stat", path, null, err);
     try state.returnValues(thread, op.base, op.return_count, &.{try statValue(state, value)});
 }
 
@@ -97,7 +99,7 @@ pub fn exists(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const path = try state.expectArgumentString(thread, op, "fs.exists", 0);
     const options = try optionTable(state, thread, op, "fs.exists", 1);
     const follow = if (options) |table| try boolOption(state, table, "fs.exists", "follow_symlinks", true) else true;
-    _ = state.fsStat(path, follow) catch |err| {
+    _ = io_mod.fsStat(state, path, follow) catch |err| {
         if (err == error.FileNotFound) {
             try state.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = false }});
             return;
@@ -111,7 +113,7 @@ pub fn list(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const path = try state.expectArgumentString(thread, op, "fs.list", 0);
     const options = try optionTable(state, thread, op, "fs.list", 1);
     const sorted = if (options) |table| try boolOption(state, table, "fs.list", "sorted", true) else true;
-    const entries = state.fsReadDirAlloc(path) catch |err| return returnFailure(state, thread, op, "list", path, null, err);
+    const entries = io_mod.fsReadDirAlloc(state, path) catch |err| return returnFailure(state, thread, op, "list", path, null, err);
     defer host.deinitDirectoryEntries(state.allocator, entries);
     if (sorted) std.mem.sort(host.DirectoryEntry, entries, {}, lessEntry);
     const result = try state.newTableWithHints(@intCast(entries.len), 0);
@@ -125,7 +127,7 @@ pub fn list(state: *State, thread: *Thread, op: bytecode.Call) !void {
 
 pub fn scandir(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const path = try state.expectArgumentString(thread, op, "fs.scandir", 0);
-    const entries = state.fsReadDirAlloc(path) catch |err| return returnFailure(state, thread, op, "scandir", path, null, err);
+    const entries = io_mod.fsReadDirAlloc(state, path) catch |err| return returnFailure(state, thread, op, "scandir", path, null, err);
     defer host.deinitDirectoryEntries(state.allocator, entries);
     const iterator = try newIterator(state, "scan");
     const queue = try state.newTableWithHints(@intCast(entries.len), 0);
@@ -144,7 +146,7 @@ pub fn walk(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const path = try state.expectArgumentString(thread, op, "fs.walk", 0);
     const options = try optionTable(state, thread, op, "fs.walk", 1);
     const max_depth = if (options) |table| try integerOption(state, table, "fs.walk", "max_depth", std.math.maxInt(i32)) else std.math.maxInt(i32);
-    const entries = state.fsReadDirAlloc(path) catch |err| return returnFailure(state, thread, op, "walk", path, null, err);
+    const entries = io_mod.fsReadDirAlloc(state, path) catch |err| return returnFailure(state, thread, op, "walk", path, null, err);
     defer host.deinitDirectoryEntries(state.allocator, entries);
     const iterator = try newIterator(state, "walk");
     const queue = try state.newTableWithHints(@intCast(entries.len), 0);
@@ -165,7 +167,7 @@ pub fn mkdir(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const options = try optionTable(state, thread, op, "fs.mkdir", 1);
     const parents = if (options) |table| try boolOption(state, table, "fs.mkdir", "parents", false) else false;
     const exist_ok = if (options) |table| try boolOption(state, table, "fs.mkdir", "exist_ok", false) else false;
-    state.fsMakeDir(path, parents) catch |err| {
+    io_mod.fsMakeDir(state, path, parents) catch |err| {
         if (exist_ok and err == error.PathAlreadyExists) {
             try state.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = true }});
             return;
@@ -180,7 +182,7 @@ pub fn remove(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const options = try optionTable(state, thread, op, "fs.remove", 1);
     const recursive = if (options) |table| try boolOption(state, table, "fs.remove", "recursive", false) else false;
     const missing_ok = if (options) |table| try boolOption(state, table, "fs.remove", "missing_ok", false) else false;
-    state.fsRemovePath(path, recursive) catch |err| {
+    io_mod.fsRemovePath(state, path, recursive) catch |err| {
         if (missing_ok and err == error.FileNotFound) {
             try state.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = true }});
             return;
@@ -196,20 +198,20 @@ pub fn copy(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const options = try optionTable(state, thread, op, "fs.copy", 2);
     const overwrite = if (options) |table| try boolOption(state, table, "fs.copy", "overwrite", false) else false;
     const recursive = if (options) |table| try boolOption(state, table, "fs.copy", "recursive", false) else false;
-    const source_stat = state.fsStat(source, false) catch |err| return returnFailure(state, thread, op, "copy", source, destination, err);
+    const source_stat = io_mod.fsStat(state, source, false) catch |err| return returnFailure(state, thread, op, "copy", source, destination, err);
     if (source_stat.kind == .directory) {
         if (!recursive) return returnFailure(state, thread, op, "copy", source, destination, error.IsDir);
-        const destination_stat: ?host.FileStat = state.fsStat(destination, false) catch |err| switch (err) {
+        const destination_stat: ?host.FileStat = io_mod.fsStat(state, destination, false) catch |err| switch (err) {
             error.FileNotFound => null,
             else => return returnFailure(state, thread, op, "copy", source, destination, err),
         };
         if (destination_stat) |existing| {
             if (!overwrite) return returnFailure(state, thread, op, "copy", source, destination, error.PathAlreadyExists);
-            if (existing.kind != .directory) state.fsRemovePath(destination, false) catch |err| return returnFailure(state, thread, op, "copy", source, destination, err);
+            if (existing.kind != .directory) io_mod.fsRemovePath(state, destination, false) catch |err| return returnFailure(state, thread, op, "copy", source, destination, err);
         }
         copyTree(state, source, destination, overwrite) catch |err| return returnFailure(state, thread, op, "copy", source, destination, err);
     } else {
-        state.fsCopyFile(source, destination, overwrite) catch |err| return returnFailure(state, thread, op, "copy", source, destination, err);
+        io_mod.fsCopyFile(state, source, destination, overwrite) catch |err| return returnFailure(state, thread, op, "copy", source, destination, err);
     }
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = true }});
 }
@@ -217,35 +219,35 @@ pub fn copy(state: *State, thread: *Thread, op: bytecode.Call) !void {
 pub fn rename(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const old_path = try state.expectArgumentString(thread, op, "fs.rename", 0);
     const new_path = try state.expectArgumentString(thread, op, "fs.rename", 1);
-    state.fsRenamePath(old_path, new_path) catch |err| return returnFailure(state, thread, op, "rename", old_path, new_path, err);
+    io_mod.fsRenamePath(state, old_path, new_path) catch |err| return returnFailure(state, thread, op, "rename", old_path, new_path, err);
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = true }});
 }
 
 pub fn move(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const old_path = try state.expectArgumentString(thread, op, "fs.move", 0);
     const new_path = try state.expectArgumentString(thread, op, "fs.move", 1);
-    state.fsRenamePath(old_path, new_path) catch |rename_err| {
+    io_mod.fsRenamePath(state, old_path, new_path) catch |rename_err| {
         if (!std.mem.eql(u8, @errorName(rename_err), "CrossDeviceLink")) return returnFailure(state, thread, op, "move", old_path, new_path, rename_err);
-        state.fsCopyFile(old_path, new_path, false) catch |err| return returnFailure(state, thread, op, "move", old_path, new_path, err);
-        state.fsRemovePath(old_path, false) catch |err| return returnFailure(state, thread, op, "move", old_path, new_path, err);
+        io_mod.fsCopyFile(state, old_path, new_path, false) catch |err| return returnFailure(state, thread, op, "move", old_path, new_path, err);
+        io_mod.fsRemovePath(state, old_path, false) catch |err| return returnFailure(state, thread, op, "move", old_path, new_path, err);
     };
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = true }});
 }
 
 pub fn touch(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const path = try state.expectArgumentString(thread, op, "fs.touch", 0);
-    const existing = state.fsReadFileAlloc(path, state.options.max_file_bytes) catch |err| switch (err) {
+    const existing = io_mod.fsReadFileAlloc(state, path, state.options.max_file_bytes) catch |err| switch (err) {
         error.FileNotFound => try state.allocator.dupe(u8, ""),
         else => return returnFailure(state, thread, op, "touch", path, null, err),
     };
     defer state.allocator.free(existing);
-    state.fsWriteFile(path, existing) catch |err| return returnFailure(state, thread, op, "touch", path, null, err);
+    io_mod.fsWriteFile(state, path, existing) catch |err| return returnFailure(state, thread, op, "touch", path, null, err);
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = true }});
 }
 
 pub fn openDir(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const path = try state.expectArgumentString(thread, op, "fs.open_dir", 0);
-    const value = state.fsStat(path, true) catch |err| return returnFailure(state, thread, op, "open_dir", path, null, err);
+    const value = io_mod.fsStat(state, path, true) catch |err| return returnFailure(state, thread, op, "open_dir", path, null, err);
     if (value.kind != .directory) return returnFailure(state, thread, op, "open_dir", path, null, error.NotDir);
     const dir = try state.newTableWithHints(0, 12);
     try set(dir, state, "__zlua_fs_dir", .{ .boolean = true });
@@ -260,7 +262,7 @@ pub fn openDir(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const metatable = try state.newTableWithHints(0, 3);
     try set(metatable, state, "__close", .{ .native = .fs_dir_close });
     try set(metatable, state, "__metatable", .{ .string = try state.intern("fs.Directory") });
-    state.setTableMetatableRaw(dir.table, metatable.table);
+    metatable_mod.setTableMetatableRaw(state, dir.table, metatable.table);
     try state.returnValues(thread, op.base, op.return_count, &.{dir});
 }
 
@@ -325,7 +327,7 @@ pub fn errorTostring(state: *State, thread: *Thread, op: bytecode.Call) !void {
 
 pub fn fileStat(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const path = (try expectFsFile(state, runtime.argValue(state, thread, op, 0))).path;
-    const value = state.fsStat(path, true) catch |err| return returnFailure(state, thread, op, "stat", path, null, err);
+    const value = io_mod.fsStat(state, path, true) catch |err| return returnFailure(state, thread, op, "stat", path, null, err);
     try state.returnValues(thread, op.base, op.return_count, &.{try statValue(state, value)});
 }
 
@@ -361,7 +363,7 @@ pub fn dirWalk(state: *State, thread: *Thread, op: bytecode.Call) !void {
 fn dirIteratorDelegate(state: *State, thread: *Thread, op: bytecode.Call, recursive: bool) !void {
     const dir = try expectDir(state, runtime.argValue(state, thread, op, 0));
     const path = try dirPath(state, dir);
-    const entries = state.fsReadDirAlloc(path) catch |err| return returnFailure(state, thread, op, if (recursive) "walk" else "scandir", path, null, err);
+    const entries = io_mod.fsReadDirAlloc(state, path) catch |err| return returnFailure(state, thread, op, if (recursive) "walk" else "scandir", path, null, err);
     defer host.deinitDirectoryEntries(state.allocator, entries);
     const iterator = try newIterator(state, if (recursive) "walk" else "scan");
     const queue = try state.newTableWithHints(@intCast(entries.len), 0);
@@ -392,7 +394,7 @@ pub fn dirStat(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const child = if (op.arg_count >= 2 and runtime.argValue(state, thread, op, 1) != .nil) try state.expectArgumentString(thread, op, "fs directory:stat", 1) else "";
     const path = if (child.len == 0) try state.allocator.dupe(u8, try dirPath(state, dir)) else try joinTwo(state, try dirPath(state, dir), child);
     defer state.allocator.free(path);
-    const value = state.fsStat(path, true) catch |err| return returnFailure(state, thread, op, "stat", path, null, err);
+    const value = io_mod.fsStat(state, path, true) catch |err| return returnFailure(state, thread, op, "stat", path, null, err);
     try state.returnValues(thread, op.base, op.return_count, &.{try statValue(state, value)});
 }
 
@@ -401,7 +403,7 @@ pub fn dirMkdir(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const child = try state.expectArgumentString(thread, op, "fs directory:mkdir", 1);
     const path = try joinTwo(state, try dirPath(state, dir), child);
     defer state.allocator.free(path);
-    state.fsMakeDir(path, true) catch |err| return returnFailure(state, thread, op, "mkdir", path, null, err);
+    io_mod.fsMakeDir(state, path, true) catch |err| return returnFailure(state, thread, op, "mkdir", path, null, err);
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = true }});
 }
 
@@ -411,7 +413,7 @@ pub fn dirRemove(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const path = try joinTwo(state, try dirPath(state, dir), child);
     defer state.allocator.free(path);
     const recursive = op.arg_count >= 3 and runtime.argValue(state, thread, op, 2) == .boolean and runtime.argValue(state, thread, op, 2).boolean;
-    state.fsRemovePath(path, recursive) catch |err| return returnFailure(state, thread, op, "remove", path, null, err);
+    io_mod.fsRemovePath(state, path, recursive) catch |err| return returnFailure(state, thread, op, "remove", path, null, err);
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = true }});
 }
 
@@ -483,7 +485,7 @@ fn newIterator(state: *State, kind: []const u8) !Value {
     try set(metatable, state, "__call", .{ .native = .fs_iterator_next });
     try set(metatable, state, "__close", .{ .native = .fs_iterator_close });
     try set(metatable, state, "__metatable", .{ .string = try state.intern("fs.Iterator") });
-    state.setTableMetatableRaw(iterator.table, metatable.table);
+    metatable_mod.setTableMetatableRaw(state, iterator.table, metatable.table);
     return iterator;
 }
 
@@ -493,7 +495,7 @@ fn expandPending(state: *State, iterator: *Table) !void {
     defer state.setTableRaw(iterator, .{ .string = state.intern("pending_path") catch "pending_path" }, .nil) catch {};
     if (truthyField(iterator, "skip_current")) return;
     const depth = integerField(iterator, "pending_depth") orelse 1;
-    const entries = state.fsReadDirAlloc(pending.string) catch |err| return state.failValue(try failureValue(state, "walk", pending.string, null, err));
+    const entries = io_mod.fsReadDirAlloc(state, pending.string) catch |err| return state.failValue(try failureValue(state, "walk", pending.string, null, err));
     defer host.deinitDirectoryEntries(state.allocator, entries);
     const queue = try state.expectTable(iterator.get(.{ .string = "queue" }));
     var count = integerField(iterator, "count") orelse 0;
@@ -507,24 +509,24 @@ fn expandPending(state: *State, iterator: *Table) !void {
 }
 
 fn writeBytes(state: *State, path: []const u8, data: []const u8, atomic: bool) !void {
-    if (!atomic) return state.fsWriteFile(path, data);
+    if (!atomic) return io_mod.fsWriteFile(state, path, data);
     const temporary = try std.fmt.allocPrint(state.allocator, "{s}.zlua-tmp-{x}", .{ path, @intFromPtr(state) });
     defer state.allocator.free(temporary);
-    state.fsWriteFile(temporary, data) catch |err| return err;
-    errdefer state.fsRemovePath(temporary, false) catch {};
-    try state.fsRenamePath(temporary, path);
+    io_mod.fsWriteFile(state, temporary, data) catch |err| return err;
+    errdefer io_mod.fsRemovePath(state, temporary, false) catch {};
+    try io_mod.fsRenamePath(state, temporary, path);
 }
 
 fn copyTree(state: *State, source: []const u8, destination: []const u8, overwrite: bool) !void {
-    state.fsMakeDir(destination, true) catch |err| if (err != error.PathAlreadyExists) return err;
-    const entries = try state.fsReadDirAlloc(source);
+    io_mod.fsMakeDir(state, destination, true) catch |err| if (err != error.PathAlreadyExists) return err;
+    const entries = try io_mod.fsReadDirAlloc(state, source);
     defer host.deinitDirectoryEntries(state.allocator, entries);
     for (entries) |entry| {
         const src = try joinTwo(state, source, entry.name);
         defer state.allocator.free(src);
         const dst = try joinTwo(state, destination, entry.name);
         defer state.allocator.free(dst);
-        if (entry.kind == .directory) try copyTree(state, src, dst, overwrite) else try state.fsCopyFile(src, dst, overwrite);
+        if (entry.kind == .directory) try copyTree(state, src, dst, overwrite) else try io_mod.fsCopyFile(state, src, dst, overwrite);
     }
 }
 
@@ -581,7 +583,7 @@ fn failureValue(state: *State, operation: []const u8, path: []const u8, destinat
     const metatable = try state.newTableWithHints(0, 2);
     try set(metatable, state, "__tostring", .{ .native = .fs_error_tostring });
     try set(metatable, state, "__metatable", .{ .string = try state.intern("fs.Error") });
-    state.setTableMetatableRaw(value.table, metatable.table);
+    metatable_mod.setTableMetatableRaw(state, value.table, metatable.table);
     return value;
 }
 

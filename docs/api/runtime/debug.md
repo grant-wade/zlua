@@ -25,20 +25,28 @@
 - [runtime](../runtime.md)
 - [runtime.chunk](../runtime/chunk.md)
 - [reflection](../reflection.md)
-- [runtime.value](../runtime/value.md)
-- [runtime.number_format](../runtime/number_format.md)
-- [runtime.execute](../runtime/execute.md)
-- [testing.process](../testing/process.md)
 - [runtime.state](../runtime/state.md)
-- [runtime.rollback](../runtime/rollback.md)
+- [stdlib](../stdlib.md)
+- [stdlib.base](../stdlib/base.md)
 - [runtime.call](../runtime/call.md)
 - [runtime.coroutine](../runtime/coroutine.md)
 - [runtime.debug](../runtime/debug.md)
-- [runtime.gc](../runtime/gc.md)
+- [runtime.metatable](../runtime/metatable.md)
+- [runtime.rollback](../runtime/rollback.md)
+- [runtime.value](../runtime/value.md)
+- [runtime.number_format](../runtime/number_format.md)
 - [runtime.host](../runtime/host.md)
+- [runtime.upvalue](../runtime/upvalue.md)
+- [runtime.failure](../runtime/failure.md)
+- [runtime.io](../runtime/io.md)
+- [runtime.load](../runtime/load.md)
+- [runtime.vm](../runtime/vm.md)
+- [runtime.gc](../runtime/gc.md)
+- [runtime.entry](../runtime/entry.md)
+- [runtime.system](../runtime/system.md)
 - [runtime.timezone](../runtime/timezone.md)
-- [stdlib](../stdlib.md)
-- [stdlib.base](../stdlib/base.md)
+- [runtime.index](../runtime/index.md)
+- [runtime.operators](../runtime/operators.md)
 - [stdlib.table](../stdlib/table.md)
 - [stdlib.string](../stdlib/string.md)
 - [stdlib.math](../stdlib/math.md)
@@ -55,7 +63,8 @@
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
-- [runtime.vm](../runtime/vm.md)
+- [runtime.execute](../runtime/execute.md)
+- [testing.process](../testing/process.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
 - [compile.compiler](../compile/compiler.md)
@@ -105,120 +114,52 @@
 
 ## Functions
 
+- [lineForFrame](#fn-lineforframe)
 - [appendUnhandledErrorDebugDump](#fn-appendunhandlederrordebugdump)
-- [appendDebugFrames](#fn-appenddebugframes)
-- [appendDebugLocals](#fn-appenddebuglocals)
-- [appendDebugVarargs](#fn-appenddebugvarargs)
-- [appendDebugUpvalues](#fn-appenddebugupvalues)
-- [appendDebugStack](#fn-appenddebugstack)
-- [appendDebugValue](#fn-appenddebugvalue)
 - [formatTraceback](#fn-formattraceback)
-- [formatTracebackWith](#fn-formattracebackwith)
 - [indirectFrameCount](#fn-indirectframecount)
 - [errorRaisedByLuaCode](#fn-errorraisedbyluacode)
 - [messageHandlerCallName](#fn-messagehandlercallname)
 - [isCoroutineEntryFrame](#fn-iscoroutineentryframe)
-- [chunkId](#fn-chunkid)
+- [currentLine](#fn-currentline)
+- [currentExtraArgs](#fn-currentextraargs)
+- [currentWhat](#fn-currentwhat)
+- [currentFunctionName](#fn-currentfunctionname)
+- [currentFunctionNameWhat](#fn-currentfunctionnamewhat)
+- [setThreadHook](#fn-setthreadhook)
+- [threadHookMask](#fn-threadhookmask)
+- [callHook](#fn-callhook)
+- [callReturnHook](#fn-callreturnhook)
+- [callLineHook](#fn-calllinehook)
+- [callCountHook](#fn-callcounthook)
+- [tracebackValue](#fn-tracebackvalue)
+- [tracebackMessageHandler](#fn-tracebackmessagehandler)
+- [snapshotCoroutineErrorTraceback](#fn-snapshotcoroutineerrortraceback)
+- [lineForErrorLevel](#fn-lineforerrorlevel)
+- [sourceForErrorLevel](#fn-sourceforerrorlevel)
 
 ## Types
 
-- [TracebackOptions](#type-tracebackoptions)
 - [CallName](#type-callname)
 
 ## Constants
 
-- [traceback_levels_head](#const-traceback_levels_head)
-- [traceback_levels_tail](#const-traceback_levels_tail)
 - [coroutine_entry_source](#const-coroutine_entry_source)
+
+<a id="fn-lineforframe"></a>
+
+## lineForFrame
+
+```zig
+pub fn lineForFrame(frame: CallFrame) ?usize
+```
 
 <a id="fn-appendunhandlederrordebugdump"></a>
 
 ## appendUnhandledErrorDebugDump
 
 ```zig
-pub fn appendUnhandledErrorDebugDump(comptime State: type, self: *State, thread: *Thread, err: anyerror) !void
-```
-
-<a id="fn-appenddebugframes"></a>
-
-## appendDebugFrames
-
-```zig
-pub fn appendDebugFrames(comptime State: type, self: *State, out: *std.ArrayList(u8), thread: *Thread) !void
-```
-
-<a id="fn-appenddebuglocals"></a>
-
-## appendDebugLocals
-
-```zig
-pub fn appendDebugLocals(comptime State: type, self: *State, out: *std.ArrayList(u8), thread: *Thread, frame: CallFrame) !void
-```
-
-<a id="fn-appenddebugvarargs"></a>
-
-## appendDebugVarargs
-
-```zig
-pub fn appendDebugVarargs(comptime State: type, self: *State, out: *std.ArrayList(u8), frame: CallFrame) !void
-```
-
-<a id="fn-appenddebugupvalues"></a>
-
-## appendDebugUpvalues
-
-```zig
-pub fn appendDebugUpvalues(comptime State: type, self: *State, out: *std.ArrayList(u8), frame: CallFrame) !void
-```
-
-<a id="fn-appenddebugstack"></a>
-
-## appendDebugStack
-
-```zig
-pub fn appendDebugStack(comptime State: type, self: *State, out: *std.ArrayList(u8), thread: *Thread) !void
-```
-
-<a id="fn-appenddebugvalue"></a>
-
-## appendDebugValue
-
-```zig
-pub fn appendDebugValue(comptime State: type, self: *State, out: *std.ArrayList(u8), value: Value) !void
-```
-
-<a id="const-traceback_levels_head"></a>
-
-## traceback_levels_head
-
-```zig
-pub const traceback_levels_head = 10;
-```
-
-<a id="const-traceback_levels_tail"></a>
-
-## traceback_levels_tail
-
-```zig
-pub const traceback_levels_tail = 11;
-```
-
-<a id="type-tracebackoptions"></a>
-
-## TracebackOptions
-
-```zig
-pub const TracebackOptions = struct {
-    /// Text placed before `stack traceback:`.
-    message: ?[]const u8 = null,
-    /// First level shown; level 0 is the function producing the traceback.
-    level: usize = 1,
-    /// Level 0 is the top frame's native callee; otherwise `level_zero` names it.
-    level_zero_is_callee: bool = false,
-    level_zero: Value = .nil,
-    /// Append the standalone interpreter's `[C]: in ?` entry.
-    host_frame: bool = false,
-};
+pub fn appendUnhandledErrorDebugDump(self: *State, thread: *Thread, err: anyerror) !void
 ```
 
 <a id="fn-formattraceback"></a>
@@ -228,20 +169,8 @@ pub const TracebackOptions = struct {
 Formats a traceback from level 1 without a message, as a message handler sees it.
 
 ```zig
-pub fn formatTraceback(comptime State: type, self: *State, thread: *Thread, host_frame: bool) ![]u8
+pub fn formatTraceback(self: *State, thread: *Thread, host_frame: bool) ![]u8
 ```
-
-<a id="fn-formattracebackwith"></a>
-
-## formatTracebackWith
-
-Formats a `luaL_traceback`-style traceback, owned by the caller.
-
-```zig
-pub fn formatTracebackWith(comptime State: type, self: *State, thread: *Thread, options: TracebackOptions) ![]u8
-```
-
-References: [`TracebackOptions`](#type-tracebackoptions)
 
 <a id="type-callname"></a>
 
@@ -304,13 +233,133 @@ True for the synthetic frame calling a coroutine's non-Lua body, which C Lua lac
 pub fn isCoroutineEntryFrame(frame: CallFrame) bool
 ```
 
-<a id="fn-chunkid"></a>
+<a id="fn-currentline"></a>
 
-## chunkId
-
-Formats a chunk name for messages, as `luaO_chunkid` does.
+## currentLine
 
 ```zig
-pub fn chunkId(buffer: *[chunk_id_size]u8, source: []const u8) []const u8
+pub fn currentLine(self: *State, thread: *Thread, level: i64) ?usize
+```
+
+<a id="fn-currentextraargs"></a>
+
+## currentExtraArgs
+
+```zig
+pub fn currentExtraArgs(self: *State, thread: *Thread, level: i64) ?usize
+```
+
+<a id="fn-currentwhat"></a>
+
+## currentWhat
+
+```zig
+pub fn currentWhat(self: *State, thread: *Thread, level: i64) []const u8
+```
+
+<a id="fn-currentfunctionname"></a>
+
+## currentFunctionName
+
+```zig
+pub fn currentFunctionName(self: *State, thread: *Thread, level: i64) ?[]const u8
+```
+
+<a id="fn-currentfunctionnamewhat"></a>
+
+## currentFunctionNameWhat
+
+```zig
+pub fn currentFunctionNameWhat(self: *State, thread: *Thread, level: i64) ?[]const u8
+```
+
+<a id="fn-setthreadhook"></a>
+
+## setThreadHook
+
+```zig
+pub fn setThreadHook(self: *State, target: *Thread, hook: Value, mask: []const u8, count: u32) void
+```
+
+<a id="fn-threadhookmask"></a>
+
+## threadHookMask
+
+```zig
+pub fn threadHookMask(self: *State, thread: *Thread) ![]const u8
+```
+
+<a id="fn-callhook"></a>
+
+## callHook
+
+```zig
+pub fn callHook(self: *State, thread: *Thread, event: []const u8) !void
+```
+
+<a id="fn-callreturnhook"></a>
+
+## callReturnHook
+
+```zig
+pub fn callReturnHook(self: *State, thread: *Thread, name: ?[]const u8) !void
+```
+
+<a id="fn-calllinehook"></a>
+
+## callLineHook
+
+```zig
+pub fn callLineHook(self: *State, thread: *Thread) !void
+```
+
+<a id="fn-callcounthook"></a>
+
+## callCountHook
+
+```zig
+pub fn callCountHook(self: *State, thread: *Thread) !void
+```
+
+<a id="fn-tracebackvalue"></a>
+
+## tracebackValue
+
+```zig
+pub fn tracebackValue(self: *State, thread: *Thread, op: bytecode.Call) !void
+```
+
+<a id="fn-tracebackmessagehandler"></a>
+
+## tracebackMessageHandler
+
+The standalone interpreter's `msghandler` from `lua.c`.
+
+```zig
+pub fn tracebackMessageHandler(self: *State, thread: *Thread, op: bytecode.Call) !void
+```
+
+<a id="fn-snapshotcoroutineerrortraceback"></a>
+
+## snapshotCoroutineErrorTraceback
+
+```zig
+pub fn snapshotCoroutineErrorTraceback(self: *State, target: *Thread) ![]const u8
+```
+
+<a id="fn-lineforerrorlevel"></a>
+
+## lineForErrorLevel
+
+```zig
+pub fn lineForErrorLevel(self: *State, thread: *Thread, level: usize) ?usize
+```
+
+<a id="fn-sourceforerrorlevel"></a>
+
+## sourceForErrorLevel
+
+```zig
+pub fn sourceForErrorLevel(self: *State, thread: *Thread, level: usize) ?[]const u8
 ```
 

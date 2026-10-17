@@ -6,6 +6,10 @@ const host = @import("../runtime/host.zig");
 const rollback = @import("../runtime/rollback.zig");
 const static_strings = @import("static_strings.zig");
 const os_lib = @import("os.zig");
+const entry_mod = @import("../runtime/entry.zig");
+const io_mod = @import("../runtime/io.zig");
+const metatable_mod = @import("../runtime/metatable.zig");
+const system_mod = @import("../runtime/system.zig");
 
 const bytecode = compile.bytecode;
 const State = runtime.State;
@@ -83,7 +87,7 @@ const Handle = struct {
     fn noteSize(self: Handle, state: *State) void {
         const payload = self.userdata.payload orelse return;
         const bytes = managedBytes(self.file);
-        if (bytes > payload.managed_bytes) state.noteAllocation(bytes - payload.managed_bytes) else state.noteAllocationFreed(payload.managed_bytes - bytes);
+        if (bytes > payload.managed_bytes) state.gc.noteAllocation(bytes - payload.managed_bytes) else state.gc.noteAllocationFreed(payload.managed_bytes - bytes);
         payload.managed_bytes = bytes;
     }
 };
@@ -174,7 +178,7 @@ pub fn newFile(state: *State, options: FileOptions) !Value {
         .pos = if (options.mode.opensAtEnd()) content.items.len else 0,
         .generation = state.file_generation,
         .popen_result = options.popen_result,
-        .finalizer_order = state.nextFinalizerOrder(),
+        .finalizer_order = metatable_mod.nextFinalizerOrder(state),
     };
     const value = try state.newUserdata(file, fileTypeId(), static_strings.get("FILE*"), fileFinalizer, null, disposeFile);
     const userdata = value.userdata;
@@ -184,7 +188,7 @@ pub fn newFile(state: *State, options: FileOptions) !Value {
     payload.snapshot_tracking = .scoped;
     payload.is_snapshot_copy = true;
     userdata.metatable = metatable;
-    state.writeBarrier(userdata, .{ .table = metatable });
+    state.gc.writeBarrier(userdata, .{ .table = metatable });
     (Handle{ .userdata = userdata, .file = file }).noteSize(state);
     return value;
 }
@@ -259,7 +263,7 @@ pub fn open(state: *State, thread: *Thread, op: bytecode.Call) !void {
     var contents: []const u8 = "";
     var found = true;
     if (parsed.reads_existing or parsed.append) {
-        contents = state.readFileRaw(path) catch |err| switch (err) {
+        contents = io_mod.readFileRaw(state, path) catch |err| switch (err) {
             error.OutOfMemory => return err,
             error.FileNotFound => if (parsed.kind == 'r') return os_lib.fileFailure(state, thread, op, path, err) else blk: {
                 found = false;
@@ -283,11 +287,11 @@ pub fn open(state: *State, thread: *Thread, op: bytecode.Call) !void {
 /// without rewriting it, so concurrent appends by other writers survive.
 pub fn prepareWrite(state: *State, path: []const u8, parsed: ParsedMode, exists: bool) anyerror!void {
     switch (parsed.kind) {
-        'w' => try state.fsWriteFile(path, ""),
+        'w' => try io_mod.fsWriteFile(state, path, ""),
         'a' => if (exists)
-            try state.fsCheckWritable(path)
+            try io_mod.fsCheckWritable(state, path)
         else
-            state.fsCreateFileExclusive(path) catch |err| if (err != error.PathAlreadyExists) return err,
+            io_mod.fsCreateFileExclusive(state, path) catch |err| if (err != error.PathAlreadyExists) return err,
         else => {},
     }
 }
@@ -308,10 +312,10 @@ pub fn popen(state: *State, thread: *Thread, op: bytecode.Call) !void {
     var command_output: []const u8 = "";
     var result: ?host.ProcessResult = null;
     if (mode[0] == 'r') {
-        const popen_result = try state.popenProcess(command, null);
+        const popen_result = try system_mod.popenProcess(state, command, null);
         command_output = popen_result.output;
         result = popen_result.result;
-    } else if (!state.processEnabled()) {
+    } else if (!system_mod.processEnabled(state)) {
         return state.fail("'popen' not supported");
     } else switch (state.options.process) {
         .custom => |process| if (process.popen == null) return state.fail("'popen' not supported"),
@@ -322,7 +326,7 @@ pub fn popen(state: *State, thread: *Thread, op: bytecode.Call) !void {
 
 fn finishPopen(state: *State, file: *File) !host.ProcessResult {
     if (file.popen_result == null) {
-        const popen_result = try state.popenProcess(file.path, file.content.items);
+        const popen_result = try system_mod.popenProcess(state, file.path, file.content.items);
         state.allocator.free(popen_result.output);
         file.popen_result = popen_result.result;
     }
@@ -444,7 +448,7 @@ pub fn fileSeek(state: *State, thread: *Thread, op: bytecode.Call) !void {
         return state.failArgumentMessage("file:seek", 2, "invalid whence");
 
     if (file.kind == .stdin) {
-        if (state.stdinIsStream()) {
+        if (io_mod.stdinIsStream(state)) {
             try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.intern("Illegal seek") }, .{ .integer = 29 } });
             return;
         }
@@ -559,10 +563,10 @@ fn openCheckedFile(state: *State, path: []const u8, mode: []const u8) !Value {
     const parsed = parseMode(mode).?;
     if (specialDevice(path)) |kind| return newFile(state, .{ .kind = kind, .path = path, .mode = parsed });
     if (parsed.kind != 'r') {
-        state.fsWriteFile(path, "") catch |err| return failOpenChecked(state, path, err);
+        io_mod.fsWriteFile(state, path, "") catch |err| return failOpenChecked(state, path, err);
         return newFile(state, .{ .path = path, .mode = parsed });
     }
-    const contents = state.readFileRaw(path) catch |err| {
+    const contents = io_mod.readFileRaw(state, path) catch |err| {
         if (err != error.IsDir) return failOpenChecked(state, path, err);
         return newFile(state, .{ .path = path, .mode = parsed, .is_directory = true });
     };
@@ -578,7 +582,7 @@ fn failOpenChecked(state: *State, path: []const u8, err: anyerror) anyerror {
 
 /// Reads the rest of stdin, sharing the `io.stdin` position. Caller owns the bytes.
 pub fn readAllStdin(state: *State) ![]u8 {
-    var source = state.stdinSource();
+    var source = io_mod.stdinSource(state);
     defer source.finish();
     var bytes: std.ArrayList(u8) = .empty;
     errdefer bytes.deinit(state.allocator);
@@ -618,7 +622,7 @@ pub fn truncateFile(state: *State, userdata: *Userdata, size: usize) !void {
     const copied = @min(size, file.content.items.len);
     @memcpy(bytes[0..copied], file.content.items[0..copied]);
     @memset(bytes[copied..], 0);
-    try state.fsWriteFile(file.path, bytes);
+    try io_mod.fsWriteFile(state, file.path, bytes);
     file.content.deinit(state.allocator);
     file.content = ownedBuffer(bytes);
     owned = false;
@@ -767,7 +771,7 @@ fn readFullDevice(state: *State, format: ReadFormat) !Value {
 }
 
 fn readStdinFormat(state: *State, format: ReadFormat) !Value {
-    var source = state.stdinSource();
+    var source = io_mod.stdinSource(state);
     defer source.finish();
     const reader = source.reader();
     switch (format) {
@@ -947,8 +951,8 @@ fn writeToFile(state: *State, thread: *Thread, op: bytecode.Call, handle: Handle
         };
         if (line_buffered and !wrote_newline and std.mem.indexOfScalar(u8, bytes, '\n') != null) wrote_newline = true;
         switch (target) {
-            .stdout => try state.writeStdout(bytes),
-            .stderr => try state.writeStderr(bytes),
+            .stdout => try io_mod.writeStdout(state, bytes),
+            .stderr => try io_mod.writeStderr(state, bytes),
             .discard => {},
             .full_device => if (bytes.len != 0) {
                 if (file.buffer_mode == .no) return returnWriteFailure(state, thread, op, host.fileError(error.NoSpaceLeft), total);
@@ -1034,8 +1038,8 @@ fn markClosed(state: *State, handle: Handle) void {
 
 fn flushFile(state: *State, file: *File) anyerror!void {
     switch (file.kind) {
-        .stdout => return state.flushStdout(),
-        .stderr => return state.flushStderr(),
+        .stdout => return io_mod.flushStdout(state),
+        .stderr => return io_mod.flushStderr(state),
         .regular => {},
         .full_device => {
             file.device_pending = false;
@@ -1047,8 +1051,8 @@ fn flushFile(state: *State, file: *File) anyerror!void {
 
     const content = file.content.items;
     if (file.append) {
-        state.fsAppendFile(file.path, content[file.synced..]) catch |err| switch (err) {
-            error.FileNotFound => try state.fsWriteFile(file.path, content),
+        io_mod.fsAppendFile(state, file.path, content[file.synced..]) catch |err| switch (err) {
+            error.FileNotFound => try io_mod.fsWriteFile(state, file.path, content),
             else => return err,
         };
         file.synced = content.len;
@@ -1056,14 +1060,14 @@ fn flushFile(state: *State, file: *File) anyerror!void {
     }
     var written = false;
     if (file.generation == state.file_generation) {
-        if (state.fsWriteFileAt(file.path, file.synced, content[file.synced..])) {
+        if (io_mod.fsWriteFileAt(state, file.path, file.synced, content[file.synced..])) {
             written = true;
         } else |err| switch (err) {
             error.OutOfMemory => return err,
             else => {},
         }
     }
-    if (!written) try state.fsWriteFile(file.path, content);
+    if (!written) try io_mod.fsWriteFile(state, file.path, content);
     file.synced = content.len;
     file.generation = state.file_generation;
 }
@@ -1074,7 +1078,7 @@ fn refreshReadable(state: *State, handle: Handle) !void {
     if (file.generation == state.file_generation) return;
     if (file.hasUnflushedWrites()) return;
     file.generation = state.file_generation;
-    const contents = state.readFileRaw(file.path) catch |err| {
+    const contents = io_mod.readFileRaw(state, file.path) catch |err| {
         if (err == error.OutOfMemory) return err;
         return;
     };
@@ -1172,10 +1176,10 @@ test "host stdin reader is consumed only as far as each read needs" {
     var reader: std.Io.Reader = .fixed("first\n12 rest\nabcdef\nlast");
     var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .full, .stdin_reader = &reader });
     defer state.deinit();
-    try state.executeSourceChunk("a = io.read()");
+    try entry_mod.executeSourceChunk(&state, "a = io.read()");
     try std.testing.expectEqualStrings("first", state.getGlobal("a").string);
     try std.testing.expectEqual(@as(usize, 6), reader.seek);
-    try state.executeSourceChunk(
+    try entry_mod.executeSourceChunk(&state,
         \\b = io.read('n') c = io.read(5) d = io.stdin:read('L')
         \\for line in io.lines() do e = line end
         \\f = io.read('a') g = io.read() _, h, i = io.stdin:seek()
@@ -1193,7 +1197,7 @@ test "host stdin reader is consumed only as far as each read needs" {
 test "stdin seeks past the integer limits fail without moving" {
     var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .full, .stdin = "abc" });
     defer state.deinit();
-    try state.executeSourceChunk(
+    try entry_mod.executeSourceChunk(&state,
         \\assert(io.read(1) == 'a')
         \\local ok, message, code = io.stdin:seek('cur', math.maxinteger)
         \\assert(ok == nil and message:find('^Value too large') and (code == 75 or code == 84 or code == 132))
@@ -1211,13 +1215,13 @@ test "output flush policies follow C stdio buffering" {
         var sink: std.Io.Writer.Discarding = .init(&buffer);
         var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .full, .stdout = &sink.writer, .stdout_flush = case[0], .capture_output = false });
         defer state.deinit();
-        try state.executeSourceChunk("io.write('ab\\n')");
+        try entry_mod.executeSourceChunk(&state, "io.write('ab\\n')");
         try std.testing.expectEqual(@as(u64, case[1]), sink.count);
-        try state.executeSourceChunk("print('x')");
+        try entry_mod.executeSourceChunk(&state, "print('x')");
         try std.testing.expectEqual(@as(u64, case[2]), sink.count);
         try std.testing.expectEqual(@as(u64, 5), sink.fullCount());
         try std.testing.expectEqual(@as(usize, 0), state.stdout.items.len);
-        try state.executeSourceChunk("io.stdout:write('y') io.flush()");
+        try entry_mod.executeSourceChunk(&state, "io.stdout:write('y') io.flush()");
         try std.testing.expectEqual(@as(u64, 6), sink.count);
     }
 }
@@ -1252,7 +1256,7 @@ test "Linux /dev/full emulation follows glibc stream results" {
     try state.setTableRaw(state.global_table.?, .{ .string = try state.intern("third") }, third);
     const reader = try newFile(&state, .{ .kind = .full_device, .path = "/dev/full", .mode = parseMode("r").? });
     try state.setTableRaw(state.global_table.?, .{ .string = try state.intern("reader") }, reader);
-    try state.executeSourceChunk(
+    try entry_mod.executeSourceChunk(&state,
         \\local enospc = 'No space left on device'
         \\-- Full buffering: writes succeed, a flush fails once and discards them.
         \\assert(full:write('abcd') == full)

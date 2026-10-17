@@ -1,6 +1,7 @@
 const std = @import("std");
 const compile = @import("../compile.zig");
 const runtime = @import("../runtime.zig");
+const call_mod = @import("../runtime/call.zig");
 
 const bytecode = compile.bytecode;
 const State = runtime.State;
@@ -34,7 +35,7 @@ pub fn codepoint(state: *State, thread: *Thread, op: bytecode.Call) !void {
     if (stop > source.len) return state.failArgumentMessage("utf8.codepoint", 3, "out of bounds");
     var pos = if (start <= 1) @as(usize, 0) else start - 1;
     const end = @min(stop, source.len);
-    if (!state.nativeStackFits(thread, op, end - pos)) return state.failLibrary("stack overflow (string slice too long)");
+    if (!call_mod.nativeStackFits(state, thread, op, end - pos)) return state.failLibrary("stack overflow (string slice too long)");
     while (pos < end) {
         const decoded = decodeAt(source, pos, strict) orelse return state.failLibrary("invalid UTF-8 code");
         try values.append(state.allocator, .{ .integer = decoded.codepoint });

@@ -9,6 +9,8 @@ const CallOptions = @import("options.zig").CallOptions;
 const CallResult = errors.CallResult;
 const Ref = handle.Ref;
 const State = @import("state.zig").State;
+const entry_mod = @import("../runtime/entry.zig");
+const vm_mod = @import("../runtime/vm.zig");
 
 /// Rooted handle to a Lua function or loaded chunk.
 pub const Function = struct {
@@ -39,7 +41,7 @@ pub const Function = struct {
         const handler = try hostErrorHandler(state, options, &traceback);
         const budget = CallBudget.begin(state, options);
         defer budget.end(state);
-        const results = state.raw_state.callFunctionHandled(try handle.rawValue(self.ref), raw_args, handler) catch |err| {
+        const results = entry_mod.callFunctionHandled(&state.raw_state, try handle.rawValue(self.ref), raw_args, handler) catch |err| {
             const captured = errors.captureLuaError(state, err);
             if (captured == error.LuaError) {
                 state.last_error_traceback = traceback;
@@ -69,7 +71,7 @@ pub const Function = struct {
         const handler = try hostErrorHandler(state, options, &traceback);
         const budget = CallBudget.begin(state, options);
         defer budget.end(state);
-        const result = state.raw_state.protectedCallFunctionHandled(try handle.rawValue(self.ref), raw_args, handler) catch |err| {
+        const result = entry_mod.protectedCallFunctionHandled(&state.raw_state, try handle.rawValue(self.ref), raw_args, handler) catch |err| {
             if (err == error.OutOfMemory and errors.takeMemoryLimitExceeded(state)) {
                 return .{ .lua_error = try errors.memoryLimitErrorRef(state) };
             }
@@ -113,11 +115,11 @@ const CallBudget = struct {
 
     fn begin(state: *State, options: CallOptions) CallBudget {
         const max = options.max_instructions orelse return .{ .active = false, .previous = null };
-        return .{ .active = true, .previous = state.raw_state.beginCallInstructionBudget(max) };
+        return .{ .active = true, .previous = vm_mod.beginCallInstructionBudget(&state.raw_state, max) };
     }
 
     fn end(self: CallBudget, state: *State) void {
-        if (self.active) state.raw_state.endCallInstructionBudget(self.previous);
+        if (self.active) vm_mod.endCallInstructionBudget(&state.raw_state, self.previous);
     }
 };
 

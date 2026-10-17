@@ -12,6 +12,8 @@ const Context = @import("context.zig").Context;
 const Ref = handle.Ref;
 const State = state_mod.State;
 const Table = @import("table.zig").Table;
+const index_mod = @import("../runtime/index.zig");
+const metatable_mod = @import("../runtime/metatable.zig");
 
 pub fn UserdataOptions(comptime T: type) type {
     return struct {
@@ -106,10 +108,10 @@ pub fn Userdata(comptime T: type) type {
             if (index_value == .nil) {
                 index_value = self.ref.state.raw_state.newTableWithHints(0, 4) catch |err| return errors.captureLuaError(self.ref.state, err);
                 try self.ref.state.raw_state.setTableRaw(metatable.table, index_key, index_value);
-                self.ref.state.raw_state.setTableValue(metatable, index_key, index_value) catch |err| return errors.captureLuaError(self.ref.state, err);
+                index_mod.setTableValue(&self.ref.state.raw_state, metatable, index_key, index_value) catch |err| return errors.captureLuaError(self.ref.state, err);
             }
             if (index_value != .table) return error.TypeMismatch;
-            try self.ref.state.raw_state.setTableValue(index_value, .{ .string = try self.ref.state.raw_state.intern(name) }, try handle.rawValue(method_function.ref));
+            try index_mod.setTableValue(&self.ref.state.raw_state, index_value, .{ .string = try self.ref.state.raw_state.intern(name) }, try handle.rawValue(method_function.ref));
         }
 
         /// Installs `Source` methods as in `State.newUserdataAuto`.
@@ -145,8 +147,8 @@ pub fn Userdata(comptime T: type) type {
             defer metamethod_function.deinit();
 
             const metatable = try self.metatableValue();
-            try self.ref.state.raw_state.setTableValue(metatable, .{ .string = try self.ref.state.raw_state.intern(name) }, try handle.rawValue(metamethod_function.ref));
-            if (std.mem.eql(u8, name, "__gc")) self.ref.state.raw_state.checkUserdataFinalizer(try self.rawUserdata());
+            try index_mod.setTableValue(&self.ref.state.raw_state, metatable, .{ .string = try self.ref.state.raw_state.intern(name) }, try handle.rawValue(metamethod_function.ref));
+            if (std.mem.eql(u8, name, "__gc")) self.ref.state.raw_state.gc.checkUserdataFinalizer(try self.rawUserdata());
         }
 
         fn initMetatable(self: @This()) !void {
@@ -157,7 +159,7 @@ pub fn Userdata(comptime T: type) type {
             try self.ref.state.raw_state.setTableRaw(metatable.table, .{ .string = try self.ref.state.raw_state.intern("__name") }, .{ .string = try self.ref.state.raw_state.intern(@typeName(T)) });
             try self.ref.state.raw_state.setTableRaw(metatable.table, .{ .string = try self.ref.state.raw_state.intern("__index") }, index);
             rollback_runtime.touch(raw);
-            try self.ref.state.raw_state.setDebugMetatableValue(.{ .userdata = raw }, metatable);
+            try metatable_mod.setDebugMetatableValue(&self.ref.state.raw_state, .{ .userdata = raw }, metatable);
         }
 
         fn rawUserdata(self: @This()) !*runtime.Userdata {
@@ -205,10 +207,10 @@ pub fn create(state: *State, comptime T: type, value: T, options: UserdataOption
         return err;
     };
     raw.userdata.payload.?.managed_bytes = @sizeOf(T);
-    state.raw_state.noteAllocation(@sizeOf(T));
+    state.raw_state.gc.noteAllocation(@sizeOf(T));
     var userdata = try convert.fromRuntimeValue(state, raw, Userdata(T));
     errdefer userdata.deinit();
-    if (metatable) |table| try state.raw_state.setDebugMetatableValue(raw, .{ .table = table }) else try userdata.initMetatable();
+    if (metatable) |table| try metatable_mod.setDebugMetatableValue(&state.raw_state, raw, .{ .table = table }) else try userdata.initMetatable();
     raw.userdata.finalizer = userdataFinalizer(T, options.finalizer);
     raw.userdata.finalizer_data = userdataFinalizerData(T, options.finalizer);
     raw.userdata.payload.?.finalizer = raw.userdata.finalizer;
@@ -224,7 +226,7 @@ pub fn wrapPtr(state: *State, comptime T: type, ptr: *T, options: UserdataPtrOpt
     const raw = try state.raw_state.newUserdata(ptr, typeId(T), @typeName(T), null, null, null);
     var userdata = try convert.fromRuntimeValue(state, raw, Userdata(T));
     errdefer userdata.deinit();
-    if (metatable) |table| try state.raw_state.setDebugMetatableValue(raw, .{ .table = table }) else try userdata.initMetatable();
+    if (metatable) |table| try metatable_mod.setDebugMetatableValue(&state.raw_state, raw, .{ .table = table }) else try userdata.initMetatable();
     raw.userdata.finalizer = userdataFinalizer(T, options.finalizer);
     raw.userdata.finalizer_data = userdataFinalizerData(T, options.finalizer);
     raw.userdata.payload.?.finalizer = raw.userdata.finalizer;

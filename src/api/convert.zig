@@ -12,6 +12,7 @@ const Ref = handle.Ref;
 const State = @import("state.zig").State;
 const Table = @import("table.zig").Table;
 const Value = @import("value.zig").Value;
+const index_mod = @import("../runtime/index.zig");
 
 pub fn expectedLuaType(comptime T: type) []const u8 {
     if (T == Value or T == Ref or T == ErrorRef) return "value";
@@ -108,7 +109,7 @@ fn arrayToRuntimeValue(state: *State, values: anytype) !runtime.Value {
     for (values, 0..) |item, index| {
         const raw_item = try toRuntimeValue(state, item);
         const raw_index: i64 = @intCast(index + 1);
-        state.raw_state.setTableValue(table, .{ .integer = raw_index }, raw_item) catch |err| return errors.captureLuaError(state, err);
+        index_mod.setTableValue(&state.raw_state, table, .{ .integer = raw_index }, raw_item) catch |err| return errors.captureLuaError(state, err);
     }
     return table;
 }
@@ -122,7 +123,7 @@ fn structToRuntimeValue(state: *State, value: anytype, comptime info: std.builti
     inline for (reflection.fieldNames(info)) |field| {
         const raw_key = runtime.Value{ .string = try state.raw_state.intern(field) };
         const raw_value = try toRuntimeValue(state, @field(value, field));
-        state.raw_state.setTableValue(table, raw_key, raw_value) catch |err| return errors.captureLuaError(state, err);
+        index_mod.setTableValue(&state.raw_state, table, raw_key, raw_value) catch |err| return errors.captureLuaError(state, err);
     }
     return table;
 }
@@ -133,7 +134,7 @@ fn tupleToRuntimeValue(state: *State, value: anytype, comptime len: usize) !runt
     inline for (0..len) |index| {
         const raw_item = try toRuntimeValue(state, value[index]);
         const raw_index: i64 = @intCast(index + 1);
-        state.raw_state.setTableValue(table, .{ .integer = raw_index }, raw_item) catch |err| return errors.captureLuaError(state, err);
+        index_mod.setTableValue(&state.raw_state, table, .{ .integer = raw_index }, raw_item) catch |err| return errors.captureLuaError(state, err);
     }
     return table;
 }

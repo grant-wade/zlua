@@ -104,14 +104,14 @@ test "inline and spilled callback results remain rooted across GC and nested cal
                 try table.set("n", i);
                 try ctx.pushReturn(table);
                 table.deinit();
-                if (ctx.state().raw_state.stress_step) {
+                if (ctx.state().raw_state.gc.stress_step) {
                     _ = try ctx.state().stepGc(.{});
                 } else try ctx.state().collect();
             }
             var callback = try ctx.arg(1, api.Function);
             defer callback.deinit();
             try ctx.callNonYielding(callback, .{}, void);
-            if (ctx.state().raw_state.stress_step) {
+            if (ctx.state().raw_state.gc.stress_step) {
                 _ = try ctx.state().stepGc(.{});
             } else try ctx.state().collect();
         }
@@ -119,7 +119,7 @@ test "inline and spilled callback results remain rooted across GC and nested cal
     for ([_]bool{ false, true }) |tiny_steps| {
         var lua = try api.State.init(a, .{});
         defer lua.deinit();
-        lua.raw_state.stress_step = tiny_steps;
+        lua.raw_state.gc.stress_step = tiny_steps;
         if (tiny_steps) {
             _ = lua.setGcMode(.incremental);
             _ = try lua.setGcParam(.stepsize, 8);

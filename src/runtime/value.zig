@@ -575,3 +575,93 @@ pub fn hexValue(byte: u8) u32 {
         else => 0,
     };
 }
+
+pub fn luaTypeName(value: Value) []const u8 {
+    return switch (value) {
+        .nil => "nil",
+        .boolean => "boolean",
+        .integer, .number => "number",
+        .string => "string",
+        .table => "table",
+        .userdata => "userdata",
+        .thread => "thread",
+        .closure,
+        .coroutine_wrapper,
+        .gmatch_iterator,
+        .native_print,
+        .native_tostring,
+        .native_getmetatable,
+        .native_setmetatable,
+        .native_rawequal,
+        .native_rawget,
+        .native_rawset,
+        .native_rawlen,
+        .native_next,
+        .native_pairs,
+        .native_ipairs,
+        .native_ipairs_iter,
+        .native_table_create,
+        .native_select,
+        .native_assert,
+        .native_error,
+        .native_pcall,
+        .native_xpcall,
+        .native_collectgarbage,
+        .native_debug_traceback,
+        .native_coroutine_create,
+        .native_coroutine_resume,
+        .native_coroutine_yield,
+        .native_coroutine_status,
+        .native_coroutine_running,
+        .native_coroutine_isyieldable,
+        .native_coroutine_close,
+        .native_coroutine_wrap,
+        .native,
+        .api_callback,
+        => "function",
+    };
+}
+
+pub fn isNativeCallable(value: Value) bool {
+    return switch (value) {
+        .native_print,
+        .native_tostring,
+        .native_getmetatable,
+        .native_setmetatable,
+        .native_rawequal,
+        .native_rawget,
+        .native_rawset,
+        .native_rawlen,
+        .native_next,
+        .native_pairs,
+        .native_ipairs,
+        .native_ipairs_iter,
+        .native_table_create,
+        .native_select,
+        .native_assert,
+        .native_error,
+        .native_pcall,
+        .native_xpcall,
+        .native_collectgarbage,
+        .native_debug_traceback,
+        .native_coroutine_create,
+        .native_coroutine_resume,
+        .native_coroutine_yield,
+        .native_coroutine_status,
+        .native_coroutine_running,
+        .native_coroutine_isyieldable,
+        .native_coroutine_close,
+        .native_coroutine_wrap,
+        .native,
+        .api_callback,
+        => true,
+        else => false,
+    };
+}
+
+pub fn functionLike(value: Value) bool {
+    return switch (value) {
+        .closure, .coroutine_wrapper, .gmatch_iterator => true,
+        else => isNativeCallable(value),
+    };
+}

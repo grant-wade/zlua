@@ -25,20 +25,28 @@
 - [runtime](../runtime.md)
 - [runtime.chunk](../runtime/chunk.md)
 - [reflection](../reflection.md)
-- [runtime.value](../runtime/value.md)
-- [runtime.number_format](../runtime/number_format.md)
-- [runtime.execute](../runtime/execute.md)
-- [testing.process](../testing/process.md)
 - [runtime.state](../runtime/state.md)
-- [runtime.rollback](../runtime/rollback.md)
+- [stdlib](../stdlib.md)
+- [stdlib.base](../stdlib/base.md)
 - [runtime.call](../runtime/call.md)
 - [runtime.coroutine](../runtime/coroutine.md)
 - [runtime.debug](../runtime/debug.md)
-- [runtime.gc](../runtime/gc.md)
+- [runtime.metatable](../runtime/metatable.md)
+- [runtime.rollback](../runtime/rollback.md)
+- [runtime.value](../runtime/value.md)
+- [runtime.number_format](../runtime/number_format.md)
 - [runtime.host](../runtime/host.md)
+- [runtime.upvalue](../runtime/upvalue.md)
+- [runtime.failure](../runtime/failure.md)
+- [runtime.io](../runtime/io.md)
+- [runtime.load](../runtime/load.md)
+- [runtime.vm](../runtime/vm.md)
+- [runtime.gc](../runtime/gc.md)
+- [runtime.entry](../runtime/entry.md)
+- [runtime.system](../runtime/system.md)
 - [runtime.timezone](../runtime/timezone.md)
-- [stdlib](../stdlib.md)
-- [stdlib.base](../stdlib/base.md)
+- [runtime.index](../runtime/index.md)
+- [runtime.operators](../runtime/operators.md)
 - [stdlib.table](../stdlib/table.md)
 - [stdlib.string](../stdlib/string.md)
 - [stdlib.math](../stdlib/math.md)
@@ -55,7 +63,8 @@
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
-- [runtime.vm](../runtime/vm.md)
+- [runtime.execute](../runtime/execute.md)
+- [testing.process](../testing/process.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
 - [compile.compiler](../compile/compiler.md)
@@ -108,7 +117,10 @@
 - [appendBinaryChunkHeader](#fn-appendbinarychunkheader)
 - [dumpClosureBinary](#fn-dumpclosurebinary)
 - [verifyProto](#fn-verifyproto)
-- [BinaryChunkReader](#fn-binarychunkreader)
+
+## Types
+
+- [BinaryChunkReader](#type-binarychunkreader)
 
 ## Constants
 
@@ -158,11 +170,41 @@ Children are verified separately, but their upvalue descriptors are checked here
 pub fn verifyProto(proto: *const proto_mod.Proto) bool
 ```
 
-<a id="fn-binarychunkreader"></a>
+<a id="type-binarychunkreader"></a>
 
 ## BinaryChunkReader
 
 ```zig
-pub fn BinaryChunkReader(comptime State: type) type
+pub const BinaryChunkReader = struct {
+    state: *State,
+    source: []const u8,
+    pos: usize,
+    depth: usize = 0,
+};
+```
+
+### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [readProto](#fn-binarychunkreader-readproto) | `self: *Self, parent_source_name: ?[]const u8` | `anyerror!*proto_mod.Proto` | Verifies each proto once its children are read, so a returned tree is safe to execute. |
+| [readBool](#fn-binarychunkreader-readbool) | `self: *Self` | `!bool` |  |
+
+<a id="fn-binarychunkreader-readproto"></a>
+
+### BinaryChunkReader.readProto
+
+Verifies each proto once its children are read, so a returned tree is safe to execute.
+
+```zig
+pub fn readProto(self: *Self, parent_source_name: ?[]const u8) anyerror!*proto_mod.Proto
+```
+
+<a id="fn-binarychunkreader-readbool"></a>
+
+### BinaryChunkReader.readBool
+
+```zig
+pub fn readBool(self: *Self) !bool
 ```
 

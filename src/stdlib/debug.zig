@@ -2,6 +2,11 @@ const std = @import("std");
 const compile = @import("../compile.zig");
 const runtime = @import("../runtime.zig");
 const io_lib = @import("io.zig");
+const call_mod = @import("../runtime/call.zig");
+const debug_mod = @import("../runtime/debug.zig");
+const io_mod = @import("../runtime/io.zig");
+const load_mod = @import("../runtime/load.zig");
+const metatable_mod = @import("../runtime/metatable.zig");
 
 const bytecode = compile.bytecode;
 const State = runtime.State;
@@ -40,7 +45,7 @@ pub fn getinfo(state: *State, thread: *Thread, op: bytecode.Call) !void {
             const frame_index = info_thread.frames.items.len - depth;
             const frame = info_thread.frames.items[frame_index];
             const tail = frame.is_tail_call or (depth == 2 and info_thread.frames.items.len != 0 and info_thread.frames.items[info_thread.frames.items.len - 1].is_tail_call);
-            break :blk .{ frame.closure, .{ .closure = frame.closure }, frame.proto.source_name, state.currentWhat(info_thread, target.integer), if (state.currentLine(info_thread, target.integer)) |line| @as(i64, @intCast(line)) else -1, state.currentFunctionName(info_thread, target.integer), tail };
+            break :blk .{ frame.closure, .{ .closure = frame.closure }, frame.proto.source_name, debug_mod.currentWhat(state, info_thread, target.integer), if (debug_mod.currentLine(state, info_thread, target.integer)) |line| @as(i64, @intCast(line)) else -1, debug_mod.currentFunctionName(state, info_thread, target.integer), tail };
         },
         .closure => .{ target.closure, target, target.closure.proto.source_name, "Lua", @as(i64, -1), null, false },
         .api_callback, .gmatch_iterator, .native, .native_print, .native_tostring, .native_getmetatable, .native_setmetatable, .native_rawequal, .native_rawget, .native_rawset, .native_rawlen, .native_next, .native_pairs, .native_ipairs, .native_ipairs_iter, .native_table_create, .native_select, .native_assert, .native_error, .native_pcall, .native_xpcall, .native_collectgarbage, .native_debug_traceback, .native_coroutine_create, .native_coroutine_resume, .native_coroutine_yield, .native_coroutine_status, .native_coroutine_running, .native_coroutine_isyieldable, .native_coroutine_close, .native_coroutine_wrap => .{ null, target, "[C]", "C", @as(i64, -1), null, false },
@@ -67,7 +72,7 @@ pub fn getinfo(state: *State, thread: *Thread, op: bytecode.Call) !void {
     try state.setTableRaw(table, .{ .string = try state.intern("istailcall") }, .{ .boolean = istailcall });
     try state.setTableRaw(table, .{ .string = try state.intern("what") }, .{ .string = try state.intern(what) });
     try state.setTableRaw(table, .{ .string = try state.intern("currentline") }, .{ .integer = if (stripped_debug and target == .integer) -1 else currentline });
-    const extraargs: i64 = if (if (target == .integer) state.currentExtraArgs(info_thread, target.integer) else null) |count| @intCast(count) else 0;
+    const extraargs: i64 = if (if (target == .integer) debug_mod.currentExtraArgs(state, info_thread, target.integer) else null) |count| @intCast(count) else 0;
     try state.setTableRaw(table, .{ .string = try state.intern("extraargs") }, .{ .integer = extraargs });
     const Transfer = struct { first: i64, count: i64 };
     const transfer: Transfer = if (target == .integer and target.integer == 2 and thread.hook_running and thread.hook_transfer_count != 0)
@@ -77,7 +82,7 @@ pub fn getinfo(state: *State, thread: *Thread, op: bytecode.Call) !void {
     try state.setTableRaw(table, .{ .string = try state.intern("ftransfer") }, .{ .integer = transfer.first });
     try state.setTableRaw(table, .{ .string = try state.intern("ntransfer") }, .{ .integer = transfer.count });
     const is_hook_frame = target == .integer and target.integer == 1 and thread.hook_running;
-    const namewhat = if (is_hook_frame) "hook" else if (target == .integer) if (state.currentFunctionNameWhat(info_thread, target.integer)) |override| override else if (level_name) |name| blk: {
+    const namewhat = if (is_hook_frame) "hook" else if (target == .integer) if (debug_mod.currentFunctionNameWhat(state, info_thread, target.integer)) |override| override else if (level_name) |name| blk: {
         const proto_name = if (target_closure) |closure| closure.proto.debug_name else null;
         break :blk if (std.mem.eql(u8, name, "x") and (proto_name == null or !std.mem.eql(u8, proto_name.?, "f"))) "field" else "local";
     } else "" else if (level_name) |name| blk: {
@@ -209,7 +214,7 @@ pub fn upvaluejoin(state: *State, thread: *Thread, op: bytecode.Call) !void {
     if (first != .closure or first_index >= first.closure.upvalues.len) return state.failArgumentMessage("debug.upvaluejoin", 1, "invalid upvalue index");
     try @import("../runtime/rollback.zig").closureWritable(first.closure);
     first.closure.upvalues[first_index] = replacement;
-    state.upvalueBarrier(first.closure, replacement);
+    state.gc.upvalueBarrier(first.closure, replacement);
     try state.returnValues(thread, op.base, op.return_count, &.{});
 }
 
@@ -307,12 +312,12 @@ pub fn setlocal(state: *State, thread: *Thread, op: bytecode.Call) !void {
         },
         .local => |debug_local| {
             local_thread.stack.items[frame.base + debug_local.register] = value;
-            state.threadBarrier(local_thread, value);
+            state.gc.threadBarrier(local_thread, value);
             try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(debug_local.name) }});
         },
         .temporary => |register| {
             local_thread.stack.items[frame.base + register] = value;
-            state.threadBarrier(local_thread, value);
+            state.gc.threadBarrier(local_thread, value);
             try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern("(temporary)") }});
         },
     }
@@ -323,14 +328,14 @@ pub fn getregistry(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const hook_key = try state.newTableWithHints(0, 0);
     const metatable = try state.newTableWithHints(0, 1);
     try state.setTableRaw(metatable.table, .{ .string = try state.intern("__mode") }, .{ .string = try state.intern("k") });
-    state.setTableMetatableRaw(hook_key.table, metatable.table);
+    metatable_mod.setTableMetatableRaw(state, hook_key.table, metatable.table);
     try state.setTableRaw(registry.table, .{ .string = try state.intern("_HOOKKEY") }, hook_key);
     try state.returnValues(thread, op.base, op.return_count, &.{registry});
 }
 
 pub fn sethook(state: *State, thread: *Thread, op: bytecode.Call) !void {
     if (op.arg_count == 0) {
-        state.setThreadHook(thread, .nil, "", 0);
+        debug_mod.setThreadHook(state, thread, .nil, "", 0);
         try state.returnValues(thread, op.base, op.return_count, &.{});
         return;
     }
@@ -341,7 +346,7 @@ pub fn sethook(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const mask = if (hook == .nil) "" else try state.expectArgumentString(thread, op, "debug.sethook", hook_index + 1);
     const count = if (op.arg_count > hook_index + 2) hookCount(runtime.argValue(state, thread, op, hook_index + 2)) else 0;
 
-    state.setThreadHook(target, hook, mask, if (count > 0) @intCast(count) else 0);
+    debug_mod.setThreadHook(state, target, hook, mask, if (count > 0) @intCast(count) else 0);
     try state.returnValues(thread, op.base, op.return_count, &.{});
 }
 
@@ -356,51 +361,51 @@ pub fn gethook(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const target = if (op.arg_count > 0 and runtime.argValue(state, thread, op, 0) == .thread) runtime.argValue(state, thread, op, 0).thread else thread;
     try state.returnValues(thread, op.base, op.return_count, &.{
         target.hook,
-        .{ .string = try state.threadHookMask(target) },
+        .{ .string = try debug_mod.threadHookMask(state, target) },
         .{ .integer = @intCast(target.hook_count) },
     });
 }
 
 pub fn setmetatable(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const value = runtime.argValue(state, thread, op, 0);
-    try state.setDebugMetatableValue(value, runtime.argValue(state, thread, op, 1));
+    try metatable_mod.setDebugMetatableValue(state, value, runtime.argValue(state, thread, op, 1));
     try state.returnValues(thread, op.base, op.return_count, &.{value});
 }
 
 pub fn getmetatable(state: *State, thread: *Thread, op: bytecode.Call) !void {
     if (op.arg_count == 0) return state.failArgumentMessage("debug.getmetatable", 1, "value expected");
-    try state.returnValues(thread, op.base, op.return_count, &.{state.rawMetatableValue(runtime.argValue(state, thread, op, 0))});
+    try state.returnValues(thread, op.base, op.return_count, &.{metatable_mod.rawMetatableValue(state, runtime.argValue(state, thread, op, 0))});
 }
 
 /// Lua's `debug.debug`: runs stdin commands until "cont" or end of input.
 pub fn debugPrompt(state: *State, thread: *Thread, op: bytecode.Call) !void {
     while (true) {
-        try state.writeStderr("lua_debug> ");
+        try io_mod.writeStderr(state, "lua_debug> ");
         const line = try io_lib.readStdinLine(state) orelse break;
         if (std.mem.eql(u8, line, "cont\n") or std.mem.eql(u8, line, "cont")) break;
         const source = try state.allocator.dupe(u8, line);
-        const closure = state.loadSourceAsClosureNamed(source, "=(debug command)") catch |err| {
+        const closure = load_mod.loadSourceAsClosureNamed(state, source, "=(debug command)") catch |err| {
             state.allocator.free(source);
             if (err == error.OutOfMemory) return err;
             try writeDebugError(state, thread, state.currentErrorValue());
             continue;
         };
         try state.registerAllocation("source_allocations", source);
-        switch (try state.runProtectedCall(thread, state.protectedCallContextWithErrors(thread), closure, &.{})) {
+        switch (try call_mod.runProtectedCall(state, thread, call_mod.protectedCallContextWithErrors(state, thread), closure, &.{})) {
             .success => |values| state.allocator.free(values),
-            .failure => |failure| try writeDebugError(state, thread, try state.caughtErrorValue(failure)),
+            .failure => |failure| try writeDebugError(state, thread, try call_mod.caughtErrorValue(state, failure)),
         }
     }
     try state.returnValues(thread, op.base, op.return_count, &.{});
 }
 
 fn writeDebugError(state: *State, thread: *Thread, value: Value) !void {
-    const message = state.valueToString(thread, value) catch |err| switch (err) {
+    const message = metatable_mod.valueToString(state, thread, value) catch |err| switch (err) {
         error.OutOfMemory => return err,
         else => "(error object is not a string)",
     };
-    try state.writeStderr(message);
-    try state.writeStderr("\n");
+    try io_mod.writeStderr(state, message);
+    try io_mod.writeStderr(state, "\n");
 }
 
 pub fn setuservalue(state: *State, thread: *Thread, op: bytecode.Call) !void {
@@ -572,9 +577,9 @@ fn writeUpvalue(state: *State, upvalue: *runtime.Upvalue, value: Value) !void {
     if (upvalue.is_open) {
         try @import("../runtime/rollback.zig").threadWritable(upvalue.owner);
         upvalue.owner.stack.items[upvalue.stack_index] = value;
-        state.threadBarrier(upvalue.owner, value);
+        state.gc.threadBarrier(upvalue.owner, value);
     } else {
         upvalue.closed = value;
-        state.writeBarrier(upvalue, value);
+        state.gc.writeBarrier(upvalue, value);
     }
 }

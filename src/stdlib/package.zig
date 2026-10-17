@@ -2,6 +2,9 @@ const std = @import("std");
 const compile = @import("../compile.zig");
 const runtime = @import("../runtime.zig");
 const io_lib = @import("io.zig");
+const call_mod = @import("../runtime/call.zig");
+const io_mod = @import("../runtime/io.zig");
+const load_mod = @import("../runtime/load.zig");
 
 const bytecode = compile.bytecode;
 const State = runtime.State;
@@ -32,7 +35,7 @@ fn optionalPath(state: *State, thread: *Thread, op: bytecode.Call, function_name
 }
 
 fn loadChunkFile(state: *State, path: ?[]const u8, mode: []const u8, environment: Value) !Value {
-    const source = if (path) |name| try state.readFileAlloc(name) else try io_lib.readAllStdin(state);
+    const source = if (path) |name| try io_mod.readFileAlloc(state, name) else try io_lib.readAllStdin(state);
     var keep_source = false;
     defer if (!keep_source) state.allocator.free(source);
 
@@ -40,12 +43,12 @@ fn loadChunkFile(state: *State, path: ?[]const u8, mode: []const u8, environment
     const binary = looksLikeBinaryChunk(chunk);
     if (binary and std.mem.indexOfScalar(u8, mode, 'b') == null) return state.fail("attempt to load a binary chunk");
     if (!binary and std.mem.indexOfScalar(u8, mode, 't') == null) return state.fail("attempt to load a text chunk");
-    if (binary) return state.loadBinaryDump(chunk, environment);
+    if (binary) return load_mod.loadBinaryDump(state, chunk, environment);
 
     prepareTextFileSource(@constCast(source));
     const source_name = if (path) |name| try std.fmt.allocPrint(state.allocator, "@{s}", .{name}) else try state.allocator.dupe(u8, "=stdin");
     defer state.allocator.free(source_name);
-    const closure = try state.loadSourceAsClosureNamedEnv(source, source_name, environment);
+    const closure = try load_mod.loadSourceAsClosureNamedEnv(state, source, source_name, environment);
     try state.registerAllocation("source_allocations", source);
     keep_source = true;
     return closure;
@@ -90,7 +93,7 @@ pub fn dofile(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const path = try optionalPath(state, thread, op, "dofile");
     const environment = if (state.global_table) |table| Value{ .table = table } else state.getGlobal("_G");
     const closure = try loadChunkFile(state, path, "bt", environment);
-    const values = try state.callCollect(thread, closure, &.{});
+    const values = try call_mod.callCollect(state, thread, closure, &.{});
     defer state.allocator.free(values);
     const result_values = if (path != null and values.len >= 2 and values[0] == .native and values[0].native == .dofile and values[1] == .string and std.mem.eql(u8, values[1].string, path.?)) values[2..] else values;
     try state.returnValues(thread, op.base, op.return_count, result_values);
@@ -122,13 +125,13 @@ pub fn require(state: *State, thread: *Thread, op: bytecode.Call) !void {
             return state.fail(message);
         };
         defer state.allocator.free(found);
-        loader = try state.loadFileAsClosure(found);
+        loader = try load_mod.loadFileAsClosure(state, found);
         loader_data = .{ .string = try state.intern(found) };
     }
 
     const loader_data_root = try state.rootValue(loader_data);
     defer state.unrootValue(loader_data_root);
-    const values = try state.callCollect(thread, loader, &.{ name_key, loader_data });
+    const values = try call_mod.callCollect(state, thread, loader, &.{ name_key, loader_data });
     defer state.allocator.free(values);
     const module_value = if (values.len == 0 or values[0] == .nil) Value{ .boolean = true } else values[0];
     try state.setTableRaw(loaded, name_key, module_value);
@@ -185,7 +188,7 @@ pub fn searcherLua(state: *State, thread: *Thread, op: bytecode.Call) !void {
         return;
     };
     defer state.allocator.free(found);
-    const loader = state.loadFileAsClosure(found) catch {
+    const loader = load_mod.loadFileAsClosure(state, found) catch {
         try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern("cannot load file") }});
         return;
     };
@@ -204,7 +207,7 @@ fn searchPath(state: *State, name: []const u8, path: []const u8, sep: []const u8
     while (iterator.next()) |template| {
         var candidate = try applyTemplate(state.allocator, template, module_path);
         defer candidate.deinit(state.allocator);
-        const contents = state.readFileRaw(candidate.items) catch |err| {
+        const contents = io_mod.readFileRaw(state, candidate.items) catch |err| {
             if (err == error.OutOfMemory) return error.OutOfMemory;
             continue;
         };

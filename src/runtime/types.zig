@@ -535,7 +535,7 @@ pub const ApiCallbackContext = struct {
 
     pub fn appendReturn(self: *ApiCallbackContext, value: Value) !void {
         try self.returns.append(self.state.allocator, value);
-        self.state.markValue(value);
+        self.state.gc.markValue(value);
     }
 
     pub fn fail(self: *ApiCallbackContext, message: []const u8) RuntimeError {
@@ -552,7 +552,7 @@ pub const ApiCallbackContext = struct {
 
     pub fn raise(self: *ApiCallbackContext, value: Value) error{LuaError} {
         self.error_value = value;
-        self.state.markValue(value);
+        self.state.gc.markValue(value);
         return error.LuaError;
     }
 

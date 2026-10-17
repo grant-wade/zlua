@@ -40,6 +40,11 @@ const Userdata = userdata_mod.Userdata;
 const UserdataOptions = userdata_mod.UserdataOptions;
 const UserdataPtrOptions = userdata_mod.UserdataPtrOptions;
 const Value = @import("value.zig").Value;
+const coroutine_mod = @import("../runtime/coroutine.zig");
+const entry_mod = @import("../runtime/entry.zig");
+const io_mod = @import("../runtime/io.zig");
+const load_mod = @import("../runtime/load.zig");
+const vm_mod = @import("../runtime/vm.zig");
 
 /// Copyable, thread-safe handle that stops Lua at the next safepoint with `error.Interrupted`.
 /// Join threads using it before `State.deinit`. Lua cannot catch it and pending `__close`
@@ -97,10 +102,10 @@ pub const State = struct {
             .memory_limit_allocator = memory_limit_allocator,
             .raw_state = try runtime.State.initWithOptions(runtime_allocator, options_mod.runtimeOptions(options)),
         };
-        state.raw_state.gc_mode = options.gc.mode;
-        state.raw_state.gc_running = options.gc.running;
-        state.raw_state.gc_params = options.gc.params;
-        state.raw_state.resetAutoGcThreshold();
+        state.raw_state.gc.mode = options.gc.mode;
+        state.raw_state.gc.running = options.gc.running;
+        state.raw_state.gc.params = options.gc.params;
+        state.raw_state.gc.resetAutoThreshold();
         if (memory_limit_allocator) |limit| state.raw_state.allocator_lifetime = &limit.lifetime;
         memory_limit_allocator = null;
         errdefer state.deinit();
@@ -152,7 +157,7 @@ pub const State = struct {
     }
 
     pub fn instructionBudget(self: *const State) InstructionBudget {
-        const used = self.raw_state.instructionBudgetUsed();
+        const used = vm_mod.instructionBudgetUsed(&self.raw_state);
         const remaining = if (self.raw_state.options.max_instructions) |limit|
             if (used >= limit) 0 else limit - used
         else
@@ -165,21 +170,21 @@ pub const State = struct {
     }
 
     pub fn resetInstructionBudget(self: *State) void {
-        self.raw_state.resetInstructionBudget();
+        vm_mod.resetInstructionBudget(&self.raw_state);
     }
 
     /// Returns a thread-safe `InterruptHandle`; handles share one flag that stays valid across
     /// `reset` until `deinit`. While one exists, dispatch polls the flag periodically.
     pub fn interruptHandle(self: *State) !InterruptHandle {
-        return .{ .control = try self.raw_state.interruptControl() };
+        return .{ .control = try vm_mod.interruptControl(&self.raw_state) };
     }
 
     pub fn clearInterrupt(self: *State) void {
-        self.raw_state.clearInterrupt();
+        vm_mod.clearInterrupt(&self.raw_state);
     }
 
     pub fn isInterruptPending(self: *const State) bool {
-        return self.raw_state.interruptRequested();
+        return vm_mod.interruptRequested(&self.raw_state);
     }
 
     pub fn openLibs(self: *State, selection: Stdlib) !void {
@@ -191,47 +196,47 @@ pub const State = struct {
     /// Runs a full collection and pending finalizers, even while automatic GC is stopped.
     pub fn collect(self: *State) !void {
         callbacks.bindDispatch(self);
-        try self.raw_state.collectGarbage();
+        try self.raw_state.gc.collect();
     }
 
     /// Runs at most `budget.steps` basic steps, even while stopped; bounds work, not time.
     pub fn stepGc(self: *State, budget: GcBudget) !GcStepResult {
         callbacks.bindDispatch(self);
-        return if (try self.raw_state.stepGc(budget.steps)) .complete else .pending;
+        return if (try self.raw_state.gc.runSteps(budget.steps)) .complete else .pending;
     }
 
     pub fn gcMode(self: *const State) GcMode {
-        return self.raw_state.gc_mode;
+        return self.raw_state.gc.mode;
     }
 
     /// Returns the previous mode.
     pub fn setGcMode(self: *State, mode: GcMode) GcMode {
-        return self.raw_state.setGcMode(mode);
+        return self.raw_state.gc.setMode(mode);
     }
 
     pub fn gcParam(self: *const State, param: GcParam) i64 {
-        return self.raw_state.gcParam(param);
+        return self.raw_state.gc.getParam(param);
     }
 
     /// Returns the previous value; values outside 0...maxInt(i32) return `error.InvalidGcParam`.
     pub fn setGcParam(self: *State, param: GcParam, value: i64) !i64 {
         try options_mod.validateGcParam(value);
-        const previous = self.raw_state.gcParam(param);
-        self.raw_state.setGcParam(param, value);
-        self.raw_state.resetAutoGcThreshold();
+        const previous = self.raw_state.gc.getParam(param);
+        self.raw_state.gc.setParam(param, value);
+        self.raw_state.gc.resetAutoThreshold();
         return previous;
     }
 
     pub fn stopGc(self: *State) void {
-        self.raw_state.gc_running = false;
+        self.raw_state.gc.running = false;
     }
 
     pub fn restartGc(self: *State) void {
-        self.raw_state.gc_running = true;
+        self.raw_state.gc.running = true;
     }
 
     pub fn isGcRunning(self: *const State) bool {
-        return self.raw_state.gc_running;
+        return self.raw_state.gc.running;
     }
 
     /// Converts a Zig value into a rooted `Value`.
@@ -298,7 +303,7 @@ pub const State = struct {
     /// Creates a suspended coroutine; first resume arguments become `entry`'s arguments.
     pub fn newCoroutine(self: *State, entry: Function) !Coroutine {
         const raw_entry = try convert.toRuntimeValue(self, entry);
-        const raw = self.raw_state.newCoroutineThread(raw_entry) catch |err| return errors.captureLuaError(self, err);
+        const raw = coroutine_mod.newCoroutineThread(&self.raw_state, raw_entry) catch |err| return errors.captureLuaError(self, err);
         var result = try convert.fromRuntimeValue(self, .{ .thread = raw }, Coroutine);
         errdefer result.deinit();
         try gcBoundary(self);
@@ -365,7 +370,7 @@ pub const State = struct {
         try self.ensurePackageLibrary();
         callbacks.bindDispatch(self);
         const raw_name = runtime.Value{ .string = try self.raw_state.intern(name) };
-        const results = self.raw_state.callFunction(.{ .native = .require }, &.{raw_name}) catch |err| return errors.captureLuaError(self, err);
+        const results = entry_mod.callFunction(&self.raw_state, .{ .native = .require }, &.{raw_name}) catch |err| return errors.captureLuaError(self, err);
         defer self.allocator().free(results);
         return convert.fromRuntimeResults(self, results, T);
     }
@@ -411,7 +416,7 @@ pub const State = struct {
 
     /// Loads through the configured filesystem capability.
     pub fn loadFile(self: *State, path: []const u8, options: LoadOptions) !Function {
-        const source = self.raw_state.readFileAlloc(path) catch |err| return errors.captureLuaError(self, err);
+        const source = io_mod.readFileAlloc(&self.raw_state, path) catch |err| return errors.captureLuaError(self, err);
         var keep_source = false;
         defer if (!keep_source) self.allocator().free(source);
 
@@ -430,7 +435,7 @@ pub const State = struct {
 
     pub fn loadBytecode(self: *State, bytecode: []const u8, options: BytecodeLoadOptions) !Function {
         const environment = try self.environmentValue(options.environment);
-        const loaded = self.raw_state.loadBinaryDump(bytecode, environment) catch |err| return errors.captureLuaError(self, err);
+        const loaded = load_mod.loadBinaryDump(&self.raw_state, bytecode, environment) catch |err| return errors.captureLuaError(self, err);
         return convert.fromRuntimeValue(self, loaded, Function);
     }
 
@@ -495,9 +500,9 @@ pub const State = struct {
         }
 
         return if (binary)
-            self.raw_state.loadBinaryDump(source, environment)
+            load_mod.loadBinaryDump(&self.raw_state, source, environment)
         else
-            self.raw_state.loadSourceAsClosureNamedEnv(source, source_name, environment);
+            load_mod.loadSourceAsClosureNamedEnv(&self.raw_state, source, source_name, environment);
     }
 
     fn destroyMemoryLimitAllocator(self: *State) void {
@@ -516,8 +521,8 @@ pub const State = struct {
 
 // Called after embedding writes have installed all temporary values in roots.
 pub fn gcBoundary(state: *State) !void {
-    if (state.raw_state.gc_running and state.raw_state.shouldRunAutoGc()) {
-        _ = try state.raw_state.stepGc(1);
+    if (state.raw_state.gc.running and state.raw_state.gc.shouldRunAuto()) {
+        _ = try state.raw_state.gc.runSteps(1);
     }
 }
 

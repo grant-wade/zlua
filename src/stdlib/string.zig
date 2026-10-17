@@ -1,6 +1,10 @@
 const std = @import("std");
 const compile = @import("../compile.zig");
 const runtime = @import("../runtime.zig");
+const call_mod = @import("../runtime/call.zig");
+const vm_mod = @import("../runtime/vm.zig");
+const index_mod = @import("../runtime/index.zig");
+const metatable_mod = @import("../runtime/metatable.zig");
 
 const bytecode = compile.bytecode;
 const State = runtime.State;
@@ -16,7 +20,7 @@ pub fn byte(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const first = @max(start, 1);
     const last = @min(stop, source.len);
     if (first <= last) {
-        if (!state.nativeStackFits(thread, op, last - first + 1)) return state.failLibrary("stack overflow (string slice too long)");
+        if (!call_mod.nativeStackFits(state, thread, op, last - first + 1)) return state.failLibrary("stack overflow (string slice too long)");
         var index = first;
         while (index <= last) : (index += 1) try values.append(state.allocator, .{ .integer = source[index - 1] });
     }
@@ -117,7 +121,7 @@ pub fn format(state: *State, thread: *Thread, op: bytecode.Call) !void {
                 try appendLiteral(state, &out, value, arg);
             },
             's' => {
-                const text = try state.valueToString(thread, value);
+                const text = try metatable_mod.valueToString(state, thread, value);
                 if (form.len == 2) {
                     try out.appendSlice(state.allocator, text);
                 } else {
@@ -330,7 +334,7 @@ pub fn gsub(state: *State, thread: *Thread, op: bytecode.Call) !void {
     var changed = false;
     var previous_match_end: ?usize = null;
     while (pos <= source.len and count < max_count) {
-        try state.checkInterrupt();
+        try vm_mod.checkInterrupt(state);
         const found = (try simplePatternFind(state, source, pattern, pos)) orelse break;
         try out.appendSlice(state.allocator, source[pos..found.range.start]);
         if (found.range.start == found.range.end and previous_match_end != null and previous_match_end.? == found.range.start) {
@@ -381,7 +385,7 @@ fn gsubReplacement(state: *State, thread: *Thread, replacement: Value, source: [
     const matched_text = source[matched.range.start..matched.range.end];
     return switch (replacement) {
         .string => |bytes| .{ .text = try gsubStringReplacement(state, bytes, source, matched), .changed = true },
-        .table => |table| switch (try state.getTableFromThread(thread, .{ .table = table }, try firstMatchValue(state, source, matched))) {
+        .table => |table| switch (try index_mod.getTableFromThread(state, thread, .{ .table = table }, try firstMatchValue(state, source, matched))) {
             .nil => .{ .text = matched_text, .changed = false },
             .boolean => |value| if (value) {
                 _ = try invalidReplacementValue(state, .{ .boolean = true });
@@ -409,7 +413,7 @@ fn gsubReplacement(state: *State, thread: *Thread, replacement: Value, source: [
             var args = std.ArrayList(Value).empty;
             defer args.deinit(state.allocator);
             try appendMatchValues(state, &args, source, matched);
-            const result = try state.callOneResult(thread, replacement, args.items);
+            const result = try call_mod.callOneResult(state, thread, replacement, args.items);
             switch (result) {
                 .nil => break :blk .{ .text = matched_text, .changed = false },
                 .boolean => |value| if (value) {
@@ -657,7 +661,7 @@ pub fn rep(state: *State, thread: *Thread, op: bytecode.Call) !void {
     if (count > 0) {
         var index: i64 = 0;
         while (index < count) : (index += 1) {
-            if (index & 0xfff == 0) try state.checkInterrupt();
+            if (index & 0xfff == 0) try vm_mod.checkInterrupt(state);
             if (index != 0) try out.appendSlice(state.allocator, sep);
             try out.appendSlice(state.allocator, source);
         }
@@ -868,7 +872,7 @@ pub fn unpack(state: *State, thread: *Thread, op: bytecode.Call) !void {
         if (item.kind != .fixed_string and item.kind != .zero_string and item.kind != .padding) {
             pos += try packAlignmentPadding(state, pos, item, config.max_align);
         }
-        if (!state.nativeStackFits(thread, op, values.items.len + 2)) return state.failLibrary("stack overflow (too many results)");
+        if (!call_mod.nativeStackFits(state, thread, op, values.items.len + 2)) return state.failLibrary("stack overflow (too many results)");
         switch (item.kind) {
             .padding => {
                 if (pos + 1 > data.len) return state.failArgumentMessage("string.unpack", 2, "data string too short");
@@ -1040,7 +1044,7 @@ fn simplePatternFind(state: *State, source: []const u8, pattern: []const u8, sta
     }
     var candidate = start;
     while (candidate <= source.len) : (candidate += 1) {
-        try state.checkInterrupt();
+        try vm_mod.checkInterrupt(state);
         if (try matchSimplePatternAt(state, source, pattern, candidate)) |matched| return .{ .range = .{ .start = candidate, .end = matched.end }, .captures = matched.captures };
     }
     return null;
@@ -1274,7 +1278,7 @@ fn matchPatternFrom(state: *State, source: []const u8, pattern: []const u8, sour
             var index = ends.items.len;
             while (index > 0) {
                 index -= 1;
-                try state.checkInterrupt();
+                try vm_mod.checkInterrupt(state);
                 if (try matchPatternFrom(state, source, pattern, ends.items[index], next_index, depth + 1, captures)) |matched_end| return matched_end;
             }
             if (quantifier == '*') return matchPatternFrom(state, source, pattern, source_index, next_index, depth + 1, captures);
@@ -1283,7 +1287,7 @@ fn matchPatternFrom(state: *State, source: []const u8, pattern: []const u8, sour
         '-' => {
             var candidate = source_index;
             while (true) {
-                try state.checkInterrupt();
+                try vm_mod.checkInterrupt(state);
                 if (try matchPatternFrom(state, source, pattern, candidate, next_index, depth + 1, captures)) |matched_end| return matched_end;
                 const item_end = (try matchPatternItem(state, source, atom, candidate, captures)) orelse return null;
                 if (item_end == candidate) return null;

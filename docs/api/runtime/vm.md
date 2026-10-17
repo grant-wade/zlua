@@ -25,20 +25,28 @@
 - [runtime](../runtime.md)
 - [runtime.chunk](../runtime/chunk.md)
 - [reflection](../reflection.md)
-- [runtime.value](../runtime/value.md)
-- [runtime.number_format](../runtime/number_format.md)
-- [runtime.execute](../runtime/execute.md)
-- [testing.process](../testing/process.md)
 - [runtime.state](../runtime/state.md)
-- [runtime.rollback](../runtime/rollback.md)
+- [stdlib](../stdlib.md)
+- [stdlib.base](../stdlib/base.md)
 - [runtime.call](../runtime/call.md)
 - [runtime.coroutine](../runtime/coroutine.md)
 - [runtime.debug](../runtime/debug.md)
-- [runtime.gc](../runtime/gc.md)
+- [runtime.metatable](../runtime/metatable.md)
+- [runtime.rollback](../runtime/rollback.md)
+- [runtime.value](../runtime/value.md)
+- [runtime.number_format](../runtime/number_format.md)
 - [runtime.host](../runtime/host.md)
+- [runtime.upvalue](../runtime/upvalue.md)
+- [runtime.failure](../runtime/failure.md)
+- [runtime.io](../runtime/io.md)
+- [runtime.load](../runtime/load.md)
+- [runtime.vm](../runtime/vm.md)
+- [runtime.gc](../runtime/gc.md)
+- [runtime.entry](../runtime/entry.md)
+- [runtime.system](../runtime/system.md)
 - [runtime.timezone](../runtime/timezone.md)
-- [stdlib](../stdlib.md)
-- [stdlib.base](../stdlib/base.md)
+- [runtime.index](../runtime/index.md)
+- [runtime.operators](../runtime/operators.md)
 - [stdlib.table](../stdlib/table.md)
 - [stdlib.string](../stdlib/string.md)
 - [stdlib.math](../stdlib/math.md)
@@ -55,7 +63,8 @@
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
-- [runtime.vm](../runtime/vm.md)
+- [runtime.execute](../runtime/execute.md)
+- [testing.process](../testing/process.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
 - [compile.compiler](../compile/compiler.md)
@@ -105,28 +114,29 @@
 
 ## Functions
 
-- [checkExecutionLimits](#fn-checkexecutionlimits)
 - [executionCheckpoint](#fn-executioncheckpoint)
 - [checkInterrupt](#fn-checkinterrupt)
-- [instructionBudgetExhausted](#fn-instructionbudgetexhausted)
+- [runThreadUntil](#fn-runthreaduntil)
+- [interruptControl](#fn-interruptcontrol)
+- [interruptRequested](#fn-interruptrequested)
+- [clearInterrupt](#fn-clearinterrupt)
+- [instructionBudgetUsed](#fn-instructionbudgetused)
+- [resetInstructionBudget](#fn-resetinstructionbudget)
+- [beginCallInstructionBudget](#fn-begincallinstructionbudget)
+- [endCallInstructionBudget](#fn-endcallinstructionbudget)
+- [consumeInterrupt](#fn-consumeinterrupt)
+- [get](#fn-get)
+- [set](#fn-set)
+- [absoluteRegister](#fn-absoluteregister)
+- [jumpThread](#fn-jumpthread)
+- [jumpThreadMaybeFast](#fn-jumpthreadmaybefast)
+- [forValueName](#fn-forvaluename)
+- [assertProtoPrepared](#fn-assertprotoprepared)
 
 ## Types
 
 - [InterruptControl](#type-interruptcontrol)
-
-## Constants
-
-- [interrupt_poll_interval](#const-interrupt_poll_interval)
-
-<a id="const-interrupt_poll_interval"></a>
-
-## interrupt_poll_interval
-
-Instructions between interrupt polls; the fast loop also polls at backward jumps and calls.
-
-```zig
-pub const interrupt_poll_interval: u64 = 1024;
-```
+- [ForValueKind](#type-forvaluekind)
 
 <a id="type-interruptcontrol"></a>
 
@@ -179,16 +189,6 @@ pub fn isRequested(self: *const InterruptControl) bool
 
 References: [`InterruptControl`](#type-interruptcontrol)
 
-<a id="fn-checkexecutionlimits"></a>
-
-## checkExecutionLimits
-
-Per-instruction safepoint; the hot path is one comparison against `instruction_checkpoint`.
-
-```zig
-pub inline fn checkExecutionLimits(comptime State: type, self: *State, thread: *Thread) !void
-```
-
 <a id="fn-executioncheckpoint"></a>
 
 ## executionCheckpoint
@@ -197,7 +197,7 @@ Interrupts and exhausted budgets leave the checkpoint in place so every later
 safepoint raises again; Lua code cannot catch them and keep running.
 
 ```zig
-pub noinline fn executionCheckpoint(comptime State: type, self: *State, thread: *Thread) !void
+pub noinline fn executionCheckpoint(self: *State, thread: *Thread) !void
 ```
 
 <a id="fn-checkinterrupt"></a>
@@ -207,14 +207,159 @@ pub noinline fn executionCheckpoint(comptime State: type, self: *State, thread: 
 Polled periodically by long-running native functions.
 
 ```zig
-pub fn checkInterrupt(comptime State: type, self: *State) !void
+pub fn checkInterrupt(self: *State) !void
 ```
 
-<a id="fn-instructionbudgetexhausted"></a>
+<a id="fn-runthreaduntil"></a>
 
-## instructionBudgetExhausted
+## runThreadUntil
 
 ```zig
-pub fn instructionBudgetExhausted(comptime State: type, self: *const State) bool
+pub fn runThreadUntil(self: *State, thread: *Thread, target_frame_count: usize) anyerror!void
+```
+
+<a id="fn-interruptcontrol"></a>
+
+## interruptControl
+
+Allocates the shared interrupt control on first use; polling starts at the next safepoint.
+
+```zig
+pub fn interruptControl(self: *State) !*InterruptControl
+```
+
+References: [`InterruptControl`](#type-interruptcontrol)
+
+<a id="fn-interruptrequested"></a>
+
+## interruptRequested
+
+```zig
+pub inline fn interruptRequested(self: *const State) bool
+```
+
+<a id="fn-clearinterrupt"></a>
+
+## clearInterrupt
+
+```zig
+pub fn clearInterrupt(self: *State) void
+```
+
+<a id="fn-instructionbudgetused"></a>
+
+## instructionBudgetUsed
+
+```zig
+pub fn instructionBudgetUsed(self: *const State) u64
+```
+
+<a id="fn-resetinstructionbudget"></a>
+
+## resetInstructionBudget
+
+Restarts the cumulative `max_instructions` budget.
+
+```zig
+pub fn resetInstructionBudget(self: *State) void
+```
+
+<a id="fn-begincallinstructionbudget"></a>
+
+## beginCallInstructionBudget
+
+Limits a host call, including nested calls and coroutines, to `max` further
+instructions. Returns the enclosing deadline for `endCallInstructionBudget`.
+
+```zig
+pub fn beginCallInstructionBudget(self: *State, max: u64) ?u64
+```
+
+<a id="fn-endcallinstructionbudget"></a>
+
+## endCallInstructionBudget
+
+Restores the deadline returned by `beginCallInstructionBudget`.
+
+```zig
+pub fn endCallInstructionBudget(self: *State, previous: ?u64) void
+```
+
+<a id="fn-consumeinterrupt"></a>
+
+## consumeInterrupt
+
+```zig
+pub fn consumeInterrupt(self: *State) void
+```
+
+<a id="fn-get"></a>
+
+## get
+
+```zig
+pub fn get(_: *State, thread: *Thread, register: usize) Value
+```
+
+<a id="fn-set"></a>
+
+## set
+
+```zig
+pub fn set(_: *State, thread: *Thread, register: usize, value: Value) void
+```
+
+<a id="fn-absoluteregister"></a>
+
+## absoluteRegister
+
+```zig
+pub fn absoluteRegister(_: *State, thread: *Thread, register: usize) usize
+```
+
+<a id="fn-jumpthread"></a>
+
+## jumpThread
+
+```zig
+pub fn jumpThread(self: *State, thread: *Thread, offset: bytecode.JumpOffset, auto_gc: bool) !void
+```
+
+<a id="fn-jumpthreadmaybefast"></a>
+
+## jumpThreadMaybeFast
+
+```zig
+pub fn jumpThreadMaybeFast(self: *State, thread: *Thread, offset: bytecode.JumpOffset, auto_gc: bool) !void
+```
+
+<a id="type-forvaluekind"></a>
+
+## ForValueKind
+
+```zig
+pub const ForValueKind = enum {
+    initial,
+    limit,
+    step,
+};
+```
+
+<a id="fn-forvaluename"></a>
+
+## forValueName
+
+```zig
+pub fn forValueName(kind: ForValueKind) []const u8
+```
+
+References: [`ForValueKind`](#type-forvaluekind)
+
+<a id="fn-assertprotoprepared"></a>
+
+## assertProtoPrepared
+
+```zig
+pub fn assertProtoPrepared(proto: *const proto_mod.Proto) void
 ```
 

@@ -10,6 +10,9 @@ const state_mod = @import("state.zig");
 const Ref = handle.Ref;
 const State = state_mod.State;
 const Value = @import("value.zig").Value;
+const entry_mod = @import("../runtime/entry.zig");
+const metatable_mod = @import("../runtime/metatable.zig");
+const operators_mod = @import("../runtime/operators.zig");
 
 /// Rooted handle to a Lua table.
 pub const Table = struct {
@@ -66,9 +69,9 @@ pub const Table = struct {
     pub fn len(self: Table) !i64 {
         const state = self.ref.state;
         const raw = try self.rawValue();
-        const handler = (state.raw_state.getMetamethod(raw, "__len") catch |err| return errors.captureLuaError(state, err)) orelse return raw.table.len();
+        const handler = (metatable_mod.getMetamethod(&state.raw_state, raw, "__len") catch |err| return errors.captureLuaError(state, err)) orelse return raw.table.len();
         const result = callFirstResult(state, handler, &.{ raw, raw }) catch |err| return errors.captureLuaError(state, err);
-        return state.raw_state.lengthToInteger(result) catch |err| return errors.captureLuaError(state, err);
+        return operators_mod.lengthToInteger(&state.raw_state, result) catch |err| return errors.captureLuaError(state, err);
     }
 
     pub fn rawLen(self: Table) !i64 {
@@ -91,7 +94,7 @@ pub const Table = struct {
         const state = self.ref.state;
         const raw = try self.rawValue();
         const raw_metatable: runtime.Value = if (metatable) |table| try convert.toRuntimeValue(state, table) else .nil;
-        state.raw_state.setDebugMetatableValue(raw, raw_metatable) catch |err| return errors.captureLuaError(state, err);
+        metatable_mod.setDebugMetatableValue(&state.raw_state, raw, raw_metatable) catch |err| return errors.captureLuaError(state, err);
     }
 
     /// A `[]const u8` result borrows VM memory; see `Value.string`.
@@ -158,8 +161,8 @@ pub const Table = struct {
     pub fn pairs(self: Table) !Iterator {
         const state = self.ref.state;
         const raw = try self.rawValue();
-        const handler = (state.raw_state.getMetamethod(raw, "__pairs") catch |err| return errors.captureLuaError(state, err)) orelse return self.rawIterator();
-        const results = state.raw_state.callFunction(handler, &.{raw}) catch |err| return errors.captureLuaError(state, err);
+        const handler = (metatable_mod.getMetamethod(&state.raw_state, raw, "__pairs") catch |err| return errors.captureLuaError(state, err)) orelse return self.rawIterator();
+        const results = entry_mod.callFunction(&state.raw_state, handler, &.{raw}) catch |err| return errors.captureLuaError(state, err);
         defer state.allocator().free(results);
         const result = struct {
             fn at(values: []const runtime.Value, index: usize) runtime.Value {
@@ -173,7 +176,7 @@ pub const Table = struct {
         try iterator.store(.control, result(results, 2));
         const closing = result(results, 3);
         if (runtime.truthy(closing)) {
-            const close_handler = state.raw_state.getMetamethod(closing, "__close") catch |err| return errors.captureLuaError(state, err);
+            const close_handler = metatable_mod.getMetamethod(&state.raw_state, closing, "__close") catch |err| return errors.captureLuaError(state, err);
             if (close_handler == null) return errors.captureLuaError(state, state.raw_state.fail("variable '(for state)' got a non-closable value"));
             try iterator.store(.closing, closing);
         }
@@ -250,7 +253,7 @@ pub const Table = struct {
 
         fn callIterator(self: *Iterator) ![2]runtime.Value {
             const state = self.state;
-            const results = state.raw_state.callFunction(self.rooted(.target), &.{ self.rooted(.invariant), self.rooted(.control) }) catch |err| {
+            const results = entry_mod.callFunction(&state.raw_state, self.rooted(.target), &.{ self.rooted(.invariant), self.rooted(.control) }) catch |err| {
                 const failure = errors.captureLuaError(state, err);
                 self.release(.control);
                 self.release(.value);
@@ -271,8 +274,8 @@ pub const Table = struct {
             const state = self.state;
             defer state.raw_state.unrootValue(index);
             const closing = state.raw_state.rootedValue(index);
-            const handler = (state.raw_state.getMetamethod(closing, "__close") catch |err| return errors.captureLuaError(state, err)) orelse return;
-            const results = state.raw_state.callFunction(handler, &.{ closing, failure }) catch |err| return errors.captureLuaError(state, err);
+            const handler = (metatable_mod.getMetamethod(&state.raw_state, closing, "__close") catch |err| return errors.captureLuaError(state, err)) orelse return;
+            const results = entry_mod.callFunction(&state.raw_state, handler, &.{ closing, failure }) catch |err| return errors.captureLuaError(state, err);
             state.allocator().free(results);
         }
 
@@ -325,7 +328,7 @@ fn writableTableKey(state: *State, key: runtime.Value) !runtime.Value {
 }
 
 fn callFirstResult(state: *State, callable: runtime.Value, args: []const runtime.Value) !runtime.Value {
-    const results = try state.raw_state.callFunction(callable, args);
+    const results = try entry_mod.callFunction(&state.raw_state, callable, args);
     defer state.allocator().free(results);
     return if (results.len == 0) .nil else results[0];
 }
@@ -338,7 +341,7 @@ fn indexTable(state: *State, start: *runtime.Table, key: runtime.Value) !runtime
             const found = table.get(raw_key);
             if (found != .nil) return found;
         }
-        const handler = try state.raw_state.getMetamethod(.{ .table = table }, "__index") orelse return .nil;
+        const handler = try metatable_mod.getMetamethod(&state.raw_state, .{ .table = table }, "__index") orelse return .nil;
         switch (handler) {
             .table => |next| table = next,
             else => return callFirstResult(state, handler, &.{ .{ .table = table }, key }),
@@ -352,7 +355,7 @@ fn assignTable(state: *State, start: *runtime.Table, key: runtime.Value, value: 
     const lookup = readableTableKey(key);
     for (0..max_metamethod_chain) |_| {
         const existing = if (lookup) |raw_key| table.get(raw_key) != .nil else false;
-        const handler = if (existing) null else try state.raw_state.getMetamethod(.{ .table = table }, "__newindex");
+        const handler = if (existing) null else try metatable_mod.getMetamethod(&state.raw_state, .{ .table = table }, "__newindex");
         const metamethod = handler orelse {
             const raw_key = lookup orelse return state.raw_state.fail(if (key == .nil) "table index is nil" else "table index is NaN");
             return storeRaw(state, table, raw_key, value);
@@ -371,8 +374,8 @@ fn assignTable(state: *State, start: *runtime.Table, key: runtime.Value, value: 
 fn storeRaw(state: *State, table: *runtime.Table, key: runtime.Value, value: runtime.Value) !void {
     if (table.rollback != null and table.get(key) != .nil) {
         try rollback_runtime.tableWritable(table);
-        state.raw_state.noteTableCapacityDelta(table, 0);
+        state.raw_state.gc.noteTableCapacityDelta(table, 0);
     }
     if (!table.setExistingNonNil(key, value)) try state.raw_state.setTableRaw(table, key, value);
-    state.raw_state.writeTableBarrier(table, key, value);
+    state.raw_state.gc.writeTableBarrier(table, key, value);
 }

@@ -118,7 +118,7 @@ test "file buffers count toward collector memory accounting" {
     , .{});
     try std.testing.expect(try lua.getGlobal("grown", f64) >= 1024);
     try std.testing.expect(try lua.getGlobal("shrunk", f64) < 64);
-    try std.testing.expectEqual(lua.raw_state.allocationStats().total(), lua.raw_state.gc_known_total);
+    try std.testing.expectEqual(lua.raw_state.gc.allocationStats().total(), lua.raw_state.gc.known_total);
 }
 
 test "collecting an unreachable open file flushes and closes it" {
@@ -482,7 +482,7 @@ test "deinit finalizers run collected tables first and respect limits and interr
             \\keep = setmetatable({}, {__gc = function() log('kept') end})
             \\setmetatable({}, {__gc = function() log('separated') end})
         , .{});
-        while (lua.raw_state.gc_phase != .finalize) _ = try lua.stepGc(.{});
+        while (lua.raw_state.gc.phase != .finalize) _ = try lua.stepGc(.{});
         try std.testing.expect(lua.raw_state.table_pending_finalizer_head != null);
         try lua.doString("late = setmetatable({}, {__gc = function() log('late') end})", .{});
     }

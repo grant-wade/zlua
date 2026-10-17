@@ -6,9 +6,10 @@ const types = @import("types.zig");
 const State = @import("state.zig").State;
 const Proto = @import("../compile/proto.zig").Proto;
 const static_strings = @import("../stdlib/static_strings.zig");
+const gc_mod = @import("gc.zig");
 
 pub fn checkIdleFast(source: *const State) !void {
-    if (source.execution_depth != 0 or source.userdata_scope != null or source.current_thread != null or source.active_api_callback != null or source.is_collecting or source.snapshot_busy) return error.SnapshotBusy;
+    if (source.execution_depth != 0 or source.userdata_scope != null or source.current_thread != null or source.active_api_callback != null or source.gc.collecting or source.snapshot_busy) return error.SnapshotBusy;
 }
 
 pub fn checkIdle(source: *const State) !void {
@@ -226,7 +227,8 @@ const Copier = struct {
         }
         for (source.thread_allocations.items, d.thread_allocations.items) |old, new| try self.thread(old, new);
         for (source.userdata_allocations.items, d.userdata_allocations.items) |old, new| try self.userdata(old, new);
-        inline for (.{ "global_table", "table_metatable_head", "table_finalizer_head", "table_pending_finalizer_head", "userdata_pending_finalizer_head", "userdata_lua_pending_head", "table_metatable_count", "table_finalizer_serial", "stdin_pos", "file_generation", "last_error", "error_handled", "warnings_on", "string_metatable", "number_metatable", "boolean_metatable", "nil_metatable", "file_metatable", "fs_file_metatable", "io_input", "io_output", "zerde_null", "zerde_array_metatable", "zerde_object_metatable", "gc_running", "gc_mode", "gc_params", "random_state", "instruction_count", "instruction_budget_base" }) |name| @field(d, name) = try self.remap(@field(source, name));
+        inline for (.{ "global_table", "table_metatable_head", "table_finalizer_head", "table_pending_finalizer_head", "userdata_pending_finalizer_head", "userdata_lua_pending_head", "table_metatable_count", "table_finalizer_serial", "stdin_pos", "file_generation", "last_error", "error_handled", "warnings_on", "string_metatable", "number_metatable", "boolean_metatable", "nil_metatable", "file_metatable", "fs_file_metatable", "io_input", "io_output", "zerde_null", "zerde_array_metatable", "zerde_object_metatable", "random_state", "instruction_count", "instruction_budget_base" }) |name| @field(d, name) = try self.remap(@field(source, name));
+        inline for (.{ "running", "mode", "params" }) |name| @field(d.gc, name) = @field(source.gc, name);
         d.file_generation +%= 1;
         d.stdout = try self.list(u8, source.stdout.items);
         d.stderr = try self.list(u8, source.stderr.items);
@@ -234,10 +236,10 @@ const Copier = struct {
         inline for (.{ "userdata_allocations", "closure_allocations", "upvalue_allocations", "thread_allocations" }) |field| {
             for (@field(d, field).items, 0..) |object, index| try d.object_allocation_index.put(a, @intFromPtr(object), index);
         }
-        try @import("gc.zig").reserveQueues(State, d, 0);
+        try d.gc.reserveQueues(0);
         if (error_root) |index| _ = try d.rootValue(try self.value(source.rootedValue(index)));
-        _ = d.refreshAllocationTotal();
-        d.normalizeGcBaseline();
+        _ = d.gc.refreshAllocationTotal();
+        d.gc.normalizeBaseline();
     }
 
     fn storedValue(self: *Copier, v: types.Value) !types.Value {
@@ -375,10 +377,15 @@ comptime {
     @setEvalBranchQuota(1000000);
     review(State, .{
         .external = "allocator allocator_lifetime options",
-        .rebuilt = "borrowed_proto_count strings string_allocation_index table_allocation_index object_allocation_index gc_next_total gc_known_total api_roots",
+        .rebuilt = "borrowed_proto_count strings string_allocation_index table_allocation_index object_allocation_index api_roots gc",
         .remapped = "global_table table_metatable_head table_finalizer_head table_pending_finalizer_head userdata_pending_finalizer_head userdata_lua_pending_head string_metatable number_metatable boolean_metatable nil_metatable file_metatable fs_file_metatable io_input io_output zerde_null zerde_array_metatable zerde_object_metatable last_error",
-        .copied = "string_allocations table_allocations userdata_allocations closure_allocations upvalue_allocations thread_allocations proto_allocations source_allocations stdout stderr table_metatable_count table_finalizer_serial stdin_pos file_generation error_handled warnings_on gc_running gc_mode gc_params random_state instruction_count instruction_budget_base",
-        .transient = "execution_depth userdata_scope value_roots rollback snapshot_busy discarding exit_request local_zone current_thread api_callback_dispatch api_callback_user_data active_api_callback coroutine_close_depth gc_epoch gc_generation gc_phase gc_cycle gc_work gc_remembered gc_weak gc_tables gc_finalizers gc_major_pending gc_cycle_start_total gc_found_young gc_old gc_sweep_cursor gc_major_base gc_work_done gc_minor_count is_collecting stress_collect stress_step stress_mark mark_all_stack_registers conservative_gc_depth call_instruction_deadline instruction_checkpoint interrupt",
+        .copied = "string_allocations table_allocations userdata_allocations closure_allocations upvalue_allocations thread_allocations proto_allocations source_allocations stdout stderr table_metatable_count table_finalizer_serial stdin_pos file_generation error_handled warnings_on random_state instruction_count instruction_budget_base",
+        .transient = "execution_depth userdata_scope value_roots rollback snapshot_busy discarding exit_request local_zone current_thread api_callback_dispatch api_callback_user_data active_api_callback coroutine_close_depth call_instruction_deadline instruction_checkpoint interrupt",
+    });
+    review(gc_mod.Gc, .{
+        .rebuilt = "next_total known_total",
+        .copied = "running mode params",
+        .transient = "epoch generation phase cycle work remembered weak tables finalizers major_pending cycle_start_total found_young old sweep_cursor major_base work_done minor_count collecting stress_collect stress_step stress_mark mark_all_stack_registers conservative_depth",
     });
     review(types.Thread, .{
         .copied = "exposed stack frames yield_values protected_continuations generic_for_continuations pairs_continuations tail_call_continuations call_one_continuations hook_call hook_line hook_return hook_count hook_count_remaining pending_yield_hook_return continuation_order continuation_frame_count last_result_base last_result_count last_transfer_base last_transfer_count yield_result_base yield_result_count pending_unwind_resume_frame_count pending_unwind_target_frame_count started is_main closing status stack_error_space host_frame frame_storage_bytes",

@@ -1,6 +1,10 @@
 const std = @import("std");
 const compile = @import("../compile.zig");
 const errors = @import("../errors.zig");
+const call_mod = @import("call.zig");
+const metatable_mod = @import("metatable.zig");
+const rollback_mod = @import("rollback.zig");
+const State = @import("state.zig").State;
 const types = @import("types.zig");
 const value_mod = @import("value.zig");
 
@@ -8,17 +12,20 @@ const proto_mod = compile.proto;
 const Value = types.Value;
 const Thread = types.Thread;
 const CallFrame = types.CallFrame;
-
 const appendFmt = value_mod.appendFmt;
 const appendValue = value_mod.appendValue;
 const localActiveAt = value_mod.localActiveAt;
+const bytecode = compile.bytecode;
+const toInteger = value_mod.toInteger;
+const argValue = value_mod.argValue;
+const luaTypeName = value_mod.luaTypeName;
 
 const DebugStackSlot = struct {
     frame_index: usize,
     register: usize,
 };
 
-fn lineForFrame(frame: CallFrame) ?usize {
+pub fn lineForFrame(frame: CallFrame) ?usize {
     if (frame.proto.line_info.items.len == 0) return null;
     const pc = if (frame.pc == 0) 0 else frame.pc - 1;
     if (pc >= frame.proto.line_info.items.len) return null;
@@ -43,13 +50,13 @@ fn debugValueTypeName(value: Value) []const u8 {
     return value_mod.debugValueTypeName(value);
 }
 
-pub fn appendUnhandledErrorDebugDump(comptime State: type, self: *State, thread: *Thread, err: anyerror) !void {
+pub fn appendUnhandledErrorDebugDump(self: *State, thread: *Thread, err: anyerror) !void {
     const out = &self.stderr;
-    const stats = self.allocationStats();
+    const stats = self.gc.allocationStats();
     try out.appendSlice(self.allocator, "\n[zlua debug] unhandled runtime exception\n");
     try appendFmt(self.allocator, out, "error={s}\n", .{@errorName(err)});
     try out.appendSlice(self.allocator, "error_value=");
-    try appendDebugValue(State, self, out, self.currentErrorValue());
+    try appendDebugValue(self, out, self.currentErrorValue());
     try out.append(self.allocator, '\n');
     if (self.last_error) |payload| switch (payload) {
         .diagnostic => |message| try appendFmt(self.allocator, out, "last_error={s}\n", .{message}),
@@ -63,12 +70,12 @@ pub fn appendUnhandledErrorDebugDump(comptime State: type, self: *State, thread:
     try appendFmt(self.allocator, out, "allocations strings={d} tables={d} closures={d} upvalues={d} threads={d} bytes={d}\n", .{ stats.strings, stats.tables, stats.closures, stats.upvalues, stats.threads, stats.bytes });
     try appendFmt(self.allocator, out, "thread status={s} frames={d} stack={d} results={d}@{d} native_depth={d} protected_close_depth={d}\n", .{ @tagName(thread.status), thread.frames.items.len, thread.stack.items.len, thread.last_result_count, thread.last_result_base, thread.native_call_depth, thread.protected_close_depth });
     try appendFmt(self.allocator, out, "continuations protected={d} call_one={d} tail={d} generic_for={d} pairs={d}\n", .{ thread.protected_continuations.items.len, thread.call_one_continuations.items.len, thread.tail_call_continuations.items.len, thread.generic_for_continuations.items.len, thread.pairs_continuations.items.len });
-    try appendDebugFrames(State, self, out, thread);
-    try appendDebugStack(State, self, out, thread);
+    try appendDebugFrames(self, out, thread);
+    try appendDebugStack(self, out, thread);
     try out.appendSlice(self.allocator, "[/zlua debug]\n");
 }
 
-pub fn appendDebugFrames(comptime State: type, self: *State, out: *std.ArrayList(u8), thread: *Thread) !void {
+fn appendDebugFrames(self: *State, out: *std.ArrayList(u8), thread: *Thread) !void {
     try appendFmt(self.allocator, out, "frames newest-first ({d}):\n", .{thread.frames.items.len});
     var index = thread.frames.items.len;
     while (index > 0) {
@@ -82,13 +89,13 @@ pub fn appendDebugFrames(comptime State: type, self: *State, out: *std.ArrayList
         else
             "<end>";
         try appendFmt(self.allocator, out, "  frame {d}: {s}:{d} pc={d} op={s} func={s} base={d} return={d}@{d} registers={d}\n", .{ index, frame.proto.source_name, line, pc, instruction, name, frame.base, frame.return_count, frame.return_start, frame.proto.max_registers });
-        try appendDebugLocals(State, self, out, thread, frame);
-        try appendDebugVarargs(State, self, out, frame);
-        try appendDebugUpvalues(State, self, out, frame);
+        try appendDebugLocals(self, out, thread, frame);
+        try appendDebugVarargs(self, out, frame);
+        try appendDebugUpvalues(self, out, frame);
     }
 }
 
-pub fn appendDebugLocals(comptime State: type, self: *State, out: *std.ArrayList(u8), thread: *Thread, frame: CallFrame) !void {
+fn appendDebugLocals(self: *State, out: *std.ArrayList(u8), thread: *Thread, frame: CallFrame) !void {
     const pc = if (frame.pc == 0) @as(usize, 0) else frame.pc - 1;
     var found = false;
     for (frame.proto.locals.items) |local| {
@@ -99,7 +106,7 @@ pub fn appendDebugLocals(comptime State: type, self: *State, out: *std.ArrayList
         try out.appendSlice(self.allocator, " = ");
         const absolute_register = frame.base + local.register;
         if (absolute_register < thread.stack.items.len) {
-            try appendDebugValue(State, self, out, thread.stack.items[absolute_register]);
+            try appendDebugValue(self, out, thread.stack.items[absolute_register]);
         } else {
             try out.appendSlice(self.allocator, "<out-of-stack>");
         }
@@ -108,19 +115,19 @@ pub fn appendDebugLocals(comptime State: type, self: *State, out: *std.ArrayList
     if (!found) try out.appendSlice(self.allocator, "    locals: <none>\n");
 }
 
-pub fn appendDebugVarargs(comptime State: type, self: *State, out: *std.ArrayList(u8), frame: CallFrame) !void {
+fn appendDebugVarargs(self: *State, out: *std.ArrayList(u8), frame: CallFrame) !void {
     if (frame.varargs.len == 0) {
         try out.appendSlice(self.allocator, "    varargs: <none>\n");
         return;
     }
     for (frame.varargs, 0..) |value, index| {
         try appendFmt(self.allocator, out, "    vararg {d} = ", .{index});
-        try appendDebugValue(State, self, out, value);
+        try appendDebugValue(self, out, value);
         try out.append(self.allocator, '\n');
     }
 }
 
-pub fn appendDebugUpvalues(comptime State: type, self: *State, out: *std.ArrayList(u8), frame: CallFrame) !void {
+fn appendDebugUpvalues(self: *State, out: *std.ArrayList(u8), frame: CallFrame) !void {
     if (frame.closure.upvalues.len == 0) {
         try out.appendSlice(self.allocator, "    upvalues: <none>\n");
         return;
@@ -131,12 +138,12 @@ pub fn appendDebugUpvalues(comptime State: type, self: *State, out: *std.ArrayLi
         try appendFmt(self.allocator, out, "    upvalue U{d} {s} {s}", .{ index, name, if (upvalue.is_open) "open" else "closed" });
         if (upvalue.is_open) try appendFmt(self.allocator, out, " stack={d}", .{upvalue.stack_index});
         try out.appendSlice(self.allocator, " = ");
-        try appendDebugValue(State, self, out, value);
+        try appendDebugValue(self, out, value);
         try out.append(self.allocator, '\n');
     }
 }
 
-pub fn appendDebugStack(comptime State: type, self: *State, out: *std.ArrayList(u8), thread: *Thread) !void {
+fn appendDebugStack(self: *State, out: *std.ArrayList(u8), thread: *Thread) !void {
     try appendFmt(self.allocator, out, "stack ({d} slots):\n", .{thread.stack.items.len});
     for (thread.stack.items, 0..) |value, stack_index| {
         try appendFmt(self.allocator, out, "  [{d}]", .{stack_index});
@@ -144,22 +151,22 @@ pub fn appendDebugStack(comptime State: type, self: *State, out: *std.ArrayList(
             try appendFmt(self.allocator, out, " frame={d} r{d}", .{ slot.frame_index, slot.register });
         }
         try out.appendSlice(self.allocator, " = ");
-        try appendDebugValue(State, self, out, value);
+        try appendDebugValue(self, out, value);
         try out.append(self.allocator, '\n');
     }
 }
 
-pub fn appendDebugValue(comptime State: type, self: *State, out: *std.ArrayList(u8), value: Value) !void {
+fn appendDebugValue(self: *State, out: *std.ArrayList(u8), value: Value) !void {
     try appendFmt(self.allocator, out, "({s}) ", .{debugValueTypeName(value)});
-    if (value == .table and !self.isTrackedTable(value.table)) {
+    if (value == .table and !self.gc.isTrackedTable(value.table)) {
         try appendFmt(self.allocator, out, "table: 0x{x}", .{@intFromPtr(value.table)});
         return;
     }
     try appendValue(self.allocator, out, value);
 }
 
-pub const traceback_levels_head = 10;
-pub const traceback_levels_tail = 11;
+const traceback_levels_head = 10;
+const traceback_levels_tail = 11;
 const chunk_id_size = 60;
 
 const TracebackEntry = union(enum) {
@@ -175,7 +182,7 @@ const NativeEntry = struct {
     callee: Value = .nil,
 };
 
-pub const TracebackOptions = struct {
+const TracebackOptions = struct {
     /// Text placed before `stack traceback:`.
     message: ?[]const u8 = null,
     /// First level shown; level 0 is the function producing the traceback.
@@ -188,12 +195,12 @@ pub const TracebackOptions = struct {
 };
 
 /// Formats a traceback from level 1 without a message, as a message handler sees it.
-pub fn formatTraceback(comptime State: type, self: *State, thread: *Thread, host_frame: bool) ![]u8 {
-    return formatTracebackWith(State, self, thread, .{ .host_frame = host_frame });
+pub fn formatTraceback(self: *State, thread: *Thread, host_frame: bool) ![]u8 {
+    return formatTracebackWith(self, thread, .{ .host_frame = host_frame });
 }
 
 /// Formats a `luaL_traceback`-style traceback, owned by the caller.
-pub fn formatTracebackWith(comptime State: type, self: *State, thread: *Thread, options: TracebackOptions) ![]u8 {
+fn formatTracebackWith(self: *State, thread: *Thread, options: TracebackOptions) ![]u8 {
     var entries = std.ArrayList(TracebackEntry).empty;
     defer entries.deinit(self.allocator);
     const frames = thread.frames.items;
@@ -240,12 +247,12 @@ pub fn formatTracebackWith(comptime State: type, self: *State, thread: *Thread, 
                 const named = if (native.origin) |value| originNamewhat(value) else null;
                 if (named) |namewhat| {
                     try appendFmt(self.allocator, &out, "{s} '{s}'", .{ namewhat, originName(native.origin.?) });
-                } else if (!try appendGlobalName(State, self, &out, native.callee)) {
+                } else if (!try appendGlobalName(self, &out, native.callee)) {
                     try out.append(self.allocator, '?');
                 }
             },
             .native_iterator => try out.appendSlice(self.allocator, "\n\t[C]: in for iterator 'for iterator'"),
-            .lua => |frame_index| try appendTracebackFrame(State, self, &out, frames, frame_index),
+            .lua => |frame_index| try appendTracebackFrame(self, &out, frames, frame_index),
         }
     }
     return out.toOwnedSlice(self.allocator);
@@ -260,7 +267,7 @@ fn appendNativeMarks(allocator: std.mem.Allocator, entries: *std.ArrayList(Trace
     }
 }
 
-fn appendGlobalName(comptime State: type, self: *State, out: *std.ArrayList(u8), callee: Value) !bool {
+fn appendGlobalName(self: *State, out: *std.ArrayList(u8), callee: Value) !bool {
     if (callee == .nil) return false;
     const start = out.items.len;
     try out.appendSlice(self.allocator, "function '");
@@ -272,7 +279,7 @@ fn appendGlobalName(comptime State: type, self: *State, out: *std.ArrayList(u8),
     return true;
 }
 
-fn appendTracebackFrame(comptime State: type, self: *State, out: *std.ArrayList(u8), frames: []const CallFrame, index: usize) !void {
+fn appendTracebackFrame(self: *State, out: *std.ArrayList(u8), frames: []const CallFrame, index: usize) !void {
     const allocator = self.allocator;
     const frame = frames[index];
     if (isNativeEntryFrame(frame)) {
@@ -293,7 +300,7 @@ fn appendTracebackFrame(comptime State: type, self: *State, out: *std.ArrayList(
         try appendFmt(allocator, out, "{s} '{s}'", .{ name.namewhat, name.name });
     } else if (frame.proto.defined_line == 0) {
         try out.appendSlice(allocator, "main chunk");
-    } else if (!try appendGlobalName(State, self, out, .{ .closure = frame.closure })) {
+    } else if (!try appendGlobalName(self, out, .{ .closure = frame.closure })) {
         try appendFmt(allocator, out, "function <{s}:{d}>", .{ source, frame.proto.defined_line });
     }
     if (frame.is_tail_call) try out.appendSlice(allocator, "\n\t(...tail calls...)");
@@ -428,7 +435,7 @@ fn originName(origin: proto_mod.OperandOrigin) []const u8 {
 }
 
 /// Formats a chunk name for messages, as `luaO_chunkid` does.
-pub fn chunkId(buffer: *[chunk_id_size]u8, source: []const u8) []const u8 {
+fn chunkId(buffer: *[chunk_id_size]u8, source: []const u8) []const u8 {
     const max = chunk_id_size - 1;
     if (source.len > 0 and source[0] == '=') {
         const rest = source[1..];
@@ -462,4 +469,297 @@ pub fn chunkId(buffer: *[chunk_id_size]u8, source: []const u8) []const u8 {
     @memcpy(buffer[len .. len + suffix.len], suffix);
     len += suffix.len;
     return buffer[0..len];
+}
+
+pub fn currentLine(self: *State, thread: *Thread, level: i64) ?usize {
+    _ = self;
+    if (level < 1) return null;
+    const depth: usize = @intCast(level);
+    if (depth > thread.frames.items.len) return null;
+    const frame = thread.frames.items[thread.frames.items.len - depth];
+    if (frame.proto.line_info.items.len == 0) return null;
+    const pc = if (frame.pc == 0) @as(usize, 0) else frame.pc - 1;
+    return frame.proto.line_info.items[@min(pc, frame.proto.line_info.items.len - 1)].line;
+}
+
+pub fn currentExtraArgs(self: *State, thread: *Thread, level: i64) ?usize {
+    _ = self;
+    if (level < 1) return null;
+    const depth: usize = @intCast(level);
+    if (depth > thread.frames.items.len) return null;
+    const frame = thread.frames.items[thread.frames.items.len - depth];
+    return frame.varargs.len;
+}
+
+pub fn currentWhat(self: *State, thread: *Thread, level: i64) []const u8 {
+    _ = self;
+    if (level == 2 and thread.protected_close_depth != 0) return "C";
+    if (level >= 1) {
+        const depth: usize = @intCast(level);
+        if (depth <= thread.frames.items.len) {
+            const frame = thread.frames.items[thread.frames.items.len - depth];
+            if (frame.proto.defined_line == 0) return "main";
+        }
+    }
+    return "Lua";
+}
+
+pub fn currentFunctionName(self: *State, thread: *Thread, level: i64) ?[]const u8 {
+    _ = self;
+    if (level == 2 and thread.protected_close_depth != 0) return "pcall";
+    if (level == 2 and thread.hook_running) if (thread.hook_return_name) |name| return name;
+    if (level < 1) return null;
+    const depth: usize = @intCast(level);
+    if (depth > thread.frames.items.len) return null;
+    const frame = thread.frames.items[thread.frames.items.len - depth];
+    const pc = if (frame.pc == 0) 0 else frame.pc - 1;
+    for (frame.proto.locals.items) |local| {
+        if (!std.mem.eql(u8, local.name, "name")) continue;
+        if (pc < local.start_pc or (local.end_pc != 0 and pc > local.end_pc)) continue;
+        const value = thread.stack.items[frame.base + local.register];
+        if (value == .string) return value.string;
+    }
+    return frame.debug_name_override orelse frame.proto.debug_name;
+}
+
+pub fn currentFunctionNameWhat(self: *State, thread: *Thread, level: i64) ?[]const u8 {
+    _ = self;
+    if (level < 1) return null;
+    const depth: usize = @intCast(level);
+    if (depth > thread.frames.items.len) return null;
+    const frame = thread.frames.items[thread.frames.items.len - depth];
+    return frame.debug_namewhat_override;
+}
+
+pub fn setThreadHook(self: *State, target: *Thread, hook: Value, mask: []const u8, count: u32) void {
+    rollback_mod.touch(target);
+    target.hook = hook;
+    self.gc.writeBarrier(target, hook);
+    target.hook_call = false;
+    target.hook_line = false;
+    target.hook_return = false;
+    target.hook_count = 0;
+    target.hook_count_remaining = 0;
+    target.pending_yield_hook_return = false;
+    if (hook == .nil) return;
+    target.hook_call = std.mem.indexOfScalar(u8, mask, 'c') != null;
+    target.hook_line = std.mem.indexOfScalar(u8, mask, 'l') != null;
+    target.hook_return = std.mem.indexOfScalar(u8, mask, 'r') != null;
+    target.hook_count = count;
+    target.hook_count_remaining = hookDispatchInterval(count);
+    if (target.hook_line and target.frames.items.len != 0) {
+        const frame_index = target.frames.items.len - 1;
+        target.frames.items[frame_index].last_hook_line = lineForFrame(target.frames.items[frame_index]);
+    }
+}
+
+pub fn threadHookMask(self: *State, thread: *Thread) ![]const u8 {
+    var bytes: [3]u8 = undefined;
+    var len: usize = 0;
+    if (thread.hook_call) {
+        bytes[len] = 'c';
+        len += 1;
+    }
+    if (thread.hook_return) {
+        bytes[len] = 'r';
+        len += 1;
+    }
+    if (thread.hook_line) {
+        bytes[len] = 'l';
+        len += 1;
+    }
+    return self.intern(bytes[0..len]);
+}
+
+pub fn callHook(self: *State, thread: *Thread, event: []const u8) !void {
+    const args = [_]Value{.{ .string = try self.intern(event) }};
+    try callHookWithArgs(self, thread, &args);
+}
+
+pub fn callReturnHook(self: *State, thread: *Thread, name: ?[]const u8) !void {
+    const previous = thread.hook_return_name;
+    thread.hook_return_name = name;
+    defer thread.hook_return_name = previous;
+    try callHook(self, thread, "return");
+}
+
+fn callHookWithArgs(self: *State, thread: *Thread, args: []const Value) !void {
+    if (thread.hook == .nil or thread.hook_running) return;
+    thread.hook_running = true;
+    defer thread.hook_running = false;
+    self.gc.conservative_depth += 1;
+    defer self.gc.conservative_depth -= 1;
+    const previous_result_base = thread.last_result_base;
+    const previous_result_count = thread.last_result_count;
+    defer {
+        thread.last_result_base = previous_result_base;
+        thread.last_result_count = previous_result_count;
+    }
+    _ = try call_mod.callOneNamed(self, thread, "?", "hook", thread.hook, args);
+}
+
+pub fn callLineHook(self: *State, thread: *Thread) !void {
+    if (!thread.hook_line or thread.hook == .nil or thread.hook_running) return;
+    if (thread.frames.items.len == 0) return;
+    const frame_index = thread.frames.items.len - 1;
+    const line = lineForFrame(thread.frames.items[frame_index]) orelse return;
+    if (thread.frames.items[frame_index].last_hook_line == line) return;
+    thread.frames.items[frame_index].last_hook_line = line;
+    const line_value = if (thread.frames.items[frame_index].closure.stripped_debug) Value.nil else Value{ .integer = @intCast(line) };
+    const args = [_]Value{ .{ .string = try self.intern("line") }, line_value };
+    try callHookWithArgs(self, thread, &args);
+}
+
+pub fn callCountHook(self: *State, thread: *Thread) !void {
+    if (thread.hook_count == 0 or thread.hook == .nil or thread.hook_running) return;
+    if (thread.hook_count_remaining > 1) {
+        thread.hook_count_remaining -= 1;
+        return;
+    }
+    thread.hook_count_remaining = hookDispatchInterval(thread.hook_count);
+    try callHook(self, thread, "count");
+}
+
+fn hookDispatchInterval(count: u32) u32 {
+    return if (count == 0) 0 else count * 2;
+}
+
+pub fn tracebackValue(self: *State, thread: *Thread, op: bytecode.Call) !void {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(self.allocator);
+
+    const message = argValue(self, thread, op, 0);
+    if (message == .thread) {
+        const target = message.thread;
+        const level_value = if (op.arg_count >= 3) argValue(self, thread, op, 2) else Value.nil;
+        const has_coroutine_level = level_value != .nil;
+        if (!has_coroutine_level and target.close_error_value != null) if (target.error_traceback) |traceback| {
+            try self.returnValues(thread, op.base, op.return_count, &.{.{ .string = traceback }});
+            return;
+        };
+        const coroutine_level = if (has_coroutine_level) toInteger(level_value) orelse 1 else 0;
+        const has_yield_trace = !has_coroutine_level and (target.frames.items.len != 0 or (target.status != .dead and target.yield_values.items.len != 0));
+        try out.appendSlice(self.allocator, "stack traceback:");
+        if (has_yield_trace) try out.appendSlice(self.allocator, "\n\t'yield'");
+        const skip = if (coroutine_level <= 1) @as(usize, 0) else @as(usize, @intCast(coroutine_level - 1));
+        const count = if (skip >= target.frames.items.len) @as(usize, 0) else target.frames.items.len - skip;
+        if (count == 0 and target.status != .dead and target.yield_values.items.len != 0 and !has_coroutine_level) {
+            try out.appendSlice(self.allocator, "\n\t@db.lua: in function <");
+        }
+        try appendCoroutineTracebackFrames(self, &out, target, count, @intFromBool(has_yield_trace));
+        try self.returnValues(thread, op.base, op.return_count, &.{.{ .string = try self.intern(out.items) }});
+        return;
+    }
+    if (message != .nil and message != .string and message != .integer and message != .number) {
+        try self.returnValues(thread, op.base, op.return_count, &.{message});
+        return;
+    }
+    const text: ?[]const u8 = if (message == .nil) null else try metatable_mod.valueToString(self, thread, message);
+    const level = if (op.arg_count >= 2) toInteger(argValue(self, thread, op, 1)) orelse 1 else 1;
+    if (level < 0) {
+        try appendFmt(self.allocator, &out, "{s}{s}stack traceback:", .{ text orelse "", if (text == null) "" else "\n" });
+        try self.returnValues(thread, op.base, op.return_count, &.{.{ .string = try self.intern(out.items) }});
+        return;
+    }
+    const traceback = try formatTracebackWith(self, thread, .{
+        .message = text,
+        .level = std.math.cast(usize, level) orelse std.math.maxInt(usize),
+        .level_zero_is_callee = calledByTopInstruction(thread, op),
+        .level_zero = .native_debug_traceback,
+        .host_frame = thread.host_frame,
+    });
+    defer self.allocator.free(traceback);
+    try self.returnValues(thread, op.base, op.return_count, &.{.{ .string = try self.intern(traceback) }});
+}
+
+/// The standalone interpreter's `msghandler` from `lua.c`.
+pub fn tracebackMessageHandler(self: *State, thread: *Thread, op: bytecode.Call) !void {
+    const message = argValue(self, thread, op, 0);
+    const text = switch (message) {
+        .string => |bytes| bytes,
+        .integer, .number => try metatable_mod.valueToString(self, thread, message),
+        else => blk: {
+            if (try metatable_mod.getMetaEvent(self, message, .__tostring)) |metamethod| {
+                const result = try call_mod.callOneResult(self, thread, metamethod, &.{message});
+                if (result == .string) return self.returnValues(thread, op.base, op.return_count, &.{result});
+            }
+            var out = std.ArrayList(u8).empty;
+            defer out.deinit(self.allocator);
+            try appendFmt(self.allocator, &out, "(error object is a {s} value)", .{luaTypeName(message)});
+            break :blk try self.intern(out.items);
+        },
+    };
+    const traceback = try formatTracebackWith(self, thread, .{ .message = text, .host_frame = thread.host_frame });
+    defer self.allocator.free(traceback);
+    try self.returnValues(thread, op.base, op.return_count, &.{.{ .string = try self.intern(traceback) }});
+}
+
+fn calledByTopInstruction(thread: *Thread, op: bytecode.Call) bool {
+    const frames = thread.frames.items;
+    if (frames.len == 0) return false;
+    const frame = frames[frames.len - 1];
+    if (frame.pc == 0 or frame.pc > frame.proto.instructions.items.len) return false;
+    return switch (frame.proto.instructions.items[frame.pc - 1]) {
+        .call, .tail_call => |call| call.base == op.base,
+        else => false,
+    };
+}
+
+fn appendCoroutineTracebackFrame(self: *State, out: *std.ArrayList(u8), target: *Thread, frame: CallFrame, level: i64) !void {
+    try out.append(self.allocator, '\n');
+    try out.append(self.allocator, '\t');
+    try out.appendSlice(self.allocator, frame.proto.source_name);
+    if (currentFunctionName(self, target, level)) |name| {
+        try appendFmt(self.allocator, out, ": in function '{s}'", .{name});
+    } else {
+        try out.appendSlice(self.allocator, ": in function <");
+    }
+}
+
+/// Appends the innermost `count` frames after `leading` levels, skipping the middle like `luaL_traceback`.
+fn appendCoroutineTracebackFrames(self: *State, out: *std.ArrayList(u8), target: *Thread, count: usize, leading: usize) !void {
+    if (count == 0) return;
+    const head = traceback_levels_head;
+    const tail = traceback_levels_tail;
+    const last = leading + count - 1;
+    var level: usize = 0;
+    var limit: isize = if (last > head + tail) head else -1;
+    while (level <= last) {
+        const current = level;
+        level += 1;
+        const show_skip = limit == 0;
+        limit -= 1;
+        if (show_skip) {
+            const skipped = last - level - tail + 1;
+            try appendFmt(self.allocator, out, "\n\t...\t(skipping {d} levels)", .{skipped});
+            level += skipped;
+            continue;
+        }
+        if (current < leading) continue;
+        const index = count - 1 - (current - leading);
+        try appendCoroutineTracebackFrame(self, out, target, target.frames.items[index], @intCast(target.frames.items.len - index));
+    }
+}
+
+pub fn snapshotCoroutineErrorTraceback(self: *State, target: *Thread) ![]const u8 {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(self.allocator);
+    try out.appendSlice(self.allocator, "stack traceback:\n\t'error'");
+    try appendCoroutineTracebackFrames(self, &out, target, target.frames.items.len, 1);
+    return self.intern(out.items);
+}
+
+pub fn lineForErrorLevel(self: *State, thread: *Thread, level: usize) ?usize {
+    _ = self;
+    if (level == 0 or level > thread.frames.items.len) return null;
+    const frame = thread.frames.items[thread.frames.items.len - level];
+    return lineForFrame(frame);
+}
+
+pub fn sourceForErrorLevel(self: *State, thread: *Thread, level: usize) ?[]const u8 {
+    _ = self;
+    if (level == 0 or level > thread.frames.items.len) return null;
+    const source_name = thread.frames.items[thread.frames.items.len - level].proto.source_name;
+    if (source_name.len > 0 and (source_name[0] == '@' or source_name[0] == '=')) return source_name[1..];
+    return source_name;
 }

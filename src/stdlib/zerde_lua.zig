@@ -2,6 +2,7 @@ const std = @import("std");
 const zerde = @import("zerde");
 const runtime = @import("../runtime.zig");
 const io = @import("io.zig");
+const metatable_mod = @import("../runtime/metatable.zig");
 
 const State = runtime.State;
 const Value = runtime.Value;
@@ -13,7 +14,7 @@ pub fn ensureSupportTables(state: *State) !void {
     if (state.zerde_null == null) {
         const null_value = try state.newTableWithHints(0, 0);
         const null_metatable = try zerdeMetatable(state, "zerde null");
-        state.setTableMetatableRaw(null_value.table, null_metatable);
+        metatable_mod.setTableMetatableRaw(state, null_value.table, null_metatable);
         state.zerde_null = null_value.table;
     }
     if (state.zerde_array_metatable == null) state.zerde_array_metatable = try zerdeMetatable(state, "zerde array");
@@ -99,7 +100,7 @@ pub const LuaSink = struct {
         try ensureSupportTables(self.state);
         const hint = if (len) |count| std.math.cast(u32, count) orelse std.math.maxInt(u32) else 0;
         const value = try self.state.newTableWithHints(hint, 0);
-        self.state.setTableMetatableRaw(value.table, self.state.zerde_array_metatable.?);
+        metatable_mod.setTableMetatableRaw(self.state, value.table, self.state.zerde_array_metatable.?);
         try self.stack.append(self.state.allocator, .{ .kind = .seq, .table = value.table });
     }
 
@@ -113,7 +114,7 @@ pub const LuaSink = struct {
         try ensureSupportTables(self.state);
         const hint = if (len) |count| std.math.cast(u32, count) orelse std.math.maxInt(u32) else 0;
         const value = try self.state.newTableWithHints(0, hint);
-        self.state.setTableMetatableRaw(value.table, self.state.zerde_object_metatable.?);
+        metatable_mod.setTableMetatableRaw(self.state, value.table, self.state.zerde_object_metatable.?);
         try self.stack.append(self.state.allocator, .{ .kind = .object, .table = value.table });
     }
 

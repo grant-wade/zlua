@@ -25,20 +25,28 @@
 - [runtime](../runtime.md)
 - [runtime.chunk](../runtime/chunk.md)
 - [reflection](../reflection.md)
-- [runtime.value](../runtime/value.md)
-- [runtime.number_format](../runtime/number_format.md)
-- [runtime.execute](../runtime/execute.md)
-- [testing.process](../testing/process.md)
 - [runtime.state](../runtime/state.md)
-- [runtime.rollback](../runtime/rollback.md)
+- [stdlib](../stdlib.md)
+- [stdlib.base](../stdlib/base.md)
 - [runtime.call](../runtime/call.md)
 - [runtime.coroutine](../runtime/coroutine.md)
 - [runtime.debug](../runtime/debug.md)
-- [runtime.gc](../runtime/gc.md)
+- [runtime.metatable](../runtime/metatable.md)
+- [runtime.rollback](../runtime/rollback.md)
+- [runtime.value](../runtime/value.md)
+- [runtime.number_format](../runtime/number_format.md)
 - [runtime.host](../runtime/host.md)
+- [runtime.upvalue](../runtime/upvalue.md)
+- [runtime.failure](../runtime/failure.md)
+- [runtime.io](../runtime/io.md)
+- [runtime.load](../runtime/load.md)
+- [runtime.vm](../runtime/vm.md)
+- [runtime.gc](../runtime/gc.md)
+- [runtime.entry](../runtime/entry.md)
+- [runtime.system](../runtime/system.md)
 - [runtime.timezone](../runtime/timezone.md)
-- [stdlib](../stdlib.md)
-- [stdlib.base](../stdlib/base.md)
+- [runtime.index](../runtime/index.md)
+- [runtime.operators](../runtime/operators.md)
 - [stdlib.table](../stdlib/table.md)
 - [stdlib.string](../stdlib/string.md)
 - [stdlib.math](../stdlib/math.md)
@@ -55,7 +63,8 @@
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
-- [runtime.vm](../runtime/vm.md)
+- [runtime.execute](../runtime/execute.md)
+- [testing.process](../testing/process.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
 - [compile.compiler](../compile/compiler.md)
@@ -106,44 +115,46 @@
 ## Functions
 
 - [callOneResult](#fn-calloneresult)
-- [callOneResultWithContinuation](#fn-calloneresultwithcontinuation)
 - [callOneMetamethodWithContinuation](#fn-callonemetamethodwithcontinuation)
 - [callOneMetamethod](#fn-callonemetamethod)
 - [callOneNamed](#fn-callonenamed)
-- [metamethodDebugName](#fn-metamethoddebugname)
-- [callOneResultMaybeContinuation](#fn-calloneresultmaybecontinuation)
-- [pushCallOneContinuation](#fn-pushcallonecontinuation)
-- [readyCallOneContinuationIndex](#fn-readycallonecontinuationindex)
 - [completeReadyCallOneContinuation](#fn-completereadycallonecontinuation)
 - [protectedCall](#fn-protectedcall)
-- [protectedCallContext](#fn-protectedcallcontext)
 - [protectedCallContextWithErrors](#fn-protectedcallcontextwitherrors)
 - [runProtectedCall](#fn-runprotectedcall)
-- [pushProtectedContinuation](#fn-pushprotectedcontinuation)
 - [readyProtectedContinuationIndex](#fn-readyprotectedcontinuationindex)
-- [errorProtectedContinuationIndex](#fn-errorprotectedcontinuationindex)
 - [completeReadyProtectedContinuation](#fn-completereadyprotectedcontinuation)
 - [completeProtectedContinuationError](#fn-completeprotectedcontinuationerror)
-- [returnProtectedContinuationSuccess](#fn-returnprotectedcontinuationsuccess)
-- [returnProtectedResult](#fn-returnprotectedresult)
 - [collectArgs](#fn-collectargs)
 - [resolveReturnCount](#fn-resolvereturncount)
 - [prepareClosureFrame](#fn-prepareclosureframe)
+- [noteCaughtError](#fn-notecaughterror)
+- [applyMessageHandler](#fn-applymessagehandler)
+- [checkCStack](#fn-checkcstack)
+- [callCollect](#fn-callcollect)
+- [callValue](#fn-callvalue)
+- [runtimeNativeCall](#fn-runtimenativecall)
+- [nativeCallInfo](#fn-nativecallinfo)
+- [invokeValue](#fn-invokevalue)
+- [nativeStackFits](#fn-nativestackfits)
+- [callStackValueLimit](#fn-callstackvaluelimit)
+- [tailCallValue](#fn-tailcallvalue)
+- [returnFromFrame](#fn-returnfromframe)
+- [namedVarargRead](#fn-namedvarargread)
+- [resolveResultCount](#fn-resolveresultcount)
+- [loadVarargs](#fn-loadvarargs)
+- [caughtErrorValue](#fn-caughterrorvalue)
+- [completeReadyTailCallContinuation](#fn-completereadytailcallcontinuation)
+- [callNative](#fn-callnative)
+- [isRuntimeError](#fn-isruntimeerror)
+- [hasPendingContinuations](#fn-haspendingcontinuations)
 
 <a id="fn-calloneresult"></a>
 
 ## callOneResult
 
 ```zig
-pub fn callOneResult(comptime State: type, self: *State, thread: *Thread, callable: Value, args: []const Value) anyerror!Value
-```
-
-<a id="fn-calloneresultwithcontinuation"></a>
-
-## callOneResultWithContinuation
-
-```zig
-pub fn callOneResultWithContinuation(comptime State: type, self: *State, thread: *Thread, callable: Value, args: []const Value, result: CallOneContinuationResult) anyerror!Value
+pub fn callOneResult(self: *State, thread: *Thread, callable: Value, args: []const Value) anyerror!Value
 ```
 
 <a id="fn-callonemetamethodwithcontinuation"></a>
@@ -151,7 +162,7 @@ pub fn callOneResultWithContinuation(comptime State: type, self: *State, thread:
 ## callOneMetamethodWithContinuation
 
 ```zig
-pub fn callOneMetamethodWithContinuation(comptime State: type, self: *State, thread: *Thread, name: []const u8, callable: Value, args: []const Value, result: CallOneContinuationResult) anyerror!Value
+pub fn callOneMetamethodWithContinuation(self: *State, thread: *Thread, name: []const u8, callable: Value, args: []const Value, result: CallOneContinuationResult) anyerror!Value
 ```
 
 <a id="fn-callonemetamethod"></a>
@@ -159,7 +170,7 @@ pub fn callOneMetamethodWithContinuation(comptime State: type, self: *State, thr
 ## callOneMetamethod
 
 ```zig
-pub fn callOneMetamethod(comptime State: type, self: *State, thread: *Thread, name: []const u8, callable: Value, args: []const Value) anyerror!Value
+pub fn callOneMetamethod(self: *State, thread: *Thread, name: []const u8, callable: Value, args: []const Value) anyerror!Value
 ```
 
 <a id="fn-callonenamed"></a>
@@ -169,39 +180,7 @@ pub fn callOneMetamethod(comptime State: type, self: *State, thread: *Thread, na
 Calls `callable` for one result; a Lua callee reports `namewhat 'name'`.
 
 ```zig
-pub fn callOneNamed(comptime State: type, self: *State, thread: *Thread, name: []const u8, namewhat: []const u8, callable: Value, args: []const Value) anyerror!Value
-```
-
-<a id="fn-metamethoddebugname"></a>
-
-## metamethodDebugName
-
-```zig
-pub fn metamethodDebugName(name: []const u8) []const u8
-```
-
-<a id="fn-calloneresultmaybecontinuation"></a>
-
-## callOneResultMaybeContinuation
-
-```zig
-pub fn callOneResultMaybeContinuation(comptime State: type, self: *State, thread: *Thread, callable: Value, args: []const Value, continuation_result: ?CallOneContinuationResult) anyerror!Value
-```
-
-<a id="fn-pushcallonecontinuation"></a>
-
-## pushCallOneContinuation
-
-```zig
-pub fn pushCallOneContinuation(comptime State: type, self: *State, thread: *Thread, frame_count: usize, result: CallOneContinuationResult) !void
-```
-
-<a id="fn-readycallonecontinuationindex"></a>
-
-## readyCallOneContinuationIndex
-
-```zig
-pub fn readyCallOneContinuationIndex(thread: *Thread) ?usize
+pub fn callOneNamed(self: *State, thread: *Thread, name: []const u8, namewhat: []const u8, callable: Value, args: []const Value) anyerror!Value
 ```
 
 <a id="fn-completereadycallonecontinuation"></a>
@@ -209,7 +188,7 @@ pub fn readyCallOneContinuationIndex(thread: *Thread) ?usize
 ## completeReadyCallOneContinuation
 
 ```zig
-pub fn completeReadyCallOneContinuation(comptime State: type, self: *State, thread: *Thread) !bool
+pub fn completeReadyCallOneContinuation(self: *State, thread: *Thread) !bool
 ```
 
 <a id="fn-protectedcall"></a>
@@ -217,15 +196,7 @@ pub fn completeReadyCallOneContinuation(comptime State: type, self: *State, thre
 ## protectedCall
 
 ```zig
-pub fn protectedCall(comptime State: type, self: *State, thread: *Thread, callable: Value, args: []const Value) anyerror!ProtectedCallResult
-```
-
-<a id="fn-protectedcallcontext"></a>
-
-## protectedCallContext
-
-```zig
-pub fn protectedCallContext(comptime State: type, _: *State, thread: *Thread) ProtectedCallContext
+pub fn protectedCall(self: *State, thread: *Thread, callable: Value, args: []const Value) anyerror!ProtectedCallResult
 ```
 
 <a id="fn-protectedcallcontextwitherrors"></a>
@@ -233,7 +204,7 @@ pub fn protectedCallContext(comptime State: type, _: *State, thread: *Thread) Pr
 ## protectedCallContextWithErrors
 
 ```zig
-pub fn protectedCallContextWithErrors(comptime State: type, self: *State, thread: *Thread) ProtectedCallContext
+pub fn protectedCallContextWithErrors(self: *State, thread: *Thread) ProtectedCallContext
 ```
 
 <a id="fn-runprotectedcall"></a>
@@ -241,15 +212,7 @@ pub fn protectedCallContextWithErrors(comptime State: type, self: *State, thread
 ## runProtectedCall
 
 ```zig
-pub fn runProtectedCall(comptime State: type, self: *State, thread: *Thread, context: ProtectedCallContext, callable: Value, args: []const Value) anyerror!ProtectedCallResult
-```
-
-<a id="fn-pushprotectedcontinuation"></a>
-
-## pushProtectedContinuation
-
-```zig
-pub fn pushProtectedContinuation(comptime State: type, self: *State, thread: *Thread, context: ProtectedCallContext, base: u32, return_count: u16) !void
+pub fn runProtectedCall(self: *State, thread: *Thread, context: ProtectedCallContext, callable: Value, args: []const Value) anyerror!ProtectedCallResult
 ```
 
 <a id="fn-readyprotectedcontinuationindex"></a>
@@ -260,20 +223,12 @@ pub fn pushProtectedContinuation(comptime State: type, self: *State, thread: *Th
 pub fn readyProtectedContinuationIndex(thread: *Thread) ?usize
 ```
 
-<a id="fn-errorprotectedcontinuationindex"></a>
-
-## errorProtectedContinuationIndex
-
-```zig
-pub fn errorProtectedContinuationIndex(thread: *Thread) ?usize
-```
-
 <a id="fn-completereadyprotectedcontinuation"></a>
 
 ## completeReadyProtectedContinuation
 
 ```zig
-pub fn completeReadyProtectedContinuation(comptime State: type, self: *State, thread: *Thread) !bool
+pub fn completeReadyProtectedContinuation(self: *State, thread: *Thread) !bool
 ```
 
 <a id="fn-completeprotectedcontinuationerror"></a>
@@ -281,23 +236,7 @@ pub fn completeReadyProtectedContinuation(comptime State: type, self: *State, th
 ## completeProtectedContinuationError
 
 ```zig
-pub fn completeProtectedContinuationError(comptime State: type, self: *State, thread: *Thread) !bool
-```
-
-<a id="fn-returnprotectedcontinuationsuccess"></a>
-
-## returnProtectedContinuationSuccess
-
-```zig
-pub fn returnProtectedContinuationSuccess(comptime State: type, self: *State, thread: *Thread, continuation: ProtectedContinuation, values: []Value) !void
-```
-
-<a id="fn-returnprotectedresult"></a>
-
-## returnProtectedResult
-
-```zig
-pub fn returnProtectedResult(comptime State: type, self: *State, thread: *Thread, base: u32, return_count: u16, result: ProtectedCallResult) !void
+pub fn completeProtectedContinuationError(self: *State, thread: *Thread) !bool
 ```
 
 <a id="fn-collectargs"></a>
@@ -305,7 +244,7 @@ pub fn returnProtectedResult(comptime State: type, self: *State, thread: *Thread
 ## collectArgs
 
 ```zig
-pub fn collectArgs(comptime State: type, self: *State, thread: *Thread, op: bytecode.Call, first: u32) ![]Value
+pub fn collectArgs(self: *State, thread: *Thread, op: bytecode.Call, first: u32) ![]Value
 ```
 
 <a id="fn-resolvereturncount"></a>
@@ -313,7 +252,7 @@ pub fn collectArgs(comptime State: type, self: *State, thread: *Thread, op: byte
 ## resolveReturnCount
 
 ```zig
-pub fn resolveReturnCount(comptime State: type, self: *State, count: u16, available: usize) !usize
+pub fn resolveReturnCount(self: *State, count: u16, available: usize) !usize
 ```
 
 <a id="fn-prepareclosureframe"></a>
@@ -321,6 +260,178 @@ pub fn resolveReturnCount(comptime State: type, self: *State, count: u16, availa
 ## prepareClosureFrame
 
 ```zig
-pub fn prepareClosureFrame(comptime State: type, self: *State, thread: *Thread, closure: *Closure, source_base: usize, frame_base: usize, arg_count: usize, return_start: usize, return_count: u16) !CallFrame
+pub fn prepareClosureFrame(self: *State, thread: *Thread, closure: *Closure, source_base: usize, frame_base: usize, arg_count: usize, return_start: usize, return_count: u16) !CallFrame
+```
+
+<a id="fn-notecaughterror"></a>
+
+## noteCaughtError
+
+Records stack overflow and memory errors caught from Lua execution; memory
+errors skip message handlers as in Lua.
+
+```zig
+pub fn noteCaughtError(self: *State, err: anyerror) void
+```
+
+<a id="fn-applymessagehandler"></a>
+
+## applyMessageHandler
+
+Runs the message handler on top of the failing frames, like `luaG_errormsg`.
+Handler errors retry until Lua's C-call limit yields "error in error handling".
+
+```zig
+pub fn applyMessageHandler(self: *State, thread: *Thread) !void
+```
+
+<a id="fn-checkcstack"></a>
+
+## checkCStack
+
+```zig
+pub fn checkCStack(self: *State, thread: *Thread) !void
+```
+
+<a id="fn-callcollect"></a>
+
+## callCollect
+
+```zig
+pub fn callCollect(self: *State, thread: *Thread, callable: Value, args: []const Value) anyerror![]Value
+```
+
+<a id="fn-callvalue"></a>
+
+## callValue
+
+```zig
+pub fn callValue(self: *State, thread: *Thread, op: bytecode.Call) !void
+```
+
+<a id="fn-runtimenativecall"></a>
+
+## runtimeNativeCall
+
+Native code the runtime runs on top of the current frame, such as error handling.
+
+```zig
+pub fn runtimeNativeCall(thread: *Thread) types.NativeCall
+```
+
+<a id="fn-nativecallinfo"></a>
+
+## nativeCallInfo
+
+```zig
+pub fn nativeCallInfo(thread: *Thread, resolved: bytecode.Call, outer: ?types.NativeCall, name: ?[]const u8, namewhat: ?[]const u8, extra_args: usize) types.NativeCall
+```
+
+<a id="fn-invokevalue"></a>
+
+## invokeValue
+
+```zig
+pub fn invokeValue(self: *State, thread: *Thread, resolved: bytecode.Call, depth: usize) anyerror!void
+```
+
+<a id="fn-nativestackfits"></a>
+
+## nativeStackFits
+
+Like `lua_checkstack`, above the arguments of native call `op`.
+
+```zig
+pub fn nativeStackFits(self: *const State, thread: *const Thread, op: bytecode.Call, count: usize) bool
+```
+
+<a id="fn-callstackvaluelimit"></a>
+
+## callStackValueLimit
+
+```zig
+pub fn callStackValueLimit(self: *const State, thread: *const Thread) usize
+```
+
+<a id="fn-tailcallvalue"></a>
+
+## tailCallValue
+
+```zig
+pub fn tailCallValue(self: *State, thread: *Thread, op: bytecode.Call) anyerror!void
+```
+
+<a id="fn-returnfromframe"></a>
+
+## returnFromFrame
+
+```zig
+pub fn returnFromFrame(self: *State, thread: *Thread, first: u32, count: u16) !void
+```
+
+<a id="fn-namedvarargread"></a>
+
+## namedVarargRead
+
+```zig
+pub fn namedVarargRead(varargs: []const Value, key: Value) Value
+```
+
+<a id="fn-resolveresultcount"></a>
+
+## resolveResultCount
+
+```zig
+pub fn resolveResultCount(self: *State, thread: *Thread, source_start: usize, count: u16) !usize
+```
+
+<a id="fn-loadvarargs"></a>
+
+## loadVarargs
+
+```zig
+pub fn loadVarargs(self: *State, thread: *Thread, op: bytecode.Vararg) !void
+```
+
+<a id="fn-caughterrorvalue"></a>
+
+## caughtErrorValue
+
+Like `luaG_errormsg` without a handler: nil becomes `<no error object>`.
+
+```zig
+pub fn caughtErrorValue(self: *State, value: Value) !Value
+```
+
+<a id="fn-completereadytailcallcontinuation"></a>
+
+## completeReadyTailCallContinuation
+
+```zig
+pub fn completeReadyTailCallContinuation(self: *State, thread: *Thread) !bool
+```
+
+<a id="fn-callnative"></a>
+
+## callNative
+
+```zig
+pub fn callNative(self: *State, native: NativeFn, thread: *Thread, op: bytecode.Call) !void
+```
+
+<a id="fn-isruntimeerror"></a>
+
+## isRuntimeError
+
+```zig
+pub fn isRuntimeError(err: anyerror) bool
+```
+
+<a id="fn-haspendingcontinuations"></a>
+
+## hasPendingContinuations
+
+```zig
+pub inline fn hasPendingContinuations(thread: *const Thread) bool
 ```
 

@@ -3,6 +3,7 @@ const runtime_types = @import("../runtime/types.zig");
 const convert = @import("convert.zig");
 const errors = @import("errors.zig");
 const handle = @import("handle.zig");
+const coroutine_mod = @import("../runtime/coroutine.zig");
 const CallResult = errors.CallResult;
 const Ref = handle.Ref;
 
@@ -55,7 +56,7 @@ pub const Coroutine = struct {
         const raw_args = try convert.convertArgs(state, args);
         defer state.allocator().free(raw_args);
         _ = errors.takeMemoryLimitExceeded(state);
-        const result = state.raw_state.resumeCoroutine(raw, raw_args) catch |err| {
+        const result = coroutine_mod.resumeCoroutine(&state.raw_state, raw, raw_args) catch |err| {
             if (err == error.OutOfMemory and errors.takeMemoryLimitExceeded(state)) {
                 return .{ .lua_error = try errors.memoryLimitErrorRef(state) };
             }
@@ -103,7 +104,7 @@ pub const Coroutine = struct {
     pub fn protectedClose(self: Coroutine) !CallResult(void) {
         const raw = try self.rawThread();
         const state = self.ref.state;
-        const failure = state.raw_state.closeCoroutine(raw, null) catch |err| switch (err) {
+        const failure = coroutine_mod.closeCoroutineFromHost(&state.raw_state, raw, null) catch |err| switch (err) {
             error.RuntimeError, error.StackOverflow, error.UnsupportedOpcode => state.raw_state.currentErrorValue(),
             error.OutOfMemory => if (errors.takeMemoryLimitExceeded(state)) return .{ .lua_error = try errors.memoryLimitErrorRef(state) } else return err,
             else => return err,

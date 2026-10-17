@@ -1,6 +1,7 @@
 const std = @import("std");
 const reflection = @import("../reflection.zig");
 const api = @import("../api.zig");
+const coroutine_mod = @import("../runtime/coroutine.zig");
 const a = std.testing.allocator;
 
 test "snapshot accepts stateless allocator with undefined context" {
@@ -213,7 +214,7 @@ test "snapshot survives origin and restores modules files iterators streams erro
     var right = try snapshot.newState(a);
     defer right.deinit();
     try std.testing.expectEqual(count, left.instructionBudget().used);
-    try std.testing.expect(!left.raw_state.gc_running);
+    try std.testing.expect(!left.raw_state.gc.running);
     try std.testing.expectEqualStrings("captured\n", left.raw_state.stdout.items);
     try std.testing.expectEqualStrings("err", left.raw_state.stderr.items);
     var err = left.takeErrorValue().?;
@@ -519,7 +520,7 @@ test "snapshot restores instruction limits and GC tuning" {
     var lua = try api.State.init(a, .{ .limits = .{ .max_instructions = 200 } });
     defer lua.deinit();
     try lua.doString("function exhaust() while true do end end; collectgarbage('incremental'); collectgarbage('stop')", .{});
-    lua.raw_state.setGcParam(.pause, 333);
+    lua.raw_state.gc.setParam(.pause, 333);
     const used = lua.instructionBudget().used;
     var snapshot = try lua.snapshot(a);
     defer snapshot.deinit();
@@ -527,13 +528,13 @@ test "snapshot restores instruction limits and GC tuning" {
         var function = try lua.getGlobal("exhaust", api.Function);
         try std.testing.expectError(error.LuaError, function.call(.{}, void));
         function.deinit();
-        lua.raw_state.setGcParam(.pause, 100);
+        lua.raw_state.gc.setParam(.pause, 100);
         try lua.reset();
         try std.testing.expectEqual(used, lua.instructionBudget().used);
         try std.testing.expectEqual(@as(?u64, 200), lua.instructionBudget().limit);
-        try std.testing.expectEqual(@as(i64, 333), lua.raw_state.gcParam(.pause));
-        try std.testing.expectEqual(@import("../runtime.zig").GcMode.incremental, lua.raw_state.gc_mode);
-        try std.testing.expect(!lua.raw_state.gc_running);
+        try std.testing.expectEqual(@as(i64, 333), lua.raw_state.gc.getParam(.pause));
+        try std.testing.expectEqual(@import("../runtime.zig").GcMode.incremental, lua.raw_state.gc.mode);
+        try std.testing.expect(!lua.raw_state.gc.running);
     }
 }
 
@@ -1087,12 +1088,12 @@ test "journal newState first-write coroutine and GC allocation failures release 
             var worker = try image.newState(allocator);
             defer worker.deinit();
             const co = worker.raw_state.getGlobal("co").thread;
-            const result = try worker.raw_state.resumeCoroutine(co, &.{});
+            const result = try coroutine_mod.resumeCoroutine(&worker.raw_state, co, &.{});
             switch (result) {
                 .success => |values| worker.allocator().free(values),
                 .failure => return error.UnexpectedCoroutineFailure,
             }
-            try worker.raw_state.collectGarbageWithFinalizers(null);
+            try worker.raw_state.gc.collectWithFinalizers(null);
             try worker.reset();
         }
     }.run, .{&snapshot});
@@ -1437,21 +1438,21 @@ test "snapshot capture and reset between collector phases invalidate only collec
         defer lua.deinit();
         try lua.doString("data = {}; for i=1,32 do data[i] = {value=i} end", .{});
         try lua.collect();
-        lua.raw_state.gc_mode = .incremental;
+        lua.raw_state.gc.mode = .incremental;
         var baseline = try lua.snapshot(std.testing.allocator);
         defer baseline.deinit();
         if (comptime !std.mem.eql(u8, phase, "pause")) {
             var steps: usize = 0;
-            while (lua.raw_state.gc_phase != @field(@import("../runtime/types.zig").GcPhase, phase)) : (steps += 1) {
+            while (lua.raw_state.gc.phase != @field(@import("../runtime/types.zig").GcPhase, phase)) : (steps += 1) {
                 try std.testing.expect(steps < 10000);
-                _ = try lua.raw_state.stepGc(1);
+                _ = try lua.raw_state.gc.runSteps(1);
             }
         }
         try lua.reset();
         try std.testing.expectEqual(@as(usize, 0), lua.raw_state.rollback.?.last_restored_objects);
-        try std.testing.expectEqual(.pause, lua.raw_state.gc_phase);
+        try std.testing.expectEqual(.pause, lua.raw_state.gc.phase);
         if (comptime !std.mem.eql(u8, phase, "pause")) {
-            while (lua.raw_state.gc_phase != @field(@import("../runtime/types.zig").GcPhase, phase)) _ = try lua.raw_state.stepGc(1);
+            while (lua.raw_state.gc.phase != @field(@import("../runtime/types.zig").GcPhase, phase)) _ = try lua.raw_state.gc.runSteps(1);
         }
         var captured = try lua.snapshot(std.testing.allocator);
         defer captured.deinit();
@@ -1477,7 +1478,7 @@ test "typed GC controls restore with snapshots and minors reuse unchanged baseli
     defer snapshot.deinit();
     for (0..4) |_| {
         try std.testing.expectEqual(api.GcStepResult.pending, try lua.stepGc(.{}));
-        try std.testing.expect(lua.raw_state.gc_work_done < 100);
+        try std.testing.expect(lua.raw_state.gc.work_done < 100);
         try lua.reset();
         try std.testing.expectEqual(@as(usize, 0), lua.raw_state.rollback.?.last_restored_objects);
         try std.testing.expect(!lua.raw_state.rollback.?.registries_detached);
@@ -1505,7 +1506,7 @@ test "atomic rollback detachment can fail and resume without losing weak entries
         try lua.doString("weak = setmetatable({}, {__mode='v'}); weak.item = {value=42}", .{});
         var snapshot = try lua.snapshot(a);
         defer snapshot.deinit();
-        while (lua.raw_state.gc_phase != .atomic) _ = try lua.stepGc(.{});
+        while (lua.raw_state.gc.phase != .atomic) _ = try lua.stepGc(.{});
         const weak = lua.raw_state.getGlobal("weak").table;
         try std.testing.expect(weak.get(.{ .string = "item" }) == .table);
         failing.fail_index = failing.alloc_index + offset;
@@ -1518,8 +1519,8 @@ test "atomic rollback detachment can fail and resume without losing weak entries
             break;
         } else |err| {
             try std.testing.expectEqual(error.OutOfMemory, err);
-            try std.testing.expectEqual(.atomic, lua.raw_state.gc_phase);
-            try std.testing.expect(!lua.raw_state.is_collecting);
+            try std.testing.expectEqual(.atomic, lua.raw_state.gc.phase);
+            try std.testing.expect(!lua.raw_state.gc.collecting);
             try std.testing.expect(weak.get(.{ .string = "item" }) == .table);
             _ = try lua.stepGc(.{});
             try std.testing.expect(weak.get(.{ .string = "item" }) == .nil);
@@ -1540,7 +1541,7 @@ test "snapshot preserves pending userdata finalizers without running them" {
         }
     }.run;
     for (0..3) |_| _ = try lua.raw_state.newUserdata(&calls, 1, "counter", finalizer, null, null);
-    while (lua.raw_state.gc_phase != .finalize) _ = try lua.stepGc(.{});
+    while (lua.raw_state.gc.phase != .finalize) _ = try lua.stepGc(.{});
     try std.testing.expectEqual(@as(usize, 0), calls);
     try std.testing.expect(lua.raw_state.userdata_pending_finalizer_head != null);
     var snapshot = try lua.snapshot(a);
@@ -1570,7 +1571,7 @@ test "host GC drains table finalizers protects failures and restores pending reg
         \\  end})
         \\end
     , .{});
-    while (lua.raw_state.gc_phase != .finalize) _ = try lua.stepGc(.{});
+    while (lua.raw_state.gc.phase != .finalize) _ = try lua.stepGc(.{});
     try std.testing.expectEqualStrings("", lua.raw_state.getGlobal("calls").string);
     var snapshot = try lua.snapshot(a);
     defer snapshot.deinit();
@@ -1585,7 +1586,7 @@ test "host GC drains table finalizers protects failures and restores pending reg
         try std.testing.expect(worker.raw_state.table_pending_finalizer_head != null);
     }
     // A basic host step executes one pending Lua finalizer, including while stopped.
-    while (lua.raw_state.gc_phase != .finalize) _ = try lua.stepGc(.{});
+    while (lua.raw_state.gc.phase != .finalize) _ = try lua.stepGc(.{});
     try std.testing.expectEqual(api.GcStepResult.pending, try lua.stepGc(.{}));
     try std.testing.expectEqualStrings("3", lua.raw_state.getGlobal("calls").string);
     try lua.collect();
@@ -1601,11 +1602,11 @@ test "pending scoped finalizers detach snapshot payloads with retryable failure"
     defer lua.deinit();
     var ud = try lua.newUserdata(ScopedPayload, .{ .copies = &copies, .finals = &finals, .disposals = &disposals, .fail = &fail }, .{ .finalizer = ScopedPayload.finalize, .snapshot = .{ .copy = ScopedPayload.copy, .dispose = ScopedPayload.dispose, .tracking = .scoped } });
     ud.deinit();
-    while (lua.raw_state.gc_phase != .finalize) _ = try lua.stepGc(.{});
+    while (lua.raw_state.gc.phase != .finalize) _ = try lua.stepGc(.{});
     var snapshot = try lua.snapshot(a);
     defer snapshot.deinit();
     for (0..2) |iteration| {
-        while (lua.raw_state.gc_phase != .finalize) _ = try lua.stepGc(.{});
+        while (lua.raw_state.gc.phase != .finalize) _ = try lua.stepGc(.{});
         const pending = lua.raw_state.userdata_pending_finalizer_head.?;
         const pristine = pending.ptr;
         fail = true;
@@ -1641,14 +1642,14 @@ test "managed accounting includes suspended varargs and pending return buffers" 
     }
     try std.testing.expect(vararg_count >= 3);
     try std.testing.expectEqual(@as(usize, 3), pending_count);
-    try std.testing.expectEqual(lua.raw_state.allocationStats().total(), lua.raw_state.gc_known_total);
+    try std.testing.expectEqual(lua.raw_state.gc.allocationStats().total(), lua.raw_state.gc.known_total);
     var snapshot = try lua.snapshot(a);
     defer snapshot.deinit();
     for (0..2) |_| {
         try lua.doString("local ok,a,b,c = coroutine.resume(co); assert(ok and a==11 and b==22 and c==33)", .{});
-        try std.testing.expectEqual(lua.raw_state.allocationStats().total(), lua.raw_state.gc_known_total);
+        try std.testing.expectEqual(lua.raw_state.gc.allocationStats().total(), lua.raw_state.gc.known_total);
         try lua.reset();
-        try std.testing.expectEqual(lua.raw_state.allocationStats().total(), lua.raw_state.gc_known_total);
+        try std.testing.expectEqual(lua.raw_state.gc.allocationStats().total(), lua.raw_state.gc.known_total);
     }
 }
 
@@ -1659,14 +1660,14 @@ test "host finalizer frame allocation failures leave a resumable pending list" {
         var lua = try api.State.init(failing.allocator(), .{ .gc = .{ .running = false, .mode = .incremental } });
         defer lua.deinit();
         try lua.doString("calls=0; setmetatable({}, {__gc=function() calls=calls+1 end})", .{});
-        while (lua.raw_state.gc_phase != .finalize) _ = try lua.stepGc(.{});
+        while (lua.raw_state.gc.phase != .finalize) _ = try lua.stepGc(.{});
         failing.fail_index = failing.alloc_index + offset;
         const result = lua.stepGc(.{});
         failing.fail_index = std.math.maxInt(usize);
         if (result) |_| break else |err| {
             try std.testing.expectEqual(error.OutOfMemory, err);
-            try std.testing.expect(!lua.raw_state.is_collecting);
-            try std.testing.expectEqual(.finalize, lua.raw_state.gc_phase);
+            try std.testing.expect(!lua.raw_state.gc.collecting);
+            try std.testing.expectEqual(.finalize, lua.raw_state.gc.phase);
             try std.testing.expect(lua.raw_state.table_pending_finalizer_head != null);
             try lua.collect();
             try std.testing.expectEqual(@as(i64, 1), lua.raw_state.getGlobal("calls").integer);
@@ -1677,23 +1678,23 @@ test "host finalizer frame allocation failures leave a resumable pending list" {
 test "owned userdata storage is charged to managed memory across snapshot reset" {
     var lua = try api.State.init(a, .{ .gc = .{ .running = false } });
     defer lua.deinit();
-    const before = lua.raw_state.gc_known_total;
+    const before = lua.raw_state.gc.known_total;
     var owned = try lua.newUserdata([8192]u8, @splat(0), .{});
     try lua.setGlobal("owned", owned);
     owned.deinit();
-    try std.testing.expect(lua.raw_state.gc_known_total >= before + 8192);
-    try std.testing.expectEqual(lua.raw_state.allocationStats().total(), lua.raw_state.gc_known_total);
+    try std.testing.expect(lua.raw_state.gc.known_total >= before + 8192);
+    try std.testing.expectEqual(lua.raw_state.gc.allocationStats().total(), lua.raw_state.gc.known_total);
     var snapshot = try lua.snapshot(a);
     defer snapshot.deinit();
     for (0..2) |_| {
-        const baseline = lua.raw_state.gc_known_total;
+        const baseline = lua.raw_state.gc.known_total;
         try lua.setGlobal("owned", null);
         try lua.collect();
-        try std.testing.expect(lua.raw_state.gc_known_total <= baseline - 8192);
-        try std.testing.expectEqual(lua.raw_state.allocationStats().total(), lua.raw_state.gc_known_total);
+        try std.testing.expect(lua.raw_state.gc.known_total <= baseline - 8192);
+        try std.testing.expectEqual(lua.raw_state.gc.allocationStats().total(), lua.raw_state.gc.known_total);
         try lua.reset();
-        try std.testing.expectEqual(baseline, lua.raw_state.gc_known_total);
-        try std.testing.expectEqual(lua.raw_state.allocationStats().total(), lua.raw_state.gc_known_total);
+        try std.testing.expectEqual(baseline, lua.raw_state.gc.known_total);
+        try std.testing.expectEqual(lua.raw_state.gc.allocationStats().total(), lua.raw_state.gc.known_total);
     }
 }
 

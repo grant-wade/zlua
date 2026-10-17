@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const api = @import("../root.zig");
+const entry_mod = @import("../runtime/entry.zig");
 const a = std.testing.allocator;
 
 var lua_started: std.atomic.Value(bool) = .init(false);
@@ -129,16 +130,16 @@ test "pending interrupts stop library functions called directly by the host" {
     const items_value = raw.getGlobal("items");
 
     handle.interrupt();
-    try std.testing.expectError(error.Interrupted, raw.callFunction(rep, &.{ .{ .string = try raw.intern("x") }, .{ .integer = 1 << 20 } }));
+    try std.testing.expectError(error.Interrupted, entry_mod.callFunction(raw, rep, &.{ .{ .string = try raw.intern("x") }, .{ .integer = 1 << 20 } }));
     try std.testing.expect(!lua.isInterruptPending());
     handle.interrupt();
-    try std.testing.expectError(error.Interrupted, raw.callFunction(concat, &.{items_value}));
+    try std.testing.expectError(error.Interrupted, entry_mod.callFunction(raw, concat, &.{items_value}));
     try std.testing.expect(!lua.isInterruptPending());
     handle.interrupt();
-    try std.testing.expectError(error.Interrupted, raw.callFunction(sort, &.{items_value}));
+    try std.testing.expectError(error.Interrupted, entry_mod.callFunction(raw, sort, &.{items_value}));
     try std.testing.expect(!lua.isInterruptPending());
 
-    const values = try raw.callFunction(rep, &.{ .{ .string = try raw.intern("x") }, .{ .integer = 3 } });
+    const values = try entry_mod.callFunction(raw, rep, &.{ .{ .string = try raw.intern("x") }, .{ .integer = 3 } });
     defer lua.allocator().free(values);
     try std.testing.expectEqualStrings("xxx", values[0].string);
 }

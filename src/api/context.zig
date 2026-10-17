@@ -7,6 +7,7 @@ const handle = @import("handle.zig");
 const Coroutine = @import("coroutine.zig").Coroutine;
 const Function = @import("function.zig").Function;
 const State = @import("state.zig").State;
+const call_mod = @import("../runtime/call.zig");
 
 /// Callback context for functions registered with `State.register`.
 pub const Context = struct {
@@ -87,7 +88,7 @@ pub const Context = struct {
         defer self.lua.allocator().free(raw_args);
         self.raw.thread.native_call_depth += 1;
         defer self.raw.thread.native_call_depth -= 1;
-        const result = try self.raw.state.protectedCall(self.raw.thread, try handle.rawValue(function.ref), raw_args);
+        const result = try call_mod.protectedCall(self.raw.state, self.raw.thread, try handle.rawValue(function.ref), raw_args);
         return switch (result) {
             .success => |values| blk: {
                 defer self.lua.allocator().free(values);
