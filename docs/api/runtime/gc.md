@@ -157,6 +157,8 @@ pub const Gc = struct {
     cycle_start_total: usize = 0,
     found_young: bool = false,
     old: types.GcGenerations = .{},
+    /// Owned prototypes before this index have survived a collection; minor cycles sweep only the rest.
+    old_protos: usize = 0,
     sweep_cursor: usize = 0,
     major_base: usize = 0,
     work_done: usize = 0,
@@ -191,6 +193,7 @@ pub const Gc = struct {
 | [setParam](#fn-gc-setparam) | `gc: *Gc, param: GcParam, value: i64` | `void` |  |
 | [collectWithFinalizers](#fn-gc-collectwithfinalizers) | `gc: *Gc, thread: ?*Thread` | `!void` |  |
 | [shouldRunAuto](#fn-gc-shouldrunauto) | `gc: *Gc` | `bool` |  |
+| [notePrototype](#fn-gc-noteprototype) | `gc: *Gc, proto: *const proto_mod.Proto` | `void` | Brings the next automatic step closer by the prototype's size without adding it to the heap total, whose growth decides the switches between minor and major collections. |
 | [resetAutoThreshold](#fn-gc-resetautothreshold) | `gc: *Gc` | `void` |  |
 | [normalizeBaseline](#fn-gc-normalizebaseline) | `gc: *Gc` | `void` |  |
 | [markValue](#fn-gc-markvalue) | `gc: *Gc, value: Value` | `void` |  |
@@ -422,6 +425,19 @@ References: [`Gc`](#type-gc)
 
 ```zig
 pub fn shouldRunAuto(gc: *Gc) bool
+```
+
+References: [`Gc`](#type-gc)
+
+<a id="fn-gc-noteprototype"></a>
+
+### Gc.notePrototype
+
+Brings the next automatic step closer by the prototype's size without adding it to the heap
+total, whose growth decides the switches between minor and major collections.
+
+```zig
+pub fn notePrototype(gc: *Gc, proto: *const proto_mod.Proto) void
 ```
 
 References: [`Gc`](#type-gc)
