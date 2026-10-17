@@ -97,7 +97,7 @@ pub fn gmatchNext(state: *State, state_value: Value) !GmatchValues {
     const capture_pattern = positionAndWholeCapturePattern(pattern);
     const search_pattern = capture_pattern orelse pattern;
     const found = while (true) {
-        const current = (try pattern_mod.simplePatternFind(state, source, search_pattern, @intCast(@max(pos, 0)))) orelse return .{};
+        const current = (try pattern_mod.unanchoredPatternFind(state, source, search_pattern, @intCast(@max(pos, 0)))) orelse return .{};
         if (current.range.start == current.range.end and previous_match_end != null and previous_match_end.? == current.range.start) {
             if (current.range.end >= source.len) return .{};
             pos = @intCast(current.range.end + 1);
@@ -140,7 +140,8 @@ pub fn gsub(state: *State, thread: *Thread, op: bytecode.Call) !void {
         .string, .table => raw_replacement,
         else => if (isFunctionValue(raw_replacement)) raw_replacement else return state.failArgumentType("string.gsub", 3, "string/function/table", raw_replacement),
     };
-    const max_count = try state.optionalArgumentInteger(thread, op, "string.gsub", 3, std.math.maxInt(i64));
+    const requested_count = try state.optionalArgumentInteger(thread, op, "string.gsub", 3, std.math.maxInt(i64));
+    const max_count = if (pattern.len > 0 and pattern[0] == '^') @min(requested_count, 1) else requested_count;
     if (max_count > 0 and replacement == .string and std.mem.eql(u8, pattern, "^0*(%d.-%d)0*$") and std.mem.eql(u8, replacement.string, "%1")) {
         try state.returnValues(thread, op.base, op.return_count, &.{ .{ .string = try trimReasonableNumeral(state, source) }, .{ .integer = 1 } });
         return;

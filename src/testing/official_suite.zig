@@ -298,7 +298,7 @@ fn runOne(
     options: Options,
     counts: *Counts,
 ) !void {
-    if (platformSkipReason(file)) |reason| {
+    if (skipReason(file, options.mode)) |reason| {
         counts.skipped += 1;
         try out.print("skip {s} ({s})\n", .{ std.fs.path.basename(file), reason });
         return;
@@ -328,8 +328,23 @@ fn runOne(
     if (clua_passed) try printProcess(out, "clua", clua_result, options.show_clua);
 }
 
-fn platformSkipReason(file: []const u8) ?[]const u8 {
-    return skipReasonForOs(builtin.os.tag, std.fs.path.basename(file));
+fn skipReason(file: []const u8, mode: Mode) ?[]const u8 {
+    const filename = std.fs.path.basename(file);
+    return skipReasonForOs(builtin.os.tag, filename) orelse skipReasonForMode(mode, filename);
+}
+
+fn skipReasonForMode(mode: Mode, filename: []const u8) ?[]const u8 {
+    if (mode != .complete) return null;
+    const skips = [_]struct { []const u8, []const u8 }{
+        .{ "attrib.lua", "needs the C test libraries and module paths that all.lua sets up" },
+        .{ "main.lua", "needs the C test libraries and module paths that all.lua sets up" },
+        .{ "big.lua", "must run inside all.lua's coroutine driver" },
+        .{ "files.lua", "expects a non-seekable stdin, as when all.lua runs from a terminal" },
+    };
+    for (skips) |skip| {
+        if (std.mem.eql(u8, filename, skip[0])) return skip[1];
+    }
+    return null;
 }
 
 fn skipReasonForOs(os: std.Target.Os.Tag, filename: []const u8) ?[]const u8 {
@@ -344,6 +359,12 @@ test "allocator exhaustion requires a platform with a child memory cap" {
     try std.testing.expect(skipReasonForOs(.macos, "heavy.lua") != null);
     try std.testing.expect(skipReasonForOs(.linux, "heavy.lua") == null);
     try std.testing.expect(skipReasonForOs(.windows, "files.lua") == null);
+}
+
+test "complete mode skips files that need the all.lua driver" {
+    try std.testing.expect(skipReasonForMode(.complete, "big.lua") != null);
+    try std.testing.expect(skipReasonForMode(.basic, "big.lua") == null);
+    try std.testing.expect(skipReasonForMode(.complete, "db.lua") == null);
 }
 
 fn collectOfficialFiles(allocator: std.mem.Allocator, io: std.Io, options: Options, files: *std.ArrayList([]u8)) !void {

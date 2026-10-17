@@ -396,42 +396,54 @@ pub fn parseLuaNumber(text: []const u8) !f64 {
     return std.fmt.parseFloat(f64, trimmed);
 }
 
+/// Ports `lua_strx2number`: digits past the 30th significant one only adjust the exponent.
 fn parseHexNumber(text: []const u8) !f64 {
+    const max_significant_digits = 30;
     var index: usize = 2;
     var value: f64 = 0;
-    var digits: usize = 0;
-    while (index < text.len and std.ascii.isHex(text[index])) : (index += 1) {
-        value = value * 16 + @as(f64, @floatFromInt(hexValue(text[index])));
-        digits += 1;
+    var exponent: i64 = 0;
+    var significant_digits: usize = 0;
+    var any_digits = false;
+    var seen_dot = false;
+    while (index < text.len) : (index += 1) {
+        const byte = text[index];
+        if (byte == '.') {
+            if (seen_dot) break;
+            seen_dot = true;
+        } else if (std.ascii.isHex(byte)) {
+            any_digits = true;
+            if (significant_digits > 0 or byte != '0') {
+                significant_digits += 1;
+                if (significant_digits <= max_significant_digits) {
+                    value = value * 16 + @as(f64, @floatFromInt(hexValue(byte)));
+                } else {
+                    exponent += 1;
+                }
+            }
+            if (seen_dot) exponent -= 1;
+        } else break;
     }
-    if (index < text.len and text[index] == '.') {
-        index += 1;
-        var place: f64 = 1.0 / 16.0;
-        while (index < text.len and std.ascii.isHex(text[index])) : (index += 1) {
-            value += @as(f64, @floatFromInt(hexValue(text[index]))) * place;
-            place /= 16.0;
-            digits += 1;
-        }
-    }
-    if (digits == 0) return error.RuntimeError;
+    if (!any_digits) return error.RuntimeError;
+    exponent *= 4;
 
-    var exponent: i32 = 0;
     if (index < text.len and (text[index] == 'p' or text[index] == 'P')) {
         index += 1;
-        var sign: i32 = 1;
+        var negative = false;
         if (index < text.len and (text[index] == '+' or text[index] == '-')) {
-            sign = if (text[index] == '-') -1 else 1;
+            negative = text[index] == '-';
             index += 1;
         }
         const exponent_start = index;
+        var written: i64 = 0;
         while (index < text.len and std.ascii.isDigit(text[index])) : (index += 1) {
-            exponent = exponent * 10 + @as(i32, @intCast(text[index] - '0'));
+            written = @min(written * 10 + (text[index] - '0'), 1 << 32);
         }
         if (index == exponent_start) return error.RuntimeError;
-        exponent *= sign;
+        exponent += if (negative) -written else written;
     }
     if (index != text.len) return error.RuntimeError;
-    return value * std.math.pow(f64, 2.0, @floatFromInt(exponent));
+    const clamped: i32 = @intCast(std.math.clamp(exponent, -100_000, 100_000));
+    return std.math.ldexp(value, clamped);
 }
 
 pub fn floatToInteger(number: f64) ?i64 {

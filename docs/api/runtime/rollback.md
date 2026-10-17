@@ -113,6 +113,7 @@
 - [testing.expected_failures](../testing/expected_failures.md)
 - [testing.metadata](../testing/metadata.md)
 - [testing.normalizer](../testing/normalizer.md)
+- [testing.parallel](../testing/parallel.md)
 - [testing.extension_runner](../testing/extension_runner.md)
 - [testing.official_suite](../testing/official_suite.md)
 
@@ -226,6 +227,7 @@ pub const Journal = struct {
 | [attach](#fn-journal-attach) | `self: *Journal, state: *State` | `void` |  |
 | [prepareAllocation](#fn-journal-prepareallocation) | `self: *Journal, state: *State` | `!void` |  |
 | [allocated](#fn-journal-allocated) | `self: *Journal, comptime field: []const u8, item: anytype` | `void` |  |
+| [isNew](#fn-journal-isnew) | `self: *const Journal, address: usize` | `bool` |  |
 | [freed](#fn-journal-freed) | `self: *Journal, address: usize` | `void` |  |
 | [detachRegistries](#fn-journal-detachregistries) | `self: *Journal, state: *State` | `!void` |  |
 | [outputWritable](#fn-journal-outputwritable) | `self: *Journal, state: *State` | `!void` |  |
@@ -271,6 +273,16 @@ References: [`Journal`](#type-journal)
 
 ```zig
 pub fn allocated(self: *Journal, comptime field: []const u8, item: anytype) void
+```
+
+References: [`Journal`](#type-journal)
+
+<a id="fn-journal-isnew"></a>
+
+### Journal.isNew
+
+```zig
+pub fn isNew(self: *const Journal, address: usize) bool
 ```
 
 References: [`Journal`](#type-journal)

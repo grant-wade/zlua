@@ -112,6 +112,7 @@
 - [testing.expected_failures](../../testing/expected_failures.md)
 - [testing.metadata](../../testing/metadata.md)
 - [testing.normalizer](../../testing/normalizer.md)
+- [testing.parallel](../../testing/parallel.md)
 - [testing.extension_runner](../../testing/extension_runner.md)
 - [testing.official_suite](../../testing/official_suite.md)
 

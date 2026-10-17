@@ -56,7 +56,15 @@ pub fn coroutineResume(self: *State, thread: *Thread, op: bytecode.Call) !void {
 
     const result = try resumeCoroutine(self, target, args);
     defer freeCoroutineResumeResult(self.allocator, result);
+    if (result == .success and !resultsFit(self, thread, op.base, result.success.len + 1)) {
+        return returnCoroutineResumeResult(self, thread, op.base, op.return_count, .{ .failure = .{ .string = try self.strings.intern("too many results to resume") } });
+    }
     try returnCoroutineResumeResult(self, thread, op.base, op.return_count, result);
+}
+
+fn resultsFit(self: *const State, thread: *const Thread, base: u32, count: usize) bool {
+    const frame = thread.frames.items[thread.frames.items.len - 1];
+    return count <= self.stackValueLimit() -| (frame.base + base);
 }
 
 // Both coroutine.yield and an API callback contribute one native frame.
@@ -156,7 +164,10 @@ fn callCoroutineWrapperWithArgs(self: *State, thread: *Thread, base: u32, return
     const result = try resumeCoroutine(self, target, args);
     defer freeCoroutineResumeResult(self.allocator, result);
     switch (result) {
-        .success => |values| try self.returnValues(thread, base, return_count, values),
+        .success => |values| {
+            if (!resultsFit(self, thread, base, values.len)) return self.throwValue(try self.withLibraryWhere(.{ .string = try self.strings.intern("too many results to resume") }));
+            try self.returnValues(thread, base, return_count, values);
+        },
         .failure => |error_value| {
             const failure = if (target.status == .dead)
                 (try closeCoroutine(self, target, null)) orelse error_value

@@ -209,6 +209,10 @@ pub const Journal = struct {
         self.new_objects.putAssumeCapacity(address, .{ .kind = kind, .len = len });
     }
 
+    pub fn isNew(self: *const Journal, address: usize) bool {
+        return self.new_objects.contains(address);
+    }
+
     pub fn freed(self: *Journal, address: usize) void {
         _ = self.new_objects.remove(address);
     }

@@ -113,6 +113,7 @@
 - [testing.expected_failures](../testing/expected_failures.md)
 - [testing.metadata](../testing/metadata.md)
 - [testing.normalizer](../testing/normalizer.md)
+- [testing.parallel](../testing/parallel.md)
 - [testing.extension_runner](../testing/extension_runner.md)
 - [testing.official_suite](../testing/official_suite.md)
 
@@ -765,6 +766,8 @@ pub const CoroutineResumeResult = union(enum) {
 pub const Closure = struct {
     rollback: ?*@import("rollback.zig").Record(Closure) = null,
     proto: *const proto_mod.Proto,
+    /// Loaded chunk prototype that owns `proto`; null when `proto` is that root.
+    root: ?*const proto_mod.Proto = null,
     upvalues: []*Upvalue,
     constants: ?[]?Value = null,
     stripped_debug: bool = false,
