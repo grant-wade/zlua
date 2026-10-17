@@ -600,3 +600,30 @@ test "collections free chunk prototypes once their closures are unreachable" {
         \\end
     , .{});
 }
+
+test "fast field stores keep their keys after the chunk prototype is freed" {
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+
+    try lua.doString(
+        \\keep = {}
+        \\for i = 1, 200 do
+        \\  local chunk = load("local function fill(t) for j = 1, 2 do t.name" .. i .. " = j end end " ..
+        \\    "local a, b = {}, { p = 1, q = 2, r = 3 } b.s = 4 fill(a) fill(b) return b")
+        \\  local t = chunk()
+        \\  if i % 50 == 0 then keep[i] = t end
+        \\end
+        \\collectgarbage()
+    , .{});
+    try std.testing.expect(lua.raw_state.proto_allocations.items.len - lua.raw_state.borrowed_proto_count < 20);
+
+    try lua.doString(
+        \\for i, t in pairs(keep) do
+        \\  local found = false
+        \\  for k, v in pairs(t) do
+        \\    if k == "name" .. i then found = v == 2 end
+        \\  end
+        \\  assert(found and t["name" .. i] == 2)
+        \\end
+    , .{});
+}
