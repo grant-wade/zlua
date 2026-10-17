@@ -420,8 +420,10 @@ pub const Gc = struct {
         const state = gc.parentState();
         if (state.gc.stress_step and state.gc.phase == .pause) state.gc.major_pending = true;
         defer state.gc.stress_mark = state.gc.known_total;
-        if (state.gc.stress_collect or gc.luaFastStep()) return gc.collectConservatively(thread);
-        _ = try gc.step(thread, true);
+        // Safepoints sit between instructions, so registers above the live frame top are dead unless a hook is running.
+        const conservative = state.gc.conservative_depth != 0;
+        if (state.gc.stress_collect or gc.luaFastStep()) return gc.collectWithFinalizersMode(thread, conservative);
+        _ = try gc.step(thread, conservative);
     }
 
     fn basicWork(gc: *Gc) usize {
@@ -544,10 +546,8 @@ pub const Gc = struct {
             },
             .atomic => {
                 try gc.atomic();
-                if (state.gc.cycle == .major) {
-                    state.gc.remembered.clearRetainingCapacity();
-                    state.gc.old = .{};
-                }
+                // Like Lua's atomic2gen, survivors age here; objects allocated during the sweep stay young.
+                if (state.gc.cycle == .major) gc.ageAllObjects();
                 state.gc.phase = .sweep_threads;
                 state.gc.sweep_cursor = if (state.gc.cycle == .minor) state.gc.old.thread_allocations else 0;
             },
@@ -583,7 +583,7 @@ pub const Gc = struct {
                         const reclaimed = state.gc.cycle_start_total -| state.gc.known_total;
                         const added = state.gc.cycle_start_total -| state.gc.major_base;
                         const return_to_minor = reclaimed > added *| @as(usize, @intCast(@max(state.gc.params.majorminor, 0))) / 100;
-                        gc.normalizeBaseline();
+                        gc.finishBaseline();
                         state.gc.major_pending = state.gc.mode == .generational and !return_to_minor;
                     } else {
                         gc.promoteYoung();
@@ -652,14 +652,40 @@ pub const Gc = struct {
     }
 
     pub fn normalizeBaseline(gc: *Gc) void {
+        gc.ageAllObjects();
+        gc.finishBaseline();
+    }
+
+    fn ageAllObjects(gc: *Gc) void {
         const state = gc.parentState();
-        gc.resetMarks();
         state.gc.generation += 1;
         state.gc.remembered.clearRetainingCapacity();
+        inline for (reflection.fieldsOf(types.GcGenerations)) |f| @field(state.gc.old, f) = @field(state, f).items.len;
+    }
+
+    /// Lua's entergen collects before aging survivors; starting every object young
+    /// lets the next minor collection free garbage that existed before the switch.
+    fn makeAllObjectsYoung(gc: *Gc) void {
+        const state = gc.parentState();
+        state.gc.remembered.clearRetainingCapacity();
+        inline for (reflection.fieldsOf(types.GcGenerations)) |field| {
+            const strings = comptime std.mem.eql(u8, field, "string_allocations");
+            for (@field(state, field).items) |*item| {
+                const pointer = if (strings) item else item.*;
+                pointer.gc.generation = state.gc.generation;
+                pointer.gc.age = .new;
+                pointer.gc.remembered = false;
+            }
+            @field(state.gc.old, field) = 0;
+        }
+    }
+
+    fn finishBaseline(gc: *Gc) void {
+        const state = gc.parentState();
+        gc.resetMarks();
         state.gc.major_pending = false;
         state.gc.phase = .pause;
         state.gc.sweep_cursor = 0;
-        inline for (reflection.fieldsOf(types.GcGenerations)) |f| @field(state.gc.old, f) = @field(state, f).items.len;
         state.gc.major_base = state.gc.known_total;
         gc.resetAutoThreshold();
     }
@@ -1469,8 +1495,10 @@ pub const Gc = struct {
         const state = gc.parentState();
         const strings = comptime std.mem.eql(u8, field, "string_allocations");
         const tables = comptime std.mem.eql(u8, field, "table_allocations");
+        // A major cycle ages its survivors at the atomic step, so objects allocated after it sit beyond the boundary and are live.
+        const end: *const usize = if (state.gc.cycle == .major) &@field(state.gc.old, field) else &@field(state, field).items.len;
         var work: usize = 0;
-        while (state.gc.sweep_cursor < @field(state, field).items.len and work < budget) : (work += 1) {
+        while (state.gc.sweep_cursor < end.* and work < budget) : (work += 1) {
             const index = state.gc.sweep_cursor;
             const item = @field(state, field).items[index];
             if (gc.isMarked(if (strings) &item else item)) {
@@ -1510,7 +1538,7 @@ pub const Gc = struct {
             }
             gc.removeRegistryItem(field, index);
         }
-        return state.gc.sweep_cursor >= @field(state, field).items.len;
+        return state.gc.sweep_cursor >= end.*;
     }
 
     pub fn findStringAllocation(gc: *Gc, bytes: []const u8) ?usize {
@@ -1684,7 +1712,10 @@ pub const Gc = struct {
         const previous = state.gc.mode;
         if (mode == previous) return previous;
         state.gc.mode = mode;
-        if (!state.gc.collecting) gc.normalizeBaseline();
+        if (!state.gc.collecting) {
+            gc.normalizeBaseline();
+            if (mode == .generational) gc.makeAllObjectsYoung();
+        }
         return previous;
     }
 
