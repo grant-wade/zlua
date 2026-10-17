@@ -17,7 +17,8 @@ const CaptureState = struct {
 };
 pub const Match = struct { range: MatchRange, captures: CaptureState };
 const MatchResult = struct { end: usize, captures: CaptureState };
-const pattern_match_max_depth: usize = 100;
+const pattern_match_max_depth: usize = 200;
+const MatchError = runtime.RuntimeError || error{ Interrupted, OutOfMemory };
 
 pub fn patternHasSpecials(pattern: []const u8) bool {
     for (pattern) |ch| {
@@ -55,6 +56,17 @@ pub fn plainFind(source: []const u8, pattern: []const u8, start: usize) ?Match {
 }
 
 pub fn simplePatternFind(state: *State, source: []const u8, pattern: []const u8, start: usize) !?Match {
+    if (pattern.len > 0 and pattern[0] == '^') {
+        const anchored_start = @min(start, source.len);
+        const matched = (try matchSimplePatternAt(state, source, pattern[1..], anchored_start)) orelse return null;
+        return .{ .range = .{ .start = anchored_start, .end = matched.end }, .captures = matched.captures };
+    }
+    return unanchoredPatternFind(state, source, pattern, start);
+}
+
+/// Finds the first match at or after `start`, treating a leading '^' as a
+/// literal character the way `string.gmatch` does.
+pub fn unanchoredPatternFind(state: *State, source: []const u8, pattern: []const u8, start: usize) !?Match {
     if (pattern.len == 0) return .{ .range = .{ .start = @min(start, source.len), .end = @min(start, source.len) }, .captures = .{} };
     if (repeatedEscapePattern(pattern)) |repeated| return findRepeatedEscape(source, repeated, start);
     if (simpleOneOrMoreEscape(pattern)) |code| return findOneOrMoreEscape(source, code, start);
@@ -62,11 +74,6 @@ pub fn simplePatternFind(state: *State, source: []const u8, pattern: []const u8,
         .found => |matched| return matched,
         .not_found => return null,
         .unsupported => {},
-    }
-    if (pattern[0] == '^') {
-        const anchored_start = @min(start, source.len);
-        const matched = (try matchSimplePatternAt(state, source, pattern[1..], anchored_start)) orelse return null;
-        return .{ .range = .{ .start = anchored_start, .end = matched.end }, .captures = matched.captures };
     }
     var candidate = start;
     while (candidate <= source.len) : (candidate += 1) {
@@ -253,85 +260,121 @@ fn matchSimplePatternAt(state: *State, source: []const u8, pattern: []const u8, 
     return matchPatternFrom(state, source, pattern, start, 0, 0, .{});
 }
 
-fn matchPatternFrom(state: *State, source: []const u8, pattern: []const u8, source_index: usize, pattern_index: usize, depth: usize, captures: CaptureState) !?MatchResult {
-    if (depth > pattern_match_max_depth) return state.failLibrary("pattern too complex");
-    if (pattern_index >= pattern.len) {
-        if (capturesHaveUnfinished(captures)) return state.failLibrary("unfinished capture");
-        return .{ .end = source_index, .captures = captures };
-    }
-    if (pattern[pattern_index] == '$' and pattern_index + 1 == pattern.len) return if (source_index == source.len) .{ .end = source_index, .captures = captures } else null;
-    if (pattern[pattern_index] == '(') {
-        const updated = if (pattern_index + 1 < pattern.len and pattern[pattern_index + 1] == ')')
-            try appendCapture(state, captures, .{ .position = source_index })
-        else
-            try appendCapture(state, captures, .{ .unfinished = source_index });
-        const next_index = pattern_index + @as(usize, if (pattern_index + 1 < pattern.len and pattern[pattern_index + 1] == ')') 2 else 1);
-        return matchPatternFrom(state, source, pattern, source_index, next_index, depth + 1, updated);
-    }
-    if (pattern[pattern_index] == ')') return matchPatternFrom(state, source, pattern, source_index, pattern_index + 1, depth + 1, try closeCapture(state, captures, source_index));
-
-    const atom_start = pattern_index;
-    const atom_end = nextPatternAtom(pattern, atom_start);
-    try validatePatternAtom(state, pattern, atom_start, atom_end);
-    const quantifier = if (atom_end < pattern.len and std.mem.indexOfScalar(u8, "*+-?", pattern[atom_end]) != null) pattern[atom_end] else 0;
-    const next_index = atom_end + @as(usize, if (quantifier != 0) 1 else 0);
-    const atom = pattern[atom_start..atom_end];
-
-    switch (quantifier) {
-        0 => {
-            const item_end = (try matchPatternItem(state, source, atom, source_index, captures)) orelse return null;
-            return matchPatternFrom(state, source, pattern, item_end, next_index, depth + 1, captures);
-        },
-        '?' => {
-            if (try matchPatternItem(state, source, atom, source_index, captures)) |item_end| {
-                if (item_end > source_index) {
-                    if (try matchPatternFrom(state, source, pattern, item_end, next_index, depth + 1, captures)) |end| return end;
+/// Mirrors `match` in Lua's lstrlib.c: single items advance in place, and only
+/// captures and quantifiers recurse, so `depth` tracks the same nesting limit.
+fn matchPatternFrom(state: *State, source: []const u8, pattern: []const u8, source_start: usize, pattern_start: usize, depth: usize, captures: CaptureState) MatchError!?MatchResult {
+    if (depth >= pattern_match_max_depth) return state.failLibrary("pattern too complex");
+    var s = source_start;
+    var p = pattern_start;
+    while (true) {
+        if (p >= pattern.len) {
+            if (capturesHaveUnfinished(captures)) return state.failLibrary("unfinished capture");
+            return .{ .end = s, .captures = captures };
+        }
+        switch (pattern[p]) {
+            '(' => {
+                if (p + 1 < pattern.len and pattern[p + 1] == ')') {
+                    return matchPatternFrom(state, source, pattern, s, p + 2, depth + 1, try appendCapture(state, captures, .{ .position = s }));
                 }
+                return matchPatternFrom(state, source, pattern, s, p + 1, depth + 1, try appendCapture(state, captures, .{ .unfinished = s }));
+            },
+            ')' => return matchPatternFrom(state, source, pattern, s, p + 1, depth + 1, try closeCapture(state, captures, s)),
+            '$' => if (p + 1 == pattern.len) return if (s == source.len) .{ .end = s, .captures = captures } else null,
+            '%' => if (p + 1 < pattern.len) switch (pattern[p + 1]) {
+                'b' => {
+                    if (p + 3 >= pattern.len) return state.failLibrary("malformed pattern (missing arguments to '%b')");
+                    s = matchBalanced(source, s, pattern[p + 2], pattern[p + 3]) orelse return null;
+                    p += 4;
+                    continue;
+                },
+                'f' => {
+                    p += 2;
+                    if (p >= pattern.len or pattern[p] != '[') return state.failLibrary("missing '[' after '%f' in pattern");
+                    const class_end = try singleItemEnd(state, pattern, p);
+                    const class = pattern[p..class_end];
+                    const previous = if (s == 0) 0 else source[s - 1];
+                    const current = if (s < source.len) source[s] else 0;
+                    if (patternAtomMatches(class, previous) or !patternAtomMatches(class, current)) return null;
+                    p = class_end;
+                    continue;
+                },
+                '0'...'9' => {
+                    s = (try matchCaptureReference(state, source, s, captures, pattern[p + 1])) orelse return null;
+                    p += 2;
+                    continue;
+                },
+                else => {},
+            },
+            else => {},
+        }
+
+        const item_end = try singleItemEnd(state, pattern, p);
+        const item = pattern[p..item_end];
+        const quantifier: u8 = if (item_end < pattern.len) pattern[item_end] else 0;
+        if (!singleMatch(source, s, item)) {
+            switch (quantifier) {
+                '*', '?', '-' => {
+                    p = item_end + 1;
+                    continue;
+                },
+                else => return null,
             }
-            return matchPatternFrom(state, source, pattern, source_index, next_index, depth + 1, captures);
-        },
-        '*', '+' => {
-            var ends = std.ArrayList(usize).empty;
-            defer ends.deinit(state.allocator);
-            var end = source_index;
-            while (ends.items.len < 4096) {
-                const item_end = (try matchPatternItem(state, source, atom, end, captures)) orelse break;
-                if (item_end == end) break;
-                end = item_end;
-                try ends.append(state.allocator, end);
-            }
-            if (quantifier == '+' and end == source_index) return null;
-            var index = ends.items.len;
-            while (index > 0) {
-                index -= 1;
-                try state.budget.checkInterrupt();
-                if (try matchPatternFrom(state, source, pattern, ends.items[index], next_index, depth + 1, captures)) |matched_end| return matched_end;
-            }
-            if (quantifier == '*') return matchPatternFrom(state, source, pattern, source_index, next_index, depth + 1, captures);
-            return null;
-        },
-        '-' => {
-            var candidate = source_index;
-            while (true) {
-                try state.budget.checkInterrupt();
-                if (try matchPatternFrom(state, source, pattern, candidate, next_index, depth + 1, captures)) |matched_end| return matched_end;
-                const item_end = (try matchPatternItem(state, source, atom, candidate, captures)) orelse return null;
-                if (item_end == candidate) return null;
-                candidate = item_end;
-            }
-        },
-        else => unreachable,
+        }
+        switch (quantifier) {
+            '?' => {
+                if (try matchPatternFrom(state, source, pattern, s + 1, item_end + 1, depth + 1, captures)) |matched| return matched;
+                p = item_end + 1;
+            },
+            '+' => return maxExpand(state, source, pattern, s + 1, item, item_end + 1, depth, captures),
+            '*' => return maxExpand(state, source, pattern, s, item, item_end + 1, depth, captures),
+            '-' => return minExpand(state, source, pattern, s, item, item_end + 1, depth, captures),
+            else => {
+                s += 1;
+                p = item_end;
+            },
+        }
     }
 }
 
-fn validatePatternAtom(state: *State, pattern: []const u8, atom_start: usize, atom_end: usize) !void {
-    if (pattern[atom_start] == '[' and atom_end == atom_start + 1) return state.failLibrary("malformed pattern (missing ']')");
-    if (pattern[atom_start] != '%') return;
-    if (atom_start + 1 >= pattern.len) return state.failLibrary("malformed pattern (ends with '%')");
-    switch (pattern[atom_start + 1]) {
-        'b' => if (atom_start + 3 >= pattern.len) return state.failLibrary("malformed pattern (missing arguments to '%b')"),
-        'f' => if (atom_start + 2 >= pattern.len or pattern[atom_start + 2] != '[' or atom_end == atom_start + 1) return state.failLibrary("missing '[' after '%f' in pattern"),
-        else => {},
+fn maxExpand(state: *State, source: []const u8, pattern: []const u8, start: usize, item: []const u8, rest: usize, depth: usize, captures: CaptureState) MatchError!?MatchResult {
+    var count: usize = 0;
+    while (singleMatch(source, start + count, item)) count += 1;
+    while (true) {
+        try state.budget.checkInterrupt();
+        if (try matchPatternFrom(state, source, pattern, start + count, rest, depth + 1, captures)) |matched| return matched;
+        if (count == 0) return null;
+        count -= 1;
+    }
+}
+
+fn minExpand(state: *State, source: []const u8, pattern: []const u8, start: usize, item: []const u8, rest: usize, depth: usize, captures: CaptureState) MatchError!?MatchResult {
+    var s = start;
+    while (true) {
+        try state.budget.checkInterrupt();
+        if (try matchPatternFrom(state, source, pattern, s, rest, depth + 1, captures)) |matched| return matched;
+        if (!singleMatch(source, s, item)) return null;
+        s += 1;
+    }
+}
+
+fn singleMatch(source: []const u8, index: usize, item: []const u8) bool {
+    return index < source.len and patternAtomMatches(item, source[index]);
+}
+
+/// Returns the end of the single-character class starting at `index`, raising
+/// Lua's malformed-pattern errors for a trailing '%' or an unclosed '['.
+fn singleItemEnd(state: *State, pattern: []const u8, index: usize) !usize {
+    switch (pattern[index]) {
+        '%' => {
+            if (index + 1 >= pattern.len) return state.failLibrary("malformed pattern (ends with '%')");
+            return index + 2;
+        },
+        '[' => {
+            const end = classAtomEnd(pattern, index);
+            if (end == index) return state.failLibrary("malformed pattern (missing ']')");
+            return end;
+        },
+        else => return index + 1,
     }
 }
 
@@ -367,34 +410,6 @@ fn capturesHaveUnfinished(captures: CaptureState) bool {
     return false;
 }
 
-fn matchPatternItem(state: *State, source: []const u8, atom: []const u8, source_index: usize, captures: CaptureState) !?usize {
-    if (atom.len == 0) return null;
-    if (atom.len == 1) {
-        if (source_index >= source.len) return null;
-        return if (atom[0] == '.' or atom[0] == source[source_index]) source_index + 1 else null;
-    }
-    if (atom[0] == '%') {
-        if (atom.len >= 4 and atom[1] == 'b') return matchBalanced(source, source_index, atom[2], atom[3]);
-        if (atom.len >= 4 and atom[1] == 'f' and atom[2] == '[') {
-            const previous = if (source_index == 0) 0 else source[source_index - 1];
-            const current = if (source_index < source.len) source[source_index] else 0;
-            return if (!patternAtomMatches(atom[2..], previous) and patternAtomMatches(atom[2..], current)) source_index else null;
-        }
-        if (atom[1] == '0') {
-            try invalidCaptureIndex(state, 0);
-            unreachable;
-        }
-        if (atom[1] >= '1' and atom[1] <= '9') return matchCaptureReference(state, source, source_index, captures, atom[1] - '0');
-        if (source_index >= source.len) return null;
-        return if (patternEscapeMatches(atom[1], source[source_index])) source_index + 1 else null;
-    }
-    if (atom[0] == '[' and atom[atom.len - 1] == ']') {
-        if (source_index >= source.len) return null;
-        return if (patternAtomMatches(atom, source[source_index])) source_index + 1 else null;
-    }
-    return null;
-}
-
 fn matchBalanced(source: []const u8, source_index: usize, open: u8, close: u8) ?usize {
     if (source_index >= source.len or source[source_index] != open) return null;
     var depth: usize = 1;
@@ -410,35 +425,23 @@ fn matchBalanced(source: []const u8, source_index: usize, open: u8, close: u8) ?
     return null;
 }
 
-fn matchCaptureReference(state: *State, source: []const u8, source_index: usize, captures: CaptureState, one_based: u8) !?usize {
-    const index: usize = one_based - 1;
-    if (index >= captures.count) {
+fn matchCaptureReference(state: *State, source: []const u8, source_index: usize, captures: CaptureState, digit: u8) !?usize {
+    const one_based = digit - '0';
+    if (one_based == 0 or one_based > captures.count) {
         try invalidCaptureIndex(state, one_based);
         unreachable;
     }
-    const range = switch (captures.slots[index]) {
+    const range = switch (captures.slots[one_based - 1]) {
         .range => |range| range,
-        else => {
+        .position => return null,
+        .unfinished => {
             try invalidCaptureIndex(state, one_based);
             unreachable;
         },
     };
     const captured = source[range.start..range.end];
-    if (source_index + captured.len > source.len) return null;
+    if (captured.len > source.len - source_index) return null;
     return if (std.mem.eql(u8, source[source_index .. source_index + captured.len], captured)) source_index + captured.len else null;
-}
-
-fn nextPatternAtom(pattern: []const u8, index: usize) usize {
-    if (pattern[index] == '%' and index + 1 < pattern.len) {
-        if (pattern[index + 1] == 'b' and index + 3 < pattern.len) return index + 4;
-        if (pattern[index + 1] == 'f' and index + 2 < pattern.len and pattern[index + 2] == '[') return classAtomEnd(pattern, index + 2);
-        return index + 2;
-    }
-    if (pattern[index] == '[') {
-        const end = classAtomEnd(pattern, index);
-        if (end > index) return end;
-    }
-    return index + 1;
 }
 
 fn classAtomEnd(pattern: []const u8, index: usize) usize {
