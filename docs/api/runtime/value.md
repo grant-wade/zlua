@@ -35,6 +35,7 @@
 - [runtime.rollback](../runtime/rollback.md)
 - [runtime.value](../runtime/value.md)
 - [runtime.number_format](../runtime/number_format.md)
+- [runtime.table_index](../runtime/table_index.md)
 - [runtime.host](../runtime/host.md)
 - [runtime.upvalue](../runtime/upvalue.md)
 - [runtime.failure](../runtime/failure.md)
@@ -73,6 +74,7 @@
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
 - [runtime.native_fn](../runtime/native_fn.md)
+- [runtime.address_index](../runtime/address_index.md)
 - [compile.compiler](../compile/compiler.md)
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
@@ -123,6 +125,7 @@
 
 - [valuesEqual](#fn-valuesequal)
 - [hashValue](#fn-hashvalue)
+- [hashString](#fn-hashstring)
 - [truthy](#fn-truthy)
 - [toInteger](#fn-tointeger)
 - [coerceToInteger](#fn-coercetointeger)
@@ -210,6 +213,14 @@ pub fn hashValue(value: Value) u64
 ```
 
 References: [`Value`](#alias-value)
+
+<a id="fn-hashstring"></a>
+
+## hashString
+
+```zig
+pub fn hashString(bytes: []const u8) u64
+```
 
 <a id="fn-truthy"></a>
 

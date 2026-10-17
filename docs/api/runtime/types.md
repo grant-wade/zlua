@@ -35,6 +35,7 @@
 - [runtime.rollback](../runtime/rollback.md)
 - [runtime.value](../runtime/value.md)
 - [runtime.number_format](../runtime/number_format.md)
+- [runtime.table_index](../runtime/table_index.md)
 - [runtime.host](../runtime/host.md)
 - [runtime.upvalue](../runtime/upvalue.md)
 - [runtime.failure](../runtime/failure.md)
@@ -73,6 +74,7 @@
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
 - [runtime.native_fn](../runtime/native_fn.md)
+- [runtime.address_index](../runtime/address_index.md)
 - [compile.compiler](../compile/compiler.md)
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
@@ -154,6 +156,7 @@
 - [NativeCall](#type-nativecall)
 - [CallFrame](#type-callframe)
 - [StringAllocation](#type-stringallocation)
+- [AddressContext](#type-addresscontext)
 - [GcMeta](#type-gcmeta)
 - [GcObject](#type-gcobject)
 - [GcPhase](#type-gcphase)
@@ -171,12 +174,16 @@
 - [UserdataDeinit](#const-userdatadeinit)
 - [UserdataSnapshotCopy](#const-userdatasnapshotcopy)
 - [ApiCallbackDispatchFn](#const-apicallbackdispatchfn)
-- [TableEntryIndex](#const-tableentryindex)
-- [PointerAllocationIndex](#const-pointerallocationindex)
+
+## Aliases
+
+- [TableEntryIndex](#alias-tableentryindex)
 
 ## Imports
 
 - [NativeFn](#import-nativefn) `@import("native_fn.zig")`
+- [PointerAllocationIndex](#import-pointerallocationindex) `@import("address_index.zig")`
+- [ObjectAllocationIndex](#import-objectallocationindex) `@import("address_index.zig")`
 
 <a id="type-runtimeerror"></a>
 
@@ -804,15 +811,13 @@ pub const TableEntry = struct {
 };
 ```
 
-<a id="const-tableentryindex"></a>
+<a id="alias-tableentryindex"></a>
 
 ## TableEntryIndex
 
 ```zig
-pub const TableEntryIndex = std.HashMap(Value, usize, ValueHashContext, std.hash_map.default_max_load_percentage);
+pub const TableEntryIndex = table_index.EntryIndex;
 ```
-
-References: [`Value`](#type-value)
 
 <a id="type-metaevent"></a>
 
@@ -877,7 +882,7 @@ pub const Table = struct {
     rollback: ?*@import("rollback.zig").Record(Table) = null,
     array: std.ArrayList(Value) = .empty,
     entries: std.ArrayList(TableEntry) = .empty,
-    entry_index: TableEntryIndex,
+    entry_index: TableEntryIndex = .{},
     metatable: ?*Table = null,
     metatable_prev: ?*Table = null,
     metatable_next: ?*Table = null,
@@ -900,18 +905,21 @@ pub const Table = struct {
 | [init](#fn-table-init) | `allocator: std.mem.Allocator, array_hint: u32, hash_hint: u32` | `!Table` |  |
 | [deinit](#fn-table-deinit) | `self: *Table, allocator: std.mem.Allocator` | `void` |  |
 | [get](#fn-table-get) | `self: *const Table, key: Value` | `Value` |  |
+| [getStringHashed](#fn-table-getstringhashed) | `self: *const Table, key: []const u8, hash: u32` | `Value` | Raw read of a string key whose &#96;table_index.hashStringKey&#96; the caller already knows. |
+| [findStringEntry](#fn-table-findstringentry) | `self: *const Table, key: []const u8, hash: u32` | `?usize` |  |
 | [metaEventAbsent](#fn-table-metaeventabsent) | `self: *const Table, event: MetaEvent` | `bool` |  |
 | [metaEvent](#fn-table-metaevent) | `self: *Table, event: MetaEvent` | `Value` | Raw lookup of a metamethod in this metatable, caching absence. |
 | [invalidateMetaEvents](#fn-table-invalidatemetaevents) | `self: *Table` | `void` | Call before writing a hash slot that may currently hold nil. |
 | [findEntry](#fn-table-findentry) | `self: *const Table, key: Value` | `?usize` |  |
-| [rebuildEntryIndex](#fn-table-rebuildentryindex) | `self: *Table` | `!void` |  |
+| [rebuildEntryIndex](#fn-table-rebuildentryindex) | `self: *Table, allocator: std.mem.Allocator` | `!void` |  |
 | [insertHashEntryNoAlloc](#fn-table-inserthashentrynoalloc) | `self: *Table, key: Value, value: Value` | `bool` | Insert an absent hash key using reserved storage. The caller must check that the key is absent; false means growth or snapshot detachment is needed. |
 | [set](#fn-table-set) | `self: *Table, allocator: std.mem.Allocator, key: Value, value: Value` | `!void` |  |
 | [setExistingNonNil](#fn-table-setexistingnonnil) | `self: *Table, key: Value, value: Value` | `bool` |  |
 | [len](#fn-table-len) | `self: *const Table` | `i64` |  |
 | [next](#fn-table-next) | `self: *const Table, key: Value` | `![2]Value` |  |
 | [removeHashKey](#fn-table-removehashkey) | `self: *Table, key: Value` | `void` |  |
-| [removeEntryAt](#fn-table-removeentryat) | `self: *Table, index: usize` | `void` |  |
+| [removeEntryAt](#fn-table-removeentryat) | `self: *Table, index: usize` | `void` | Removes one entry, keeping the order of the rest for &#96;next&#96;. |
+| [reindexEntries](#fn-table-reindexentries) | `self: *Table` | `void` | Restores the index after entries were removed or moved. Never allocates, since the index already holds at least as many slots as entries. |
 
 <a id="fn-table-init"></a>
 
@@ -942,6 +950,28 @@ pub fn get(self: *const Table, key: Value) Value
 ```
 
 References: [`Table`](#type-table), [`Value`](#type-value)
+
+<a id="fn-table-getstringhashed"></a>
+
+### Table.getStringHashed
+
+Raw read of a string key whose `table_index.hashStringKey` the caller already knows.
+
+```zig
+pub inline fn getStringHashed(self: *const Table, key: []const u8, hash: u32) Value
+```
+
+References: [`Table`](#type-table), [`Value`](#type-value)
+
+<a id="fn-table-findstringentry"></a>
+
+### Table.findStringEntry
+
+```zig
+pub inline fn findStringEntry(self: *const Table, key: []const u8, hash: u32) ?usize
+```
+
+References: [`Table`](#type-table)
 
 <a id="fn-table-metaeventabsent"></a>
 
@@ -992,7 +1022,7 @@ References: [`Table`](#type-table), [`Value`](#type-value)
 ### Table.rebuildEntryIndex
 
 ```zig
-pub fn rebuildEntryIndex(self: *Table) !void
+pub fn rebuildEntryIndex(self: *Table, allocator: std.mem.Allocator) !void
 ```
 
 References: [`Table`](#type-table)
@@ -1064,8 +1094,23 @@ References: [`Table`](#type-table), [`Value`](#type-value)
 
 ### Table.removeEntryAt
 
+Removes one entry, keeping the order of the rest for `next`.
+
 ```zig
 pub fn removeEntryAt(self: *Table, index: usize) void
+```
+
+References: [`Table`](#type-table)
+
+<a id="fn-table-reindexentries"></a>
+
+### Table.reindexEntries
+
+Restores the index after entries were removed or moved. Never allocates,
+since the index already holds at least as many slots as entries.
+
+```zig
+pub fn reindexEntries(self: *Table) void
 ```
 
 References: [`Table`](#type-table)
@@ -1429,13 +1474,62 @@ pub const StringAllocation = struct {
 };
 ```
 
-<a id="const-pointerallocationindex"></a>
+<a id="import-pointerallocationindex"></a>
 
 ## PointerAllocationIndex
 
 ```zig
-pub const PointerAllocationIndex = std.AutoHashMap(usize, usize);
+pub const PointerAllocationIndex = @import("address_index.zig").AddressIndex;
 ```
+
+References: [`AddressIndex`](../runtime/address_index.md#const-addressindex)
+
+<a id="import-objectallocationindex"></a>
+
+## ObjectAllocationIndex
+
+```zig
+pub const ObjectAllocationIndex = @import("address_index.zig").ObjectAddressIndex;
+```
+
+References: [`ObjectAddressIndex`](../runtime/address_index.md#const-objectaddressindex)
+
+<a id="type-addresscontext"></a>
+
+## AddressContext
+
+Hashes object addresses, which are distinct and aligned, without Wyhash.
+
+```zig
+pub const AddressContext = struct { ... };
+```
+
+### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [hash](#fn-addresscontext-hash) | `_: AddressContext, address: usize` | `u64` |  |
+| [eql](#fn-addresscontext-eql) | `_: AddressContext, lhs: usize, rhs: usize` | `bool` |  |
+
+<a id="fn-addresscontext-hash"></a>
+
+### AddressContext.hash
+
+```zig
+pub fn hash(_: AddressContext, address: usize) u64
+```
+
+References: [`AddressContext`](#type-addresscontext)
+
+<a id="fn-addresscontext-eql"></a>
+
+### AddressContext.eql
+
+```zig
+pub fn eql(_: AddressContext, lhs: usize, rhs: usize) bool
+```
+
+References: [`AddressContext`](#type-addresscontext)
 
 <a id="type-gcmeta"></a>
 
