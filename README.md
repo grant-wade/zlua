@@ -11,7 +11,7 @@ Development happens on GitHub, and Codeberg hosts a source mirror.
 1. Add zlua to your Zig package dependencies:
 
 ```sh
-zig fetch --save git+https://github.com/grant-wade/zlua#v0.7.0
+zig fetch --save git+https://github.com/grant-wade/zlua#v0.7.1
 ```
 
 2. Wire the dependency into your executable in `build.zig`:

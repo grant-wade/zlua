@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.1
 
 ### Lua compatibility
 
@@ -18,10 +18,17 @@
 - Automatic collections kept dead values in stack slots above the running function alive.
 - An incremental sweep could fall behind objects allocated during it and never finish.
 
+### Performance
+
+- More calls, returns, table operations, and generic loops stay in the VM's fast loop.
+- Faster table indexing, precomputed hashes for constant keys, and integer array access fast paths.
+- GC registries use an address index, and `table.sort` uses Lua 5.5's sorting algorithm.
+
 ### Testing
 
 - `zig build test-official-complete` runs the official suite without `_soft` and `_port`, and `zig build test-gc-stress` runs the differential fixtures under both GC stress modes. CI runs both on Linux.
 - Fuzz targets for source loading, binary chunk verification, and string library inputs run with `zig build test --fuzz`.
+- Test harnesses run cases in parallel, and the benchmark suite includes whole-program workloads.
 
 ## 0.7.0
 
