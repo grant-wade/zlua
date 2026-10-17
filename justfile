@@ -3,7 +3,7 @@ set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 zig := "zig"
 zlua := "zig-out/bin/zlua"
 clua := "zig-out/bin/lua5.5"
-official_memory_limit := if os() == "linux" { "--memory-limit-mb=256" } else { "" }
+official_memory_limit := if os() =~ "^(linux|freebsd)$" { "--memory-limit-mb=512" } else { "" }
 
 # Show available commands.
 default:

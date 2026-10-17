@@ -358,6 +358,7 @@ test "allocator exhaustion requires a platform with a child memory cap" {
     try std.testing.expect(skipReasonForOs(.windows, "heavy.lua") != null);
     try std.testing.expect(skipReasonForOs(.macos, "heavy.lua") != null);
     try std.testing.expect(skipReasonForOs(.linux, "heavy.lua") == null);
+    try std.testing.expect(skipReasonForOs(.freebsd, "heavy.lua") == null);
     try std.testing.expect(skipReasonForOs(.windows, "files.lua") == null);
 }
 
@@ -422,7 +423,8 @@ fn runOfficialFile(
     const script_arg = try std.fmt.allocPrint(allocator, "./{s}", .{std.fs.path.basename(file)});
     defer allocator.free(script_arg);
     try argv.appendSlice(allocator, &.{ "-e", prelude });
-    if ((builtin.os.tag == .macos or builtin.os.tag == .windows) and std.mem.eql(u8, std.fs.path.basename(file), "files.lua")) {
+    // FreeBSD's retained output makes files.lua's fclose assertion fail even in C Lua.
+    if ((builtin.os.tag == .macos or builtin.os.tag == .windows or builtin.os.tag == .freebsd) and std.mem.eql(u8, std.fs.path.basename(file), "files.lua")) {
         try argv.appendSlice(allocator, &.{ "-e", official_portable_files_prelude });
     }
     try argv.append(allocator, script_arg);

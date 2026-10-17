@@ -55,7 +55,7 @@ pub fn runProcess(
     var expand_arg0 = options.expand_arg0;
     if (options.memory_limit_mb != 0) {
         if (argv.len == 0) return error.EmptyArgv;
-        if (builtin.os.tag != .linux) return error.UnsupportedMemoryLimit;
+        if (builtin.os.tag != .linux and builtin.os.tag != .freebsd) return error.UnsupportedMemoryLimit;
 
         const limit_kb = std.math.mul(u64, options.memory_limit_mb, 1024) catch return error.MemoryLimitTooLarge;
         limit_kb_arg = try std.fmt.allocPrint(allocator, "{d}", .{limit_kb});
@@ -67,7 +67,7 @@ pub fn runProcess(
         try wrapped_argv.appendSlice(allocator, &.{
             "/bin/sh",
             "-c",
-            "limit_kb=$1; shift; ulimit -v \"$limit_kb\"; exec \"$@\"",
+            "limit_kb=$1; shift; ulimit -v \"$limit_kb\" || exit 125; exec \"$@\"",
             "zlua-memory-limit",
             limit_kb_arg.?,
             owned_arg0 orelse argv[0],
@@ -142,4 +142,17 @@ test "owned result reports success" {
 test "memory limit wrapper rejects empty argv" {
     const result = runProcess(std.testing.allocator, std.Io.failing, &.{}, .{ .memory_limit_mb = 1 });
     try std.testing.expectError(error.EmptyArgv, result);
+}
+
+test "memory limit is applied to the child and preserves arguments" {
+    if (builtin.os.tag != .linux and builtin.os.tag != .freebsd) return error.SkipZigTest;
+
+    var result = try runProcess(std.testing.allocator, std.testing.io, &.{
+        "/bin/sh", "-c", "ulimit -v; printf '%s\\n' \"$1\"", "test", "argument with spaces; $HOME",
+    }, .{ .memory_limit_mb = 256 });
+    defer result.deinit(std.testing.allocator);
+
+    try std.testing.expect(result.success());
+    try std.testing.expectEqualStrings("262144\nargument with spaces; $HOME\n", result.stdout);
+    try std.testing.expectEqualStrings("", result.stderr);
 }

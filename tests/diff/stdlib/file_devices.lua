@@ -5,8 +5,6 @@
 -- skip-os: windows
 -- reason: Windows has no POSIX device files
 
--- Device files behave like the host's: `/dev/full` exists only on Linux.
-
 local null = assert(io.open("/dev/null", "w"))
 print(null:write("discarded") == null, null:flush(), null:close())
 null = assert(io.open("/dev/null"))
@@ -36,6 +34,14 @@ full = assert(io.open("/dev/full", "w"))
 print(full:setvbuf("line"))
 print(full:write("no newline") == full)
 print(full:write("line\n") == full)
+print(full:flush())
+print(full:close())
+
+full = assert(io.open("/dev/full", "w"))
+assert(full:setvbuf("line"))
+local written, err, errno, count = full:write("prefix", "line\n")
+print(written == full, err, errno, count)
+print(full:flush())
 print(full:close())
 
 io.output("/dev/full")

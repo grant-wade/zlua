@@ -32,7 +32,7 @@ Most recipes are thin wrappers around the build step of the same or a similar na
 | `just version`, `just clua-version` | Print version information for zlua or the downloaded Lua. |
 | `just diff [args...]` | Run the differential tests with `--debug-errors`. |
 | `just extensions [args...]` | Run the zlua extension fixtures. |
-| `just official [args...]` | Run the official tests with debug errors and a 256 MiB child cap on Linux. |
+| `just official [args...]` | Run the official tests with debug errors and a 512 MiB child cap on Linux and FreeBSD. |
 | `just bench [args...]` | Run the full benchmark suite, or only the cases you select. |
 | `just fmt` | Format the top-level source, testing, build, and example files. |
 | `just clean` | Remove `zig-out/` and `.zig-cache/`. |
@@ -46,8 +46,8 @@ Format with Zig `0.16.0`, because the Zig `0.17.0` formatter can introduce synta
 | `-Dtarget=<target>` | Select the Zig target. |
 | `--release=safe`, `--release=fast`, `--release=small` | Select a release mode; this spelling works on both supported Zig versions. Without it you get a debug build. |
 | `-Doptimize=<mode>` | Zig 0.16: `Debug`, `ReleaseSafe`, `ReleaseFast`, `ReleaseSmall`. Zig 0.17: `debug`, `safe`, `fast`, `small`. |
-| `-Dofficial-memory-limit-mb=<n>` | Memory cap for each official-test child process on Linux. Defaults to `256` on Linux and `0` elsewhere; `0` disables it. |
-| `-Dofficial-complete-memory-limit-mb=<n>` | The same cap for `test-official-complete`. Defaults to `2048` on Linux and `0` elsewhere. |
+| `-Dofficial-memory-limit-mb=<n>` | Memory cap for each official-test child process on Linux and FreeBSD. Defaults to `512` on those platforms and `0` elsewhere; `0` disables it. |
+| `-Dofficial-complete-memory-limit-mb=<n>` | The same cap for `test-official-complete`. Defaults to `2048` on Linux and FreeBSD and `0` elsewhere. |
 | `-Dofficial-timeout-ms=<n>` | Timeout for each official-test child process. Defaults to `120000`; `0` disables it. |
 
 ## Build Steps
@@ -167,7 +167,7 @@ just official [options] [files...]
 | `--suite-path PATH`, `--suite-path=PATH` | Use a different extracted test directory. |
 | `--mode=basic|complete` | Prelude mode. `internal` is rejected because `testC` builds are not supported. |
 | `--timeout-ms=N` | Per-process timeout; `0` means none. |
-| `--memory-limit-mb=N` | Child memory cap on Linux; `0` means none. |
+| `--memory-limit-mb=N` | Child memory cap on Linux and FreeBSD; `0` means none. |
 | `--show-clua`, `--show-zlua` | Print each engine's output. |
 | `--debug-errors` | Enable zlua internal diagnostics. |
 

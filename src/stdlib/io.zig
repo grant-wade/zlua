@@ -51,7 +51,7 @@ pub const File = struct {
         regular,
         popen,
         null_device,
-        /// Linux `/dev/full`: endless zero reads; flushing fails with `ENOSPC`.
+        /// Linux and FreeBSD `/dev/full`: endless zero reads; flushing fails with `ENOSPC`.
         full_device,
         /// `io.tmpfile`: memory only.
         anonymous,
@@ -957,6 +957,8 @@ fn writeToFile(state: *State, thread: *Thread, op: bytecode.Call, handle: Handle
             .full_device => if (bytes.len != 0) {
                 if (file.buffer_mode == .no) return returnWriteFailure(state, thread, op, host.fileError(error.NoSpaceLeft), total);
                 file.device_pending = true;
+                if (builtin.os.tag == .freebsd and line_buffered and std.mem.indexOfScalar(u8, bytes, '\n') != null)
+                    return returnWriteFailure(state, thread, op, host.fileError(error.NoSpaceLeft), total);
             },
             .buffer => writeBytes(state, handle, bytes) catch |err| switch (err) {
                 error.FileTooBig => return returnWriteFailure(state, thread, op, host.fileError(err), total),
@@ -1020,7 +1022,8 @@ fn closeFile(state: *State, handle: Handle) !?host.FileError {
 fn flushReport(state: *State, file: *File) error{OutOfMemory}!?host.FileError {
     if (file.kind == .full_device) {
         if (!file.device_pending) return null;
-        file.device_pending = false;
+        // FreeBSD retains failed output for subsequent flush/close attempts.
+        if (builtin.os.tag != .freebsd) file.device_pending = false;
         return host.fileError(error.NoSpaceLeft);
     }
     flushFile(state, file) catch |err| {
@@ -1162,7 +1165,7 @@ pub fn parseMode(mode: []const u8) ?ParsedMode {
 
 fn specialDevice(path: []const u8) ?File.Kind {
     if (std.mem.eql(u8, path, "/dev/null")) return .null_device;
-    if (builtin.os.tag == .linux and std.mem.eql(u8, path, "/dev/full")) return .full_device;
+    if ((builtin.os.tag == .linux or builtin.os.tag == .freebsd) and std.mem.eql(u8, path, "/dev/full")) return .full_device;
     return null;
 }
 
@@ -1244,8 +1247,7 @@ test "number scanning matches read_number consumption" {
 }
 
 test "Linux /dev/full emulation follows glibc stream results" {
-    // Windows streams have no line buffering.
-    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    if (builtin.os.tag == .windows or builtin.os.tag == .freebsd) return error.SkipZigTest;
     var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .full });
     defer state.deinit();
     const device = try newFile(&state, .{ .kind = .full_device, .path = "/dev/full", .mode = parseMode("w").? });
