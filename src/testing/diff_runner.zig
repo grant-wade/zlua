@@ -8,6 +8,7 @@ const expected_failures = @import("expected_failures.zig");
 const frontend = @import("../frontend.zig");
 const metadata = @import("metadata.zig");
 const normalizer = @import("normalizer.zig");
+const parallel = @import("parallel.zig");
 const process = @import("process.zig");
 const runtime = @import("../runtime.zig");
 
@@ -25,6 +26,7 @@ const Options = struct {
     gc_step_stress: bool = false,
     debug_errors: bool = false,
     timeout_ms: u64 = 5000,
+    jobs: usize = 0,
 };
 
 const Counts = struct {
@@ -35,6 +37,41 @@ const Counts = struct {
     flaky: usize = 0,
     timed_out: usize = 0,
     unexpected_failed: usize = 0,
+
+    fn add(self: *Counts, other: Counts) void {
+        inline for (comptime std.meta.fieldNames(Counts)) |name| @field(self, name) += @field(other, name);
+    }
+};
+
+const FixtureResult = struct {
+    output: std.Io.Writer.Allocating,
+    counts: Counts = .{},
+};
+
+const Run = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    out: *std.Io.Writer,
+    paths: []const []u8,
+    results: []FixtureResult,
+    clua_exe: ?[]const u8,
+    registry: expected_failures.Registry,
+    options: Options,
+    cwd: []const u8,
+    environ_map: *const std.process.Environ.Map,
+    counts: Counts = .{},
+
+    fn runFixture(self: *Run, index: usize) anyerror!void {
+        const result = &self.results[index];
+        try runOne(self.allocator, self.io, &result.output.writer, self.paths[index], self.clua_exe, self.registry, self.options, self.cwd, self.environ_map, &result.counts);
+    }
+
+    fn reportFixture(self: *Run, index: usize) anyerror!void {
+        const result = &self.results[index];
+        self.counts.add(result.counts);
+        try self.out.writeAll(result.output.written());
+        try self.out.flush();
+    }
 };
 
 pub fn runCli(
@@ -66,7 +103,6 @@ pub fn runCli(
     var writer = File.stdout().writer(io, &buffer);
     const out = &writer.interface;
 
-    var counts: Counts = .{};
     const cwd = try std.process.currentPathAlloc(io, allocator);
     defer allocator.free(cwd);
 
@@ -78,14 +114,29 @@ pub fn runCli(
         },
     };
 
-    for (tests.items) |path| {
-        try runOne(allocator, io, out, path, clua_exe, registry, options, cwd, environ_map, &counts);
-    }
+    const results = try allocator.alloc(FixtureResult, tests.items.len);
+    defer allocator.free(results);
+    for (results) |*result| result.* = .{ .output = .init(allocator) };
+    defer for (results) |*result| result.output.deinit();
 
-    try printSummary(out, counts);
+    var run: Run = .{
+        .allocator = allocator,
+        .io = io,
+        .out = out,
+        .paths = tests.items,
+        .results = results,
+        .clua_exe = clua_exe,
+        .registry = registry,
+        .options = options,
+        .cwd = cwd,
+        .environ_map = environ_map,
+    };
+    try parallel.forEachOrdered(allocator, io, options.jobs, tests.items.len, &run, Run.runFixture, Run.reportFixture);
+
+    try printSummary(out, run.counts);
     try out.flush();
 
-    return if (counts.unexpected_failed == 0) 0 else 1;
+    return if (run.counts.unexpected_failed == 0) 0 else 1;
 }
 
 fn parseArgs(args: []const []const u8) !Options {
@@ -115,6 +166,8 @@ fn parseArgs(args: []const []const u8) !Options {
             options.feature = arg[10..];
         } else if (std.mem.startsWith(u8, arg, "--timeout-ms=")) {
             options.timeout_ms = try std.fmt.parseInt(u64, arg[13..], 10);
+        } else if (std.mem.startsWith(u8, arg, "--jobs=")) {
+            options.jobs = try std.fmt.parseInt(usize, arg[7..], 10);
         } else if (std.mem.startsWith(u8, arg, "--")) {
             return error.UnknownOption;
         } else {
@@ -386,9 +439,10 @@ fn stderrPrint(io: std.Io, comptime fmt: []const u8, args: anytype) !void {
 }
 
 test "argument parser accepts stage and feature" {
-    const args = [_][]const u8{ "tests/diff", "--stage=parse", "--feature=syntax", "--debug-errors" };
+    const args = [_][]const u8{ "tests/diff", "--stage=parse", "--feature=syntax", "--debug-errors", "--jobs=3" };
     const options = try parseArgs(&args);
     try std.testing.expectEqual(metadata.Stage.parse, options.stage.?);
     try std.testing.expect(std.mem.eql(u8, options.feature.?, "syntax"));
     try std.testing.expect(options.debug_errors);
+    try std.testing.expectEqual(@as(usize, 3), options.jobs);
 }
