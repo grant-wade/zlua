@@ -3,7 +3,7 @@
 ## Navigation
 
 - [API Index](README.md)
-- Submodules: [testing.process](testing/process.md), [testing.clua](testing/clua.md), [testing.bench_runner](testing/bench_runner.md), [testing.diff_runner](testing/diff_runner.md), [testing.fixtures](testing/fixtures.md), [testing.expected_failures](testing/expected_failures.md), [testing.metadata](testing/metadata.md), [testing.normalizer](testing/normalizer.md), [testing.extension_runner](testing/extension_runner.md), [testing.official_suite](testing/official_suite.md)
+- Submodules: [testing.process](testing/process.md), [testing.clua](testing/clua.md), [testing.bench_runner](testing/bench_runner.md), [testing.diff_runner](testing/diff_runner.md), [testing.fixtures](testing/fixtures.md), [testing.expected_failures](testing/expected_failures.md), [testing.metadata](testing/metadata.md), [testing.normalizer](testing/normalizer.md), [testing.parallel](testing/parallel.md), [testing.extension_runner](testing/extension_runner.md), [testing.official_suite](testing/official_suite.md)
 
 <details>
 <summary>All documents</summary>
@@ -113,6 +113,7 @@
 - [testing.expected_failures](testing/expected_failures.md)
 - [testing.metadata](testing/metadata.md)
 - [testing.normalizer](testing/normalizer.md)
+- [testing.parallel](testing/parallel.md)
 - [testing.extension_runner](testing/extension_runner.md)
 - [testing.official_suite](testing/official_suite.md)
 
@@ -128,6 +129,7 @@
 - [metadata](#import-metadata) `@import("testing/metadata.zig")`
 - [normalizer](#import-normalizer) `@import("testing/normalizer.zig")`
 - [official_suite](#import-official_suite) `@import("testing/official_suite.zig")`
+- [parallel](#import-parallel) `@import("testing/parallel.zig")`
 - [process](#import-process) `@import("testing/process.zig")`
 
 <a id="import-clua"></a>
@@ -192,6 +194,14 @@ pub const normalizer = @import("testing/normalizer.zig");
 
 ```zig
 pub const official_suite = @import("testing/official_suite.zig");
+```
+
+<a id="import-parallel"></a>
+
+## parallel
+
+```zig
+pub const parallel = @import("testing/parallel.zig");
 ```
 
 <a id="import-process"></a>
