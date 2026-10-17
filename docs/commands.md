@@ -68,7 +68,9 @@ Format with Zig `0.16.0`, because the Zig `0.17.0` formatter can introduce synta
 | `run-test-diff -- [args...]` | Run the differential harness with your own filters and options. |
 | `test-extensions` | Run all zlua extension fixtures. |
 | `run-test-extensions -- [args...]` | Run the extension harness with your own filters and options. |
-| `test-official` | Run the complete official-suite dashboard. |
+| `test-official` | Run the full official-suite dashboard in basic mode. |
+| `test-official-complete` | Run the official suite in complete mode, with full-size and non-portable sections enabled. |
+| `test-gc-stress` | Run the differential fixtures under `--gc-stress` and `--gc-step-stress`. |
 | `run-test-official -- [args...]` | Run selected official tests or modes. |
 | `bench -- [args...]` | Run all benchmark groups one after another and print one combined report. |
 | `ci` | Run the tests, examples, and the differential, extension, and official checks. |

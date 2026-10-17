@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Lua compatibility
+
+- Pattern matching follows Lua's matcher: `*` and `+` no longer stop after 4096 repetitions, long patterns no longer fail with `pattern too complex`, and quantifiers after `%b`, `%f`, and back-references are literal characters.
+- `string.gsub` with a `^` anchor replaces at most once, and `string.gmatch` treats a leading `^` as a literal.
+- A back-reference to a position capture fails to match instead of raising an error, and `%f[` without a closing `]` is a malformed pattern.
+- Hexadecimal numerals with many digits or large exponents convert like Lua (`0xe03` followed by 1000 zeros and `p-4000` is `3587.0`, not `nan`).
+- `coroutine.resume` returns `false, "too many results to resume"` when the results do not fit on the caller's stack, instead of raising a stack overflow.
+
+### Fixes
+
+- In generational mode, objects created while a major collection was sweeping, or before switching to generational mode, became old immediately, so minor collections never freed them or ran their finalizers.
+- Automatic collections kept dead values in stack slots above the running function alive.
+- An incremental sweep could fall behind objects allocated during it and never finish.
+
+### Testing
+
+- `zig build test-official-complete` runs the official suite without `_soft` and `_port`, and `zig build test-gc-stress` runs the differential fixtures under both GC stress modes. CI runs both on Linux.
+- Fuzz targets for source loading, binary chunk verification, and string library inputs run with `zig build test --fuzz`.
+
 ## 0.7.0
 
 ### Breaking changes

@@ -14,9 +14,17 @@ The checks come in layers, from fast unit tests up to the full upstream suite. `
 | Differential fixtures | `zig build test-diff` | Runs `tests/diff/**/*.lua` under Lua 5.5 and zlua. |
 | Extension fixtures | `zig build test-extensions` | Checks zlua-only libraries and functions against checked-in output. |
 | Official suite | `zig build test-official` | Runs downloaded Lua 5.5 tests under both interpreters. |
+| Complete official suite | `zig build test-official-complete` | Runs the same tests with their full-size and non-portable sections enabled. |
+| GC stress | `zig build test-gc-stress` | Runs the differential fixtures under both GC stress modes. |
 | Full check | `zig build ci` | Unit tests, freestanding smoke builds, examples, differential fixtures, extension fixtures, and official suite. |
 
-`just test`, `just diff`, `just extensions`, `just official`, and `just ci` are shorter wrappers around the same steps.
+`just test`, `just diff`, `just extensions`, `just official`, and `just ci` are shorter wrappers around the same steps. The complete official suite and GC stress runs take longer, so `zig build ci` leaves them to the extended CI job.
+
+The unit tests include fuzz targets for source loading, binary chunk verification, and string library inputs (patterns, `string.format`, and `string.pack`). A normal test run only checks their seed inputs. To search for crashes, run the fuzzer with an optional iteration limit:
+
+```sh
+zig build test --fuzz=100K
+```
 
 ## GitHub Actions
 
@@ -25,8 +33,11 @@ on Linux and macOS (x64 and ARM64), plus Windows x64. You can also start the ful
 matrix manually. Each job then builds, runs, and tests the downstream embedding
 project in `examples/project` against the current checkout.
 
-The `PR checks` job passes only when every job in the full-suite matrix passes. A
-failed, cancelled, or skipped matrix job makes it fail. That makes `PR checks` the
+An extended job on Linux runs `zig build test-official-complete test-gc-stress` with
+both Zig versions.
+
+The `PR checks` job passes only when every full-suite and extended job passes. A
+failed, cancelled, or skipped job makes it fail. That makes `PR checks` the
 one to select as the required status check in the branch protection rule or ruleset
 for `main`.
 
@@ -124,7 +135,10 @@ zig build test-official
 just official calls db locals
 just official --mode=complete strings.lua
 zig build test-official -Dofficial-memory-limit-mb=0
+zig build test-official-complete
 ```
+
+Basic mode sets `_soft` and `_port`, which shrink the stress sections and skip non-portable checks. Complete mode leaves them unset, and it skips the four files that only work under `all.lua`'s driver: `attrib.lua` and `main.lua` need the C test libraries and module paths it sets up, `big.lua` must run inside its coroutine, and `files.lua` expects a non-seekable stdin.
 
 Limits differ depending on how you run the suite. The build step caps each child process at 256 MiB on Linux by default, with no cap elsewhere, and limits each child to 120 seconds (`-Dofficial-timeout-ms=0` disables the timeout). Running the harness directly applies no timeout or memory cap by default.
 
