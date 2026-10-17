@@ -107,4 +107,5 @@ test {
     _ = @import("testing/api_coroutine_tests.zig");
     _ = @import("testing/api_limit_tests.zig");
     _ = @import("testing/api_table_tests.zig");
+    _ = @import("testing/api_fuzz_tests.zig");
 }
