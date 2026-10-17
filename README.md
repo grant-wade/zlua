@@ -129,3 +129,5 @@ The [documentation index](docs/README.md) links to guides on embedding, the stan
 ## License
 
 zlua is available under the [MIT License](LICENSE).
+
+zlua gratefully acknowledges [Lua](https://www.lua.org/), created and maintained by the Lua team at PUC-Rio. The Lua language and reference implementation guide zlua's compatibility, and the project uses the official implementation and test suite for validation. Lua's copyright and MIT license are reproduced in [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES).

@@ -31,6 +31,7 @@ pub fn build(b: *std.Build) void {
     const clua_bench_lib = addCluaLib(b, target, bench_optimize, lua_deps_step, "lua5.5-bench");
     const clua_bench_exe = addClua(b, target, bench_optimize, clua_bench_lib);
     b.installArtifact(clua_exe);
+    b.installFile("THIRD_PARTY_NOTICES", "share/licenses/zlua/THIRD_PARTY_NOTICES");
 
     const mod = b.addModule("zlua", .{
         .root_source_file = b.path("src/root.zig"),

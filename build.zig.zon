@@ -12,6 +12,7 @@
     .paths = .{
         "README.md",
         "LICENSE",
+        "THIRD_PARTY_NOTICES",
         "CHANGELOG.md",
         "CONTRIBUTING.md",
         "build.zig",
