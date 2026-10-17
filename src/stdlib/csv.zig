@@ -47,7 +47,7 @@ pub fn write(state: *State, thread: *Thread, op: bytecode.Call) !void {
 
     const bytes = try out.toOwnedSlice();
     defer state.allocator.free(bytes);
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(bytes) }});
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(bytes) }});
 }
 
 fn csvOptions(state: *State, thread: *Thread, op: bytecode.Call, operation: []const u8) !zerde.csv.Options {
@@ -60,7 +60,7 @@ fn csvOptions(state: *State, thread: *Thread, op: bytecode.Call, operation: []co
         else => return state.failArgumentType(operation, 2, "table", value),
     };
 
-    const delimiter = table.get(.{ .string = try state.intern("delimiter") });
+    const delimiter = table.get(.{ .string = try state.strings.intern("delimiter") });
     if (delimiter != .nil) {
         const string = switch (delimiter) {
             .string => |string| string,
@@ -75,7 +75,7 @@ fn csvOptions(state: *State, thread: *Thread, op: bytecode.Call, operation: []co
         }
     }
 
-    const header = table.get(.{ .string = try state.intern("header") });
+    const header = table.get(.{ .string = try state.strings.intern("header") });
     if (header != .nil) {
         options.header = switch (header) {
             .boolean => |boolean| boolean,
@@ -83,7 +83,7 @@ fn csvOptions(state: *State, thread: *Thread, op: bytecode.Call, operation: []co
         };
     }
 
-    const record_terminator = table.get(.{ .string = try state.intern("record_terminator") });
+    const record_terminator = table.get(.{ .string = try state.strings.intern("record_terminator") });
     if (record_terminator != .nil) {
         const string = switch (record_terminator) {
             .string => |string| string,
@@ -98,7 +98,7 @@ fn csvOptions(state: *State, thread: *Thread, op: bytecode.Call, operation: []co
         }
     }
 
-    const final_record_terminator = table.get(.{ .string = try state.intern("final_record_terminator") });
+    const final_record_terminator = table.get(.{ .string = try state.strings.intern("final_record_terminator") });
     if (final_record_terminator != .nil) {
         options.final_record_terminator = switch (final_record_terminator) {
             .boolean => |boolean| boolean,
@@ -116,5 +116,5 @@ fn failCsvError(state: *State, operation: []const u8, err: anyerror) !void {
     var message: std.ArrayList(u8) = .empty;
     defer message.deinit(state.allocator);
     try runtime.appendFmt(state.allocator, &message, "{s}: {s}", .{ operation, @errorName(err) });
-    return state.fail(try state.intern(message.items));
+    return state.fail(try state.strings.intern(message.items));
 }

@@ -20,7 +20,7 @@ pub fn loadfile(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const closure = loadChunkFile(state, path, mode, environment) catch |err| switch (err) {
         error.RuntimeError => {
             const error_value = state.currentErrorValue();
-            const message: Value = if (error_value == .string) error_value else .{ .string = try state.intern("cannot load source") };
+            const message: Value = if (error_value == .string) error_value else .{ .string = try state.strings.intern("cannot load source") };
             try state.returnValues(thread, op.base, op.return_count, &.{ .nil, message });
             return;
         },
@@ -102,9 +102,9 @@ pub fn dofile(state: *State, thread: *Thread, op: bytecode.Call) !void {
 pub fn require(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const name = try state.expectArgumentString(thread, op, "require", 0);
     const package = try packageTable(state);
-    const loaded = try state.expectTable(package.get(.{ .string = try state.intern("loaded") }));
-    const preload = try state.expectTable(package.get(.{ .string = try state.intern("preload") }));
-    const name_key = Value{ .string = try state.intern(name) };
+    const loaded = try state.expectTable(package.get(.{ .string = try state.strings.intern("loaded") }));
+    const preload = try state.expectTable(package.get(.{ .string = try state.strings.intern("preload") }));
+    const name_key = Value{ .string = try state.strings.intern(name) };
 
     const cached = loaded.get(name_key);
     if (cached != .nil and !(cached == .boolean and !cached.boolean)) {
@@ -115,9 +115,9 @@ pub fn require(state: *State, thread: *Thread, op: bytecode.Call) !void {
     var loader = preload.get(name_key);
     var loader_data: Value = .nil;
     if (loader != .nil) {
-        loader_data = .{ .string = try state.intern(":preload:") };
+        loader_data = .{ .string = try state.strings.intern(":preload:") };
     } else {
-        const path_value = package.get(.{ .string = try state.intern("path") });
+        const path_value = package.get(.{ .string = try state.strings.intern("path") });
         if (path_value != .string) return state.failArgumentType("require", 1, "package.path string", path_value);
         const path = path_value.string;
         const found = try searchPath(state, name, path, ".", "/") orelse {
@@ -126,7 +126,7 @@ pub fn require(state: *State, thread: *Thread, op: bytecode.Call) !void {
         };
         defer state.allocator.free(found);
         loader = try load_mod.loadFileAsClosure(state, found);
-        loader_data = .{ .string = try state.intern(found) };
+        loader_data = .{ .string = try state.strings.intern(found) };
     }
 
     const loader_data_root = try state.rootValue(loader_data);
@@ -148,13 +148,13 @@ pub fn searchpath(state: *State, thread: *Thread, op: bytecode.Call) !void {
 
     if (try searchPath(state, name, path, sep, rep)) |found| {
         defer state.allocator.free(found);
-        try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(found) }});
+        try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(found) }});
         return;
     }
 
     const message = try searchPathError(state, name, path, sep, rep);
     defer state.allocator.free(message);
-    try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.intern(message) } });
+    try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.strings.intern(message) } });
 }
 
 /// Native C modules are not supported, matching a Lua build without dynamic libraries.
@@ -163,36 +163,36 @@ pub fn loadlib(state: *State, thread: *Thread, op: bytecode.Call) !void {
     _ = try state.expectArgumentString(thread, op, "package.loadlib", 1);
     try state.returnValues(thread, op.base, op.return_count, &.{
         .nil,
-        .{ .string = try state.intern("dynamic libraries not enabled; check your Lua installation") },
-        .{ .string = try state.intern("absent") },
+        .{ .string = try state.strings.intern("dynamic libraries not enabled; check your Lua installation") },
+        .{ .string = try state.strings.intern("absent") },
     });
 }
 
 pub fn searcherPreload(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const name = try state.expectArgumentString(thread, op, "package.searchers preload", 0);
-    const preload = try state.expectTable((try packageTable(state)).get(.{ .string = try state.intern("preload") }));
-    const loader = preload.get(.{ .string = try state.intern(name) });
+    const preload = try state.expectTable((try packageTable(state)).get(.{ .string = try state.strings.intern("preload") }));
+    const loader = preload.get(.{ .string = try state.strings.intern(name) });
     if (loader == .nil) {
-        try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern("no field package.preload") }});
+        try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern("no field package.preload") }});
     } else {
-        try state.returnValues(thread, op.base, op.return_count, &.{ loader, .{ .string = try state.intern(":preload:") } });
+        try state.returnValues(thread, op.base, op.return_count, &.{ loader, .{ .string = try state.strings.intern(":preload:") } });
     }
 }
 
 pub fn searcherLua(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const name = try state.expectArgumentString(thread, op, "package.searchers Lua", 0);
     const package = try packageTable(state);
-    const path = try state.expectString(package.get(.{ .string = try state.intern("path") }));
+    const path = try state.expectString(package.get(.{ .string = try state.strings.intern("path") }));
     const found = try searchPath(state, name, path, ".", "/") orelse {
-        try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern("no matching file") }});
+        try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern("no matching file") }});
         return;
     };
     defer state.allocator.free(found);
     const loader = load_mod.loadFileAsClosure(state, found) catch {
-        try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern("cannot load file") }});
+        try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern("cannot load file") }});
         return;
     };
-    try state.returnValues(thread, op.base, op.return_count, &.{ loader, .{ .string = try state.intern(found) } });
+    try state.returnValues(thread, op.base, op.return_count, &.{ loader, .{ .string = try state.strings.intern(found) } });
 }
 
 fn packageTable(state: *State) !*runtime.Table {
@@ -223,9 +223,9 @@ fn moduleNotFoundMessage(state: *State, name: []const u8, package: *runtime.Tabl
     defer out.deinit(state.allocator);
     try runtime.appendFmt(state.allocator, &out, "module '{s}' not found:\n\tno field package.preload['{s}']", .{ name, name });
     try appendSearchPathError(state, &out, name, path, ".", "/");
-    const cpath_value = package.get(.{ .string = try state.intern("cpath") });
+    const cpath_value = package.get(.{ .string = try state.strings.intern("cpath") });
     if (cpath_value == .string) try appendSearchPathError(state, &out, name, cpath_value.string, ".", "/");
-    return state.intern(out.items);
+    return state.strings.intern(out.items);
 }
 
 fn searchPathError(state: *State, name: []const u8, path: []const u8, sep: []const u8, rep: []const u8) ![]u8 {

@@ -63,6 +63,8 @@
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
+- [runtime.budget](../runtime/budget.md)
+- [runtime.strings](../runtime/strings.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
 - [runtime.tests](../runtime/tests.md)
@@ -114,17 +116,7 @@
 
 ## Functions
 
-- [executionCheckpoint](#fn-executioncheckpoint)
-- [checkInterrupt](#fn-checkinterrupt)
 - [runThreadUntil](#fn-runthreaduntil)
-- [interruptControl](#fn-interruptcontrol)
-- [interruptRequested](#fn-interruptrequested)
-- [clearInterrupt](#fn-clearinterrupt)
-- [instructionBudgetUsed](#fn-instructionbudgetused)
-- [resetInstructionBudget](#fn-resetinstructionbudget)
-- [beginCallInstructionBudget](#fn-begincallinstructionbudget)
-- [endCallInstructionBudget](#fn-endcallinstructionbudget)
-- [consumeInterrupt](#fn-consumeinterrupt)
 - [get](#fn-get)
 - [set](#fn-set)
 - [absoluteRegister](#fn-absoluteregister)
@@ -135,80 +127,7 @@
 
 ## Types
 
-- [InterruptControl](#type-interruptcontrol)
 - [ForValueKind](#type-forvaluekind)
-
-<a id="type-interruptcontrol"></a>
-
-## InterruptControl
-
-Interrupt request shared with host threads. Heap-allocated so its address
-survives moves of the owning state.
-
-```zig
-pub const InterruptControl = struct {
-    requested: std.atomic.Value(bool) = .init(false),
-};
-```
-
-### Nested Declarations
-
-| Name | Parameters | Return Type | Description |
-| --- | --- | --- | --- |
-| [request](#fn-interruptcontrol-request) | `self: *InterruptControl` | `void` |  |
-| [clear](#fn-interruptcontrol-clear) | `self: *InterruptControl` | `void` |  |
-| [isRequested](#fn-interruptcontrol-isrequested) | `self: *const InterruptControl` | `bool` |  |
-
-<a id="fn-interruptcontrol-request"></a>
-
-### InterruptControl.request
-
-```zig
-pub fn request(self: *InterruptControl) void
-```
-
-References: [`InterruptControl`](#type-interruptcontrol)
-
-<a id="fn-interruptcontrol-clear"></a>
-
-### InterruptControl.clear
-
-```zig
-pub fn clear(self: *InterruptControl) void
-```
-
-References: [`InterruptControl`](#type-interruptcontrol)
-
-<a id="fn-interruptcontrol-isrequested"></a>
-
-### InterruptControl.isRequested
-
-```zig
-pub fn isRequested(self: *const InterruptControl) bool
-```
-
-References: [`InterruptControl`](#type-interruptcontrol)
-
-<a id="fn-executioncheckpoint"></a>
-
-## executionCheckpoint
-
-Interrupts and exhausted budgets leave the checkpoint in place so every later
-safepoint raises again; Lua code cannot catch them and keep running.
-
-```zig
-pub noinline fn executionCheckpoint(self: *State, thread: *Thread) !void
-```
-
-<a id="fn-checkinterrupt"></a>
-
-## checkInterrupt
-
-Polled periodically by long-running native functions.
-
-```zig
-pub fn checkInterrupt(self: *State) !void
-```
 
 <a id="fn-runthreaduntil"></a>
 
@@ -216,81 +135,6 @@ pub fn checkInterrupt(self: *State) !void
 
 ```zig
 pub fn runThreadUntil(self: *State, thread: *Thread, target_frame_count: usize) anyerror!void
-```
-
-<a id="fn-interruptcontrol"></a>
-
-## interruptControl
-
-Allocates the shared interrupt control on first use; polling starts at the next safepoint.
-
-```zig
-pub fn interruptControl(self: *State) !*InterruptControl
-```
-
-References: [`InterruptControl`](#type-interruptcontrol)
-
-<a id="fn-interruptrequested"></a>
-
-## interruptRequested
-
-```zig
-pub inline fn interruptRequested(self: *const State) bool
-```
-
-<a id="fn-clearinterrupt"></a>
-
-## clearInterrupt
-
-```zig
-pub fn clearInterrupt(self: *State) void
-```
-
-<a id="fn-instructionbudgetused"></a>
-
-## instructionBudgetUsed
-
-```zig
-pub fn instructionBudgetUsed(self: *const State) u64
-```
-
-<a id="fn-resetinstructionbudget"></a>
-
-## resetInstructionBudget
-
-Restarts the cumulative `max_instructions` budget.
-
-```zig
-pub fn resetInstructionBudget(self: *State) void
-```
-
-<a id="fn-begincallinstructionbudget"></a>
-
-## beginCallInstructionBudget
-
-Limits a host call, including nested calls and coroutines, to `max` further
-instructions. Returns the enclosing deadline for `endCallInstructionBudget`.
-
-```zig
-pub fn beginCallInstructionBudget(self: *State, max: u64) ?u64
-```
-
-<a id="fn-endcallinstructionbudget"></a>
-
-## endCallInstructionBudget
-
-Restores the deadline returned by `beginCallInstructionBudget`.
-
-```zig
-pub fn endCallInstructionBudget(self: *State, previous: ?u64) void
-```
-
-<a id="fn-consumeinterrupt"></a>
-
-## consumeInterrupt
-
-```zig
-pub fn consumeInterrupt(self: *State) void
 ```
 
 <a id="fn-get"></a>

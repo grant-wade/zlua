@@ -65,7 +65,7 @@ fn concatStringValues(self: *State, values: []const Value) !Value {
         @memcpy(bytes[offset..][0..text.len], text);
         offset += text.len;
     }
-    return .{ .string = try self.adoptString(bytes) };
+    return .{ .string = try self.strings.adopt(bytes) };
 }
 
 pub fn concatRangeToRegister(self: *State, thread: *Thread, op: bytecode.ConcatRange) !void {

@@ -103,7 +103,7 @@ pub fn Userdata(comptime T: type) type {
             defer method_function.deinit();
 
             const metatable = try self.metatableValue();
-            const index_key = runtime.Value{ .string = try self.ref.state.raw_state.intern("__index") };
+            const index_key = runtime.Value{ .string = try self.ref.state.raw_state.strings.intern("__index") };
             var index_value = metatable.table.get(index_key);
             if (index_value == .nil) {
                 index_value = self.ref.state.raw_state.newTableWithHints(0, 4) catch |err| return errors.captureLuaError(self.ref.state, err);
@@ -111,7 +111,7 @@ pub fn Userdata(comptime T: type) type {
                 index_mod.setTableValue(&self.ref.state.raw_state, metatable, index_key, index_value) catch |err| return errors.captureLuaError(self.ref.state, err);
             }
             if (index_value != .table) return error.TypeMismatch;
-            try index_mod.setTableValue(&self.ref.state.raw_state, index_value, .{ .string = try self.ref.state.raw_state.intern(name) }, try handle.rawValue(method_function.ref));
+            try index_mod.setTableValue(&self.ref.state.raw_state, index_value, .{ .string = try self.ref.state.raw_state.strings.intern(name) }, try handle.rawValue(method_function.ref));
         }
 
         /// Installs `Source` methods as in `State.newUserdataAuto`.
@@ -147,7 +147,7 @@ pub fn Userdata(comptime T: type) type {
             defer metamethod_function.deinit();
 
             const metatable = try self.metatableValue();
-            try index_mod.setTableValue(&self.ref.state.raw_state, metatable, .{ .string = try self.ref.state.raw_state.intern(name) }, try handle.rawValue(metamethod_function.ref));
+            try index_mod.setTableValue(&self.ref.state.raw_state, metatable, .{ .string = try self.ref.state.raw_state.strings.intern(name) }, try handle.rawValue(metamethod_function.ref));
             if (std.mem.eql(u8, name, "__gc")) self.ref.state.raw_state.gc.checkUserdataFinalizer(try self.rawUserdata());
         }
 
@@ -156,8 +156,8 @@ pub fn Userdata(comptime T: type) type {
             if (raw.metatable != null) return;
             const metatable = self.ref.state.raw_state.newTableWithHints(0, 3) catch |err| return errors.captureLuaError(self.ref.state, err);
             const index = self.ref.state.raw_state.newTableWithHints(0, 4) catch |err| return errors.captureLuaError(self.ref.state, err);
-            try self.ref.state.raw_state.setTableRaw(metatable.table, .{ .string = try self.ref.state.raw_state.intern("__name") }, .{ .string = try self.ref.state.raw_state.intern(@typeName(T)) });
-            try self.ref.state.raw_state.setTableRaw(metatable.table, .{ .string = try self.ref.state.raw_state.intern("__index") }, index);
+            try self.ref.state.raw_state.setTableRaw(metatable.table, .{ .string = try self.ref.state.raw_state.strings.intern("__name") }, .{ .string = try self.ref.state.raw_state.strings.intern(@typeName(T)) });
+            try self.ref.state.raw_state.setTableRaw(metatable.table, .{ .string = try self.ref.state.raw_state.strings.intern("__index") }, index);
             rollback_runtime.touch(raw);
             try metatable_mod.setDebugMetatableValue(&self.ref.state.raw_state, .{ .userdata = raw }, metatable);
         }

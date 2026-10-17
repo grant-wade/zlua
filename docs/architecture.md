@@ -101,7 +101,7 @@ For measurement, `State.initWithOptionsObserved` exposes the startup phases (sta
 
 ### Runtime Modules
 
-`runtime.State` holds the VM's data and keeps a small set of methods that the standard libraries and the Zig API use everywhere: lifecycle, roots, string interning, object allocation, globals, and argument and library errors. Everything else lives in modules that take `*State` explicitly:
+`runtime.State` holds the VM's data and keeps a small set of methods that the standard libraries and the Zig API use everywhere: lifecycle, roots, object allocation, globals, and argument and library errors. Subsystems that own their own fields are facets on the state (`state.gc`, `state.budget`, `state.strings`), and everything else lives in modules that take `*State` explicitly. Libraries that need private per-state tables, such as the zerde null sentinel, get rooted, snapshot-safe slots in `state.library_tables`, keyed by `stdlib.LibraryTable`, rather than `State` fields:
 
 | Module | Contents |
 | --- | --- |
@@ -116,6 +116,8 @@ For measurement, `State.initWithOptionsObserved` exposes the startup phases (sta
 | `io.zig`, `system.zig` | Capability-gated files, output, and filesystem operations; environment, clocks, processes, and exit. |
 | `failure.zig` | Runtime error messages with source locations. |
 | `gc.zig` | The collector as `State.gc` (`state.gc.collect()`, barriers, allocation accounting), with its own fields. |
+| `budget.zig` | Instruction counting, `max_instructions` and per-call budgets, and host interrupts as `State.budget`. |
+| `strings.zig` | String interning as `State.strings` (`state.strings.intern(...)`). |
 | `debug.zig`, `coroutine.zig` | Debug info, hooks, and tracebacks; coroutines. |
 
 ### Values and Heap Objects

@@ -49,7 +49,7 @@ pub fn date(state: *State, thread: *Thread, op: bytecode.Call) !void {
     var out = std.ArrayList(u8).empty;
     defer out.deinit(state.allocator);
     try formatDate(state, &out, format, parts);
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(out.items) }});
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(out.items) }});
 }
 
 pub fn exit(state: *State, thread: *Thread, op: bytecode.Call) !void {
@@ -86,14 +86,14 @@ pub fn fileFailure(state: *State, thread: *Thread, op: bytecode.Call, path: ?[]c
     else
         try state.allocator.dupe(u8, info.message);
     defer state.allocator.free(message);
-    try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.intern(message) }, .{ .integer = info.errno } });
+    try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.strings.intern(message) }, .{ .integer = info.errno } });
 }
 
 /// Like PUC's `mkstemp`-based `os.tmpname`: creates the file; the caller removes it.
 pub fn tmpname(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const name = try createTempFile(state) orelse return state.fail("unable to generate a unique filename");
     defer state.allocator.free(name);
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(name) }});
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(name) }});
 }
 
 const temp_name_prefix = "lua_";
@@ -146,7 +146,7 @@ fn randomNameBytes(state: *State, out: []u8) void {
         var hasher = std.hash.Wyhash.init(count);
         const identity = @intFromPtr(state);
         hasher.update(std.mem.asBytes(&identity));
-        hasher.update(std.mem.asBytes(&state.instruction_count));
+        hasher.update(std.mem.asBytes(&state.budget.instructions));
         hasher.update(std.mem.asBytes(&state.file_generation));
         const first = hasher.final();
         const second = std.hash.Wyhash.hash(first, std.mem.asBytes(&count));
@@ -164,7 +164,7 @@ pub fn difftime(state: *State, thread: *Thread, op: bytecode.Call) !void {
 
 pub fn getenv(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const name = try state.expectArgumentString(thread, op, "os.getenv", 0);
-    const value = if (system_mod.getenv(state, name)) |env| Value{ .string = try state.intern(env) } else Value.nil;
+    const value = if (system_mod.getenv(state, name)) |env| Value{ .string = try state.strings.intern(env) } else Value.nil;
     try state.returnValues(thread, op.base, op.return_count, &.{value});
 }
 
@@ -173,7 +173,7 @@ pub fn setlocale(state: *State, thread: *Thread, op: bytecode.Call) !void {
         try state.expectArgumentString(thread, op, "os.setlocale", 0)
     else
         "C";
-    const value = if (std.mem.eql(u8, locale, "C")) Value{ .string = try state.intern("C") } else Value.nil;
+    const value = if (std.mem.eql(u8, locale, "C")) Value{ .string = try state.strings.intern("C") } else Value.nil;
     try state.returnValues(thread, op.base, op.return_count, &.{value});
 }
 
@@ -188,7 +188,7 @@ pub fn execute(state: *State, thread: *Thread, op: bytecode.Call) !void {
 
 /// Returns `true|nil, "exit"|"signal", code` like `luaL_execresult`.
 pub fn returnProcessResult(state: *State, thread: *Thread, op: bytecode.Call, result: host.ProcessResult) !void {
-    const status = try state.intern(switch (result.status) {
+    const status = try state.strings.intern(switch (result.status) {
         .exit => "exit",
         .signal => "signal",
     });
@@ -247,7 +247,7 @@ fn setDateFields(state: *State, table: *runtime.Table, parts: DateParts) !void {
 }
 
 fn setField(state: *State, table: *runtime.Table, name: []const u8, value: Value) !void {
-    try state.setTableRaw(table, .{ .string = try state.intern(name) }, value);
+    try state.setTableRaw(table, .{ .string = try state.strings.intern(name) }, value);
 }
 
 fn tableToTime(state: *State, value: Value) !i64 {
@@ -324,7 +324,7 @@ fn formatDate(state: *State, out: *std.ArrayList(u8), format: []const u8, parts:
 fn invalidConversion(state: *State, conversion: []const u8) anyerror {
     const message = try std.fmt.allocPrint(state.allocator, "invalid conversion specifier '%{s}'", .{conversion});
     defer state.allocator.free(message);
-    return state.failArgumentMessage("os.date", 1, try state.intern(message));
+    return state.failArgumentMessage("os.date", 1, try state.strings.intern(message));
 }
 
 fn appendConversion(state: *State, out: *std.ArrayList(u8), conversion: u8, parts: DateParts) anyerror!void {

@@ -2,7 +2,6 @@ const std = @import("std");
 const compile = @import("../compile.zig");
 const runtime = @import("../runtime.zig");
 const call_mod = @import("../runtime/call.zig");
-const vm_mod = @import("../runtime/vm.zig");
 const index_mod = @import("../runtime/index.zig");
 const operators_mod = @import("../runtime/operators.zig");
 
@@ -22,7 +21,7 @@ pub fn concat(state: *State, thread: *Thread, op: bytecode.Call) !void {
     defer out.deinit(state.allocator);
     var index = start;
     while (index <= stop) : (index += 1) {
-        if ((index -% start) & 0xfff == 0) try vm_mod.checkInterrupt(state);
+        if ((index -% start) & 0xfff == 0) try state.budget.checkInterrupt();
         if (index != start) try out.appendSlice(state.allocator, sep);
         const value = try index_mod.getTableFromThread(state, thread, table_value, .{ .integer = index });
         switch (value) {
@@ -31,7 +30,7 @@ pub fn concat(state: *State, thread: *Thread, op: bytecode.Call) !void {
         }
         if (index == std.math.maxInt(i64)) break;
     }
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(out.items) }});
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(out.items) }});
 }
 
 /// Unique sequence elements in first-occurrence order, compared by raw key equality.
@@ -119,7 +118,7 @@ pub fn pack(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const table_value = try state.newTableWithHints(op.arg_count, 1);
     const table = table_value.table;
     for (0..op.arg_count) |index| try state.setTableRaw(table, .{ .integer = @intCast(index + 1) }, runtime.argValue(state, thread, op, @intCast(index)));
-    try state.setTableRaw(table, .{ .string = try state.intern("n") }, .{ .integer = op.arg_count });
+    try state.setTableRaw(table, .{ .string = try state.strings.intern("n") }, .{ .integer = op.arg_count });
     try state.returnValues(thread, op.base, op.return_count, &.{table_value});
 }
 
@@ -167,7 +166,7 @@ pub fn sort(state: *State, thread: *Thread, op: bytecode.Call) !void {
 
 fn sortValues(state: *State, thread: *Thread, comparator: Value, values: []Value) !void {
     if (values.len < 2) return;
-    try vm_mod.checkInterrupt(state);
+    try state.budget.checkInterrupt();
     var left: usize = 0;
     var right: usize = values.len - 1;
     const pivot = values[values.len / 2];

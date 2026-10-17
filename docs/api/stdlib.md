@@ -63,6 +63,8 @@
 - [stdlib.msgpack](stdlib/msgpack.md)
 - [stdlib.csv](stdlib/csv.md)
 - [stdlib.fs](stdlib/fs.md)
+- [runtime.budget](runtime/budget.md)
+- [runtime.strings](runtime/strings.md)
 - [runtime.execute](runtime/execute.md)
 - [testing.process](testing/process.md)
 - [runtime.tests](runtime/tests.md)
@@ -124,6 +126,7 @@
 
 - [LibrarySelection](#type-libraryselection)
 - [LibrarySet](#type-libraryset)
+- [LibraryTable](#type-librarytable)
 - [InitHints](#type-inithints)
 
 ## Aliases
@@ -379,6 +382,21 @@ pub fn isEmpty(self: LibrarySet) bool
 ```
 
 References: [`LibrarySet`](#type-libraryset)
+
+<a id="type-librarytable"></a>
+
+## LibraryTable
+
+Tables a library keeps for itself on each state. The runtime roots and snapshots every
+slot without knowing what it holds, so a library adds a member here instead of a `State` field.
+
+```zig
+pub const LibraryTable = enum {
+    zerde_null,
+    zerde_array_metatable,
+    zerde_object_metatable,
+};
+```
 
 <a id="type-inithints"></a>
 

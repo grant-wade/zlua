@@ -568,11 +568,11 @@ pub fn threadHookMask(self: *State, thread: *Thread) ![]const u8 {
         bytes[len] = 'l';
         len += 1;
     }
-    return self.intern(bytes[0..len]);
+    return self.strings.intern(bytes[0..len]);
 }
 
 pub fn callHook(self: *State, thread: *Thread, event: []const u8) !void {
-    const args = [_]Value{.{ .string = try self.intern(event) }};
+    const args = [_]Value{.{ .string = try self.strings.intern(event) }};
     try callHookWithArgs(self, thread, &args);
 }
 
@@ -606,7 +606,7 @@ pub fn callLineHook(self: *State, thread: *Thread) !void {
     if (thread.frames.items[frame_index].last_hook_line == line) return;
     thread.frames.items[frame_index].last_hook_line = line;
     const line_value = if (thread.frames.items[frame_index].closure.stripped_debug) Value.nil else Value{ .integer = @intCast(line) };
-    const args = [_]Value{ .{ .string = try self.intern("line") }, line_value };
+    const args = [_]Value{ .{ .string = try self.strings.intern("line") }, line_value };
     try callHookWithArgs(self, thread, &args);
 }
 
@@ -647,7 +647,7 @@ pub fn tracebackValue(self: *State, thread: *Thread, op: bytecode.Call) !void {
             try out.appendSlice(self.allocator, "\n\t@db.lua: in function <");
         }
         try appendCoroutineTracebackFrames(self, &out, target, count, @intFromBool(has_yield_trace));
-        try self.returnValues(thread, op.base, op.return_count, &.{.{ .string = try self.intern(out.items) }});
+        try self.returnValues(thread, op.base, op.return_count, &.{.{ .string = try self.strings.intern(out.items) }});
         return;
     }
     if (message != .nil and message != .string and message != .integer and message != .number) {
@@ -658,7 +658,7 @@ pub fn tracebackValue(self: *State, thread: *Thread, op: bytecode.Call) !void {
     const level = if (op.arg_count >= 2) toInteger(argValue(self, thread, op, 1)) orelse 1 else 1;
     if (level < 0) {
         try appendFmt(self.allocator, &out, "{s}{s}stack traceback:", .{ text orelse "", if (text == null) "" else "\n" });
-        try self.returnValues(thread, op.base, op.return_count, &.{.{ .string = try self.intern(out.items) }});
+        try self.returnValues(thread, op.base, op.return_count, &.{.{ .string = try self.strings.intern(out.items) }});
         return;
     }
     const traceback = try formatTracebackWith(self, thread, .{
@@ -669,7 +669,7 @@ pub fn tracebackValue(self: *State, thread: *Thread, op: bytecode.Call) !void {
         .host_frame = thread.host_frame,
     });
     defer self.allocator.free(traceback);
-    try self.returnValues(thread, op.base, op.return_count, &.{.{ .string = try self.intern(traceback) }});
+    try self.returnValues(thread, op.base, op.return_count, &.{.{ .string = try self.strings.intern(traceback) }});
 }
 
 /// The standalone interpreter's `msghandler` from `lua.c`.
@@ -686,12 +686,12 @@ pub fn tracebackMessageHandler(self: *State, thread: *Thread, op: bytecode.Call)
             var out = std.ArrayList(u8).empty;
             defer out.deinit(self.allocator);
             try appendFmt(self.allocator, &out, "(error object is a {s} value)", .{luaTypeName(message)});
-            break :blk try self.intern(out.items);
+            break :blk try self.strings.intern(out.items);
         },
     };
     const traceback = try formatTracebackWith(self, thread, .{ .message = text, .host_frame = thread.host_frame });
     defer self.allocator.free(traceback);
-    try self.returnValues(thread, op.base, op.return_count, &.{.{ .string = try self.intern(traceback) }});
+    try self.returnValues(thread, op.base, op.return_count, &.{.{ .string = try self.strings.intern(traceback) }});
 }
 
 fn calledByTopInstruction(thread: *Thread, op: bytecode.Call) bool {
@@ -746,7 +746,7 @@ pub fn snapshotCoroutineErrorTraceback(self: *State, target: *Thread) ![]const u
     defer out.deinit(self.allocator);
     try out.appendSlice(self.allocator, "stack traceback:\n\t'error'");
     try appendCoroutineTracebackFrames(self, &out, target, target.frames.items.len, 1);
-    return self.intern(out.items);
+    return self.strings.intern(out.items);
 }
 
 pub fn lineForErrorLevel(self: *State, thread: *Thread, level: usize) ?usize {

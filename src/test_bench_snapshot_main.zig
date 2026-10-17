@@ -31,7 +31,7 @@ fn run(init: std.process.Init) !u8 {
     const arg_value = try baseline.raw_state.newTableWithHints(@intCast(args.len), 0);
     for (args, 0..) |arg, index| {
         const key = @as(i64, @intCast(index)) - @as(i64, @intCast(script_index));
-        try baseline.raw_state.setTableRaw(arg_value.table, .{ .integer = key }, .{ .string = try baseline.raw_state.intern(arg) });
+        try baseline.raw_state.setTableRaw(arg_value.table, .{ .integer = key }, .{ .string = try baseline.raw_state.strings.intern(arg) });
     }
     try baseline.raw_state.putGlobal("arg", arg_value);
 

@@ -106,7 +106,7 @@ pub fn coroutineYield(self: *State, thread: *Thread, op: bytecode.Call) !void {
 
 pub fn coroutineStatus(self: *State, thread: *Thread, op: bytecode.Call) !void {
     const target = try self.expectArgumentThread(thread, op, "coroutine.status", 0);
-    try self.returnValues(thread, op.base, op.return_count, &.{.{ .string = try self.intern(threadStatusName(target.status)) }});
+    try self.returnValues(thread, op.base, op.return_count, &.{.{ .string = try self.strings.intern(threadStatusName(target.status)) }});
 }
 
 pub fn coroutineRunning(self: *State, thread: *Thread, op: bytecode.Call) !void {
@@ -183,7 +183,7 @@ fn closeCoroutine(self: *State, target: *Thread, error_value: ?Value) !?Value {
     if (target.is_main) return self.fail("cannot close main coroutine");
     if (target.status == .running and target != self.current_thread) return self.fail("cannot close a running coroutine");
     try @import("rollback.zig").threadWritable(target);
-    if (self.coroutine_close_depth >= State.max_c_calls) return .{ .string = try self.intern("C stack overflow") };
+    if (self.coroutine_close_depth >= State.max_c_calls) return .{ .string = try self.strings.intern("C stack overflow") };
     self.coroutine_close_depth += 1;
     defer self.coroutine_close_depth -= 1;
 
@@ -211,13 +211,13 @@ fn closeCoroutine(self: *State, target: *Thread, error_value: ?Value) !?Value {
 }
 
 pub fn resumeCoroutine(self: *State, target: *Thread, args: []const Value) !CoroutineResumeResult {
-    if (target.is_main) return .{ .failure = .{ .string = try self.intern("cannot resume main coroutine") } };
-    if (target.status == .dead) return .{ .failure = .{ .string = try self.intern("cannot resume dead coroutine") } };
-    if (target.status != .suspended) return .{ .failure = .{ .string = try self.intern("cannot resume non-suspended coroutine") } };
+    if (target.is_main) return .{ .failure = .{ .string = try self.strings.intern("cannot resume main coroutine") } };
+    if (target.status == .dead) return .{ .failure = .{ .string = try self.strings.intern("cannot resume dead coroutine") } };
+    if (target.status != .suspended) return .{ .failure = .{ .string = try self.strings.intern("cannot resume non-suspended coroutine") } };
 
     const parent = self.current_thread;
-    if (parent == target) return .{ .failure = .{ .string = try self.intern("cannot resume running coroutine") } };
-    if (resumeChainDepth(parent) >= State.max_c_calls) return .{ .failure = .{ .string = try self.intern("C stack overflow") } };
+    if (parent == target) return .{ .failure = .{ .string = try self.strings.intern("cannot resume running coroutine") } };
+    if (resumeChainDepth(parent) >= State.max_c_calls) return .{ .failure = .{ .string = try self.strings.intern("C stack overflow") } };
 
     try @import("rollback.zig").threadWritable(target);
     if (parent) |parent_thread| {

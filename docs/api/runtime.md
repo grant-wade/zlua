@@ -3,7 +3,7 @@
 ## Navigation
 
 - [API Index](README.md)
-- Submodules: [runtime.types](runtime/types.md), [runtime.chunk](runtime/chunk.md), [runtime.state](runtime/state.md), [runtime.call](runtime/call.md), [runtime.coroutine](runtime/coroutine.md), [runtime.debug](runtime/debug.md), [runtime.metatable](runtime/metatable.md), [runtime.rollback](runtime/rollback.md), [runtime.value](runtime/value.md), [runtime.number_format](runtime/number_format.md), [runtime.host](runtime/host.md), [runtime.upvalue](runtime/upvalue.md), [runtime.failure](runtime/failure.md), [runtime.io](runtime/io.md), [runtime.load](runtime/load.md), [runtime.vm](runtime/vm.md), [runtime.gc](runtime/gc.md), [runtime.entry](runtime/entry.md), [runtime.system](runtime/system.md), [runtime.timezone](runtime/timezone.md), [runtime.index](runtime/index.md), [runtime.operators](runtime/operators.md), [runtime.execute](runtime/execute.md), [runtime.tests](runtime/tests.md), [runtime.internal](runtime/internal.md), [runtime.snapshot](runtime/snapshot.md)
+- Submodules: [runtime.types](runtime/types.md), [runtime.chunk](runtime/chunk.md), [runtime.state](runtime/state.md), [runtime.call](runtime/call.md), [runtime.coroutine](runtime/coroutine.md), [runtime.debug](runtime/debug.md), [runtime.metatable](runtime/metatable.md), [runtime.rollback](runtime/rollback.md), [runtime.value](runtime/value.md), [runtime.number_format](runtime/number_format.md), [runtime.host](runtime/host.md), [runtime.upvalue](runtime/upvalue.md), [runtime.failure](runtime/failure.md), [runtime.io](runtime/io.md), [runtime.load](runtime/load.md), [runtime.vm](runtime/vm.md), [runtime.gc](runtime/gc.md), [runtime.entry](runtime/entry.md), [runtime.system](runtime/system.md), [runtime.timezone](runtime/timezone.md), [runtime.index](runtime/index.md), [runtime.operators](runtime/operators.md), [runtime.budget](runtime/budget.md), [runtime.strings](runtime/strings.md), [runtime.execute](runtime/execute.md), [runtime.tests](runtime/tests.md), [runtime.internal](runtime/internal.md), [runtime.snapshot](runtime/snapshot.md)
 
 <details>
 <summary>All documents</summary>
@@ -63,6 +63,8 @@
 - [stdlib.msgpack](stdlib/msgpack.md)
 - [stdlib.csv](stdlib/csv.md)
 - [stdlib.fs](stdlib/fs.md)
+- [runtime.budget](runtime/budget.md)
+- [runtime.strings](runtime/strings.md)
 - [runtime.execute](runtime/execute.md)
 - [testing.process](testing/process.md)
 - [runtime.tests](runtime/tests.md)
@@ -191,7 +193,7 @@
 
 ## Imports
 
-- [InterruptControl](#import-interruptcontrol) `@import("runtime/vm.zig")`
+- [InterruptControl](#import-interruptcontrol) `@import("runtime/budget.zig")`
 - [number_format](#import-number_format) `@import("runtime/number_format.zig")`
 - [entry](#import-entry) `@import("runtime/entry.zig")`
 - [failure](#import-failure) `@import("runtime/failure.zig")`
@@ -268,7 +270,7 @@ pub const HostErrorHandler = state_mod.HostErrorHandler;
 ## InterruptControl
 
 ```zig
-pub const InterruptControl = @import("runtime/vm.zig").InterruptControl;
+pub const InterruptControl = @import("runtime/budget.zig").InterruptControl;
 ```
 
 <a id="alias-value"></a>

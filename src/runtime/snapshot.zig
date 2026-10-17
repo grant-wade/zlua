@@ -1,12 +1,14 @@
 //! In-memory graph copying. No collector or Lua code runs here. Destination
 //! shells are registered before references are populated, preserving identity.
+
 const std = @import("std");
-const reflection = @import("../reflection.zig");
-const types = @import("types.zig");
-const State = @import("state.zig").State;
 const Proto = @import("../compile/proto.zig").Proto;
+const reflection = @import("../reflection.zig");
 const static_strings = @import("../stdlib/static_strings.zig");
+const budget_mod = @import("budget.zig");
 const gc_mod = @import("gc.zig");
+const State = @import("state.zig").State;
+const types = @import("types.zig");
 
 pub fn checkIdleFast(source: *const State) !void {
     if (source.execution_depth != 0 or source.userdata_scope != null or source.current_thread != null or source.active_api_callback != null or source.gc.collecting or source.snapshot_busy) return error.SnapshotBusy;
@@ -36,7 +38,7 @@ fn copyGraph(source: *const State, allocator: std.mem.Allocator, lifetime: ?*typ
     var destination = State{
         .allocator = allocator,
         .allocator_lifetime = lifetime,
-        .strings = std.StringHashMap([]const u8).init(allocator),
+        .strings = .{ .map = std.StringHashMap([]const u8).init(allocator) },
         .string_allocation_index = types.PointerAllocationIndex.init(allocator),
         .table_allocation_index = types.PointerAllocationIndex.init(allocator),
         .options = source.options,
@@ -87,7 +89,7 @@ const Copier = struct {
             .string => |bytes| {
                 if (bytes.len == 0) return .{ .string = "" };
                 if (self.map.get(@intFromPtr(bytes.ptr))) |address| return .{ .string = @as([*]const u8, @ptrFromInt(address))[0..bytes.len] };
-                return .{ .string = try self.destination.intern(bytes) };
+                return .{ .string = try self.destination.strings.intern(bytes) };
             },
             inline .table, .closure, .userdata, .thread, .coroutine_wrapper, .gmatch_iterator => |pointer, tag| {
                 const address = self.map.get(@intFromPtr(pointer)) orelse return error.SnapshotUnsupported;
@@ -174,13 +176,13 @@ const Copier = struct {
             try self.map.put(@intFromPtr(bytes.ptr), @intFromPtr(bytes.ptr));
         };
         for (source.string_allocations.items) |allocation| {
-            const bytes = try d.allocateString(allocation.bytes);
+            const bytes = try d.strings.allocate(allocation.bytes);
             if (bytes.len != 0) try self.map.put(@intFromPtr(allocation.bytes.ptr), @intFromPtr(bytes.ptr));
         }
-        var strings = source.strings.iterator();
+        var strings = source.strings.map.iterator();
         while (strings.next()) |entry| {
             const v = try self.value(.{ .string = entry.value_ptr.* });
-            try d.strings.put(v.string, v.string);
+            try d.strings.map.put(v.string, v.string);
         }
         for (source.source_allocations.items) |bytes| _ = try self.text(bytes);
         try d.proto_allocations.ensureTotalCapacity(a, source.proto_allocations.items.len);
@@ -227,8 +229,10 @@ const Copier = struct {
         }
         for (source.thread_allocations.items, d.thread_allocations.items) |old, new| try self.thread(old, new);
         for (source.userdata_allocations.items, d.userdata_allocations.items) |old, new| try self.userdata(old, new);
-        inline for (.{ "global_table", "table_metatable_head", "table_finalizer_head", "table_pending_finalizer_head", "userdata_pending_finalizer_head", "userdata_lua_pending_head", "table_metatable_count", "table_finalizer_serial", "stdin_pos", "file_generation", "last_error", "error_handled", "warnings_on", "string_metatable", "number_metatable", "boolean_metatable", "nil_metatable", "file_metatable", "fs_file_metatable", "io_input", "io_output", "zerde_null", "zerde_array_metatable", "zerde_object_metatable", "random_state", "instruction_count", "instruction_budget_base" }) |name| @field(d, name) = try self.remap(@field(source, name));
+        inline for (.{ "global_table", "table_metatable_head", "table_finalizer_head", "table_pending_finalizer_head", "userdata_pending_finalizer_head", "userdata_lua_pending_head", "table_metatable_count", "table_finalizer_serial", "stdin_pos", "file_generation", "last_error", "error_handled", "warnings_on", "string_metatable", "number_metatable", "boolean_metatable", "nil_metatable", "file_metatable", "fs_file_metatable", "io_input", "io_output", "random_state" }) |name| @field(d, name) = try self.remap(@field(source, name));
         inline for (.{ "running", "mode", "params" }) |name| @field(d.gc, name) = @field(source.gc, name);
+        inline for (.{ "instructions", "base" }) |name| @field(d.budget, name) = @field(source.budget, name);
+        for (&d.library_tables.values, source.library_tables.values) |*slot, table| slot.* = try self.remap(table);
         d.file_generation +%= 1;
         d.stdout = try self.list(u8, source.stdout.items);
         d.stderr = try self.list(u8, source.stderr.items);
@@ -377,10 +381,14 @@ comptime {
     @setEvalBranchQuota(1000000);
     review(State, .{
         .external = "allocator allocator_lifetime options",
-        .rebuilt = "borrowed_proto_count strings string_allocation_index table_allocation_index object_allocation_index api_roots gc",
-        .remapped = "global_table table_metatable_head table_finalizer_head table_pending_finalizer_head userdata_pending_finalizer_head userdata_lua_pending_head string_metatable number_metatable boolean_metatable nil_metatable file_metatable fs_file_metatable io_input io_output zerde_null zerde_array_metatable zerde_object_metatable last_error",
-        .copied = "string_allocations table_allocations userdata_allocations closure_allocations upvalue_allocations thread_allocations proto_allocations source_allocations stdout stderr table_metatable_count table_finalizer_serial stdin_pos file_generation error_handled warnings_on random_state instruction_count instruction_budget_base",
-        .transient = "execution_depth userdata_scope value_roots rollback snapshot_busy discarding exit_request local_zone current_thread api_callback_dispatch api_callback_user_data active_api_callback coroutine_close_depth call_instruction_deadline instruction_checkpoint interrupt",
+        .rebuilt = "borrowed_proto_count strings string_allocation_index table_allocation_index object_allocation_index api_roots gc budget",
+        .remapped = "global_table table_metatable_head table_finalizer_head table_pending_finalizer_head userdata_pending_finalizer_head userdata_lua_pending_head string_metatable number_metatable boolean_metatable nil_metatable file_metatable fs_file_metatable io_input io_output library_tables last_error",
+        .copied = "string_allocations table_allocations userdata_allocations closure_allocations upvalue_allocations thread_allocations proto_allocations source_allocations stdout stderr table_metatable_count table_finalizer_serial stdin_pos file_generation error_handled warnings_on random_state",
+        .transient = "execution_depth userdata_scope value_roots rollback snapshot_busy discarding exit_request local_zone current_thread api_callback_dispatch api_callback_user_data active_api_callback coroutine_close_depth",
+    });
+    review(budget_mod.Budget, .{
+        .copied = "instructions base",
+        .transient = "call_deadline checkpoint interrupt",
     });
     review(gc_mod.Gc, .{
         .rebuilt = "next_total known_total",

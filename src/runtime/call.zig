@@ -391,7 +391,7 @@ pub fn applyMessageHandler(self: *State, thread: *Thread) !void {
             continue;
         }
         if (c_calls >= lua_max_c_calls / 10 * 11) {
-            error_value = .{ .string = try self.intern("error in error handling") };
+            error_value = .{ .string = try self.strings.intern("error in error handling") };
             break;
         }
         if (handler != .closure) native_calls += 1;
@@ -435,13 +435,13 @@ fn callMessageHandler(self: *State, thread: *Thread, handler: Value, error_value
 
 fn cStackOverflowValue(self: *State, thread: *Thread) !Value {
     const message = "C stack overflow";
-    if (!debug_mod.errorRaisedByLuaCode(thread)) return .{ .string = try self.intern(message) };
+    if (!debug_mod.errorRaisedByLuaCode(thread)) return .{ .string = try self.strings.intern(message) };
     const frame = thread.frames.items[thread.frames.items.len - 1];
-    const site = failure_mod.instructionErrorSite(self, thread) orelse return .{ .string = try self.intern(message) };
+    const site = failure_mod.instructionErrorSite(self, thread) orelse return .{ .string = try self.strings.intern(message) };
     var out = std.ArrayList(u8).empty;
     defer out.deinit(self.allocator);
     try appendFmt(self.allocator, &out, "{s}:{d}: {s}", .{ load_mod.runtimeSourceName(frame.proto.source_name), site.line, message });
-    return .{ .string = try self.intern(out.items) };
+    return .{ .string = try self.strings.intern(out.items) };
 }
 
 /// Records a native function without a calling instruction for tracebacks.
@@ -475,7 +475,7 @@ pub fn checkCStack(self: *State, thread: *Thread) !void {
 }
 
 fn errorInErrorHandling(self: *State) !?Value {
-    self.last_error = .{ .lua_value = .{ .string = try self.intern("error in error handling") } };
+    self.last_error = .{ .lua_value = .{ .string = try self.strings.intern("error in error handling") } };
     self.error_handled = true;
     return null;
 }
@@ -953,7 +953,7 @@ fn captureVarargs(self: *State, thread: *Thread, source_start: usize, count: usi
 fn namedVarargTable(self: *State, varargs: []const Value) !Value {
     const table_value = try self.newTableWithHints(@intCast(varargs.len), 1);
     const table = table_value.table;
-    try self.setTableRaw(table, .{ .string = try self.intern("n") }, .{ .integer = @intCast(varargs.len) });
+    try self.setTableRaw(table, .{ .string = try self.strings.intern("n") }, .{ .integer = @intCast(varargs.len) });
     for (varargs, 0..) |value, index| {
         try self.setTableRaw(table, .{ .integer = @intCast(index + 1) }, value);
     }
@@ -1014,7 +1014,7 @@ fn loadNamedVarargs(self: *State, thread: *Thread, frame: CallFrame, op: bytecod
 }
 
 fn namedVarargCount(self: *State, table: *Table) !usize {
-    const n_value = table.get(.{ .string = try self.intern("n") });
+    const n_value = table.get(.{ .string = try self.strings.intern("n") });
     if (n_value != .integer or n_value.integer < 0 or n_value.integer >= bytecode.multret_count) {
         return self.fail("vararg table has no proper 'n'");
     }
@@ -1070,7 +1070,7 @@ fn errorValue(self: *State, thread: *Thread, op: bytecode.Call) !void {
 
 /// Like `luaG_errormsg` without a handler: nil becomes `<no error object>`.
 pub fn caughtErrorValue(self: *State, value: Value) !Value {
-    if (value == .nil) return .{ .string = try self.intern("<no error object>") };
+    if (value == .nil) return .{ .string = try self.strings.intern("<no error object>") };
     return value;
 }
 

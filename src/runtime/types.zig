@@ -572,7 +572,7 @@ pub const RuntimeErrorPayload = union(enum) {
             .argument => |argument| blk: {
                 const rendered = errors.renderArgumentError(state.allocator, argument) catch break :blk .{ .string = "bad argument" };
                 defer state.allocator.free(rendered);
-                break :blk .{ .string = state.intern(rendered) catch "bad argument" };
+                break :blk .{ .string = state.strings.intern(rendered) catch "bad argument" };
             },
             .lua_value => |value| value,
         };

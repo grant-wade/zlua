@@ -3,6 +3,7 @@ const compile = @import("../compile.zig");
 const errors = @import("../errors.zig");
 const stdlib = @import("../stdlib.zig");
 const stdlib_static_strings = @import("../stdlib/static_strings.zig");
+const budget_mod = @import("budget.zig");
 const call_mod = @import("call.zig");
 const coroutine_mod = @import("coroutine.zig");
 const debug_mod = @import("debug.zig");
@@ -13,6 +14,7 @@ const index_mod = @import("index.zig");
 const load_mod = @import("load.zig");
 const metatable_mod = @import("metatable.zig");
 const rollback_mod = @import("rollback.zig");
+const strings_mod = @import("strings.zig");
 const timezone = @import("timezone.zig");
 const types = @import("types.zig");
 const upvalue_mod = @import("upvalue.zig");
@@ -144,7 +146,7 @@ pub const State = struct {
     discarding: bool = false,
     allocator: std.mem.Allocator,
     global_table: ?*Table = null,
-    strings: std.StringHashMap([]const u8),
+    strings: strings_mod.Strings,
     string_allocations: std.ArrayList(StringAllocation) = .empty,
     string_allocation_index: PointerAllocationIndex,
     table_allocations: std.ArrayList(*Table) = .empty,
@@ -194,21 +196,11 @@ pub const State = struct {
     /// Rooted outside Lua-visible tables.
     io_input: ?*Userdata = null,
     io_output: ?*Userdata = null,
-    zerde_null: ?*Table = null,
-    zerde_array_metatable: ?*Table = null,
-    zerde_object_metatable: ?*Table = null,
+    library_tables: std.EnumArray(stdlib.LibraryTable, ?*Table) = .initFill(null),
     gc: gc_mod.Gc = .{},
 
     random_state: [4]u64 = .{ 0x123456789abcdef0, 0xff, 0xfedcba9876543210, 0 },
-    instruction_count: u64 = 0,
-    /// `instruction_count` at the last budget reset.
-    instruction_budget_base: u64 = 0,
-    /// Deadline of the innermost budgeted host call, narrowed by enclosing ones.
-    call_instruction_deadline: ?u64 = null,
-    /// `instruction_count` at which `vm.executionCheckpoint` runs; zero forces a recompute.
-    instruction_checkpoint: u64 = 0,
-    /// Allocated on first use.
-    interrupt: ?*vm_mod.InterruptControl = null,
+    budget: budget_mod.Budget = .{},
 
     pub fn registerAllocation(self: *State, comptime field: []const u8, item: anytype) !void {
         if (self.rollback) |journal| try journal.prepareAllocation(self);
@@ -237,7 +229,7 @@ pub const State = struct {
     ) !State {
         var state = State{
             .allocator = allocator,
-            .strings = std.StringHashMap([]const u8).init(allocator),
+            .strings = .{ .map = std.StringHashMap([]const u8).init(allocator) },
             .string_allocation_index = PointerAllocationIndex.init(allocator),
             .table_allocation_index = PointerAllocationIndex.init(allocator),
             .options = options,
@@ -246,7 +238,7 @@ pub const State = struct {
         errdefer state.deinit();
 
         const hints = stdlib.initHints(options.stdlib);
-        try state.strings.ensureTotalCapacity(@intCast(hints.strings));
+        try state.strings.map.ensureTotalCapacity(@intCast(hints.strings));
         try state.string_allocations.ensureTotalCapacity(allocator, hints.strings);
         try state.string_allocation_index.ensureTotalCapacity(@intCast(hints.strings));
         try state.table_allocations.ensureTotalCapacity(allocator, hints.tables);
@@ -306,11 +298,11 @@ pub const State = struct {
         const methods = try state.newTableWithHints(0, 12);
         try state.setTableRaw(metatable, .{ .string = stdlib_static_strings.get("__index") }, methods);
         try setFileMethods(state, methods.table);
-        try state.setTableRaw(methods.table, .{ .string = try state.intern("stat") }, .{ .native = .fs_file_stat });
-        try state.setTableRaw(methods.table, .{ .string = try state.intern("tell") }, .{ .native = .fs_file_tell });
-        try state.setTableRaw(methods.table, .{ .string = try state.intern("truncate") }, .{ .native = .fs_file_truncate });
+        try state.setTableRaw(methods.table, .{ .string = try state.strings.intern("stat") }, .{ .native = .fs_file_stat });
+        try state.setTableRaw(methods.table, .{ .string = try state.strings.intern("tell") }, .{ .native = .fs_file_tell });
+        try state.setTableRaw(methods.table, .{ .string = try state.strings.intern("truncate") }, .{ .native = .fs_file_truncate });
         try state.setTableRaw(methods.table, .{ .string = stdlib_static_strings.get("path") }, .{ .native = .fs_file_path });
-        try state.setTableRaw(methods.table, .{ .string = try state.intern("sync") }, .{ .native = .io_file_flush });
+        try state.setTableRaw(methods.table, .{ .string = try state.strings.intern("sync") }, .{ .native = .io_file_flush });
         return metatable;
     }
 
@@ -370,10 +362,10 @@ pub const State = struct {
             zone.deinit();
             self.allocator.destroy(zone);
         }
-        if (self.interrupt) |control| self.allocator.destroy(control);
+        if (self.budget.interrupt) |control| self.allocator.destroy(control);
         self.stdout.deinit(self.allocator);
         self.stderr.deinit(self.allocator);
-        self.strings.deinit();
+        self.strings.map.deinit();
         self.string_allocation_index.deinit();
         self.table_allocation_index.deinit();
         self.object_allocation_index.deinit(self.allocator);
@@ -420,18 +412,18 @@ pub const State = struct {
     pub fn declareGlobal(self: *State, thread: *Thread, name: []const u8, table_register: bytecode.Register, value_register: bytecode.Register) !void {
         const table_value = vm_mod.get(self, thread, table_register);
         if (table_value != .table) return failure_mod.failRuntimeDetail(self, thread, "attempt to index a nil value");
-        const key = Value{ .string = try self.intern(name) };
+        const key = Value{ .string = try self.strings.intern(name) };
         if (table_value.table.get(key) != .nil) {
             const message = try std.fmt.allocPrint(self.allocator, "global '{s}' already defined", .{name});
             defer self.allocator.free(message);
-            return self.fail(try self.intern(message));
+            return self.fail(try self.strings.intern(message));
         }
         try index_mod.setTable(self, table_value, key, vm_mod.get(self, thread, value_register));
     }
 
     pub fn setGlobal(self: *State, name: []const u8, value: Value) !void {
         const table = self.global_table orelse return error.RuntimeError;
-        const key = try self.intern(name);
+        const key = try self.strings.intern(name);
         try self.setTableRaw(table, .{ .string = key }, value);
         self.gc.writeTableBarrier(table, .{ .string = key }, value);
         self.gc.markValue(value);
@@ -513,40 +505,12 @@ pub const State = struct {
         dispatch(&context) catch |err| switch (err) {
             error.HostCallbackYield => return coroutine_mod.suspendCoroutine(self, thread, op, context.returns.items()),
             error.RuntimeError, error.StackOverflow, error.UnsupportedOpcode => return err,
-            error.LuaError => return self.failValue(context.error_value orelse .{ .string = try self.intern("host callback raised an error") }),
+            error.LuaError => return self.failValue(context.error_value orelse .{ .string = try self.strings.intern("host callback raised an error") }),
             error.OutOfMemory, error.LuaExit, error.Interrupted => return err,
             else => return self.fail(@errorName(err)),
         };
 
         try self.returnValues(thread, op.base, op.return_count, context.returns.items());
-    }
-
-    pub fn intern(self: *State, bytes: []const u8) ![]const u8 {
-        if (stdlib_static_strings.canonical(bytes)) |static| return static;
-        if (self.strings.get(bytes)) |interned| {
-            // The registry holds strings weakly; reuse during sweeping must resurrect the string.
-            if (self.gc.phase != .pause) self.gc.markString(interned);
-            return interned;
-        }
-        const interned = try self.allocateString(bytes);
-        try self.strings.put(interned, interned);
-        return interned;
-    }
-
-    pub fn allocateString(self: *State, bytes: []const u8) ![]const u8 {
-        return self.adoptString(try self.allocator.dupe(u8, bytes));
-    }
-
-    pub fn adoptString(self: *State, allocated: []u8) ![]const u8 {
-        errdefer self.allocator.free(allocated);
-        try self.registerAllocation("string_allocations", StringAllocation{ .bytes = allocated });
-        errdefer {
-            const removed = self.string_allocations.pop().?;
-            if (self.rollback) |journal| journal.freed(@intFromPtr(removed.bytes.ptr));
-        }
-        if (allocated.len != 0) try self.string_allocation_index.put(@intFromPtr(allocated.ptr), self.string_allocations.items.len - 1);
-        self.gc.noteAllocation(@sizeOf(StringAllocation) + allocated.len);
-        return allocated;
     }
 
     pub fn newTableWithHints(self: *State, array_hint: u32, hash_hint: u32) !Value {
@@ -678,7 +642,7 @@ pub const State = struct {
         self.appendLibraryWhere(&out) catch return self.fail(message);
         if (out.items.len == 0) return self.fail(message);
         out.appendSlice(self.allocator, message) catch return self.fail(message);
-        return self.fail(self.intern(out.items) catch return self.fail(message));
+        return self.fail(self.strings.intern(out.items) catch return self.fail(message));
     }
 
     /// Prefixes a string error with `luaL_where(L, 1)`, as `coroutine.wrap` does.
@@ -689,14 +653,14 @@ pub const State = struct {
         try self.appendLibraryWhere(&out);
         if (out.items.len == 0) return value;
         try out.appendSlice(self.allocator, value.string);
-        return .{ .string = try self.intern(out.items) };
+        return .{ .string = try self.strings.intern(out.items) };
     }
 
     pub fn failLibraryFmt(self: *State, comptime fmt: []const u8, args: anytype) RuntimeError {
         var out = std.ArrayList(u8).empty;
         defer out.deinit(self.allocator);
         appendFmt(self.allocator, &out, fmt, args) catch return self.fail(fmt);
-        const message = self.intern(out.items) catch return self.fail(fmt);
+        const message = self.strings.intern(out.items) catch return self.fail(fmt);
         return self.failLibrary(message);
     }
 
@@ -808,7 +772,7 @@ pub const State = struct {
                     try appendFmt(self.allocator, &out, "calling '{s}' on bad self (", .{known.name});
                     try appendArgumentDetail(self.allocator, &out, actual_detail);
                     try out.append(self.allocator, ')');
-                    return self.intern(out.items);
+                    return self.strings.intern(out.items);
                 }
             };
         }
@@ -832,7 +796,7 @@ pub const State = struct {
         try out.appendSlice(self.allocator, "' (");
         try appendArgumentDetail(self.allocator, &out, actual_detail);
         try out.append(self.allocator, ')');
-        return self.intern(out.items);
+        return self.strings.intern(out.items);
     }
 
     fn appendArgumentDetail(allocator: std.mem.Allocator, out: *std.ArrayList(u8), detail: errors.ArgumentErrorDetail) !void {
@@ -849,7 +813,7 @@ pub const State = struct {
             .string => |string| string,
             .integer, .number => {
                 var buffer: [value_mod.max_number_text_len]u8 = undefined;
-                const string = try self.intern(value_mod.formatNumber(&buffer, value));
+                const string = try self.strings.intern(value_mod.formatNumber(&buffer, value));
                 const frame = thread.frames.items[thread.frames.items.len - 1];
                 thread.stack.items[frame.base + op.base + 1 + index] = .{ .string = string };
                 return string;

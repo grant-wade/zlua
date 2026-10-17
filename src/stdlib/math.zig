@@ -190,8 +190,8 @@ pub fn tointeger(state: *State, thread: *Thread, op: bytecode.Call) !void {
 
 pub fn typeValue(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const result: Value = switch (runtime.argValue(state, thread, op, 0)) {
-        .integer => .{ .string = try state.intern("integer") },
-        .number => .{ .string = try state.intern("float") },
+        .integer => .{ .string = try state.strings.intern("integer") },
+        .number => .{ .string = try state.strings.intern("float") },
         else => .nil,
     };
     try state.returnValues(thread, op.base, op.return_count, &.{result});

@@ -63,6 +63,8 @@
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
+- [runtime.budget](../runtime/budget.md)
+- [runtime.strings](../runtime/strings.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
 - [runtime.tests](../runtime/tests.md)
@@ -521,7 +523,7 @@ pub const State = struct {
     discarding: bool = false,
     allocator: std.mem.Allocator,
     global_table: ?*Table = null,
-    strings: std.StringHashMap([]const u8),
+    strings: strings_mod.Strings,
     string_allocations: std.ArrayList(StringAllocation) = .empty,
     string_allocation_index: PointerAllocationIndex,
     table_allocations: std.ArrayList(*Table) = .empty,
@@ -571,20 +573,10 @@ pub const State = struct {
     /// Rooted outside Lua-visible tables.
     io_input: ?*Userdata = null,
     io_output: ?*Userdata = null,
-    zerde_null: ?*Table = null,
-    zerde_array_metatable: ?*Table = null,
-    zerde_object_metatable: ?*Table = null,
+    library_tables: std.EnumArray(stdlib.LibraryTable, ?*Table) = .initFill(null),
     gc: gc_mod.Gc = .{},
     random_state: [4]u64 = .{ 0x123456789abcdef0, 0xff, 0xfedcba9876543210, 0 },
-    instruction_count: u64 = 0,
-    /// `instruction_count` at the last budget reset.
-    instruction_budget_base: u64 = 0,
-    /// Deadline of the innermost budgeted host call, narrowed by enclosing ones.
-    call_instruction_deadline: ?u64 = null,
-    /// `instruction_count` at which `vm.executionCheckpoint` runs; zero forces a recompute.
-    instruction_checkpoint: u64 = 0,
-    /// Allocated on first use.
-    interrupt: ?*vm_mod.InterruptControl = null,
+    budget: budget_mod.Budget = .{},
 };
 ```
 
@@ -623,9 +615,6 @@ pub const State = struct {
 | [activeRootCount](#fn-state-activerootcount) | `self: State` | `usize` |  |
 | [setApiCallbackDispatch](#fn-state-setapicallbackdispatch) | `self: *State, dispatch: ApiCallbackDispatchFn, user_data: *anyopaque` | `void` |  |
 | [callApiCallbackDispatch](#fn-state-callapicallbackdispatch) | `self: *State, thread: *Thread, op: bytecode.Call, callback_id: usize` | `!void` |  |
-| [intern](#fn-state-intern) | `self: *State, bytes: []const u8` | `![]const u8` |  |
-| [allocateString](#fn-state-allocatestring) | `self: *State, bytes: []const u8` | `![]const u8` |  |
-| [adoptString](#fn-state-adoptstring) | `self: *State, allocated: []u8` | `![]const u8` |  |
 | [newTableWithHints](#fn-state-newtablewithhints) | `self: *State, array_hint: u32, hash_hint: u32` | `!Value` |  |
 | [newUserdata](#fn-state-newuserdata) | `self: *State, ptr: *anyopaque, type_id: usize, type_name: []const u8, finalizer: ?UserdataFinalizer, finalizer_data: ?*const anyopaque, deinit_fn: ?UserdataDeinit` | `!Value` |  |
 | [newClosure](#fn-state-newclosure) | `self: *State, thread: *Thread, proto: *const proto_mod.Proto` | `!Value` |  |
@@ -973,36 +962,6 @@ pub fn callApiCallbackDispatch(self: *State, thread: *Thread, op: bytecode.Call,
 ```
 
 References: [`State`](#type-state), [`Thread`](#alias-thread)
-
-<a id="fn-state-intern"></a>
-
-### State.intern
-
-```zig
-pub fn intern(self: *State, bytes: []const u8) ![]const u8
-```
-
-References: [`State`](#type-state)
-
-<a id="fn-state-allocatestring"></a>
-
-### State.allocateString
-
-```zig
-pub fn allocateString(self: *State, bytes: []const u8) ![]const u8
-```
-
-References: [`State`](#type-state)
-
-<a id="fn-state-adoptstring"></a>
-
-### State.adoptString
-
-```zig
-pub fn adoptString(self: *State, allocated: []u8) ![]const u8
-```
-
-References: [`State`](#type-state)
 
 <a id="fn-state-newtablewithhints"></a>
 

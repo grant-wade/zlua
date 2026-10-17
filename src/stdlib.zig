@@ -96,6 +96,14 @@ pub const LibrarySet = struct {
     }
 };
 
+/// Tables a library keeps for itself on each state. The runtime roots and snapshots every
+/// slot without knowing what it holds, so a library adds a member here instead of a `State` field.
+pub const LibraryTable = enum {
+    zerde_null,
+    zerde_array_metatable,
+    zerde_object_metatable,
+};
+
 pub const InitHints = struct {
     globals: u32,
     strings: usize,

@@ -108,7 +108,7 @@ test "instruction accounting agrees across nested call dispatch paths" {
     var metered = try State.initWithOptions(std.testing.allocator, .{ .max_instructions = 100_000 });
     defer metered.deinit();
     try entry_mod.executeSourceChunk(&metered, source);
-    try std.testing.expectEqual(metered.instruction_count, fast.instruction_count);
+    try std.testing.expectEqual(metered.budget.instructions, fast.budget.instructions);
 }
 
 test "hand-built bytecode can fall through or jump past its final instruction" {
@@ -507,7 +507,7 @@ test "zlua binary chunks honor supplied load environment" {
     var target_state = try State.init(std.testing.allocator);
     defer target_state.deinit();
     const environment = try target_state.newTableWithHints(0, 1);
-    try environment.table.set(target_state.allocator, .{ .string = try target_state.intern("answer") }, .{ .integer = 40 });
+    try environment.table.set(target_state.allocator, .{ .string = try target_state.strings.intern("answer") }, .{ .integer = 40 });
 
     const loaded = try load_mod.loadBinaryDump(&target_state, dump.items, environment);
     const values = try entry_mod.callLoadedClosure(&target_state, loaded.closure, &.{.{ .integer = 2 }});
@@ -1063,7 +1063,7 @@ test "last Lua error value is a GC root" {
     defer state.deinit();
 
     const object = try state.newTableWithHints(0, 1);
-    try object.table.set(state.allocator, .{ .string = try state.intern("tag") }, .{ .string = try state.intern("live") });
+    try object.table.set(state.allocator, .{ .string = try state.strings.intern("tag") }, .{ .string = try state.strings.intern("live") });
     try std.testing.expectEqual(error.RuntimeError, state.failValue(object));
 
     try state.gc.collect();
@@ -1080,7 +1080,7 @@ test "collects unreachable runtime allocations" {
     defer state.deinit();
 
     const before = state.gc.allocationStats();
-    _ = try state.intern("transient-gc-string");
+    _ = try state.strings.intern("transient-gc-string");
     _ = try state.newTableWithHints(4, 4);
 
     try state.gc.collect();
@@ -1099,8 +1099,8 @@ test "keeps global table graph alive during collection" {
 
     const root = try state.newTableWithHints(0, 1);
     const child = try state.newTableWithHints(0, 1);
-    const key = try state.intern("child");
-    try child.table.set(state.allocator, .{ .string = try state.intern("answer") }, .{ .integer = 42 });
+    const key = try state.strings.intern("child");
+    try child.table.set(state.allocator, .{ .string = try state.strings.intern("answer") }, .{ .integer = 42 });
     try root.table.set(state.allocator, .{ .string = key }, child);
     try state.putGlobal("gc_root", root);
 
@@ -1119,12 +1119,12 @@ test "weak value tables clear unreachable values" {
 
     const weak = try state.newTableWithHints(0, 1);
     const metatable = try state.newTableWithHints(0, 1);
-    try metatable.table.set(state.allocator, .{ .string = try state.intern("__mode") }, .{ .string = try state.intern("v") });
+    try metatable.table.set(state.allocator, .{ .string = try state.strings.intern("__mode") }, .{ .string = try state.strings.intern("v") });
     metatable_mod.setTableMetatableRaw(&state, weak.table, metatable.table);
     try state.putGlobal("weak_values", weak);
 
     const dead = try state.newTableWithHints(0, 0);
-    try weak.table.set(state.allocator, .{ .string = try state.intern("item") }, dead);
+    try weak.table.set(state.allocator, .{ .string = try state.strings.intern("item") }, dead);
 
     try state.gc.collect();
 
@@ -1137,7 +1137,7 @@ test "weak key tables clear unreachable keys" {
 
     const weak = try state.newTableWithHints(0, 1);
     const metatable = try state.newTableWithHints(0, 1);
-    try metatable.table.set(state.allocator, .{ .string = try state.intern("__mode") }, .{ .string = try state.intern("k") });
+    try metatable.table.set(state.allocator, .{ .string = try state.strings.intern("__mode") }, .{ .string = try state.strings.intern("k") });
     metatable_mod.setTableMetatableRaw(&state, weak.table, metatable.table);
     try state.putGlobal("weak_keys", weak);
 
@@ -1155,13 +1155,13 @@ test "ephemeron table marks value when key is reachable" {
 
     const ephemeron = try state.newTableWithHints(0, 1);
     const metatable = try state.newTableWithHints(0, 1);
-    try metatable.table.set(state.allocator, .{ .string = try state.intern("__mode") }, .{ .string = try state.intern("k") });
+    try metatable.table.set(state.allocator, .{ .string = try state.strings.intern("__mode") }, .{ .string = try state.strings.intern("k") });
     metatable_mod.setTableMetatableRaw(&state, ephemeron.table, metatable.table);
     try state.putGlobal("ephemeron", ephemeron);
 
     const key = try state.newTableWithHints(0, 0);
     const value = try state.newTableWithHints(0, 1);
-    try value.table.set(state.allocator, .{ .string = try state.intern("answer") }, .{ .integer = 42 });
+    try value.table.set(state.allocator, .{ .string = try state.strings.intern("answer") }, .{ .integer = 42 });
     try ephemeron.table.set(state.allocator, key, value);
     try state.putGlobal("live_key", key);
 
@@ -1209,7 +1209,7 @@ test "incremental phases preserve mutations and allocations while sweeping" {
     _ = try state.gc.runSteps(1);
     try std.testing.expectEqual(.sweep_threads, state.gc.phase);
     const during_sweep = try state.newTableWithHints(0, 1);
-    try index_mod.setTableValue(&state, during_sweep, .{ .string = "message" }, .{ .string = try state.intern("allocated during sweeping") });
+    try index_mod.setTableValue(&state, during_sweep, .{ .string = "message" }, .{ .string = try state.strings.intern("allocated during sweeping") });
     try index_mod.setTableValue(&state, child, .{ .string = "nested" }, during_sweep);
     var steps: usize = 0;
     while (!try state.gc.runSteps(1)) : (steps += 1) try std.testing.expect(steps < 1000);
@@ -1321,7 +1321,7 @@ test "suspended unwind errors remain roots across minor and major cycles" {
     defer state.unrootValue(handle);
     state.gc.normalizeBaseline();
     const error_value = try state.newTableWithHints(0, 1);
-    try state.setTableRaw(error_value.table, .{ .string = "detail" }, .{ .string = try state.intern("suspended error") });
+    try state.setTableRaw(error_value.table, .{ .string = "detail" }, .{ .string = try state.strings.intern("suspended error") });
     thread.pending_unwind_error = error_value;
     state.gc.threadBarrier(thread, error_value);
     for (0..3) |_| {
@@ -1343,7 +1343,7 @@ test "remembered old threads retain young diagnostic strings through promotion" 
     const handle = try state.rootValue(.{ .thread = thread });
     defer state.unrootValue(handle);
     state.gc.normalizeBaseline();
-    const diagnostic = try state.intern("young traceback belonging to a suspended old thread");
+    const diagnostic = try state.strings.intern("young traceback belonging to a suspended old thread");
     thread.error_traceback = diagnostic;
     state.gc.threadBarrier(thread, .{ .string = diagnostic });
     for (0..3) |_| {

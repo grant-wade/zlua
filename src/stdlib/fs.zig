@@ -18,7 +18,7 @@ pub fn read(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const max_bytes = if (options) |table| try integerOption(state, table, "fs.read", "max_bytes", state.options.max_file_bytes) else state.options.max_file_bytes;
     const bytes = io_mod.fsReadFileAlloc(state, path, max_bytes) catch |err| return returnFailure(state, thread, op, "read", path, null, err);
     defer state.allocator.free(bytes);
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(bytes) }});
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(bytes) }});
 }
 
 pub fn write(state: *State, thread: *Thread, op: bytecode.Call) !void {
@@ -251,7 +251,7 @@ pub fn openDir(state: *State, thread: *Thread, op: bytecode.Call) !void {
     if (value.kind != .directory) return returnFailure(state, thread, op, "open_dir", path, null, error.NotDir);
     const dir = try state.newTableWithHints(0, 12);
     try set(dir, state, "__zlua_fs_dir", .{ .boolean = true });
-    try set(dir, state, "__zlua_fs_dir_path", .{ .string = try state.intern(path) });
+    try set(dir, state, "__zlua_fs_dir_path", .{ .string = try state.strings.intern(path) });
     try set(dir, state, "entries", .{ .native = .fs_dir_entries });
     try set(dir, state, "walk", .{ .native = .fs_dir_walk });
     try set(dir, state, "open", .{ .native = .fs_dir_open });
@@ -261,7 +261,7 @@ pub fn openDir(state: *State, thread: *Thread, op: bytecode.Call) !void {
     try set(dir, state, "close", .{ .native = .fs_dir_close });
     const metatable = try state.newTableWithHints(0, 3);
     try set(metatable, state, "__close", .{ .native = .fs_dir_close });
-    try set(metatable, state, "__metatable", .{ .string = try state.intern("fs.Directory") });
+    try set(metatable, state, "__metatable", .{ .string = try state.strings.intern("fs.Directory") });
     metatable_mod.setTableMetatableRaw(state, dir.table, metatable.table);
     try state.returnValues(thread, op.base, op.return_count, &.{dir});
 }
@@ -285,20 +285,20 @@ pub fn iteratorNext(state: *State, iterator: Value) ![]const Value {
     const index = integerField(table, "index") orelse 1;
     const count = integerField(table, "count") orelse 0;
     if (index > count) {
-        try state.setTableRaw(table, .{ .string = try state.intern("closed") }, .{ .boolean = true });
+        try state.setTableRaw(table, .{ .string = try state.strings.intern("closed") }, .{ .boolean = true });
         return &.{};
     }
     const entry = queue_value.table.get(.{ .integer = index });
-    try state.setTableRaw(table, .{ .string = try state.intern("index") }, .{ .integer = index + 1 });
+    try state.setTableRaw(table, .{ .string = try state.strings.intern("index") }, .{ .integer = index + 1 });
     try state.setTableRaw(queue_value.table, .{ .integer = index }, .nil);
     if (std.mem.eql(u8, kind.string, "walk") and entry == .table) {
         const entry_kind = entry.table.get(.{ .string = "kind" });
         const depth = runtime.toInteger(entry.table.get(.{ .string = "depth" })) orelse 1;
         const max_depth = integerField(table, "max_depth") orelse std.math.maxInt(i32);
         if (entry_kind == .string and std.mem.eql(u8, entry_kind.string, "directory") and depth < max_depth) {
-            try state.setTableRaw(table, .{ .string = try state.intern("pending_path") }, entry.table.get(.{ .string = "path" }));
-            try state.setTableRaw(table, .{ .string = try state.intern("pending_depth") }, .{ .integer = depth });
-            try state.setTableRaw(table, .{ .string = try state.intern("skip_current") }, .{ .boolean = false });
+            try state.setTableRaw(table, .{ .string = try state.strings.intern("pending_path") }, entry.table.get(.{ .string = "path" }));
+            try state.setTableRaw(table, .{ .string = try state.strings.intern("pending_depth") }, .{ .integer = depth });
+            try state.setTableRaw(table, .{ .string = try state.strings.intern("skip_current") }, .{ .boolean = false });
         }
     }
     const result = try state.allocator.alloc(Value, 1);
@@ -308,21 +308,21 @@ pub fn iteratorNext(state: *State, iterator: Value) ![]const Value {
 
 pub fn iteratorClose(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const table = try expectIteratorTable(state, runtime.argValue(state, thread, op, 0));
-    try state.setTableRaw(table, .{ .string = try state.intern("closed") }, .{ .boolean = true });
+    try state.setTableRaw(table, .{ .string = try state.strings.intern("closed") }, .{ .boolean = true });
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = true }});
 }
 
 pub fn iteratorSkip(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const table = try expectIteratorTable(state, runtime.argValue(state, thread, op, 0));
     if (table.get(.{ .string = "pending_path" }) == .nil) return state.fail("fs walker has no current directory to skip");
-    try state.setTableRaw(table, .{ .string = try state.intern("skip_current") }, .{ .boolean = true });
+    try state.setTableRaw(table, .{ .string = try state.strings.intern("skip_current") }, .{ .boolean = true });
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = true }});
 }
 
 pub fn errorTostring(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const value = runtime.argValue(state, thread, op, 0);
     const message = if (value == .table and value.table.get(.{ .string = "message" }) == .string) value.table.get(.{ .string = "message" }).string else "filesystem error";
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(message) }});
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(message) }});
 }
 
 pub fn fileStat(state: *State, thread: *Thread, op: bytecode.Call) !void {
@@ -350,7 +350,7 @@ pub fn fileTruncate(state: *State, thread: *Thread, op: bytecode.Call) !void {
 
 pub fn filePath(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const file = try expectFsFile(state, runtime.argValue(state, thread, op, 0));
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(file.path) }});
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(file.path) }});
 }
 
 pub fn dirEntries(state: *State, thread: *Thread, op: bytecode.Call) !void {
@@ -421,7 +421,7 @@ pub fn dirClose(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const value = runtime.argValue(state, thread, op, 0);
     if (value != .table or value.table.get(.{ .string = "__zlua_fs_dir" }) == .nil) return state.fail("fs directory expected");
     const dir = value.table;
-    try state.setTableRaw(dir, .{ .string = try state.intern("__zlua_fs_dir_closed") }, .{ .boolean = true });
+    try state.setTableRaw(dir, .{ .string = try state.strings.intern("__zlua_fs_dir_closed") }, .{ .boolean = true });
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = true }});
 }
 
@@ -431,14 +431,14 @@ pub fn pathJoin(state: *State, thread: *Thread, op: bytecode.Call) !void {
     for (0..op.arg_count) |index| try parts.append(state.allocator, try state.expectArgumentString(thread, op, "fs.path.join", @intCast(index)));
     const joined = try std.fs.path.join(state.allocator, parts.items);
     defer state.allocator.free(joined);
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(joined) }});
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(joined) }});
 }
 
 pub fn pathNormalize(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const path = try state.expectArgumentString(thread, op, "fs.path.normalize", 0);
     const normalized = try normalizeLexical(state.allocator, path);
     defer state.allocator.free(normalized);
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(normalized) }});
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(normalized) }});
 }
 
 pub fn pathBasename(state: *State, thread: *Thread, op: bytecode.Call) !void {
@@ -453,7 +453,7 @@ pub fn pathStem(state: *State, thread: *Thread, op: bytecode.Call) !void {
 
 pub fn pathDirname(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const path = try state.expectArgumentString(thread, op, "fs.path.dirname", 0);
-    const value = if (std.fs.path.dirname(path)) |result| Value{ .string = try state.intern(result) } else Value.nil;
+    const value = if (std.fs.path.dirname(path)) |result| Value{ .string = try state.strings.intern(result) } else Value.nil;
     try state.returnValues(thread, op.base, op.return_count, &.{value});
 }
 
@@ -467,24 +467,24 @@ pub fn pathRelative(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const to = try state.expectArgumentString(thread, op, "fs.path.relative", 1);
     const relative = try std.fs.path.relative(state.allocator, ".", null, from, to);
     defer state.allocator.free(relative);
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(relative) }});
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(relative) }});
 }
 
 fn returnPathSlice(state: *State, thread: *Thread, op: bytecode.Call, name: []const u8, function: *const fn ([]const u8) []const u8) !void {
     const path = try state.expectArgumentString(thread, op, name, 0);
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(function(path)) }});
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(function(path)) }});
 }
 
 fn newIterator(state: *State, kind: []const u8) !Value {
     const iterator = try state.newTableWithHints(0, 12);
-    try set(iterator, state, "__zlua_fs_iterator", .{ .string = try state.intern(kind) });
+    try set(iterator, state, "__zlua_fs_iterator", .{ .string = try state.strings.intern(kind) });
     try set(iterator, state, "next", .{ .native = .fs_iterator_next });
     try set(iterator, state, "close", .{ .native = .fs_iterator_close });
     try set(iterator, state, "skip", .{ .native = .fs_iterator_skip });
     const metatable = try state.newTableWithHints(0, 3);
     try set(metatable, state, "__call", .{ .native = .fs_iterator_next });
     try set(metatable, state, "__close", .{ .native = .fs_iterator_close });
-    try set(metatable, state, "__metatable", .{ .string = try state.intern("fs.Iterator") });
+    try set(metatable, state, "__metatable", .{ .string = try state.strings.intern("fs.Iterator") });
     metatable_mod.setTableMetatableRaw(state, iterator.table, metatable.table);
     return iterator;
 }
@@ -492,7 +492,7 @@ fn newIterator(state: *State, kind: []const u8) !Value {
 fn expandPending(state: *State, iterator: *Table) !void {
     const pending = iterator.get(.{ .string = "pending_path" });
     if (pending != .string) return;
-    defer state.setTableRaw(iterator, .{ .string = state.intern("pending_path") catch "pending_path" }, .nil) catch {};
+    defer state.setTableRaw(iterator, .{ .string = state.strings.intern("pending_path") catch "pending_path" }, .nil) catch {};
     if (truthyField(iterator, "skip_current")) return;
     const depth = integerField(iterator, "pending_depth") orelse 1;
     const entries = io_mod.fsReadDirAlloc(state, pending.string) catch |err| return state.failValue(try failureValue(state, "walk", pending.string, null, err));
@@ -505,7 +505,7 @@ fn expandPending(state: *State, iterator: *Table) !void {
         count += 1;
         try state.setTableRaw(queue, .{ .integer = count }, try entryValue(state, entry, full, @intCast(depth + 1)));
     }
-    try state.setTableRaw(iterator, .{ .string = try state.intern("count") }, .{ .integer = count });
+    try state.setTableRaw(iterator, .{ .string = try state.strings.intern("count") }, .{ .integer = count });
 }
 
 fn writeBytes(state: *State, path: []const u8, data: []const u8, atomic: bool) !void {
@@ -532,7 +532,7 @@ fn copyTree(state: *State, source: []const u8, destination: []const u8, overwrit
 
 fn statValue(state: *State, stat_value: host.FileStat) !Value {
     const value = try state.newTableWithHints(0, 12);
-    try set(value, state, "kind", .{ .string = try state.intern(@tagName(stat_value.kind)) });
+    try set(value, state, "kind", .{ .string = try state.strings.intern(@tagName(stat_value.kind)) });
     try set(value, state, "size", integerFromUnsigned(stat_value.size));
     try set(value, state, "inode", integerFromUnsigned(stat_value.inode));
     try set(value, state, "nlink", integerFromUnsigned(stat_value.nlink));
@@ -557,9 +557,9 @@ fn timestampValue(state: *State, timestamp: std.Io.Timestamp) !Value {
 
 fn entryValue(state: *State, entry: host.DirectoryEntry, path: []const u8, depth: ?usize) !Value {
     const value = try state.newTableWithHints(0, 5);
-    try set(value, state, "name", .{ .string = try state.intern(entry.name) });
-    try set(value, state, "path", .{ .string = try state.intern(path) });
-    try set(value, state, "kind", .{ .string = try state.intern(@tagName(entry.kind)) });
+    try set(value, state, "name", .{ .string = try state.strings.intern(entry.name) });
+    try set(value, state, "path", .{ .string = try state.strings.intern(path) });
+    try set(value, state, "kind", .{ .string = try state.strings.intern(@tagName(entry.kind)) });
     try set(value, state, "inode", integerFromUnsigned(entry.inode));
     if (depth) |actual| try set(value, state, "depth", .{ .integer = @intCast(actual) });
     return value;
@@ -574,15 +574,15 @@ fn failureValue(state: *State, operation: []const u8, path: []const u8, destinat
     else
         try std.fmt.allocPrint(state.allocator, "{s} '{s}': {s}", .{ operation, path, system });
     defer state.allocator.free(message);
-    try set(value, state, "code", .{ .string = try state.intern(code) });
-    try set(value, state, "system", .{ .string = try state.intern(system) });
-    try set(value, state, "operation", .{ .string = try state.intern(operation) });
-    try set(value, state, "path", .{ .string = try state.intern(path) });
-    if (destination) |dest| try set(value, state, "destination", .{ .string = try state.intern(dest) });
-    try set(value, state, "message", .{ .string = try state.intern(message) });
+    try set(value, state, "code", .{ .string = try state.strings.intern(code) });
+    try set(value, state, "system", .{ .string = try state.strings.intern(system) });
+    try set(value, state, "operation", .{ .string = try state.strings.intern(operation) });
+    try set(value, state, "path", .{ .string = try state.strings.intern(path) });
+    if (destination) |dest| try set(value, state, "destination", .{ .string = try state.strings.intern(dest) });
+    try set(value, state, "message", .{ .string = try state.strings.intern(message) });
     const metatable = try state.newTableWithHints(0, 2);
     try set(metatable, state, "__tostring", .{ .native = .fs_error_tostring });
-    try set(metatable, state, "__metatable", .{ .string = try state.intern("fs.Error") });
+    try set(metatable, state, "__metatable", .{ .string = try state.strings.intern("fs.Error") });
     metatable_mod.setTableMetatableRaw(state, value.table, metatable.table);
     return value;
 }
@@ -685,7 +685,7 @@ fn joinTwo(state: *State, parent: []const u8, child: []const u8) ![]u8 {
 }
 
 fn set(table_value: Value, state: *State, name: []const u8, value: Value) !void {
-    try state.setTableRaw(table_value.table, .{ .string = try state.intern(name) }, value);
+    try state.setTableRaw(table_value.table, .{ .string = try state.strings.intern(name) }, value);
 }
 
 fn truthyField(table: *Table, name: []const u8) bool {

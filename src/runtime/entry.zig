@@ -97,7 +97,7 @@ fn callLoadedClosureHandled(self: *State, closure: *Closure, args: []const Value
 /// Like `protectedCallLoadedClosure`; `handler` runs at the error point before frames unwind.
 fn protectedCallLoadedClosureHandled(self: *State, closure: *Closure, args: []const Value, handler: HostErrorHandler) !ProtectedCallResult {
     const thread = newHostThread(self, closure) catch |err| switch (err) {
-        error.StackOverflow => return .{ .failure = .{ .string = try self.intern("stack overflow") } },
+        error.StackOverflow => return .{ .failure = .{ .string = try self.strings.intern("stack overflow") } },
         else => return err,
     };
     defer retireHostThread(self, thread);
@@ -162,7 +162,7 @@ pub fn callFunctionHandled(self: *State, function: Value, args: []const Value, h
     defer self.current_thread = previous_thread;
     self.last_error = null;
     return call_mod.callCollect(self, thread, function, args) catch |err| {
-        if (err == error.Interrupted and self.execution_depth == 0) vm_mod.consumeInterrupt(self);
+        if (err == error.Interrupted and self.execution_depth == 0) self.budget.consumeInterrupt();
         try unwindHostThread(self, thread, err, handler);
         return err;
     };

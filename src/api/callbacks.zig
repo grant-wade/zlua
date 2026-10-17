@@ -37,10 +37,10 @@ pub fn deinitNames(state: *State, state_allocator: std.mem.Allocator) void {
 }
 
 fn apiCallbackDispatch(raw: *runtime.ApiCallbackContext) anyerror!void {
-    const user_data = raw.user_data orelse return raw.raise(.{ .string = try raw.state.intern("host callback state unavailable") });
+    const user_data = raw.user_data orelse return raw.raise(.{ .string = try raw.state.strings.intern("host callback state unavailable") });
     const state: *State = @ptrCast(@alignCast(user_data));
     if (raw.callback_id == 0 or raw.callback_id > state.callbacks.items.len) {
-        return raw.raise(.{ .string = try raw.state.intern("unknown host callback") });
+        return raw.raise(.{ .string = try raw.state.strings.intern("unknown host callback") });
     }
 
     const entry = state.callbacks.items[raw.callback_id - 1];

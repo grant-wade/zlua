@@ -640,7 +640,7 @@ fn installArgTable(
     const table = arg_value.table;
     for (args, 0..) |arg, index| {
         const key: i64 = @as(i64, @intCast(index)) - @as(i64, @intCast(zero_index));
-        try state.setTableRaw(table, .{ .integer = key }, .{ .string = try state.intern(arg) });
+        try state.setTableRaw(table, .{ .integer = key }, .{ .string = try state.strings.intern(arg) });
     }
     try state.putGlobal("arg", arg_value);
 }

@@ -5,7 +5,6 @@ const call_mod = @import("call.zig");
 const debug_mod = @import("debug.zig");
 const failure_mod = @import("failure.zig");
 const gc_mod = @import("gc.zig");
-const host = @import("host.zig");
 const index_mod = @import("index.zig");
 const load_mod = @import("load.zig");
 const metatable_mod = @import("metatable.zig");
@@ -35,74 +34,9 @@ const Closure = types.Closure;
 const Table = types.Table;
 const CallFrame = types.CallFrame;
 
-/// Instructions between interrupt polls; the fast loop also polls at backward jumps and calls.
-const interrupt_poll_interval: u64 = 1024;
-
-/// Interrupt request shared with host threads. Heap-allocated so its address
-/// survives moves of the owning state.
-pub const InterruptControl = struct {
-    requested: std.atomic.Value(bool) = .init(false),
-
-    pub fn request(self: *InterruptControl) void {
-        self.requested.store(true, .release);
-    }
-
-    pub fn clear(self: *InterruptControl) void {
-        self.requested.store(false, .release);
-    }
-
-    pub fn isRequested(self: *const InterruptControl) bool {
-        return self.requested.load(.acquire);
-    }
-};
-
-/// Per-instruction safepoint; the hot path is one comparison against `instruction_checkpoint`.
-inline fn checkExecutionLimits(self: *State, thread: *Thread) !void {
-    if (self.instruction_count >= self.instruction_checkpoint) try executionCheckpoint(self, thread);
-    self.instruction_count = self.instruction_count +| 1;
-}
-
-/// Interrupts and exhausted budgets leave the checkpoint in place so every later
-/// safepoint raises again; Lua code cannot catch them and keep running.
-pub noinline fn executionCheckpoint(self: *State, thread: *Thread) !void {
-    if (interruptRequested(self)) return error.Interrupted;
-    if (instructionBudgetExhausted(self)) {
-        const err = failure_mod.failRuntimeDetail(self, thread, "instruction limit exceeded");
-        self.error_handled = true;
-        return err;
-    }
-    self.instruction_checkpoint = nextCheckpoint(self);
-}
-
-/// Polled periodically by long-running native functions.
-pub fn checkInterrupt(self: *State) !void {
-    if (interruptRequested(self)) {
-        self.instruction_checkpoint = 0;
-        return error.Interrupted;
-    }
-}
-
-fn instructionBudgetExhausted(self: *const State) bool {
-    if (self.options.max_instructions) |max| {
-        if (self.instruction_count -| self.instruction_budget_base >= max) return true;
-    }
-    if (self.call_instruction_deadline) |deadline| {
-        if (self.instruction_count >= deadline) return true;
-    }
-    return false;
-}
-
-fn nextCheckpoint(self: *const State) u64 {
-    var next: u64 = std.math.maxInt(u64);
-    if (self.options.max_instructions) |max| next = @min(next, self.instruction_budget_base +| max);
-    if (self.call_instruction_deadline) |deadline| next = @min(next, deadline);
-    if (self.interrupt != null) next = @min(next, self.instruction_count +| interrupt_poll_interval);
-    return next;
-}
-
 pub fn runThreadUntil(self: *State, thread: *Thread, target_frame_count: usize) anyerror!void {
     runThreadLoop(self, thread, target_frame_count) catch |err| {
-        if (err == error.Interrupted and self.execution_depth == 0) consumeInterrupt(self);
+        if (err == error.Interrupted and self.execution_depth == 0) self.budget.consumeInterrupt();
         return err;
     };
 }
@@ -146,7 +80,7 @@ fn runThreadLoop(self: *State, thread: *Thread, target_frame_count: usize) anyer
         const instruction = proto.instructions.items[pc];
         if (proto.fast_loop_entry and plainFastLoopCanStart(instruction) and runPlainFastLoop(self, thread, target_frame_count)) continue;
         frame.pc += 1;
-        try checkExecutionLimits(self, thread);
+        try self.budget.checkLimits(thread);
         if (self.options.trace_vm) try traceInstruction(self, frame.*, pc, instruction);
         if (thread.hook != .nil) {
             try debug_mod.callLineHook(self, thread);
@@ -400,8 +334,8 @@ fn runThreadLoop(self: *State, thread: *Thread, target_frame_count: usize) anyer
 
 fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bool {
     if (thread.frames.items.len <= target_frame_count) return false;
-    if (instructionBudgetActive(self) or self.options.trace_vm) return false;
-    if (fastLoopInterrupted(self)) return false;
+    if (self.budget.active() or self.options.trace_vm) return false;
+    if (self.budget.fastLoopInterrupted()) return false;
     if (self.stressPending()) return false;
     if (thread.hook != .nil and (thread.hook_line or thread.hook_count != 0 or thread.hook_running)) return false;
     if (self.gc.running and self.gc.shouldRunAuto()) return false;
@@ -421,7 +355,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
     var pc = frame.pc;
     var base = frame.base;
     var count_bias: u64 = 0 -% pc;
-    defer self.instruction_count = self.instruction_count +| (pc +% count_bias);
+    defer self.budget.instructions = self.budget.instructions +| (pc +% count_bias);
     var segment_start: u64 = 0;
     frames: while (true) {
         if (!proto.fast_loop_entry) return segment_start != 0;
@@ -684,7 +618,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
                     count_bias +%= source_pc -% pc;
                     if (pc < source_pc) {
                         frame.last_hook_line = null;
-                        if (fastLoopInterrupted(self)) break :fast_loop;
+                        if (self.budget.fastLoopInterrupted()) break :fast_loop;
                     }
                 }
                 if (pc >= instructions.len) break :fast_loop;
@@ -698,7 +632,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
                 count_bias +%= source_pc -% pc;
                 if (pc < source_pc) {
                     frame.last_hook_line = null;
-                    if (fastLoopInterrupted(self)) break :fast_loop;
+                    if (self.budget.fastLoopInterrupted()) break :fast_loop;
                 }
                 if (pc >= instructions.len) break :fast_loop;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
@@ -712,7 +646,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
                     count_bias +%= source_pc -% pc;
                     if (pc < source_pc) {
                         frame.last_hook_line = null;
-                        if (fastLoopInterrupted(self)) break :fast_loop;
+                        if (self.budget.fastLoopInterrupted()) break :fast_loop;
                     }
                 }
                 if (pc >= instructions.len) break :fast_loop;
@@ -729,7 +663,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
                     count_bias +%= source_pc -% pc;
                     if (pc < source_pc) {
                         frame.last_hook_line = null;
-                        if (fastLoopInterrupted(self)) break :fast_loop;
+                        if (self.budget.fastLoopInterrupted()) break :fast_loop;
                     }
                 }
                 if (pc >= instructions.len) break :fast_loop;
@@ -758,7 +692,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
                     count_bias +%= source_pc -% pc;
                     if (pc < source_pc) {
                         frame.last_hook_line = null;
-                        if (fastLoopInterrupted(self)) break :fast_loop;
+                        if (self.budget.fastLoopInterrupted()) break :fast_loop;
                     }
                 }
                 if (pc >= instructions.len) break :fast_loop;
@@ -838,7 +772,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
                 count_bias = segment_start;
                 pc = 0;
                 base = callee_base;
-                if (fastLoopInterrupted(self)) return true;
+                if (self.budget.fastLoopInterrupted()) return true;
                 continue :frames;
             },
             .ret => {
@@ -865,7 +799,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
                 pc = frame.pc;
                 count_bias = segment_start -% pc;
                 base = frame.base;
-                if (fastLoopInterrupted(self)) return true;
+                if (self.budget.fastLoopInterrupted()) return true;
                 continue :frames;
             },
             .close => {
@@ -885,68 +819,6 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) bo
         thread.last_transfer_count = 0;
         return true;
     }
-}
-
-/// Allocates the shared interrupt control on first use; polling starts at the next safepoint.
-pub fn interruptControl(self: *State) !*InterruptControl {
-    if (self.interrupt) |control| return control;
-    const control = try self.allocator.create(InterruptControl);
-    control.* = .{};
-    self.interrupt = control;
-    self.instruction_checkpoint = 0;
-    return control;
-}
-
-pub inline fn interruptRequested(self: *const State) bool {
-    const control = self.interrupt orelse return false;
-    return control.requested.load(.monotonic);
-}
-
-pub fn clearInterrupt(self: *State) void {
-    if (self.interrupt) |control| control.clear();
-    self.instruction_checkpoint = 0;
-}
-
-inline fn fastLoopInterrupted(self: *State) bool {
-    if (!interruptRequested(self)) return false;
-    self.instruction_checkpoint = 0;
-    return true;
-}
-
-/// The uncounted fast loop is disabled while any instruction budget applies.
-inline fn instructionBudgetActive(self: *const State) bool {
-    return self.options.max_instructions != null or self.call_instruction_deadline != null;
-}
-
-pub fn instructionBudgetUsed(self: *const State) u64 {
-    return self.instruction_count -| self.instruction_budget_base;
-}
-
-/// Restarts the cumulative `max_instructions` budget.
-pub fn resetInstructionBudget(self: *State) void {
-    self.instruction_budget_base = self.instruction_count;
-    self.instruction_checkpoint = 0;
-}
-
-/// Limits a host call, including nested calls and coroutines, to `max` further
-/// instructions. Returns the enclosing deadline for `endCallInstructionBudget`.
-pub fn beginCallInstructionBudget(self: *State, max: u64) ?u64 {
-    const previous = self.call_instruction_deadline;
-    const deadline = self.instruction_count +| max;
-    self.call_instruction_deadline = if (previous) |outer| @min(outer, deadline) else deadline;
-    self.instruction_checkpoint = 0;
-    return previous;
-}
-
-/// Restores the deadline returned by `beginCallInstructionBudget`.
-pub fn endCallInstructionBudget(self: *State, previous: ?u64) void {
-    self.call_instruction_deadline = previous;
-    self.instruction_checkpoint = 0;
-}
-
-pub fn consumeInterrupt(self: *State) void {
-    if (self.interrupt) |control| control.clear();
-    self.instruction_checkpoint = 0;
 }
 
 fn fastTableArraySet(self: *State, table_value: Value, key_value: Value, value: Value) !bool {

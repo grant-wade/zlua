@@ -217,18 +217,18 @@ pub const Journal = struct {
         if (self.registries_detached) return;
         var replacement = state.*;
         inline for (registries) |name| @field(replacement, name) = .empty;
-        replacement.strings = std.StringHashMap([]const u8).init(self.allocator);
+        replacement.strings.map = std.StringHashMap([]const u8).init(self.allocator);
         replacement.string_allocation_index = types.PointerAllocationIndex.init(self.allocator);
         replacement.table_allocation_index = types.PointerAllocationIndex.init(self.allocator);
         replacement.object_allocation_index = .empty;
         errdefer freeRegistries(&replacement);
         inline for (registries) |name| @field(replacement, name) = try duplicateList(self.allocator, @field(state, name));
-        replacement.strings = try state.strings.clone();
+        replacement.strings.map = try state.strings.map.clone();
         replacement.string_allocation_index = try state.string_allocation_index.clone();
         replacement.table_allocation_index = try state.table_allocation_index.clone();
         replacement.object_allocation_index = try state.object_allocation_index.clone(self.allocator);
         inline for (registries) |name| @field(state, name) = @field(replacement, name);
-        state.strings = replacement.strings;
+        state.strings.map = replacement.strings.map;
         state.string_allocation_index = replacement.string_allocation_index;
         state.table_allocation_index = replacement.table_allocation_index;
         state.object_allocation_index = replacement.object_allocation_index;
@@ -311,7 +311,7 @@ pub const Journal = struct {
         const roots = state.api_roots;
         const callback_dispatch = state.api_callback_dispatch;
         const callback_data = state.api_callback_user_data;
-        const interrupt = state.interrupt;
+        const interrupt = state.budget.interrupt;
         const file_generation = state.file_generation;
         const gc_work = state.gc.work;
         const gc_remembered = state.gc.remembered;
@@ -332,10 +332,10 @@ pub const Journal = struct {
         state.api_roots.clearRetainingCapacity();
         state.api_callback_dispatch = callback_dispatch;
         state.api_callback_user_data = callback_data;
-        state.interrupt = interrupt;
+        state.budget.interrupt = interrupt;
         state.file_generation = file_generation +% 1;
-        state.call_instruction_deadline = null;
-        state.instruction_checkpoint = 0;
+        state.budget.call_deadline = null;
+        state.budget.checkpoint = 0;
         self.registries_detached = false;
         self.output_detached = false;
     }
@@ -387,7 +387,7 @@ pub fn retainCollected(object: anytype) bool {
 
 fn freeRegistries(state: *State) void {
     inline for (registries) |name| @field(state, name).deinit(state.allocator);
-    state.strings.deinit();
+    state.strings.map.deinit();
     state.string_allocation_index.deinit();
     state.table_allocation_index.deinit();
     state.object_allocation_index.deinit(state.allocator);

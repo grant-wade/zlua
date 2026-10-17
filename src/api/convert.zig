@@ -53,7 +53,7 @@ pub fn toRuntimeValue(state: *State, value: anytype) !runtime.Value {
         .boolean => |v| .{ .boolean = v },
         .integer => |v| .{ .integer = v },
         .number => |v| .{ .number = v },
-        .string => |v| .{ .string = try state.raw_state.intern(v) },
+        .string => |v| .{ .string = try state.raw_state.strings.intern(v) },
         .table => |v| toRuntimeValue(state, v),
         .function => |v| toRuntimeValue(state, v),
         .coroutine => |v| toRuntimeValue(state, v),
@@ -77,7 +77,7 @@ pub fn toRuntimeValue(state: *State, value: anytype) !runtime.Value {
         .float, .comptime_float => .{ .number = @floatCast(value) },
         .pointer => |pointer| pointerToRuntimeValue(state, value, pointer),
         .array => |array| if (array.child == u8)
-            .{ .string = try state.raw_state.intern(value[0..]) }
+            .{ .string = try state.raw_state.strings.intern(value[0..]) }
         else
             arrayToRuntimeValue(state, value[0..]),
         .@"struct" => |info| structToRuntimeValue(state, value, info),
@@ -88,12 +88,12 @@ pub fn toRuntimeValue(state: *State, value: anytype) !runtime.Value {
 fn pointerToRuntimeValue(state: *State, value: anytype, comptime pointer: std.builtin.Type.Pointer) !runtime.Value {
     switch (pointer.size) {
         .slice => {
-            if (pointer.child == u8) return .{ .string = try state.raw_state.intern(value) };
+            if (pointer.child == u8) return .{ .string = try state.raw_state.strings.intern(value) };
             return arrayToRuntimeValue(state, value);
         },
         .one => switch (@typeInfo(pointer.child)) {
             .array => |array| {
-                if (array.child == u8) return .{ .string = try state.raw_state.intern(value[0..]) };
+                if (array.child == u8) return .{ .string = try state.raw_state.strings.intern(value[0..]) };
                 return arrayToRuntimeValue(state, value[0..]);
             },
             .@"struct" => return toRuntimeValue(state, value.*),
@@ -121,7 +121,7 @@ fn structToRuntimeValue(state: *State, value: anytype, comptime info: std.builti
 
     const table = state.raw_state.newTableWithHints(0, hash_hint) catch |err| return errors.captureLuaError(state, err);
     inline for (reflection.fieldNames(info)) |field| {
-        const raw_key = runtime.Value{ .string = try state.raw_state.intern(field) };
+        const raw_key = runtime.Value{ .string = try state.raw_state.strings.intern(field) };
         const raw_value = try toRuntimeValue(state, @field(value, field));
         index_mod.setTableValue(&state.raw_state, table, raw_key, raw_value) catch |err| return errors.captureLuaError(state, err);
     }

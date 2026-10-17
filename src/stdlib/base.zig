@@ -35,7 +35,7 @@ pub fn load(state: *State, thread: *Thread, op: bytecode.Call) !void {
         const closure = load_mod.loadBinaryDump(state, source, environment) catch {
             const error_value = state.currentErrorValue();
             const message = if (error_value == .string) error_value.string else "cannot load binary chunk";
-            try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.intern(message) } });
+            try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.strings.intern(message) } });
             return;
         };
         try state.returnValues(thread, op.base, op.return_count, &.{closure});
@@ -45,7 +45,7 @@ pub fn load(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const closure = load_mod.loadSourceAsClosureNamedEnv(state, source, source_name, loadEnvironment(state, thread, op)) catch {
         const error_value = state.currentErrorValue();
         const message = if (error_value == .string) error_value.string else "cannot load source";
-        try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.intern(message) } });
+        try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.strings.intern(message) } });
         return;
     };
     try state.returnValues(thread, op.base, op.return_count, &.{closure});
@@ -86,7 +86,7 @@ fn loadSource(state: *State, thread: *Thread, op: bytecode.Call) !LoadSource {
                 try source.appendSlice(state.allocator, bytes);
             },
             else => {
-                try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.intern("reader function must return a string") } });
+                try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.strings.intern("reader function must return a string") } });
                 return error.LoadReturned;
             },
         }
@@ -101,7 +101,7 @@ fn loadModeError(state: *State, thread: *Thread, op: bytecode.Call, source: []co
     var message = std.ArrayList(u8).empty;
     defer message.deinit(state.allocator);
     try runtime.appendFmt(state.allocator, &message, "attempt to load a {s} chunk (mode is '{s}')", .{ kind, mode });
-    return try state.intern(message.items);
+    return try state.strings.intern(message.items);
 }
 
 fn invalidLoadMode(state: *State, thread: *Thread, op: bytecode.Call) bool {
@@ -128,7 +128,7 @@ fn isReaderFunction(value: Value) bool {
 
 pub fn typeValue(state: *State, thread: *Thread, op: bytecode.Call) !void {
     if (op.arg_count == 0) return state.failArgumentMessage("type", 1, "value expected");
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(typeName(runtime.argValue(state, thread, op, 0))) }});
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(typeName(runtime.argValue(state, thread, op, 0))) }});
 }
 
 pub fn tonumber(state: *State, thread: *Thread, op: bytecode.Call) !void {

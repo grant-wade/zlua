@@ -19,7 +19,7 @@ pub fn valueToString(self: *State, thread: *Thread, value: Value) anyerror![]con
             .string => |string| string,
             .integer, .number => {
                 var buffer: [value_mod.max_number_text_len]u8 = undefined;
-                return self.intern(value_mod.formatNumber(&buffer, result));
+                return self.strings.intern(value_mod.formatNumber(&buffer, result));
             },
             else => self.failLibrary("'__tostring' must return a string"),
         };
@@ -30,14 +30,14 @@ pub fn valueToString(self: *State, thread: *Thread, value: Value) anyerror![]con
             var named = std.ArrayList(u8).empty;
             defer named.deinit(self.allocator);
             try appendNamedValue(self.allocator, &named, name.string, value);
-            return self.intern(named.items);
+            return self.strings.intern(named.items);
         }
     }
 
     var out = std.ArrayList(u8).empty;
     defer out.deinit(self.allocator);
     try value_mod.appendValue(self.allocator, &out, value);
-    return self.intern(out.items);
+    return self.strings.intern(out.items);
 }
 
 /// Ignores `__metatable`, as `debug.getmetatable` does.

@@ -120,9 +120,9 @@ test "pending interrupts stop library functions called directly by the host" {
     const raw = &lua.raw_state;
     const string_lib = raw.getGlobal("string").table;
     const table_lib = raw.getGlobal("table").table;
-    const rep = string_lib.get(.{ .string = try raw.intern("rep") });
-    const concat = table_lib.get(.{ .string = try raw.intern("concat") });
-    const sort = table_lib.get(.{ .string = try raw.intern("sort") });
+    const rep = string_lib.get(.{ .string = try raw.strings.intern("rep") });
+    const concat = table_lib.get(.{ .string = try raw.strings.intern("concat") });
+    const sort = table_lib.get(.{ .string = try raw.strings.intern("sort") });
     var items = try lua.createTable(.{});
     defer items.deinit();
     for (0..8) |index| try items.append(@as(i64, @intCast(8 - index)));
@@ -130,7 +130,7 @@ test "pending interrupts stop library functions called directly by the host" {
     const items_value = raw.getGlobal("items");
 
     handle.interrupt();
-    try std.testing.expectError(error.Interrupted, entry_mod.callFunction(raw, rep, &.{ .{ .string = try raw.intern("x") }, .{ .integer = 1 << 20 } }));
+    try std.testing.expectError(error.Interrupted, entry_mod.callFunction(raw, rep, &.{ .{ .string = try raw.strings.intern("x") }, .{ .integer = 1 << 20 } }));
     try std.testing.expect(!lua.isInterruptPending());
     handle.interrupt();
     try std.testing.expectError(error.Interrupted, entry_mod.callFunction(raw, concat, &.{items_value}));
@@ -139,7 +139,7 @@ test "pending interrupts stop library functions called directly by the host" {
     try std.testing.expectError(error.Interrupted, entry_mod.callFunction(raw, sort, &.{items_value}));
     try std.testing.expect(!lua.isInterruptPending());
 
-    const values = try entry_mod.callFunction(raw, rep, &.{ .{ .string = try raw.intern("x") }, .{ .integer = 3 } });
+    const values = try entry_mod.callFunction(raw, rep, &.{ .{ .string = try raw.strings.intern("x") }, .{ .integer = 3 } });
     defer lua.allocator().free(values);
     try std.testing.expectEqualStrings("xxx", values[0].string);
 }

@@ -44,7 +44,6 @@ const coroutine_mod = @import("../runtime/coroutine.zig");
 const entry_mod = @import("../runtime/entry.zig");
 const io_mod = @import("../runtime/io.zig");
 const load_mod = @import("../runtime/load.zig");
-const vm_mod = @import("../runtime/vm.zig");
 
 /// Copyable, thread-safe handle that stops Lua at the next safepoint with `error.Interrupted`.
 /// Join threads using it before `State.deinit`. Lua cannot catch it and pending `__close`
@@ -157,7 +156,7 @@ pub const State = struct {
     }
 
     pub fn instructionBudget(self: *const State) InstructionBudget {
-        const used = vm_mod.instructionBudgetUsed(&self.raw_state);
+        const used = self.raw_state.budget.used();
         const remaining = if (self.raw_state.options.max_instructions) |limit|
             if (used >= limit) 0 else limit - used
         else
@@ -170,21 +169,21 @@ pub const State = struct {
     }
 
     pub fn resetInstructionBudget(self: *State) void {
-        vm_mod.resetInstructionBudget(&self.raw_state);
+        self.raw_state.budget.reset();
     }
 
     /// Returns a thread-safe `InterruptHandle`; handles share one flag that stays valid across
     /// `reset` until `deinit`. While one exists, dispatch polls the flag periodically.
     pub fn interruptHandle(self: *State) !InterruptHandle {
-        return .{ .control = try vm_mod.interruptControl(&self.raw_state) };
+        return .{ .control = try self.raw_state.budget.interruptControl() };
     }
 
     pub fn clearInterrupt(self: *State) void {
-        vm_mod.clearInterrupt(&self.raw_state);
+        self.raw_state.budget.clearInterrupt();
     }
 
     pub fn isInterruptPending(self: *const State) bool {
-        return vm_mod.interruptRequested(&self.raw_state);
+        return self.raw_state.budget.interruptRequested();
     }
 
     pub fn openLibs(self: *State, selection: Stdlib) !void {
@@ -253,7 +252,7 @@ pub const State = struct {
     }
 
     pub fn setGlobal(self: *State, name: []const u8, value: anytype) !void {
-        const raw_name = try self.raw_state.intern(name);
+        const raw_name = try self.raw_state.strings.intern(name);
         const raw_value = try convert.toRuntimeValue(self, value);
         self.raw_state.putGlobal(raw_name, raw_value) catch |err| return errors.captureLuaError(self, err);
         try gcBoundary(self);
@@ -369,7 +368,7 @@ pub const State = struct {
     pub fn require(self: *State, name: []const u8, comptime T: type) !T {
         try self.ensurePackageLibrary();
         callbacks.bindDispatch(self);
-        const raw_name = runtime.Value{ .string = try self.raw_state.intern(name) };
+        const raw_name = runtime.Value{ .string = try self.raw_state.strings.intern(name) };
         const results = entry_mod.callFunction(&self.raw_state, .{ .native = .require }, &.{raw_name}) catch |err| return errors.captureLuaError(self, err);
         defer self.allocator().free(results);
         return convert.fromRuntimeResults(self, results, T);

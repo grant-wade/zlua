@@ -13,7 +13,6 @@ const State = @import("state.zig").State;
 const types = @import("types.zig");
 const upvalue_mod = @import("upvalue.zig");
 const value_mod = @import("value.zig");
-const vm_mod = @import("vm.zig");
 
 const bytecode = compile.bytecode;
 const proto_mod = compile.proto;
@@ -335,12 +334,12 @@ pub const Gc = struct {
         }
         if (option == .string and std.mem.eql(u8, option.string, "incremental")) {
             const old = gc.setMode(.incremental);
-            try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(old.name()) }});
+            try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(old.name()) }});
             return;
         }
         if (option == .string and std.mem.eql(u8, option.string, "generational")) {
             const old = gc.setMode(.generational);
-            try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(old.name()) }});
+            try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(old.name()) }});
             return;
         }
         if (option == .string and std.mem.eql(u8, option.string, "param")) {
@@ -367,7 +366,7 @@ pub const Gc = struct {
         const name = try state.expectArgumentString(thread, op, "collectgarbage", 0);
         const message = try std.fmt.allocPrint(state.allocator, "invalid option '{s}'", .{name});
         defer state.allocator.free(message);
-        return state.failArgumentMessage("collectgarbage", 1, try state.intern(message));
+        return state.failArgumentMessage("collectgarbage", 1, try state.strings.intern(message));
     }
 
     fn collectGarbageParam(gc: *Gc, value: Value) !GcParam {
@@ -708,9 +707,7 @@ pub const Gc = struct {
         if (state.number_metatable) |metatable| if (gc.isTrackedTable(metatable)) gc.markTable(metatable);
         if (state.boolean_metatable) |metatable| if (gc.isTrackedTable(metatable)) gc.markTable(metatable);
         if (state.nil_metatable) |metatable| if (gc.isTrackedTable(metatable)) gc.markTable(metatable);
-        if (state.zerde_null) |table| if (gc.isTrackedTable(table)) gc.markTable(table);
-        if (state.zerde_array_metatable) |table| if (gc.isTrackedTable(table)) gc.markTable(table);
-        if (state.zerde_object_metatable) |table| if (gc.isTrackedTable(table)) gc.markTable(table);
+        for (state.library_tables.values) |slot| if (slot) |table| if (gc.isTrackedTable(table)) gc.markTable(table);
     }
 
     pub fn markValue(gc: *Gc, value: Value) void {
@@ -1325,7 +1322,7 @@ pub const Gc = struct {
             inline .table, .userdata => |object, tag| {
                 const frame = thread.frames.items[thread.frames.items.len - 1];
                 thread.ensureStack(state.allocator, frame.base + @as(usize, thread.scratchRegister()) + 2, call_mod.callStackValueLimit(state, thread)) catch return;
-                vm_mod.resetInstructionBudget(state);
+                state.budget.reset();
                 gc.callLuaFinalizer(thread, @unionInit(Value, @tagName(tag), object), object.metatable) catch return;
             },
             .file => |userdata| _ = state.finalizeBuiltinUserdata(userdata),
@@ -1481,8 +1478,8 @@ pub const Gc = struct {
                 continue;
             }
             if (strings) {
-                if (state.strings.get(item.bytes)) |interned| {
-                    if (interned.ptr == item.bytes.ptr and interned.len == item.bytes.len) _ = state.strings.remove(item.bytes);
+                if (state.strings.map.get(item.bytes)) |interned| {
+                    if (interned.ptr == item.bytes.ptr and interned.len == item.bytes.len) _ = state.strings.map.remove(item.bytes);
                 }
                 if (item.bytes.len != 0) _ = state.string_allocation_index.remove(@intFromPtr(item.bytes.ptr));
                 const retained = if (state.rollback) |journal| journal.keepString(item.bytes) else false;

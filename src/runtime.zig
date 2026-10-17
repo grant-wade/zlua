@@ -17,7 +17,7 @@ pub const StateOptions = state_mod.StateOptions;
 pub const OutputFlush = state_mod.OutputFlush;
 pub const StartupPhase = state_mod.StartupPhase;
 pub const HostErrorHandler = state_mod.HostErrorHandler;
-pub const InterruptControl = @import("runtime/vm.zig").InterruptControl;
+pub const InterruptControl = @import("runtime/budget.zig").InterruptControl;
 
 pub const Value = types.Value;
 pub const NativeFn = types.NativeFn;

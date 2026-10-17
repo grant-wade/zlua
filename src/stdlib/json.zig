@@ -44,7 +44,7 @@ pub fn write(state: *State, thread: *Thread, op: bytecode.Call) !void {
 
     const bytes = try out.toOwnedSlice();
     defer state.allocator.free(bytes);
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(bytes) }});
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(bytes) }});
 }
 
 fn writeOptions(state: *State, thread: *Thread, op: bytecode.Call) !zerde.json.WriteOptions {
@@ -57,7 +57,7 @@ fn writeOptions(state: *State, thread: *Thread, op: bytecode.Call) !zerde.json.W
         else => return state.failArgumentType("json.write", 2, "table", value),
     };
 
-    const pretty = table.get(.{ .string = try state.intern("pretty") });
+    const pretty = table.get(.{ .string = try state.strings.intern("pretty") });
     if (pretty != .nil) {
         options.pretty = switch (pretty) {
             .boolean => |boolean| boolean,
@@ -65,7 +65,7 @@ fn writeOptions(state: *State, thread: *Thread, op: bytecode.Call) !zerde.json.W
         };
     }
 
-    const indent = table.get(.{ .string = try state.intern("indent") });
+    const indent = table.get(.{ .string = try state.strings.intern("indent") });
     if (indent != .nil) {
         const integer = runtime.toInteger(indent) orelse return state.failArgumentType("json.write", 2, "table with numeric indent", indent);
         if (integer < 0) return state.failArgumentMessage("json.write", 2, "indent out of range");
@@ -82,5 +82,5 @@ fn failJsonError(state: *State, operation: []const u8, err: anyerror) !void {
     var message: std.ArrayList(u8) = .empty;
     defer message.deinit(state.allocator);
     try runtime.appendFmt(state.allocator, &message, "{s}: {s}", .{ operation, @errorName(err) });
-    return state.fail(try state.intern(message.items));
+    return state.fail(try state.strings.intern(message.items));
 }

@@ -2,7 +2,6 @@ const std = @import("std");
 const compile = @import("../compile.zig");
 const runtime = @import("../runtime.zig");
 const call_mod = @import("../runtime/call.zig");
-const vm_mod = @import("../runtime/vm.zig");
 const index_mod = @import("../runtime/index.zig");
 const metatable_mod = @import("../runtime/metatable.zig");
 
@@ -35,7 +34,7 @@ pub fn char(state: *State, thread: *Thread, op: bytecode.Call) !void {
         if (value < 0 or value > 255) return state.failArgumentMessage("string.char", @intCast(index + 1), "value out of range");
         try out.append(state.allocator, @intCast(value));
     }
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(out.items) }});
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(out.items) }});
 }
 
 pub fn dump(state: *State, thread: *Thread, op: bytecode.Call) !void {
@@ -47,7 +46,7 @@ pub fn dump(state: *State, thread: *Thread, op: bytecode.Call) !void {
     defer out.deinit(state.allocator);
     try runtime.dumpClosureBinary(state.allocator, &out, target.closure, strip_debug);
 
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(out.items) }});
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(out.items) }});
 }
 
 pub fn find(state: *State, thread: *Thread, op: bytecode.Call) !void {
@@ -139,7 +138,7 @@ pub fn format(state: *State, thread: *Thread, op: bytecode.Call) !void {
             else => return state.failLibraryFmt("invalid conversion '{s}' to 'format'", .{form}),
         }
     }
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(out.items) }});
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(out.items) }});
 }
 
 const max_format = 32;
@@ -249,9 +248,9 @@ pub fn gmatch(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const start = if (initial <= 1) 0 else @min(initial - 1, source.len + 1);
     const state_value = try state.newTableWithHints(0, 3);
     const state_table = state_value.table;
-    try state.setTableRaw(state_table, .{ .string = try state.intern("s") }, .{ .string = source });
-    try state.setTableRaw(state_table, .{ .string = try state.intern("p") }, .{ .string = try state.expectArgumentString(thread, op, "string.gmatch", 1) });
-    try state.setTableRaw(state_table, .{ .string = try state.intern("i") }, .{ .integer = @intCast(start) });
+    try state.setTableRaw(state_table, .{ .string = try state.strings.intern("s") }, .{ .string = source });
+    try state.setTableRaw(state_table, .{ .string = try state.strings.intern("p") }, .{ .string = try state.expectArgumentString(thread, op, "string.gmatch", 1) });
+    try state.setTableRaw(state_table, .{ .string = try state.strings.intern("i") }, .{ .integer = @intCast(start) });
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .gmatch_iterator = state_value.table }});
 }
 
@@ -287,17 +286,17 @@ pub fn gmatchNext(state: *State, state_value: Value) !GmatchValues {
         }
         break current;
     };
-    try state.setTableRaw(state_table, .{ .string = try state.intern("i") }, .{ .integer = @intCast(if (found.range.end > found.range.start) found.range.end else found.range.end + 1) });
-    try state.setTableRaw(state_table, .{ .string = try state.intern("last") }, .{ .integer = @intCast(found.range.end) });
+    try state.setTableRaw(state_table, .{ .string = try state.strings.intern("i") }, .{ .integer = @intCast(if (found.range.end > found.range.start) found.range.end else found.range.end + 1) });
+    try state.setTableRaw(state_table, .{ .string = try state.strings.intern("last") }, .{ .integer = @intCast(found.range.end) });
     var result = GmatchValues{};
     if (capture_pattern != null) {
         result.buffer[0] = .{ .integer = @intCast(found.range.start + 1) };
-        result.buffer[1] = .{ .string = try state.intern(source[found.range.start..found.range.end]) };
+        result.buffer[1] = .{ .string = try state.strings.intern(source[found.range.start..found.range.end]) };
         result.len = 2;
         return result;
     }
     if (found.captures.count == 0) {
-        result.buffer[0] = .{ .string = try state.intern(source[found.range.start..found.range.end]) };
+        result.buffer[0] = .{ .string = try state.strings.intern(source[found.range.start..found.range.end]) };
         result.len = 1;
         return result;
     }
@@ -334,7 +333,7 @@ pub fn gsub(state: *State, thread: *Thread, op: bytecode.Call) !void {
     var changed = false;
     var previous_match_end: ?usize = null;
     while (pos <= source.len and count < max_count) {
-        try vm_mod.checkInterrupt(state);
+        try state.budget.checkInterrupt();
         const found = (try simplePatternFind(state, source, pattern, pos)) orelse break;
         try out.appendSlice(state.allocator, source[pos..found.range.start]);
         if (found.range.start == found.range.end and previous_match_end != null and previous_match_end.? == found.range.start) {
@@ -360,7 +359,7 @@ pub fn gsub(state: *State, thread: *Thread, op: bytecode.Call) !void {
         count += 1;
     }
     try out.appendSlice(state.allocator, source[@min(pos, source.len)..]);
-    const result = if (!changed) source else try state.intern(out.items);
+    const result = if (!changed) source else try state.strings.intern(out.items);
     try state.returnValues(thread, op.base, op.return_count, &.{ .{ .string = result }, .{ .integer = count } });
 }
 
@@ -376,7 +375,7 @@ fn trimReasonableNumeral(state: *State, source: []const u8) ![]const u8 {
     try out.appendSlice(state.allocator, source[int_start..dot]);
     try out.append(state.allocator, '.');
     try out.appendSlice(state.allocator, source[dot + 1 .. frac_end]);
-    return state.intern(out.items);
+    return state.strings.intern(out.items);
 }
 
 const GsubReplacement = struct { text: []const u8, changed: bool };
@@ -396,13 +395,13 @@ fn gsubReplacement(state: *State, thread: *Thread, replacement: Value, source: [
                 var out = std.ArrayList(u8).empty;
                 defer out.deinit(state.allocator);
                 try runtime.appendLuaString(state.allocator, &out, .{ .integer = integer });
-                break :blk .{ .text = try state.intern(out.items), .changed = true };
+                break :blk .{ .text = try state.strings.intern(out.items), .changed = true };
             },
             .number => |number| blk: {
                 var out = std.ArrayList(u8).empty;
                 defer out.deinit(state.allocator);
                 try runtime.appendLuaString(state.allocator, &out, .{ .number = number });
-                break :blk .{ .text = try state.intern(out.items), .changed = true };
+                break :blk .{ .text = try state.strings.intern(out.items), .changed = true };
             },
             else => |value| {
                 _ = try invalidReplacementValue(state, value);
@@ -425,7 +424,7 @@ fn gsubReplacement(state: *State, thread: *Thread, replacement: Value, source: [
                     var out = std.ArrayList(u8).empty;
                     defer out.deinit(state.allocator);
                     try runtime.appendLuaString(state.allocator, &out, result);
-                    break :blk .{ .text = try state.intern(out.items), .changed = true };
+                    break :blk .{ .text = try state.strings.intern(out.items), .changed = true };
                 },
                 else => |value| {
                     _ = try invalidReplacementValue(state, value);
@@ -445,14 +444,14 @@ fn invalidReplacementValue(state: *State, value: Value) ![]const u8 {
     var message = std.ArrayList(u8).empty;
     defer message.deinit(state.allocator);
     try runtime.appendFmt(state.allocator, &message, "invalid replacement value (a {s})", .{luaTypeName(value)});
-    return state.failLibrary(try state.intern(message.items));
+    return state.failLibrary(try state.strings.intern(message.items));
 }
 
 fn invalidCaptureIndex(state: *State, one_based: u8) !void {
     var message = std.ArrayList(u8).empty;
     defer message.deinit(state.allocator);
     try runtime.appendFmt(state.allocator, &message, "invalid capture index %{d}", .{one_based});
-    return state.failLibrary(try state.intern(message.items));
+    return state.failLibrary(try state.strings.intern(message.items));
 }
 
 fn luaTypeName(value: Value) []const u8 {
@@ -491,7 +490,7 @@ fn gsubStringReplacement(state: *State, replacement: []const u8, source: []const
             else => return state.failLibrary("invalid use of '%' in replacement string"),
         }
     }
-    return state.intern(out.items);
+    return state.strings.intern(out.items);
 }
 
 fn appendReplacementCapture(state: *State, out: *std.ArrayList(u8), source: []const u8, matched: Match, one_based: u8) !void {
@@ -515,13 +514,13 @@ fn appendReplacementCapture(state: *State, out: *std.ArrayList(u8), source: []co
 }
 
 fn firstMatchValue(state: *State, source: []const u8, matched: Match) !Value {
-    if (matched.captures.count == 0) return .{ .string = try state.intern(source[matched.range.start..matched.range.end]) };
+    if (matched.captures.count == 0) return .{ .string = try state.strings.intern(source[matched.range.start..matched.range.end]) };
     return captureValue(state, source, matched.captures.slots[0]);
 }
 
 fn appendMatchValues(state: *State, values: *std.ArrayList(Value), source: []const u8, matched: Match) !void {
     if (matched.captures.count == 0) {
-        try values.append(state.allocator, .{ .string = try state.intern(source[matched.range.start..matched.range.end]) });
+        try values.append(state.allocator, .{ .string = try state.strings.intern(source[matched.range.start..matched.range.end]) });
         return;
     }
     try appendCaptureValues(state, values, source, matched.captures);
@@ -533,7 +532,7 @@ fn appendCaptureValues(state: *State, values: *std.ArrayList(Value), source: []c
 
 fn captureValue(state: *State, source: []const u8, slot: CaptureSlot) !Value {
     return switch (slot) {
-        .range => |range| .{ .string = try state.intern(source[range.start..range.end]) },
+        .range => |range| .{ .string = try state.strings.intern(source[range.start..range.end]) },
         .position => |position| .{ .integer = @intCast(position + 1) },
         .unfinished => state.failLibrary("unfinished capture"),
     };
@@ -643,7 +642,7 @@ pub fn pack(state: *State, thread: *Thread, op: bytecode.Call) !void {
         }
         index += 1;
     }
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(out.items) }});
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(out.items) }});
 }
 
 pub fn packsize(state: *State, thread: *Thread, op: bytecode.Call) !void {
@@ -661,7 +660,7 @@ pub fn rep(state: *State, thread: *Thread, op: bytecode.Call) !void {
     if (count > 0) {
         var index: i64 = 0;
         while (index < count) : (index += 1) {
-            if (index & 0xfff == 0) try vm_mod.checkInterrupt(state);
+            if (index & 0xfff == 0) try state.budget.checkInterrupt();
             if (index != 0) try out.appendSlice(state.allocator, sep);
             try out.appendSlice(state.allocator, source);
         }
@@ -670,7 +669,7 @@ pub fn rep(state: *State, thread: *Thread, op: bytecode.Call) !void {
 }
 
 fn internShortString(state: *State, bytes: []const u8) ![]const u8 {
-    return if (bytes.len <= 40) try state.intern(bytes) else try state.allocateString(bytes);
+    return if (bytes.len <= 40) try state.strings.intern(bytes) else try state.strings.allocate(bytes);
 }
 
 fn repeatedLengthTooLarge(source_len: usize, sep_len: usize, count: usize) bool {
@@ -685,7 +684,7 @@ pub fn reverse(state: *State, thread: *Thread, op: bytecode.Call) !void {
     var out = try state.allocator.alloc(u8, source.len);
     defer state.allocator.free(out);
     for (source, 0..) |source_byte, index| out[source.len - 1 - index] = source_byte;
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(out) }});
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(out) }});
 }
 
 /// Like `split`, but splits from the right.
@@ -719,7 +718,7 @@ fn splitImpl(state: *State, thread: *Thread, op: bytecode.Call, from_right: bool
     const result = try state.newTableWithHints(@intCast(pieces.items.len), 0);
     for (pieces.items, 0..) |piece, index| {
         const output_index = if (from_right) pieces.items.len - index else index + 1;
-        try state.setTableRaw(result.table, .{ .integer = @intCast(output_index) }, .{ .string = try state.intern(piece) });
+        try state.setTableRaw(result.table, .{ .integer = @intCast(output_index) }, .{ .string = try state.strings.intern(piece) });
     }
     try state.returnValues(thread, op.base, op.return_count, &.{result});
 }
@@ -804,7 +803,7 @@ pub fn strip(state: *State, thread: *Thread, op: bytecode.Call) !void {
     var end = source.len;
     while (end > start and stripByte(chars, source[end - 1])) : (end -= 1) {}
 
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(source[start..end]) }});
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(source[start..end]) }});
 }
 
 fn stripByte(chars: ?[]const u8, byte_value: u8) bool {
@@ -819,10 +818,10 @@ pub fn sub(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const start = normalizeIndex(start_arg, source.len);
     const stop = normalizeIndex(stop_arg, source.len);
     if (start > stop or start > source.len) {
-        try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern("") }});
+        try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern("") }});
         return;
     }
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(source[@max(start, 1) - 1 .. @min(stop, source.len)]) }});
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(source[@max(start, 1) - 1 .. @min(stop, source.len)]) }});
 }
 
 pub fn unpack(state: *State, thread: *Thread, op: bytecode.Call) !void {
@@ -880,12 +879,12 @@ pub fn unpack(state: *State, thread: *Thread, op: bytecode.Call) !void {
             },
             .fixed_string => {
                 if (pos + item.size > data.len) return state.failArgumentMessage("string.unpack", 2, "data string too short");
-                try values.append(state.allocator, .{ .string = try state.intern(data[pos .. pos + item.size]) });
+                try values.append(state.allocator, .{ .string = try state.strings.intern(data[pos .. pos + item.size]) });
                 pos += item.size;
             },
             .zero_string => {
                 const relative_end = std.mem.indexOfScalar(u8, data[pos..], 0) orelse return state.failArgumentMessage("string.unpack", 2, "unfinished string for format 'z'");
-                try values.append(state.allocator, .{ .string = try state.intern(data[pos .. pos + relative_end]) });
+                try values.append(state.allocator, .{ .string = try state.strings.intern(data[pos .. pos + relative_end]) });
                 pos += relative_end + 1;
             },
             .size_string => {
@@ -893,7 +892,7 @@ pub fn unpack(state: *State, thread: *Thread, op: bytecode.Call) !void {
                 const string_len = try unpackUnsignedLength(state, data[pos .. pos + item.size], config.endian);
                 pos += item.size;
                 if (pos + string_len > data.len) return state.failArgumentMessage("string.unpack", 2, "data string too short");
-                try values.append(state.allocator, .{ .string = try state.intern(data[pos .. pos + string_len]) });
+                try values.append(state.allocator, .{ .string = try state.strings.intern(data[pos .. pos + string_len]) });
                 pos += string_len;
             },
             .integer => {
@@ -922,7 +921,7 @@ fn asciiMap(state: *State, thread: *Thread, op: bytecode.Call, to_lower: bool) !
     var out = try state.allocator.alloc(u8, source.len);
     defer state.allocator.free(out);
     for (source, 0..) |source_byte, index| out[index] = if (to_lower) std.ascii.toLower(source_byte) else std.ascii.toUpper(source_byte);
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(out) }});
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(out) }});
 }
 
 fn findImpl(state: *State, thread: *Thread, op: bytecode.Call, positions: bool) !void {
@@ -958,7 +957,7 @@ fn findImpl(state: *State, thread: *Thread, op: bytecode.Call, positions: bool) 
             try state.returnValues(thread, op.base, op.return_count, values.items);
         } else {
             if (range.captures.count == 0) {
-                try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.intern(source[range.range.start..range.range.end]) }});
+                try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(source[range.range.start..range.range.end]) }});
                 return;
             }
             var values = std.ArrayList(Value).empty;
@@ -1044,7 +1043,7 @@ fn simplePatternFind(state: *State, source: []const u8, pattern: []const u8, sta
     }
     var candidate = start;
     while (candidate <= source.len) : (candidate += 1) {
-        try vm_mod.checkInterrupt(state);
+        try state.budget.checkInterrupt();
         if (try matchSimplePatternAt(state, source, pattern, candidate)) |matched| return .{ .range = .{ .start = candidate, .end = matched.end }, .captures = matched.captures };
     }
     return null;
@@ -1278,7 +1277,7 @@ fn matchPatternFrom(state: *State, source: []const u8, pattern: []const u8, sour
             var index = ends.items.len;
             while (index > 0) {
                 index -= 1;
-                try vm_mod.checkInterrupt(state);
+                try state.budget.checkInterrupt();
                 if (try matchPatternFrom(state, source, pattern, ends.items[index], next_index, depth + 1, captures)) |matched_end| return matched_end;
             }
             if (quantifier == '*') return matchPatternFrom(state, source, pattern, source_index, next_index, depth + 1, captures);
@@ -1287,7 +1286,7 @@ fn matchPatternFrom(state: *State, source: []const u8, pattern: []const u8, sour
         '-' => {
             var candidate = source_index;
             while (true) {
-                try vm_mod.checkInterrupt(state);
+                try state.budget.checkInterrupt();
                 if (try matchPatternFrom(state, source, pattern, candidate, next_index, depth + 1, captures)) |matched_end| return matched_end;
                 const item_end = (try matchPatternItem(state, source, atom, candidate, captures)) orelse return null;
                 if (item_end == candidate) return null;
@@ -1714,21 +1713,21 @@ fn invalidPackOption(state: *State, code: u8) runtime.RuntimeError {
     var message = std.ArrayList(u8).empty;
     defer message.deinit(state.allocator);
     runtime.appendFmt(state.allocator, &message, "invalid format option '{c}'", .{code}) catch return state.fail("invalid format option");
-    return state.fail(state.intern(message.items) catch return state.fail("invalid format option"));
+    return state.fail(state.strings.intern(message.items) catch return state.fail("invalid format option"));
 }
 
 fn packNextSizeOutOfLimits(state: *State, size: usize) runtime.RuntimeError {
     var message = std.ArrayList(u8).empty;
     defer message.deinit(state.allocator);
     runtime.appendFmt(state.allocator, &message, "({d}) out of limits [1,16]", .{size}) catch return state.fail("out of limits");
-    return state.fail(state.intern(message.items) catch return state.fail("out of limits"));
+    return state.fail(state.strings.intern(message.items) catch return state.fail("out of limits"));
 }
 
 fn packIntegerDoesNotFit(state: *State, size: usize) runtime.RuntimeError {
     var message = std.ArrayList(u8).empty;
     defer message.deinit(state.allocator);
     runtime.appendFmt(state.allocator, &message, "{d}-byte integer does not fit", .{size}) catch return state.fail("integer does not fit");
-    return state.fail(state.intern(message.items) catch return state.fail("integer does not fit"));
+    return state.fail(state.strings.intern(message.items) catch return state.fail("integer does not fit"));
 }
 
 fn addPackSize(state: *State, current: usize, add: usize) !usize {

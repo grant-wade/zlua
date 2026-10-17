@@ -26,18 +26,18 @@ pub fn throwStringWithLocation(self: *State, thread: *Thread, message_text: []co
     var level = requested_level;
     if (State.activeNativeCall(thread)) |call| {
         if (call.from_native) {
-            if (level == 1) return self.throwValue(.{ .string = try self.intern(message_text) });
+            if (level == 1) return self.throwValue(.{ .string = try self.strings.intern(message_text) });
             level -= 1;
         } else if (level >= 2 and call.outer_frame_count != null and call.outer_frame_count.? + 1 == call.frame_count) {
-            if (level == 2) return self.throwValue(.{ .string = try self.intern(message_text) });
+            if (level == 2) return self.throwValue(.{ .string = try self.strings.intern(message_text) });
             level -= 1;
         }
     }
-    const line = debug_mod.lineForErrorLevel(self, thread, level) orelse return self.throwValue(.{ .string = try self.intern(message_text) });
+    const line = debug_mod.lineForErrorLevel(self, thread, level) orelse return self.throwValue(.{ .string = try self.strings.intern(message_text) });
     const source = debug_mod.sourceForErrorLevel(self, thread, level) orelse "zlua";
     const message = try std.fmt.allocPrint(self.allocator, "{s}:{d}: {s}", .{ source, line, message_text });
     defer self.allocator.free(message);
-    return self.throwValue(.{ .string = try self.intern(message) });
+    return self.throwValue(.{ .string = try self.strings.intern(message) });
 }
 
 pub fn failRuntimeDetail(self: *State, thread: ?*Thread, detail: []const u8) RuntimeError {
@@ -45,7 +45,7 @@ pub fn failRuntimeDetail(self: *State, thread: ?*Thread, detail: []const u8) Run
     defer out.deinit(self.allocator);
     appendRuntimeErrorPrefix(self, &out, thread) catch return self.fail(detail);
     out.appendSlice(self.allocator, detail) catch return self.fail(detail);
-    return self.fail(self.intern(out.items) catch return self.fail(detail));
+    return self.fail(self.strings.intern(out.items) catch return self.fail(detail));
 }
 
 pub fn failDivisionByZero(self: *State, thread: *Thread, lhs: Value, rhs: Value, op: operators_mod.BinaryOp) RuntimeError {

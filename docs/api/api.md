@@ -63,6 +63,8 @@
 - [stdlib.msgpack](stdlib/msgpack.md)
 - [stdlib.csv](stdlib/csv.md)
 - [stdlib.fs](stdlib/fs.md)
+- [runtime.budget](runtime/budget.md)
+- [runtime.strings](runtime/strings.md)
 - [runtime.execute](runtime/execute.md)
 - [testing.process](testing/process.md)
 - [runtime.tests](runtime/tests.md)

@@ -189,7 +189,7 @@ fn decodeShortString(self: *State, lexeme: []const u8) ![]const u8 {
         }
     }
 
-    const bytes = try self.intern(out.items);
+    const bytes = try self.strings.intern(out.items);
     out.deinit(self.allocator);
     return bytes;
 }
@@ -208,9 +208,9 @@ fn decodeLongString(self: *State, lexeme: []const u8) ![]const u8 {
     if (std.mem.indexOfScalar(u8, content, '\r')) |_| {
         const normalized = try normalizeLongStringLineEnds(self, content);
         defer self.allocator.free(normalized);
-        return self.intern(normalized);
+        return self.strings.intern(normalized);
     }
-    return self.intern(content);
+    return self.strings.intern(content);
 }
 
 fn normalizeLongStringLineEnds(self: *State, content: []const u8) ![]const u8 {
@@ -307,7 +307,7 @@ fn failLoadDiagnostic(self: *State, source_name: ?[]const u8, source_text: []con
     else
         return self.fail(fallback);
     defer self.allocator.free(rendered);
-    return self.fail(self.intern(rendered) catch return self.fail(fallback));
+    return self.fail(self.strings.intern(rendered) catch return self.fail(fallback));
 }
 
 pub fn runtimeSourceName(name: []const u8) []const u8 {

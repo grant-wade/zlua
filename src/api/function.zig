@@ -10,7 +10,6 @@ const CallResult = errors.CallResult;
 const Ref = handle.Ref;
 const State = @import("state.zig").State;
 const entry_mod = @import("../runtime/entry.zig");
-const vm_mod = @import("../runtime/vm.zig");
 
 /// Rooted handle to a Lua function or loaded chunk.
 pub const Function = struct {
@@ -115,11 +114,11 @@ const CallBudget = struct {
 
     fn begin(state: *State, options: CallOptions) CallBudget {
         const max = options.max_instructions orelse return .{ .active = false, .previous = null };
-        return .{ .active = true, .previous = vm_mod.beginCallInstructionBudget(&state.raw_state, max) };
+        return .{ .active = true, .previous = state.raw_state.budget.beginCall(max) };
     }
 
     fn end(self: CallBudget, state: *State) void {
-        if (self.active) vm_mod.endCallInstructionBudget(&state.raw_state, self.previous);
+        if (self.active) state.raw_state.budget.endCall(self.previous);
     }
 };
 
