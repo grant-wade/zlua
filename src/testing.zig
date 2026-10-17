@@ -6,6 +6,7 @@ pub const expected_failures = @import("testing/expected_failures.zig");
 pub const metadata = @import("testing/metadata.zig");
 pub const normalizer = @import("testing/normalizer.zig");
 pub const official_suite = @import("testing/official_suite.zig");
+pub const parallel = @import("testing/parallel.zig");
 pub const process = @import("testing/process.zig");
 
 test {
@@ -17,5 +18,6 @@ test {
     _ = metadata;
     _ = normalizer;
     _ = official_suite;
+    _ = parallel;
     _ = process;
 }
