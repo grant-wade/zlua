@@ -118,14 +118,14 @@ pub fn setRootThreadArgs(self: *State, thread: *Thread, args: []const Value) !vo
     thread.frame_storage_bytes += owned_args.len * @sizeOf(Value);
 }
 
-pub fn decodeStringLiteral(self: *State, lexeme: []const u8) ![]const u8 {
+pub fn decodeStringLiteral(self: *State, lexeme: []const u8) !*const types.String {
     if (lexeme.len < 2) return self.strings.intern(lexeme);
     if (lexeme[0] == '\'' or lexeme[0] == '"') return decodeShortString(self, lexeme);
     if (lexeme[0] == '[') return decodeLongString(self, lexeme);
     return self.strings.intern(lexeme);
 }
 
-fn decodeShortString(self: *State, lexeme: []const u8) ![]const u8 {
+fn decodeShortString(self: *State, lexeme: []const u8) !*const types.String {
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(self.allocator);
 
@@ -198,7 +198,7 @@ fn decodeShortString(self: *State, lexeme: []const u8) ![]const u8 {
     return bytes;
 }
 
-fn decodeLongString(self: *State, lexeme: []const u8) ![]const u8 {
+fn decodeLongString(self: *State, lexeme: []const u8) !*const types.String {
     var level: usize = 0;
     while (1 + level < lexeme.len and lexeme[1 + level] == '=') level += 1;
     const content_start = level + 2;
@@ -311,7 +311,7 @@ fn failLoadDiagnostic(self: *State, source_name: ?[]const u8, source_text: []con
     else
         return self.fail(fallback);
     defer self.allocator.free(rendered);
-    return self.fail(self.strings.intern(rendered) catch return self.fail(fallback));
+    return self.failString(self.strings.intern(rendered) catch return self.fail(fallback));
 }
 
 pub fn runtimeSourceName(name: []const u8) []const u8 {

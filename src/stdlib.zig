@@ -206,7 +206,7 @@ fn setStaticField(state: *State, table_value: Value, comptime name: []const u8, 
 }
 
 fn putStaticGlobal(state: *State, comptime name: []const u8, value: Value) !void {
-    try state.putGlobal(static_strings.get(name), value);
+    try state.setGlobalString(static_strings.get(name), value);
 }
 
 pub fn openLibraries(state: *State, selection: LibrarySelection) !void {
@@ -758,8 +758,8 @@ test "startup keeps stdin bytes out of the string table" {
     try std.testing.expectEqual(hints.strings, state.string_allocations.items.len);
     try std.testing.expectEqual(hints.tables, state.table_allocations.items.len);
     try entry_mod.executeSourceChunk(&state, "first, second = io.read('a'), io.read('a')");
-    try std.testing.expectEqualStrings(stdin, state.getGlobal("first").string);
-    try std.testing.expectEqualStrings("", state.getGlobal("second").string);
+    try std.testing.expectEqualStrings(stdin, state.getGlobal("first").string.bytes());
+    try std.testing.expectEqualStrings("", state.getGlobal("second").string.bytes());
 }
 
 test "IO files share one PUC-layout metatable and method table" {
@@ -779,7 +779,7 @@ test "IO files share one PUC-layout metatable and method table" {
     try std.testing.expect(metatable.get(.{ .string = static_strings.get("__gc") }) == .native);
     try std.testing.expect(metatable.get(.{ .string = static_strings.get("__close") }) == .native);
     try std.testing.expect(metatable.get(.{ .string = static_strings.get("__tostring") }) == .native);
-    try std.testing.expectEqualStrings("FILE*", metatable.get(.{ .string = static_strings.get("__name") }).string);
+    try std.testing.expectEqualStrings("FILE*", metatable.get(.{ .string = static_strings.get("__name") }).string.bytes());
     const methods = metatable.get(.{ .string = static_strings.get("__index") }).table;
     try std.testing.expectEqual(@as(usize, 7), methods.entries.items.len);
     try std.testing.expect(methods.get(.{ .string = static_strings.get("read") }) == .native);

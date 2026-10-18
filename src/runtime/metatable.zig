@@ -12,7 +12,7 @@ const luaTypeName = value_mod.luaTypeName;
 const Table = types.Table;
 const Thread = types.Thread;
 
-pub fn valueToString(self: *State, thread: *Thread, value: Value) anyerror![]const u8 {
+pub fn valueToString(self: *State, thread: *Thread, value: Value) anyerror!*const types.String {
     if (try getMetaEvent(self, value, .__tostring)) |metamethod| {
         const result = try call_mod.callOneResult(self, thread, metamethod, &.{value});
         return switch (result) {
@@ -29,9 +29,14 @@ pub fn valueToString(self: *State, thread: *Thread, value: Value) anyerror![]con
         if (name == .string) {
             var named = std.ArrayList(u8).empty;
             defer named.deinit(self.allocator);
-            try appendNamedValue(self.allocator, &named, name.string, value);
+            try appendNamedValue(self.allocator, &named, name.string.bytes(), value);
             return self.strings.intern(named.items);
         }
+    }
+    if (value == .string) return value.string;
+    if (value == .integer or value == .number) {
+        var buffer: [value_mod.max_number_text_len]u8 = undefined;
+        return self.strings.intern(value_mod.formatNumber(&buffer, value));
     }
 
     var out = std.ArrayList(u8).empty;
@@ -64,7 +69,7 @@ pub fn getMetatableValue(self: *State, value: Value) !Value {
         .nil => self.nil_metatable orelse return .nil,
         else => return .nil,
     };
-    const locked = metatable.get(.{ .string = "__metatable" });
+    const locked = metatable.getLiteral("__metatable");
     if (locked != .nil) return locked;
     return .{ .table = metatable };
 }
@@ -72,7 +77,7 @@ pub fn getMetatableValue(self: *State, value: Value) !Value {
 pub fn setMetatableValue(self: *State, table_value: Value, metatable_value: Value) !void {
     const table = try self.expectTable(table_value);
     if (table.metatable) |metatable| {
-        if (metatable.get(.{ .string = "__metatable" }) != .nil) return self.failLibrary("cannot change a protected metatable");
+        if (metatable.getLiteral("__metatable") != .nil) return self.failLibrary("cannot change a protected metatable");
     }
     const metatable = switch (metatable_value) {
         .nil => null,
@@ -120,7 +125,7 @@ pub fn getMetamethod(self: *State, value: Value, name: []const u8) !?Value {
         .nil => self.nil_metatable orelse return null,
         else => return null,
     };
-    const metamethod = metatable.get(.{ .string = name });
+    const metamethod = metatable.getBytes(name);
     return if (metamethod == .nil) null else metamethod;
 }
 
@@ -153,7 +158,7 @@ pub fn nextFinalizerOrder(self: *State) u64 {
 
 pub fn luaTypeNameForError(self: *State, value: Value) []const u8 {
     if (getMetaEvent(self, value, .__name) catch null) |name| {
-        if (name == .string) return name.string;
+        if (name == .string) return name.string.bytes();
     }
     return luaTypeName(value);
 }

@@ -71,7 +71,7 @@ A `runtime.State` owns an entire Lua universe. Its contents fall into a few grou
 | Group | Contents |
 | --- | --- |
 | Environment | The global table and primitive metatables. |
-| Interning | Dynamic interned strings and their allocation index. |
+| Interning | The intern set. |
 | Heap objects | Tables, userdata, closures, upvalues, coroutines, loaded protos, and retained source buffers. |
 | Execution | Current thread, callback dispatch, instruction count, output buffers, and error state. |
 | Lifetime control | API roots, GC state, allocation totals, and host options. |
@@ -93,7 +93,7 @@ Startup is planned around the standard libraries you choose, so the state can si
   c. build their hash indexes without duplicate-key searches.
 5. The initial GC threshold is set after library setup.
 
-Common library names and fixed values live in `src/stdlib/static_strings.zig`. These are process-lifetime strings stored in the executable, so every state can reuse them without allocating or GC-tracking its own copies. `State.intern` returns the canonical static slice when one exists and falls back to the per-state interning table for everything else.
+Common library names and fixed values live in `src/stdlib/static_strings.zig`. These are process-lifetime `String` objects in read-only memory, shared by every state. Each state's intern set starts with them, and `state.strings.intern` returns the static string when one exists.
 
 Library setup avoids repeating object layouts in the same spirit. For example, file handles are `FILE*` userdata that all share one lazily created metatable.
 
@@ -117,20 +117,23 @@ For measurement, `State.initWithOptionsObserved` exposes the startup phases (sta
 | `failure.zig` | Runtime error messages with source locations. |
 | `gc.zig` | The collector as `State.gc` (`state.gc.collect()`, barriers, allocation accounting), with its own fields. |
 | `budget.zig` | Instruction counting, `max_instructions` and per-call budgets, and host interrupts as `State.budget`. |
-| `strings.zig` | String interning as `State.strings` (`state.strings.intern(...)`). |
+| `strings.zig` | String creation, interning, and `Builder` as `State.strings` (`state.strings.intern(...)`). |
 | `debug.zig`, `coroutine.zig` | Debug info, hooks, and tracebacks; coroutines. |
 
 ### Values and Heap Objects
 
-`runtime.types.Value` is a tagged union that holds Lua scalars, object pointers, native functions, and a few internal callable values. The heap objects it can point to are:
+`runtime.types.Value` is a 16-byte tagged union that holds Lua scalars, object pointers, native functions, and a few internal callable values. The heap objects it can point to are:
 
 | Object | Key data |
 | --- | --- |
+| `String` | Length, cached hash, interning flags, and GC state, followed by the bytes in the same allocation. |
 | `Closure` | Proto, Lua upvalues, lazily loaded constants, and debug-strip state. |
 | `Upvalue` | An open stack slot or a closed stored value. |
 | `Table` | Array part, hash entries and index, metatable, and GC flags. |
 | `Userdata` | Native pointer, type information, metatable, `__gc` registration, host finalizer, and deinit hook. |
 | `Thread` | Value stack, call frames, continuations, open upvalues, hooks, and coroutine status. |
+
+Strings of up to 40 bytes are always interned. Longer strings are not, and compute their hash on first use as a table key. String constants are interned at any length.
 
 Tables store positive integer keys in an array part and all other keys in hash entries backed by an index map. Don't rely on iteration order: it isn't a stable API, except where compatibility tests pin down Lua's behavior.
 
@@ -166,6 +169,8 @@ Several limits keep running code in check:
 ### Garbage Collection
 
 The collector never moves objects, so their addresses stay stable. It supports two modes: generational mode, the default, concentrates on recently allocated objects, while incremental mode spreads a full collection across VM safepoints and calls to `State.stepGc`.
+
+Each object type has a registry in the state, with old objects before young ones. Objects keep their mark, age, and generation in a header, and objects other than strings also keep their registry position.
 
 Collection starts from globals, embedding handles, active calls, and suspended coroutines and follows references from there. Write barriers keep those references valid when Lua or host code changes an object between steps. Thread stacks are the exception, since they have no per-register barrier. Instead, running threads are revisited at each atomic step, and an old thread is remembered for minor collections when it runs, suspends, or has a register written from another thread. Collections mark each frame's registers up to its pending call, much like Lua's stack top, and clear the dead registers above it. Only collections that start inside a debug hook, which can interrupt an instruction, mark whole stacks. In generational mode, a major collection ages its survivors at the atomic step, as Lua's `atomic2gen` does, so objects allocated while it sweeps stay young. A loaded chunk's prototypes are freed once none of its closures are marked; minor collections only consider chunks loaded since the previous collection. Prototypes are shared with snapshots, so string constants that become table keys or values are interned per state rather than referenced from prototype memory.
 
@@ -243,7 +248,9 @@ These rules hold across the codebase, and changes should preserve them:
 - `src/api.zig` is the stable Zig embedding boundary.
 - The runtime global table is the only runtime store for globals.
 - State-owned values that escape into host code must be rooted.
-- Static strings must have process lifetime and never enter state-owned deallocation paths.
+- Static strings have process lifetime, are never written, and never enter state-owned deallocation paths.
+- Every string of up to 40 bytes is interned.
+- A table entry with a nil value never outlives its key.
 - Standard-library startup changes must update capacity hints, the static-string catalog, and startup tests together.
 - Protected calls must restore stack, frame, result, and error state.
 - Zig API/runtime value conversion must preserve table identity and cycles.

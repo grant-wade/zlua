@@ -2,6 +2,7 @@ const std = @import("std");
 const compile = @import("../compile.zig");
 const errors = @import("../errors.zig");
 const stdlib = @import("../stdlib.zig");
+const static_strings = @import("../stdlib/static_strings.zig");
 const coroutine_mod = @import("coroutine.zig");
 const debug_mod = @import("debug.zig");
 const failure_mod = @import("failure.zig");
@@ -184,6 +185,13 @@ pub fn protectedCallContextWithErrors(self: *State, thread: *Thread) ProtectedCa
 }
 
 pub fn runProtectedCall(self: *State, thread: *Thread, context: ProtectedCallContext, callable: Value, args: []const Value) anyerror!ProtectedCallResult {
+    const saved_error = [_]Value{if (context.last_error) |payload| switch (payload) {
+        .lua_value => |value| value,
+        .diagnostic => .nil,
+    } else .nil};
+    var roots: types.ValueRoots = undefined;
+    self.pushValueRoots(&roots, &saved_error);
+    defer self.popValueRoots(&roots);
     try thread.ensureStack(self.allocator, context.absolute_base + 1 + args.len, callStackValueLimit(self, thread));
     thread.stack.items[context.absolute_base] = callable;
     for (args, 0..) |arg, index| thread.stack.items[context.absolute_base + 1 + index] = arg;
@@ -586,7 +594,7 @@ pub fn invokeValue(self: *State, thread: *Thread, resolved: bytecode.Call, depth
             for (0..resolved.arg_count) |index| {
                 if (index != 0) try io_mod.writeStdout(self, "\t");
                 const text = try metatable_mod.valueToString(self, thread, argValue(self, thread, resolved, @intCast(index)));
-                try io_mod.writeStdout(self, text);
+                try io_mod.writeStdout(self, text.bytes());
             }
             try io_mod.writeStdout(self, "\n");
             try io_mod.flushStdoutAfterPrint(self);
@@ -677,11 +685,11 @@ pub fn invokeValue(self: *State, thread: *Thread, resolved: bytecode.Call, depth
         .native_coroutine_close => try coroutine_mod.coroutineClose(self, thread, resolved),
         .native_coroutine_wrap => try coroutine_mod.coroutineWrap(self, thread, resolved),
         .gmatch_iterator => |state_table| {
-            if (state_table.get(.{ .string = "__zlua_lines_iterator" }) != .nil) {
+            if (state_table.getLiteral("__zlua_lines_iterator") != .nil) {
                 const values = try stdlib.io.linesNext(self, .{ .table = state_table });
                 defer if (values.len != 0) self.allocator.free(values);
                 try self.returnValues(thread, resolved.base, resolved.return_count, values);
-            } else if (state_table.get(.{ .string = "__zlua_fs_iterator" }) != .nil) {
+            } else if (state_table.getLiteral("__zlua_fs_iterator") != .nil) {
                 const values = try stdlib.fs.iteratorNext(self, .{ .table = state_table });
                 defer if (values.len != 0) self.allocator.free(values);
                 try self.returnValues(thread, resolved.base, resolved.return_count, values);
@@ -960,15 +968,19 @@ fn captureVarargs(self: *State, thread: *Thread, source_start: usize, count: usi
 fn namedVarargTable(self: *State, varargs: []const Value) !Value {
     const table_value = try self.newTableWithHints(@intCast(varargs.len), 1);
     const table = table_value.table;
-    try self.setTableRaw(table, .{ .string = try self.strings.intern("n") }, .{ .integer = @intCast(varargs.len) });
+    try self.setTableRaw(table, .{ .string = static_strings.get("n") }, .{ .integer = @intCast(varargs.len) });
     for (varargs, 0..) |value, index| {
         try self.setTableRaw(table, .{ .integer = @intCast(index + 1) }, value);
     }
     return table_value;
 }
 
+pub fn namedVarargField(varargs: []const Value, name: []const u8) Value {
+    return if (std.mem.eql(u8, name, "n")) .{ .integer = @intCast(varargs.len) } else .nil;
+}
+
 pub fn namedVarargRead(varargs: []const Value, key: Value) Value {
-    if (key == .string and std.mem.eql(u8, key.string, "n")) return .{ .integer = @intCast(varargs.len) };
+    if (key == .string and key.string == static_strings.get("n")) return .{ .integer = @intCast(varargs.len) };
     const normalized: Value = if (key == .number) .{ .integer = floatToInteger(key.number) orelse return .nil } else key;
     if (arrayIndex(normalized)) |index| {
         if (index <= varargs.len) return varargs[index - 1];
@@ -1021,7 +1033,7 @@ fn loadNamedVarargs(self: *State, thread: *Thread, frame: CallFrame, op: bytecod
 }
 
 fn namedVarargCount(self: *State, table: *Table) !usize {
-    const n_value = table.get(.{ .string = try self.strings.intern("n") });
+    const n_value = table.get(.{ .string = static_strings.get("n") });
     if (n_value != .integer or n_value.integer < 0 or n_value.integer >= bytecode.multret_count) {
         return self.fail("vararg table has no proper 'n'");
     }
@@ -1030,7 +1042,7 @@ fn namedVarargCount(self: *State, table: *Table) !usize {
 
 fn selectValues(self: *State, thread: *Thread, op: bytecode.Call) !void {
     const first = argValue(self, thread, op, 0);
-    if (first == .string and std.mem.eql(u8, first.string, "#")) {
+    if (first == .string and first.string.eqlBytes("#")) {
         try self.returnValues(thread, op.base, op.return_count, &.{.{ .integer = @intCast(op.arg_count - 1) }});
         return;
     }
@@ -1055,7 +1067,7 @@ fn assertValues(self: *State, thread: *Thread, op: bytecode.Call) !void {
 
     const condition = argValue(self, thread, op, 0);
     if (!truthy(condition)) {
-        const message = if (op.arg_count >= 2) argValue(self, thread, op, 1) else Value{ .string = "assertion failed!" };
+        const message = if (op.arg_count >= 2) argValue(self, thread, op, 1) else Value{ .string = static_strings.get("assertion failed!") };
         if (message == .string) return failure_mod.throwStringWithLocation(self, thread, message.string, 1);
         return self.throwValue(message);
     }

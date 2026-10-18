@@ -7,6 +7,7 @@ const metatable_mod = @import("../runtime/metatable.zig");
 const State = runtime.State;
 const Value = runtime.Value;
 const Table = runtime.Table;
+const String = @import("../runtime/types.zig").String;
 
 const max_zerde_table_len: usize = @min(std.math.maxInt(usize), std.math.maxInt(i64));
 
@@ -29,7 +30,7 @@ pub fn nullValue(state: *State) !Value {
 
 pub fn inputBytes(state: *State, value: Value, function_name: []const u8) ![]const u8 {
     return switch (value) {
-        .string => |string| string,
+        .string => |string| string.bytes(),
         else => if (io.checkedFile(state, value) != null) {
             const file = io.fileOf(value).?;
             if (file.closed) return state.failArgumentMessage(function_name, 1, "closed file");
@@ -52,7 +53,7 @@ pub const LuaSink = struct {
         kind: enum { seq, object },
         table: *Table,
         next_index: i64 = 1,
-        field_name: ?[]const u8 = null,
+        field_name: ?*const String = null,
     };
 
     state: *State,
@@ -191,7 +192,7 @@ pub fn LuaSource(comptime Encoder: type) type {
                     if (!std.math.isFinite(number)) return self.fail("non-finite number");
                     try self.encoder.emitFloat(number);
                 },
-                .string => |string| try self.encoder.emitString(string),
+                .string => |string| try self.encoder.emitString(string.bytes()),
                 .table => |table| try self.emitTable(table),
                 else => return self.fail("unsupported value type"),
             }
@@ -224,7 +225,7 @@ pub fn LuaSource(comptime Encoder: type) type {
                     for (table.entries.items) |entry| {
                         if (entry.value == .nil) continue;
                         const name = switch (entry.key) {
-                            .string => |string| string,
+                            .string => |string| string.bytes(),
                             else => return self.fail("object keys must be strings"),
                         };
                         try self.encoder.emitFieldName(name);
@@ -264,7 +265,7 @@ pub fn LuaSource(comptime Encoder: type) type {
             var out: std.ArrayList(u8) = .empty;
             defer out.deinit(self.state.allocator);
             runtime.appendFmt(self.state.allocator, &out, "{s}: {s}", .{ self.operation, message }) catch return self.state.fail(message);
-            return self.state.fail(self.state.strings.intern(out.items) catch message);
+            return self.state.fail(out.items);
         }
     };
 }

@@ -41,7 +41,7 @@ pub fn retireHostThread(self: *State, thread: *Thread) void {
     self.gc.syncThreadStorage(thread);
     upvalue_mod.closeUpvalues(self, thread, 0);
     if (!thread.exposed) {
-        const index = self.object_allocation_index.get(@intFromPtr(thread)).?;
+        const index = thread.gc.registry_index;
         self.gc.forgetThread(thread);
         self.gc.removeRegistryItem("thread_allocations", index);
         self.gc.noteAllocationFreed(@sizeOf(Thread) + thread.gc.storage_bytes);
@@ -50,7 +50,6 @@ pub fn retireHostThread(self: *State, thread: *Thread) void {
     }
     // Drop storage borrowed from the host stack, keeping the observable thread and its hook.
     const retained = Thread{
-        .marked = thread.marked,
         .gc = thread.gc,
         .exposed = true,
         .is_main = true,

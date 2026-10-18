@@ -4,9 +4,23 @@ const reflection = @import("../reflection.zig");
 const types = @import("types.zig");
 const State = @import("state.zig").State;
 const Proto = @import("../compile/proto.zig").Proto;
+const strings_mod = @import("strings.zig");
+const AddressIndex = @import("address_index.zig").AddressIndex;
 
 const Kind = enum { table, closure, upvalue, thread, userdata, string, source, proto };
-const Allocation = struct { kind: Kind, len: usize = 0 };
+/// Packed as the kind in the low three bits and the length above them.
+const Allocation = struct {
+    kind: Kind,
+    len: usize = 0,
+
+    fn encode(self: Allocation) usize {
+        return self.len << 3 | @intFromEnum(self.kind);
+    }
+
+    fn decode(value: usize) Allocation {
+        return .{ .kind = @enumFromInt(value & 7), .len = value >> 3 };
+    }
+};
 const Header = struct {
     journal: *Journal,
     kind: Kind,
@@ -145,7 +159,7 @@ pub const Journal = struct {
     userdata: []Record(types.Userdata) = &.{},
     dirty: std.ArrayList(*Header) = .empty,
     eager: std.ArrayList(*Record(types.Userdata)) = .empty,
-    new_objects: std.HashMap(usize, Allocation, types.AddressContext, std.hash_map.default_max_load_percentage),
+    new_objects: AddressIndex = .empty,
     registries_detached: bool = false,
     output_detached: bool = false,
     /// Logical restored records, independent of heap size.
@@ -154,7 +168,7 @@ pub const Journal = struct {
     pub fn create(state: *State, pristine: *const State) !*Journal {
         const a = state.allocator;
         const self = try a.create(Journal);
-        self.* = .{ .allocator = a, .saved = state.*, .new_objects = std.HashMap(usize, Allocation, types.AddressContext, std.hash_map.default_max_load_percentage).init(a) };
+        self.* = .{ .allocator = a, .saved = state.* };
         errdefer self.freeRecords();
         var count: usize = 0;
         inline for (object_types, object_lists, record_lists) |T, list, records| {
@@ -190,23 +204,21 @@ pub const Journal = struct {
 
     pub fn prepareAllocation(self: *Journal, state: *State) !void {
         try self.detachRegistries(state);
-        try self.new_objects.ensureUnusedCapacity(1);
+        try self.new_objects.ensureUnusedCapacity(self.allocator, 1);
     }
 
     pub fn allocated(self: *Journal, comptime field: []const u8, item: anytype) void {
         const kind: Kind = comptime if (std.mem.eql(u8, field, "string_allocations")) .string else if (std.mem.eql(u8, field, "source_allocations")) .source else if (std.mem.eql(u8, field, "proto_allocations")) .proto else kindOf(@typeInfo(@TypeOf(item)).pointer.child);
         const address = switch (kind) {
-            .string => @intFromPtr(item.bytes.ptr),
             .source => @intFromPtr(item.ptr),
             else => @intFromPtr(item),
         };
         const len = switch (kind) {
-            .string => item.bytes.len,
             .source => item.len,
             else => 0,
         };
-        if ((kind == .string or kind == .source) and len == 0) return;
-        self.new_objects.putAssumeCapacity(address, .{ .kind = kind, .len = len });
+        if (kind == .source and len == 0) return;
+        self.new_objects.putAssumeCapacity(address, (Allocation{ .kind = kind, .len = len }).encode());
     }
 
     pub fn isNew(self: *const Journal, address: usize) bool {
@@ -221,21 +233,12 @@ pub const Journal = struct {
         if (self.registries_detached) return;
         var replacement = state.*;
         inline for (registries) |name| @field(replacement, name) = .empty;
-        replacement.strings.map = @import("strings.zig").InternMap.init(self.allocator);
-        replacement.string_allocation_index = .empty;
-        replacement.table_allocation_index = .empty;
-        replacement.object_allocation_index = .empty;
+        replacement.strings.set = .{};
         errdefer freeRegistries(&replacement);
         inline for (registries) |name| @field(replacement, name) = try duplicateList(self.allocator, @field(state, name));
-        replacement.strings.map = try state.strings.map.clone();
-        replacement.string_allocation_index = try state.string_allocation_index.clone(self.allocator);
-        replacement.table_allocation_index = try state.table_allocation_index.clone(self.allocator);
-        replacement.object_allocation_index = try state.object_allocation_index.clone(self.allocator);
+        replacement.strings.set = try state.strings.set.clone(self.allocator);
         inline for (registries) |name| @field(state, name) = @field(replacement, name);
-        state.strings.map = replacement.strings.map;
-        state.string_allocation_index = replacement.string_allocation_index;
-        state.table_allocation_index = replacement.table_allocation_index;
-        state.object_allocation_index = replacement.object_allocation_index;
+        state.strings.set = replacement.strings.set;
         self.registries_detached = true;
     }
 
@@ -257,9 +260,9 @@ pub const Journal = struct {
         }
     }
 
-    pub fn keepString(self: *Journal, bytes: []const u8) bool {
-        if (self.saved.string_allocation_index.contains(@intFromPtr(bytes.ptr))) return true;
-        self.freed(@intFromPtr(bytes.ptr));
+    pub fn keepString(self: *Journal, string: *const types.String) bool {
+        if (!self.isNew(@intFromPtr(string))) return true;
+        self.freed(@intFromPtr(string));
         return false;
     }
 
@@ -283,10 +286,10 @@ pub const Journal = struct {
         state.gc.finalizers.clearRetainingCapacity();
         state.discarding = true;
         self.last_restored_objects = self.dirty.items.len + self.new_objects.count();
-        var objects = self.new_objects.iterator();
-        while (objects.next()) |entry| destroyAllocation(self.allocator, entry.key_ptr.*, entry.value_ptr.*);
-        self.new_objects.deinit();
-        self.new_objects = std.HashMap(usize, Allocation, types.AddressContext, std.hash_map.default_max_load_percentage).init(self.allocator);
+        for (self.new_objects.keys, self.new_objects.values) |address, value| {
+            if (address != 0) destroyAllocation(self.allocator, address, Allocation.decode(value));
+        }
+        self.new_objects.deinit(self.allocator);
         for (self.dirty.items) |h| switch (h.kind) {
             inline .table, .closure, .upvalue, .thread, .userdata => |kind| {
                 const T = typeOf(kind);
@@ -322,6 +325,7 @@ pub const Journal = struct {
         const gc_weak = state.gc.weak;
         const gc_tables = state.gc.tables;
         const gc_finalizers = state.gc.finalizers;
+        const string_scratch = state.strings.scratch;
         const epoch = state.gc.epoch + 1;
         const generation = state.gc.generation + 1;
         state.* = self.saved;
@@ -330,6 +334,7 @@ pub const Journal = struct {
         state.gc.weak = gc_weak;
         state.gc.tables = gc_tables;
         state.gc.finalizers = gc_finalizers;
+        state.strings.scratch = string_scratch;
         state.gc.epoch = epoch;
         state.gc.generation = generation;
         state.api_roots = roots;
@@ -357,9 +362,7 @@ pub const Journal = struct {
             }
         };
         if (self.registries_detached) {
-            for (self.saved.string_allocations.items) |allocation| {
-                if (!state.string_allocation_index.contains(@intFromPtr(allocation.bytes.ptr))) self.allocator.free(allocation.bytes);
-            }
+            freeRetainedStrings(self.allocator, &self.saved, state);
             freeRegistries(&self.saved);
         }
         if (self.output_detached) {
@@ -375,7 +378,7 @@ pub const Journal = struct {
         self.eager.deinit(a);
         inline for (record_lists) |records| a.free(@field(self, records));
         self.dirty.deinit(a);
-        self.new_objects.deinit();
+        self.new_objects.deinit(a);
         a.destroy(self);
     }
 };
@@ -391,10 +394,18 @@ pub fn retainCollected(object: anytype) bool {
 
 fn freeRegistries(state: *State) void {
     inline for (registries) |name| @field(state, name).deinit(state.allocator);
-    state.strings.map.deinit();
-    state.string_allocation_index.deinit(state.allocator);
-    state.table_allocation_index.deinit(state.allocator);
-    state.object_allocation_index.deinit(state.allocator);
+    state.strings.set.deinit(state.allocator);
+}
+
+/// Frees baseline strings that were collected since the snapshot.
+fn freeRetainedStrings(a: std.mem.Allocator, saved: *const State, state: *const State) void {
+    var live = std.AutoHashMap(*const types.String, void).init(a);
+    defer live.deinit();
+    live.ensureTotalCapacity(@intCast(state.string_allocations.items.len)) catch return;
+    for (state.string_allocations.items) |string| live.putAssumeCapacity(string, {});
+    for (saved.string_allocations.items) |string| {
+        if (!live.contains(string)) strings_mod.destroy(a, string);
+    }
 }
 fn freeStorage(comptime T: type, a: std.mem.Allocator, object: *T) void {
     if (T == types.Table or T == types.Thread) {
@@ -408,7 +419,8 @@ fn freeStorage(comptime T: type, a: std.mem.Allocator, object: *T) void {
 }
 fn destroyAllocation(a: std.mem.Allocator, address: usize, allocation: Allocation) void {
     switch (allocation.kind) {
-        .string, .source => a.free(@as([*]const u8, @ptrFromInt(address))[0..allocation.len]),
+        .string => strings_mod.destroy(a, @as(*const types.String, @ptrFromInt(address))),
+        .source => a.free(@as([*]const u8, @ptrFromInt(address))[0..allocation.len]),
         .proto => {
             const p: *Proto = @ptrFromInt(address);
             p.deinit();

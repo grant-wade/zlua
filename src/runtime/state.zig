@@ -66,8 +66,6 @@ pub const Upvalue = types.Upvalue;
 pub const Table = types.Table;
 pub const Userdata = types.Userdata;
 pub const Thread = types.Thread;
-const StringAllocation = types.StringAllocation;
-const PointerAllocationIndex = types.PointerAllocationIndex;
 pub const GcMode = types.GcMode;
 pub const GcParam = types.GcParam;
 
@@ -146,12 +144,9 @@ pub const State = struct {
     discarding: bool = false,
     allocator: std.mem.Allocator,
     global_table: ?*Table = null,
-    strings: strings_mod.Strings,
-    string_allocations: std.ArrayList(StringAllocation) = .empty,
-    string_allocation_index: PointerAllocationIndex = .empty,
+    strings: strings_mod.Strings = .{},
+    string_allocations: std.ArrayList(*types.String) = .empty,
     table_allocations: std.ArrayList(*Table) = .empty,
-    table_allocation_index: types.ObjectAllocationIndex = .empty,
-    object_allocation_index: types.ObjectAllocationIndex = .empty,
     table_metatable_head: ?*Table = null,
     table_finalizer_head: ?*Table = null,
     table_finalizer_serial: u64 = 0,
@@ -229,18 +224,15 @@ pub const State = struct {
     ) !State {
         var state = State{
             .allocator = allocator,
-            .strings = .{ .map = strings_mod.InternMap.init(allocator) },
             .options = options,
             .warnings_on = options.warnings,
         };
         errdefer state.deinit();
 
         const hints = stdlib.initHints(options.stdlib);
-        try state.strings.map.ensureTotalCapacity(@intCast(hints.strings));
+        state.strings.set = try strings_mod.InternSet.initStatic(allocator, hints.strings);
         try state.string_allocations.ensureTotalCapacity(allocator, hints.strings);
-        try state.string_allocation_index.ensureTotalCapacity(allocator, hints.strings);
         try state.table_allocations.ensureTotalCapacity(allocator, hints.tables);
-        try state.table_allocation_index.ensureTotalCapacity(allocator, hints.tables);
         observe(observer_context, .state, &state);
 
         try stdlib.installGlobalTableWithHint(&state, hints.globals);
@@ -363,10 +355,7 @@ pub const State = struct {
         if (self.budget.interrupt) |control| self.allocator.destroy(control);
         self.stdout.deinit(self.allocator);
         self.stderr.deinit(self.allocator);
-        self.strings.map.deinit();
-        self.string_allocation_index.deinit(self.allocator);
-        self.table_allocation_index.deinit(self.allocator);
-        self.object_allocation_index.deinit(self.allocator);
+        self.strings.deinit(self.allocator);
         self.gc.work.deinit(self.allocator);
         self.gc.remembered.deinit(self.allocator);
         self.gc.weak.deinit(self.allocator);
@@ -387,7 +376,7 @@ pub const State = struct {
             self.allocator.destroy(proto);
         }
         for (self.source_allocations.items) |source| self.allocator.free(source);
-        for (self.string_allocations.items) |allocation| self.allocator.free(allocation.bytes);
+        for (self.string_allocations.items) |string| strings_mod.destroy(self.allocator, string);
         self.api_roots.deinit(self.allocator);
         self.source_allocations.deinit(self.allocator);
         self.proto_allocations.deinit(self.allocator);
@@ -414,14 +403,17 @@ pub const State = struct {
         if (table_value.table.get(key) != .nil) {
             const message = try std.fmt.allocPrint(self.allocator, "global '{s}' already defined", .{name});
             defer self.allocator.free(message);
-            return self.fail(try self.strings.intern(message));
+            return self.failString(try self.strings.intern(message));
         }
         try index_mod.setTable(self, table_value, key, vm_mod.get(self, thread, value_register));
     }
 
     pub fn setGlobal(self: *State, name: []const u8, value: Value) !void {
+        return self.setGlobalString(try self.strings.intern(name), value);
+    }
+
+    pub fn setGlobalString(self: *State, key: *const types.String, value: Value) !void {
         const table = self.global_table orelse return error.RuntimeError;
-        const key = try self.strings.intern(name);
         try self.setTableRaw(table, .{ .string = key }, value);
         self.gc.writeTableBarrier(table, .{ .string = key }, value);
         self.gc.markValue(value);
@@ -429,7 +421,7 @@ pub const State = struct {
 
     pub fn getGlobalValue(self: *State, name: []const u8) Value {
         const table = self.global_table orelse return .nil;
-        return table.get(.{ .string = name });
+        return table.getBytes(name);
     }
 
     pub fn getGlobal(self: *State, name: []const u8) Value {
@@ -517,11 +509,6 @@ pub const State = struct {
         table.* = try Table.init(self.allocator, array_hint, hash_hint);
         errdefer table.deinit(self.allocator);
         try self.registerAllocation("table_allocations", table);
-        errdefer {
-            const removed = self.table_allocations.pop().?;
-            if (self.rollback) |journal| journal.freed(@intFromPtr(removed));
-        }
-        try self.table_allocation_index.put(self.allocator, @intFromPtr(table), self.table_allocations.items.len - 1);
         self.gc.noteAllocation(gc_mod.tableGcBytes(table));
         return .{ .table = table };
     }
@@ -591,7 +578,7 @@ pub const State = struct {
 
     pub fn expectString(self: *State, value: Value) ![]const u8 {
         return switch (value) {
-            .string => |string| string,
+            .string => |string| string.bytes(),
             else => self.fail("string expected"),
         };
     }
@@ -606,20 +593,19 @@ pub const State = struct {
     }
 
     pub fn fail(self: *State, message: []const u8) RuntimeError {
-        self.last_error = .{ .diagnostic = message };
+        return self.failString(try self.strings.intern(message));
+    }
+
+    pub fn failString(self: *State, message: *const types.String) RuntimeError {
+        self.last_error = .{ .lua_value = .{ .string = message } };
         self.error_handled = false;
         return error.RuntimeError;
     }
 
     /// Like `luaL_argerror`; `index` is 1-based and `function_name` is the fallback name.
     fn failArgument(self: *State, function_name: []const u8, index: u32, detail: errors.ArgumentErrorDetail) RuntimeError {
-        self.error_handled = false;
-        const rendered = self.renderArgumentError(function_name, index, detail) catch {
-            self.last_error = .{ .argument = .{ .function_name = function_name, .index = index, .detail = detail } };
-            return error.RuntimeError;
-        };
-        self.last_error = .{ .diagnostic = rendered };
-        return error.RuntimeError;
+        const rendered = self.renderArgumentError(function_name, index, detail) catch return error.OutOfMemory;
+        return self.failString(rendered);
     }
 
     pub fn failArgumentMessage(self: *State, function_name: []const u8, index: u32, message: []const u8) RuntimeError {
@@ -640,7 +626,7 @@ pub const State = struct {
         self.appendLibraryWhere(&out) catch return self.fail(message);
         if (out.items.len == 0) return self.fail(message);
         out.appendSlice(self.allocator, message) catch return self.fail(message);
-        return self.fail(self.strings.intern(out.items) catch return self.fail(message));
+        return self.failString(self.strings.intern(out.items) catch return self.fail(message));
     }
 
     /// Prefixes a string error with `luaL_where(L, 1)`, as `coroutine.wrap` does.
@@ -650,16 +636,15 @@ pub const State = struct {
         defer out.deinit(self.allocator);
         try self.appendLibraryWhere(&out);
         if (out.items.len == 0) return value;
-        try out.appendSlice(self.allocator, value.string);
+        try out.appendSlice(self.allocator, value.string.bytes());
         return .{ .string = try self.strings.intern(out.items) };
     }
 
     pub fn failLibraryFmt(self: *State, comptime fmt: []const u8, args: anytype) RuntimeError {
         var out = std.ArrayList(u8).empty;
         defer out.deinit(self.allocator);
-        appendFmt(self.allocator, &out, fmt, args) catch return self.fail(fmt);
-        const message = self.strings.intern(out.items) catch return self.fail(fmt);
-        return self.failLibrary(message);
+        appendFmt(self.allocator, &out, fmt, args) catch return error.OutOfMemory;
+        return self.failLibrary(out.items);
     }
 
     pub fn activeNativeCall(thread: *Thread) ?types.NativeCall {
@@ -723,13 +708,13 @@ pub const State = struct {
             try out.appendSlice(self.allocator, key);
             return true;
         }
-        const package = globals.get(.{ .string = "package" });
-        const loaded = if (package == .table) package.table.get(.{ .string = "loaded" }) else Value.nil;
+        const package = globals.getLiteral("package");
+        const loaded = if (package == .table) package.table.getLiteral("loaded") else Value.nil;
         const modules = if (loaded == .table) loaded.table else globals;
         for (modules.entries.items) |entry| {
             if (entry.key != .string or entry.value != .table or entry.value.table == globals) continue;
             if (findFunctionField(entry.value.table, callee)) |key| {
-                try appendFmt(self.allocator, out, "{s}.{s}", .{ entry.key.string, key });
+                try appendFmt(self.allocator, out, "{s}.{s}", .{ entry.key.string.bytes(), key });
                 return true;
             }
         }
@@ -738,12 +723,12 @@ pub const State = struct {
 
     fn findFunctionField(table: *Table, callee: Value) ?[]const u8 {
         for (table.entries.items) |entry| {
-            if (entry.key == .string and valuesEqual(entry.value, callee)) return entry.key.string;
+            if (entry.key == .string and valuesEqual(entry.value, callee)) return entry.key.string.bytes();
         }
         return null;
     }
 
-    fn renderArgumentError(self: *State, function_name: []const u8, raw_index: u32, detail: errors.ArgumentErrorDetail) ![]const u8 {
+    fn renderArgumentError(self: *State, function_name: []const u8, raw_index: u32, detail: errors.ArgumentErrorDetail) !*const types.String {
         var out = std.ArrayList(u8).empty;
         defer out.deinit(self.allocator);
         const thread = self.current_thread;
@@ -808,16 +793,21 @@ pub const State = struct {
     pub fn expectArgumentString(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) ![]const u8 {
         const value = argValue(self, thread, op, index);
         return switch (value) {
-            .string => |string| string,
+            .string => |string| string.bytes(),
             .integer, .number => {
                 var buffer: [value_mod.max_number_text_len]u8 = undefined;
                 const string = try self.strings.intern(value_mod.formatNumber(&buffer, value));
                 const frame = thread.frames.items[thread.frames.items.len - 1];
                 thread.stack.items[frame.base + op.base + 1 + index] = .{ .string = string };
-                return string;
+                return string.bytes();
             },
             else => self.failArgumentType(function_name, index + 1, "string", value),
         };
+    }
+
+    pub fn expectArgumentStringObject(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) !*const types.String {
+        _ = try self.expectArgumentString(thread, op, function_name, index);
+        return argValue(self, thread, op, index).string;
     }
 
     pub fn optionalArgumentString(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) !?[]const u8 {

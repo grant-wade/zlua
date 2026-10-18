@@ -54,10 +54,10 @@ fn writeOptions(state: *State, thread: *Thread, op: bytecode.Call) !zerde.toml.W
         else => return state.failArgumentType("toml.write", 2, "table", value),
     };
 
-    const layout = table.get(.{ .string = try state.strings.intern("layout") });
+    const layout = table.getLiteral("layout");
     if (layout != .nil) {
         const string = switch (layout) {
-            .string => |string| string,
+            .string => |string| string.bytes(),
             else => return state.failArgumentType("toml.write", 2, "table with string layout", layout),
         };
         if (std.mem.eql(u8, string, "inline_tables") or std.mem.eql(u8, string, "inline")) {
@@ -79,5 +79,5 @@ fn failTomlError(state: *State, operation: []const u8, err: anyerror) !void {
     var message: std.ArrayList(u8) = .empty;
     defer message.deinit(state.allocator);
     try runtime.appendFmt(state.allocator, &message, "{s}: {s}", .{ operation, @errorName(err) });
-    return state.fail(try state.strings.intern(message.items));
+    return state.fail(message.items);
 }

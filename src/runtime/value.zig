@@ -2,6 +2,7 @@ const std = @import("std");
 const compile = @import("../compile.zig");
 const types = @import("types.zig");
 const number_format = @import("number_format.zig");
+const static_strings = @import("../stdlib/static_strings.zig");
 const table_index = @import("table_index.zig");
 
 const bytecode = compile.bytecode;
@@ -25,7 +26,7 @@ pub fn valuesEqual(lhs: Value, rhs: Value) bool {
             .number => |other| value == other,
             else => false,
         },
-        .string => |value| rhs == .string and std.mem.eql(u8, value, rhs.string),
+        .string => |value| rhs == .string and value.eql(rhs.string),
         .table => |value| rhs == .table and value == rhs.table,
         .userdata => |value| rhs == .userdata and value == rhs.userdata,
         .closure => |value| rhs == .closure and value == rhs.closure,
@@ -69,7 +70,7 @@ pub fn hashValue(value: Value) u64 {
     return switch (value) {
         .integer => |payload| hashInteger(payload),
         .number => |payload| if (floatToInteger(payload)) |integer| hashInteger(integer) else mix(@as(u64, @bitCast(payload)) ^ 0x3c6ef372fe94f82b),
-        .string => |payload| hashString(payload),
+        .string => |payload| payload.tableHash(),
         .table, .gmatch_iterator => |payload| hashPointer(5, payload),
         .userdata => |payload| hashPointer(6, payload),
         .closure => |payload| hashPointer(7, payload),
@@ -115,7 +116,7 @@ pub fn truthy(value: Value) bool {
 pub fn toInteger(value: Value) ?i64 {
     return switch (value) {
         .integer => |integer| integer,
-        .string => |string| parseIntegerStrict(string),
+        .string => |string| parseIntegerStrict(string.bytes()),
         else => null,
     };
 }
@@ -125,7 +126,7 @@ pub fn coerceToInteger(value: Value) ?i64 {
     return switch (value) {
         .integer => |integer| integer,
         .number => |number| floatToInteger(number),
-        .string => |string| parseIntegerStrict(string) orelse if (parseLuaNumber(string)) |number| floatToInteger(number) else |_| null,
+        .string => |string| parseIntegerStrict(string.bytes()) orelse if (parseLuaNumber(string.bytes())) |number| floatToInteger(number) else |_| null,
         else => null,
     };
 }
@@ -134,7 +135,7 @@ pub fn toNumber(value: Value) !f64 {
     return switch (value) {
         .integer => |integer| @floatFromInt(integer),
         .number => |number| number,
-        .string => |string| parseLuaNumber(string),
+        .string => |string| parseLuaNumber(string.bytes()),
         else => error.RuntimeError,
     };
 }
@@ -279,9 +280,9 @@ pub fn prepareProtoTree(proto: *proto_mod.Proto) !void {
         value.* = switch (constant) {
             .nil => .nil,
             .boolean => |boolean| .{ .boolean = boolean },
-            .integer => |lexeme| parseIntegerLiteral(lexeme) catch .{ .string = "" },
-            .number => |lexeme| if (parseLuaNumber(lexeme)) |number| .{ .number = number } else |_| .{ .string = "" },
-            .string => .{ .string = "" },
+            .integer => |lexeme| parseIntegerLiteral(lexeme) catch .{ .string = static_strings.get("") },
+            .number => |lexeme| if (parseLuaNumber(lexeme)) |number| .{ .number = number } else |_| .{ .string = static_strings.get("") },
+            .string => .{ .string = static_strings.get("") },
         };
     }
     proto.constant_values = values;
@@ -479,7 +480,7 @@ pub fn appendValue(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value:
             var buffer: [max_number_text_len]u8 = undefined;
             try out.appendSlice(allocator, formatNumber(&buffer, value));
         },
-        .string => |string| try out.appendSlice(allocator, string),
+        .string => |string| try out.appendSlice(allocator, string.bytes()),
         .table => |table| try appendFmt(allocator, out, "table: 0x{x}", .{@intFromPtr(table)}),
         .userdata => |userdata| try appendFmt(allocator, out, "userdata: 0x{x}", .{@intFromPtr(userdata)}),
         .closure => |closure| try appendFmt(allocator, out, "function: 0x{x}", .{@intFromPtr(closure)}),

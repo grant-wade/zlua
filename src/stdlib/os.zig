@@ -261,7 +261,7 @@ fn tableToTime(state: *State, value: Value) !i64 {
     const hour = try dateField(state, table, "hour", 12, 0);
     const min = try dateField(state, table, "min", 0, 0);
     const sec = try dateField(state, table, "sec", 0, 0);
-    const isdst_value = table.get(.{ .string = "isdst" });
+    const isdst_value = table.getLiteral("isdst");
     const is_dst: ?bool = if (isdst_value == .nil) null else runtime.truthy(isdst_value);
 
     const months = year * 12 + (month - 1);
@@ -276,7 +276,7 @@ fn tableToTime(state: *State, value: Value) !i64 {
 }
 
 fn dateField(state: *State, table: *runtime.Table, comptime name: []const u8, default: ?i64, comptime delta: i64) !i64 {
-    const value = table.get(.{ .string = name });
+    const value = table.getLiteral(name);
     const integer = runtime.coerceToInteger(value) orelse {
         if (value != .nil) return state.failLibrary("field '" ++ name ++ "' is not an integer");
         return default orelse state.failLibrary("field '" ++ name ++ "' missing in date table");
@@ -324,7 +324,7 @@ fn formatDate(state: *State, out: *std.ArrayList(u8), format: []const u8, parts:
 fn invalidConversion(state: *State, conversion: []const u8) anyerror {
     const message = try std.fmt.allocPrint(state.allocator, "invalid conversion specifier '%{s}'", .{conversion});
     defer state.allocator.free(message);
-    return state.failArgumentMessage("os.date", 1, try state.strings.intern(message));
+    return state.failArgumentMessage("os.date", 1, message);
 }
 
 fn appendConversion(state: *State, out: *std.ArrayList(u8), conversion: u8, parts: DateParts) anyerror!void {

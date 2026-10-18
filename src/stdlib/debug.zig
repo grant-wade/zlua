@@ -12,6 +12,7 @@ const bytecode = compile.bytecode;
 const State = runtime.State;
 const Thread = runtime.Thread;
 const Value = runtime.Value;
+const String = runtime.String;
 
 pub fn getinfo(state: *State, thread: *Thread, op: bytecode.Call) !void {
     var info_thread = thread;
@@ -123,7 +124,7 @@ fn validateGetinfoOptions(state: *State, options: []const u8, function_name: []c
     };
 }
 
-fn shortSource(state: *State, source_name: []const u8) ![]const u8 {
+fn shortSource(state: *State, source_name: []const u8) !*const String {
     if (std.mem.eql(u8, source_name, "[C]")) return state.strings.intern(source_name);
     if (std.mem.eql(u8, source_name, "zlua")) return state.strings.intern(source_name);
     if (std.mem.eql(u8, source_name, "?")) return state.strings.intern(source_name);
@@ -400,7 +401,7 @@ pub fn debugPrompt(state: *State, thread: *Thread, op: bytecode.Call) !void {
 }
 
 fn writeDebugError(state: *State, thread: *Thread, value: Value) !void {
-    const message = metatable_mod.valueToString(state, thread, value) catch |err| switch (err) {
+    const message = if (metatable_mod.valueToString(state, thread, value)) |string| string.bytes() else |err| switch (err) {
         error.OutOfMemory => return err,
         else => "(error object is not a string)",
     };
@@ -427,7 +428,7 @@ fn upvalueIndex(value: Value) ?usize {
 
 fn isLightUserdataPlaceholder(value: Value) bool {
     if (value != .string) return false;
-    return std.mem.startsWith(u8, value.string, "upvalue:") or std.mem.startsWith(u8, value.string, "native:string.gmatch:");
+    return std.mem.startsWith(u8, value.string.bytes(), "upvalue:") or std.mem.startsWith(u8, value.string.bytes(), "native:string.gmatch:");
 }
 
 const ClosureLineRange = struct {

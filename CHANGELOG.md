@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Performance
+
+- Strings store their header and bytes in one allocation, and `Value` is 16 bytes instead of 24. Short strings are always interned and compare by pointer, and string hashes are cached.
+- Concatenation, `string.rep`, `string.format`, `string.gsub`, `string.upper`, `string.lower`, `string.reverse`, `string.char`, `table.concat`, and `utf8.char` build results in place or in a reused buffer.
+- The collector keeps mark state and registry positions in object headers instead of address maps.
+
+### Fixes
+
+- A collection during a protected call could free the error value that the call restores on failure.
+
 ## 0.7.1
 
 ### Lua compatibility

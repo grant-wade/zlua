@@ -127,7 +127,7 @@ fn runSample(io: std.Io, selection: Selection) !Sample {
     const call_elapsed = elapsedSince(io, call_start);
     const valid = if (selection.host_functions)
         returned.len == 2 and returned[0] == .integer and returned[0].integer == 42 and
-            returned[1] == .string and std.mem.eql(u8, returned[1].string, "host-ok")
+            returned[1] == .string and returned[1].string.eqlBytes("host-ok")
     else
         returned.len == 0;
     allocator.free(returned);

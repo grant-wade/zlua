@@ -45,6 +45,18 @@ pub const EntryIndex = struct {
         }
     }
 
+    pub inline fn findBytes(self: *const EntryIndex, entries: []const TableEntry, key: []const u8, hash: u32) ?usize {
+        const mask = self.slots.len - 1;
+        var position = hash & mask;
+        while (true) : (position = (position + 1) & mask) {
+            const slot = self.slots[position];
+            if (slot.entry == 0) return null;
+            if (slot.hash != hash) continue;
+            const stored = entries[slot.entry - 1].key;
+            if (stored == .string and stored.string.eqlBytes(key)) return slot.entry - 1;
+        }
+    }
+
     pub fn ensureTotalCapacity(self: *EntryIndex, allocator: std.mem.Allocator, count: usize) !void {
         const needed = slotCountFor(count);
         if (needed <= self.slots.len) return;
@@ -89,6 +101,7 @@ pub const EntryIndex = struct {
 };
 
 pub inline fn hashKey(key: Value) u32 {
+    if (key == .string) return key.string.tableHash();
     return foldHash(value_mod.hashValue(key));
 }
 
@@ -101,10 +114,6 @@ pub inline fn hashStringKey(bytes: []const u8) u32 {
 }
 
 pub inline fn keysEqual(stored: Value, key: Value) bool {
-    if (key == .string) return stored == .string and stringsEqual(stored.string, key.string);
+    if (key == .string) return stored == .string and key.string.eql(stored.string);
     return value_mod.valuesEqual(stored, key);
-}
-
-pub inline fn stringsEqual(lhs: []const u8, rhs: []const u8) bool {
-    return lhs.len == rhs.len and (lhs.ptr == rhs.ptr or std.mem.eql(u8, lhs, rhs));
 }

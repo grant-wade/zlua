@@ -23,6 +23,22 @@ const failure_mod = @import("failure.zig");
 const index_mod = @import("index.zig");
 const load_mod = @import("load.zig");
 const metatable_mod = @import("metatable.zig");
+const static_strings = @import("../stdlib/static_strings.zig");
+const strings_mod = @import("strings.zig");
+const table_index = @import("table_index.zig");
+
+fn testString(allocator: std.mem.Allocator, bytes: []const u8) !*const runtime.String {
+    const memory = try allocator.alignedAlloc(u8, .of(runtime.String), @sizeOf(runtime.String) + bytes.len);
+    const string: *runtime.String = @ptrCast(memory.ptr);
+    string.* = .{ .len = bytes.len };
+    @memcpy(string.bytesMut(), bytes);
+    return string;
+}
+
+fn tableRegistered(state: *const State, table: *const runtime.Table) bool {
+    for (state.table_allocations.items) |registered| if (registered == table) return true;
+    return false;
+}
 
 test "small table growth preserves existing entries on allocation failure" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, tableGrowthAllocationScenario, .{});
@@ -31,7 +47,14 @@ test "small table growth preserves existing entries on allocation failure" {
 fn tableGrowthAllocationScenario(allocator: std.mem.Allocator) !void {
     var table = try runtime.Table.init(allocator, 0, 1);
     defer table.deinit(allocator);
-    const keys = [_][]const u8{ "one", "two", "three", "four", "five", "six", "seven", "eight", "nine" };
+    const names = [_][]const u8{ "one", "two", "three", "four", "five", "six", "seven", "eight", "nine" };
+    var keys: [names.len]*const runtime.String = undefined;
+    var created: usize = 0;
+    defer for (keys[0..created]) |key| strings_mod.destroy(allocator, key);
+    for (names, &keys) |name, *key| {
+        key.* = try testString(allocator, name);
+        created += 1;
+    }
     for (keys, 0..) |key, index| {
         table.set(allocator, .{ .string = key }, .{ .integer = @intCast(index) }) catch |err| {
             for (keys[0..index], 0..) |previous, expected| {
@@ -465,7 +488,7 @@ test "zlua binary chunks are portable across states" {
 
     try std.testing.expectEqual(@as(usize, 2), values.len);
     try std.testing.expect(valuesEqual(values[0], .{ .integer = 42 }));
-    try std.testing.expect(valuesEqual(values[1], .{ .string = "ok" }));
+    try std.testing.expect(values[1] == .string and values[1].string.eqlBytes("ok"));
 }
 
 test "zlua binary chunks preserve nested protos and upvalue descriptors" {
@@ -625,7 +648,7 @@ fn runLoadedString(state: *State, closure: *runtime.Closure) ![]const u8 {
     const values = try entry_mod.callLoadedClosure(state, closure, &.{});
     defer state.allocator.free(values);
     try std.testing.expectEqual(@as(usize, 1), values.len);
-    return std.testing.allocator.dupe(u8, values[0].string);
+    return std.testing.allocator.dupe(u8, values[0].string.bytes());
 }
 
 test "zlua binary chunks verify and round-trip every compiled opcode family" {
@@ -1072,7 +1095,7 @@ test "last Lua error value is a GC root" {
     try std.testing.expect(error_value == .table);
     try std.testing.expect(error_value.table == object.table);
     try std.testing.expect(state.gc.isTrackedTable(object.table));
-    try std.testing.expect(valuesEqual(error_value.table.get(.{ .string = "tag" }), .{ .string = "live" }));
+    try std.testing.expect(error_value.table.getLiteral("tag").string.eqlBytes("live"));
 }
 
 test "collects unreachable runtime allocations" {
@@ -1110,7 +1133,7 @@ test "keeps global table graph alive during collection" {
     try std.testing.expect(kept_root == .table);
     const kept_child = kept_root.table.get(.{ .string = key });
     try std.testing.expect(kept_child == .table);
-    try std.testing.expect(valuesEqual(kept_child.table.get(.{ .string = "answer" }), .{ .integer = 42 }));
+    try std.testing.expect(valuesEqual(kept_child.table.getLiteral("answer"), .{ .integer = 42 }));
 }
 
 test "weak value tables clear unreachable values" {
@@ -1128,7 +1151,7 @@ test "weak value tables clear unreachable values" {
 
     try state.gc.collect();
 
-    try std.testing.expect(weak.table.get(.{ .string = "item" }) == .nil);
+    try std.testing.expect(weak.table.getLiteral("item") == .nil);
 }
 
 test "weak key tables clear unreachable keys" {
@@ -1169,7 +1192,7 @@ test "ephemeron table marks value when key is reachable" {
 
     const kept_value = ephemeron.table.get(key);
     try std.testing.expect(kept_value == .table);
-    try std.testing.expect(valuesEqual(kept_value.table.get(.{ .string = "answer" }), .{ .integer = 42 }));
+    try std.testing.expect(valuesEqual(kept_value.table.getLiteral("answer"), .{ .integer = 42 }));
 }
 
 test "collector traverses deep mixed graphs without native recursion" {
@@ -1205,17 +1228,17 @@ test "incremental phases preserve mutations and allocations while sweeping" {
     try std.testing.expectEqual(.propagate, state.gc.phase);
     while (state.gc.phase == .propagate) _ = try state.gc.runSteps(1);
     const child = try state.newTableWithHints(0, 1);
-    try index_mod.setTableValue(&state, root, .{ .string = "child" }, child);
+    try index_mod.setTableValue(&state, root, .{ .string = try state.strings.intern("child") }, child);
     _ = try state.gc.runSteps(1);
     try std.testing.expectEqual(.sweep_threads, state.gc.phase);
     const during_sweep = try state.newTableWithHints(0, 1);
-    try index_mod.setTableValue(&state, during_sweep, .{ .string = "message" }, .{ .string = try state.strings.intern("allocated during sweeping") });
-    try index_mod.setTableValue(&state, child, .{ .string = "nested" }, during_sweep);
+    try index_mod.setTableValue(&state, during_sweep, .{ .string = try state.strings.intern("message") }, .{ .string = try state.strings.intern("allocated during sweeping") });
+    try index_mod.setTableValue(&state, child, .{ .string = try state.strings.intern("nested") }, during_sweep);
     var steps: usize = 0;
     while (!try state.gc.runSteps(1)) : (steps += 1) try std.testing.expect(steps < 1000);
     try std.testing.expect(state.gc.isTrackedTable(child.table));
     try std.testing.expect(state.gc.isTrackedTable(during_sweep.table));
-    try std.testing.expectEqualStrings("allocated during sweeping", during_sweep.table.get(.{ .string = "message" }).string);
+    try std.testing.expectEqualStrings("allocated during sweeping", during_sweep.table.getLiteral("message").string.bytes());
 }
 
 test "minor work scales with young and remembered objects and promotes survivors" {
@@ -1231,7 +1254,7 @@ test "minor work scales with young and remembered objects and promotes survivors
     state.gc.normalizeBaseline();
     const leaf = root.table.get(.{ .integer = 5000 });
     const young = try state.newTableWithHints(0, 1);
-    try index_mod.setTableValue(&state, leaf, .{ .string = "child" }, young);
+    try index_mod.setTableValue(&state, leaf, .{ .string = try state.strings.intern("child") }, young);
     try std.testing.expect(!try state.gc.runSteps(1));
     try std.testing.expectEqual(.minor, state.gc.cycle);
     try std.testing.expect(state.gc.work_done < 100);
@@ -1239,12 +1262,12 @@ test "minor work scales with young and remembered objects and promotes survivors
     try std.testing.expect(!try state.gc.runSteps(1));
     try std.testing.expectEqual(.old, young.table.gc.age);
     const second = try state.newTableWithHints(0, 0);
-    try index_mod.setTableValue(&state, young, .{ .string = "next" }, second);
+    try index_mod.setTableValue(&state, young, .{ .string = try state.strings.intern("next") }, second);
     try std.testing.expect(!try state.gc.runSteps(1));
     try std.testing.expect(state.gc.isTrackedTable(second.table));
-    try index_mod.setTableValue(&state, young, .{ .string = "next" }, .nil);
+    try index_mod.setTableValue(&state, young, .{ .string = try state.strings.intern("next") }, .nil);
     try std.testing.expect(!try state.gc.runSteps(1));
-    try std.testing.expect(!state.gc.isTrackedTable(second.table));
+    try std.testing.expect(!tableRegistered(&state, second.table));
     try std.testing.expectEqual(@as(usize, 10003), state.table_allocations.items.len);
 }
 
@@ -1329,7 +1352,7 @@ test "suspended unwind errors remain roots across minor and major cycles" {
     defer state.unrootValue(handle);
     state.gc.normalizeBaseline();
     const error_value = try state.newTableWithHints(0, 1);
-    try state.setTableRaw(error_value.table, .{ .string = "detail" }, .{ .string = try state.strings.intern("suspended error") });
+    try state.setTableRaw(error_value.table, .{ .string = try state.strings.intern("detail") }, .{ .string = try state.strings.intern("suspended error") });
     thread.pending_unwind_error = error_value;
     state.gc.threadBarrier(thread, error_value);
     for (0..3) |_| {
@@ -1338,10 +1361,73 @@ test "suspended unwind errors remain roots across minor and major cycles" {
     }
     try state.gc.collect();
     try std.testing.expect(state.gc.isTrackedTable(error_value.table));
-    try std.testing.expectEqualStrings("suspended error", error_value.table.get(.{ .string = "detail" }).string);
+    try std.testing.expectEqualStrings("suspended error", error_value.table.getLiteral("detail").string.bytes());
     thread.pending_unwind_error = null;
     try state.gc.collect();
-    try std.testing.expect(!state.gc.isTrackedTable(error_value.table));
+    try std.testing.expect(!tableRegistered(&state, error_value.table));
+}
+
+test "collected strings leave the intern set without breaking probe chains" {
+    var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .none });
+    defer state.deinit();
+    const keep = try state.newTableWithHints(0, 0);
+    const handle = try state.rootValue(keep);
+    defer state.unrootValue(handle);
+    const static_count = state.strings.set.count;
+    var buffer: [32]u8 = undefined;
+    for (0..2000) |index| {
+        const string = try state.strings.intern(try std.fmt.bufPrint(&buffer, "probe {d}", .{index}));
+        if (index % 3 == 0) try state.setTableRaw(keep.table, .{ .integer = @intCast(index / 3 + 1) }, .{ .string = string });
+    }
+    try state.gc.collect();
+    try std.testing.expectEqual(static_count + 667, state.strings.set.count);
+    for (0..2000) |index| {
+        const bytes = try std.fmt.bufPrint(&buffer, "probe {d}", .{index});
+        const found = state.strings.set.find(bytes, table_index.hashStringKey(bytes));
+        if (index % 3 == 0) {
+            try std.testing.expectEqual(keep.table.get(.{ .integer = @intCast(index / 3 + 1) }).string, found.?);
+        } else try std.testing.expect(found == null);
+    }
+}
+
+test "short strings are unique across creation paths" {
+    var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .none });
+    defer state.deinit();
+    const direct = try state.strings.intern("key42");
+    try std.testing.expectEqual(direct, try state.strings.concat("key", "42"));
+    try std.testing.expectEqual(direct, try state.strings.internConstant("key42"));
+    var builder = state.strings.builder();
+    defer builder.deinit();
+    try builder.print("key{d}", .{42});
+    try std.testing.expectEqual(direct, try builder.finish());
+    try std.testing.expectEqual(static_strings.get("__index"), try state.strings.intern("__index"));
+
+    const long = "a string well beyond the forty-byte interning limit";
+    const first = try state.strings.intern(long);
+    const second = try state.strings.intern(long);
+    try std.testing.expect(first != second);
+    try std.testing.expect(first.eql(second));
+    try std.testing.expect(!first.hashed);
+    const table = try state.newTableWithHints(0, 1);
+    try state.setTableRaw(table.table, .{ .string = first }, .{ .integer = 1 });
+    try std.testing.expectEqual(@as(i64, 1), table.table.get(.{ .string = second }).integer);
+    try std.testing.expectEqual(first.hash, second.hash);
+}
+
+test "nested builders keep separate storage" {
+    var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .none });
+    defer state.deinit();
+    var outer = state.strings.builder();
+    defer outer.deinit();
+    try outer.appendSlice("outer ");
+    {
+        var inner = state.strings.builder();
+        defer inner.deinit();
+        try inner.appendSlice("inner");
+        try std.testing.expectEqualStrings("inner", (try inner.finish()).bytes());
+    }
+    try outer.appendSlice("text");
+    try std.testing.expectEqualStrings("outer text", (try outer.finish()).bytes());
 }
 
 test "remembered old threads retain young diagnostic strings through promotion" {
@@ -1356,10 +1442,10 @@ test "remembered old threads retain young diagnostic strings through promotion" 
     state.gc.threadBarrier(thread, .{ .string = diagnostic });
     for (0..3) |_| {
         _ = try state.gc.runSteps(1);
-        try std.testing.expect(state.gc.findStringAllocation(diagnostic) != null);
+        try std.testing.expect(std.mem.indexOfScalar(*runtime.String, state.string_allocations.items, @constCast(diagnostic)) != null);
     }
     try state.gc.collect();
-    try std.testing.expectEqualStrings("young traceback belonging to a suspended old thread", thread.error_traceback.?);
+    try std.testing.expectEqualStrings("young traceback belonging to a suspended old thread", thread.error_traceback.?.bytes());
 }
 
 test "minor cycles trace old suspended threads changed without barriers" {
@@ -1401,21 +1487,21 @@ test "changing weak modes after propagation retraces newly strong edges" {
     defer state.deinit();
     state.gc.mode = .incremental;
     const metatable = try state.newTableWithHints(0, 1);
-    try state.setTableRaw(metatable.table, .{ .string = "__mode" }, .{ .string = "v" });
+    try state.setTableRaw(metatable.table, .{ .string = try state.strings.intern("__mode") }, .{ .string = try state.strings.intern("v") });
     const weak = try state.newTableWithHints(0, 1);
     metatable_mod.setTableMetatableRaw(&state, weak.table, metatable.table);
     const handle = try state.rootValue(weak);
     defer state.unrootValue(handle);
     const child = try state.newTableWithHints(0, 0);
-    try state.setTableRaw(weak.table, .{ .string = "item" }, child);
+    try state.setTableRaw(weak.table, .{ .string = try state.strings.intern("item") }, child);
     while (state.gc.phase != .atomic) _ = try state.gc.runSteps(1);
-    try state.setTableRaw(metatable.table, .{ .string = "__mode" }, .{ .string = "" });
+    try state.setTableRaw(metatable.table, .{ .string = try state.strings.intern("__mode") }, .{ .string = try state.strings.intern("") });
     while (!try state.gc.runSteps(1)) {}
     try std.testing.expect(state.gc.isTrackedTable(child.table));
-    try std.testing.expect(weak.table.get(.{ .string = "item" }) == .table);
-    try state.setTableRaw(metatable.table, .{ .string = "__mode" }, .{ .string = "v" });
+    try std.testing.expect(weak.table.getLiteral("item") == .table);
+    try state.setTableRaw(metatable.table, .{ .string = try state.strings.intern("__mode") }, .{ .string = try state.strings.intern("v") });
     try state.gc.collect();
-    try std.testing.expect(weak.table.get(.{ .string = "item" }) == .nil);
+    try std.testing.expect(weak.table.getLiteral("item") == .nil);
 }
 
 const value_mod = @import("value.zig");

@@ -283,10 +283,10 @@ fn executeInstruction(self: *State, thread: *Thread, proto: *const proto_mod.Pro
         },
         .get_field => |op| {
             const table_value = stack[base + op.table];
-            const key = Value{ .string = constantString(proto, op.name) };
+            const name = constantString(proto, op.name);
             if (frame.named_vararg_readonly and op.table == proto.param_count) {
-                stack[base + op.dest] = call_mod.namedVarargRead(frame.varargs, key);
-            } else if (fastTableFieldGet(table_value, key.string, proto.constant_hashes[op.name])) |value| {
+                stack[base + op.dest] = call_mod.namedVarargField(frame.varargs, name);
+            } else if (fastTableFieldGet(table_value, name, proto.constant_hashes[op.name])) |value| {
                 stack[base + op.dest] = value;
             } else {
                 try index_mod.getTableToRegister(self, thread, op.dest, table_value, try closureConstant(self, frame.closure, op.name));
@@ -297,7 +297,7 @@ fn executeInstruction(self: *State, thread: *Thread, proto: *const proto_mod.Pro
             // Stored keys must be collectable strings; prototype bytes are only safe for lookups.
             const key = try closureConstant(self, frame.closure, op.name);
             const value = stack[base + op.value];
-            if (!fastTableKnownKeySetExistingNoAlloc(self, table_value, key, proto.constant_hashes[op.name], value) and
+            if (!fastTableKnownKeySetExistingNoAlloc(self, table_value, key, value) and
                 !try fastTableKnownKeySet(self, table_value, key, value))
             {
                 try index_mod.setTableFromThreadContinuable(self, thread, table_value, key, value);
@@ -589,13 +589,13 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             },
             .get_field => {
                 const op = instructions[pc].get_field;
-                const key = Value{ .string = constantString(proto, op.name) };
+                const name = constantString(proto, op.name);
                 const value = if (frame.named_vararg_readonly and op.table == proto.param_count)
-                    call_mod.namedVarargRead(frame.varargs, key)
+                    call_mod.namedVarargField(frame.varargs, name)
                 else if (stack[op.table] == .string)
-                    stringMethod(self, key.string, proto.constant_hashes[op.name]) orelse break :fast_loop
+                    stringMethod(self, name, proto.constant_hashes[op.name]) orelse break :fast_loop
                 else
-                    fastTableFieldGet(stack[op.table], key.string, proto.constant_hashes[op.name]) orelse break :fast_loop;
+                    fastTableFieldGet(stack[op.table], name, proto.constant_hashes[op.name]) orelse break :fast_loop;
                 stack[op.dest] = value;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
@@ -639,7 +639,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 const op = instructions[pc].set_field;
                 const cache = frame.closure.constants orelse break :fast_loop;
                 const key = cache[op.name] orelse break :fast_loop;
-                if (!fastTableKnownKeySetExistingNoAlloc(self, stack[op.table], key, proto.constant_hashes[op.name], stack[op.value])) break :fast_loop;
+                if (!fastTableKnownKeySetExistingNoAlloc(self, stack[op.table], key, stack[op.value])) break :fast_loop;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
@@ -1008,15 +1008,15 @@ fn fastTableArraySetExistingNoAlloc(self: *State, table_value: Value, key_value:
 
 noinline fn fastTableDynamicKeySetNoAlloc(self: *State, table_value: Value, key: Value, value: Value) bool {
     if (key != .string) return false;
-    return fastTableKnownKeySetExistingNoAlloc(self, table_value, key, table_index.hashStringKey(key.string), value);
+    return fastTableKnownKeySetExistingNoAlloc(self, table_value, key, value);
 }
 
-/// `key` must be a string and `hash` its `table_index.hashStringKey`.
-fn fastTableKnownKeySetExistingNoAlloc(self: *State, table_value: Value, key: Value, hash: u32, value: Value) bool {
+/// `key` must be a string.
+fn fastTableKnownKeySetExistingNoAlloc(self: *State, table_value: Value, key: Value, value: Value) bool {
     if (table_value != .table) return false;
     const table = table_value.table;
     if (table.rollback) |record| if (!record.header.detached) return false;
-    if (table.findStringEntry(key.string, hash)) |index| {
+    if (table.findStringKey(key.string)) |index| {
         const slot = &table.entries.items[index].value;
         if (slot.* == .nil) {
             if (!index_mod.noNewindexMetamethod(table)) return false;

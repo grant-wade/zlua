@@ -2,6 +2,7 @@ const std = @import("std");
 const compile = @import("../compile.zig");
 const runtime = @import("../runtime.zig");
 const call_mod = @import("../runtime/call.zig");
+const static_strings = @import("static_strings.zig");
 
 const bytecode = compile.bytecode;
 const State = runtime.State;
@@ -9,15 +10,15 @@ const Thread = runtime.Thread;
 const Value = runtime.Value;
 
 pub fn char(state: *State, thread: *Thread, op: bytecode.Call) !void {
-    var out = std.ArrayList(u8).empty;
-    defer out.deinit(state.allocator);
+    var out = state.strings.builder();
+    defer out.deinit();
     for (0..op.arg_count) |index| {
         const code = try state.argumentInteger(thread, op, "utf8.char", @intCast(index));
         var bytes: [6]u8 = undefined;
         const encoded_len = encode(code, &bytes) orelse return state.failArgumentMessage("utf8.char", @intCast(index + 1), "value out of range");
-        try out.appendSlice(state.allocator, bytes[0..encoded_len]);
+        try out.appendSlice(bytes[0..encoded_len]);
     }
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(out.items) }});
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try out.finish() }});
 }
 
 pub fn codepoint(state: *State, thread: *Thread, op: bytecode.Call) !void {
@@ -45,15 +46,15 @@ pub fn codepoint(state: *State, thread: *Thread, op: bytecode.Call) !void {
 }
 
 pub fn codes(state: *State, thread: *Thread, op: bytecode.Call) !void {
-    const source = try state.expectArgumentString(thread, op, "utf8.codes", 0);
+    const source = try state.expectArgumentStringObject(thread, op, "utf8.codes", 0);
     const strict = !(op.arg_count >= 2 and runtime.truthy(runtime.argValue(state, thread, op, 1)));
     if (strict) {
         try state.returnValues(thread, op.base, op.return_count, &.{ .{ .native = .utf8_codes_iter }, .{ .string = source }, .{ .integer = 0 } });
         return;
     }
     const state_value = try state.newTableWithHints(0, 2);
-    try state.setTableRaw(state_value.table, .{ .string = try state.strings.intern("s") }, .{ .string = source });
-    try state.setTableRaw(state_value.table, .{ .string = try state.strings.intern("i") }, .{ .integer = 0 });
+    try state.setTableRaw(state_value.table, .{ .string = static_strings.get("s") }, .{ .string = source });
+    try state.setTableRaw(state_value.table, .{ .string = static_strings.get("i") }, .{ .integer = 0 });
     try state.setTableRaw(state_value.table, .{ .string = try state.strings.intern("strict") }, .{ .boolean = strict });
     try state.returnValues(thread, op.base, op.return_count, &.{ .{ .native = .utf8_codes_iter }, state_value, .nil });
 }
@@ -65,26 +66,27 @@ pub fn codesIter(state: *State, thread: *Thread, op: bytecode.Call) !void {
 
 pub fn codesNext(state: *State, state_value: Value, index_value: Value) ![2]Value {
     if (state_value == .string) {
+        const source = state_value.string.bytes();
         const current = runtime.toInteger(index_value) orelse return .{ .nil, .nil };
         if (current < 0) return .{ .nil, .nil };
         const pos: usize = if (current == 0) 0 else blk: {
             const previous_pos: usize = @intCast(current - 1);
-            if (previous_pos >= state_value.string.len) return .{ .nil, .nil };
-            break :blk previous_pos + (sequenceLenAt(state_value.string, previous_pos) orelse return state.failLibrary("invalid UTF-8 code"));
+            if (previous_pos >= source.len) return .{ .nil, .nil };
+            break :blk previous_pos + (sequenceLenAt(source, previous_pos) orelse return state.failLibrary("invalid UTF-8 code"));
         };
-        if (pos >= state_value.string.len) return .{ .nil, .nil };
-        const decoded = decodeAt(state_value.string, pos, true) orelse return state.failLibrary("invalid UTF-8 code");
+        if (pos >= source.len) return .{ .nil, .nil };
+        const decoded = decodeAt(source, pos, true) orelse return state.failLibrary("invalid UTF-8 code");
         return .{ .{ .integer = @intCast(pos + 1) }, .{ .integer = decoded.codepoint } };
     }
 
     const state_table = try state.expectTable(state_value);
-    const source = try state.expectString(state_table.get(.{ .string = "s" }));
-    const current = runtime.toInteger(state_table.get(.{ .string = "i" })) orelse 0;
-    const strict = runtime.truthy(state_table.get(.{ .string = "strict" }));
+    const source = try state.expectString(state_table.getLiteral("s"));
+    const current = runtime.toInteger(state_table.getLiteral("i")) orelse 0;
+    const strict = runtime.truthy(state_table.getLiteral("strict"));
     const pos: usize = @intCast(@max(current, 0));
     if (pos >= source.len) return .{ .nil, .nil };
     const decoded = decodeAt(source, pos, strict) orelse return state.failLibrary("invalid UTF-8 code");
-    try state.setTableRaw(state_table, .{ .string = try state.strings.intern("i") }, .{ .integer = @intCast(pos + decoded.len) });
+    try state.setTableRaw(state_table, .{ .string = static_strings.get("i") }, .{ .integer = @intCast(pos + decoded.len) });
     return .{ .{ .integer = @intCast(pos + 1) }, .{ .integer = decoded.codepoint } };
 }
 

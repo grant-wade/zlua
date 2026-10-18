@@ -196,7 +196,7 @@ pub fn fromRuntimeValue(state: *State, raw: runtime.Value, comptime T: type) !T 
             try fromRuntimeValue(state, raw, optional.child),
         .pointer => |pointer| switch (pointer.size) {
             .slice => if (pointer.child == u8) switch (raw) {
-                .string => |value| value,
+                .string => |value| value.bytes(),
                 else => error.TypeMismatch,
             } else error.UnsupportedType,
             .one => if (@typeInfo(pointer.child) == .@"struct") switch (raw) {
@@ -215,7 +215,7 @@ fn valueFromRuntime(state: *State, raw: runtime.Value) !Value {
         .boolean => |boolean| .{ .boolean = boolean },
         .integer => |integer| .{ .integer = integer },
         .number => |number| .{ .number = number },
-        .string => |string| .{ .string = string },
+        .string => |string| .{ .string = string.bytes() },
         .table => .{ .table = try rooted(Table, state, raw) },
         .closure, .api_callback => .{ .function = try rooted(Function, state, raw) },
         .userdata => .{ .userdata = try rooted(AnyUserdata, state, raw) },

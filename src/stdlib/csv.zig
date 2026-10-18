@@ -60,10 +60,10 @@ fn csvOptions(state: *State, thread: *Thread, op: bytecode.Call, operation: []co
         else => return state.failArgumentType(operation, 2, "table", value),
     };
 
-    const delimiter = table.get(.{ .string = try state.strings.intern("delimiter") });
+    const delimiter = table.getLiteral("delimiter");
     if (delimiter != .nil) {
         const string = switch (delimiter) {
-            .string => |string| string,
+            .string => |string| string.bytes(),
             else => return state.failArgumentType(operation, 2, "table with string delimiter", delimiter),
         };
         if (std.mem.eql(u8, string, "comma") or std.mem.eql(u8, string, ",")) {
@@ -75,7 +75,7 @@ fn csvOptions(state: *State, thread: *Thread, op: bytecode.Call, operation: []co
         }
     }
 
-    const header = table.get(.{ .string = try state.strings.intern("header") });
+    const header = table.getLiteral("header");
     if (header != .nil) {
         options.header = switch (header) {
             .boolean => |boolean| boolean,
@@ -83,10 +83,10 @@ fn csvOptions(state: *State, thread: *Thread, op: bytecode.Call, operation: []co
         };
     }
 
-    const record_terminator = table.get(.{ .string = try state.strings.intern("record_terminator") });
+    const record_terminator = table.getLiteral("record_terminator");
     if (record_terminator != .nil) {
         const string = switch (record_terminator) {
-            .string => |string| string,
+            .string => |string| string.bytes(),
             else => return state.failArgumentType(operation, 2, "table with string record_terminator", record_terminator),
         };
         if (std.mem.eql(u8, string, "lf") or std.mem.eql(u8, string, "\n")) {
@@ -98,7 +98,7 @@ fn csvOptions(state: *State, thread: *Thread, op: bytecode.Call, operation: []co
         }
     }
 
-    const final_record_terminator = table.get(.{ .string = try state.strings.intern("final_record_terminator") });
+    const final_record_terminator = table.getLiteral("final_record_terminator");
     if (final_record_terminator != .nil) {
         options.final_record_terminator = switch (final_record_terminator) {
             .boolean => |boolean| boolean,
@@ -116,5 +116,5 @@ fn failCsvError(state: *State, operation: []const u8, err: anyerror) !void {
     var message: std.ArrayList(u8) = .empty;
     defer message.deinit(state.allocator);
     try runtime.appendFmt(state.allocator, &message, "{s}: {s}", .{ operation, @errorName(err) });
-    return state.fail(try state.strings.intern(message.items));
+    return state.fail(message.items);
 }

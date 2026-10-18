@@ -1,157 +1,133 @@
 const std = @import("std");
 
-pub const Layout = enum {
-    /// Addresses are mixed fully; safe for densely packed small allocations.
-    scattered,
-    /// Nearby addresses get nearby slots, so allocation-ordered work stays cache friendly.
-    /// Only for allocations of at least 64 bytes, which keep regions sparse.
-    clustered,
+/// Map from nonzero object addresses to word-sized values. Linear probing with
+/// backward-shift deletion keeps probe chains short under constant allocation churn.
+pub const AddressIndex = struct {
+    const Self = @This();
+
+    keys: []usize = &.{},
+    values: []usize = &.{},
+    len: usize = 0,
+    shift: u6 = 63,
+
+    pub const empty: Self = .{};
+
+    pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+        allocator.free(self.keys);
+        allocator.free(self.values);
+        self.* = .{};
+    }
+
+    pub fn clone(self: *const Self, allocator: std.mem.Allocator) !Self {
+        const keys = try allocator.dupe(usize, self.keys);
+        errdefer allocator.free(keys);
+        return .{ .keys = keys, .values = try allocator.dupe(usize, self.values), .len = self.len, .shift = self.shift };
+    }
+
+    pub fn count(self: *const Self) usize {
+        return self.len;
+    }
+
+    pub fn ensureTotalCapacity(self: *Self, allocator: std.mem.Allocator, total: usize) !void {
+        if (total + total / 2 <= self.keys.len) return;
+        const slot_count = std.math.ceilPowerOfTwoAssert(usize, @max(16, total * 2));
+        const keys = try allocator.alloc(usize, slot_count);
+        errdefer allocator.free(keys);
+        const values = try allocator.alloc(usize, slot_count);
+        @memset(keys, 0);
+        const old_keys = self.keys;
+        const old_values = self.values;
+        self.keys = keys;
+        self.values = values;
+        self.shift = @intCast(@as(u7, 64) - std.math.log2_int(usize, slot_count));
+        for (old_keys, old_values) |key, value| if (key != 0) self.place(key, value);
+        allocator.free(old_keys);
+        allocator.free(old_values);
+    }
+
+    pub fn ensureUnusedCapacity(self: *Self, allocator: std.mem.Allocator, extra: usize) !void {
+        return self.ensureTotalCapacity(allocator, self.len + extra);
+    }
+
+    pub fn put(self: *Self, allocator: std.mem.Allocator, key: usize, value: usize) !void {
+        try self.ensureUnusedCapacity(allocator, 1);
+        self.putAssumeCapacity(key, value);
+    }
+
+    pub fn putAssumeCapacity(self: *Self, key: usize, value: usize) void {
+        std.debug.assert(key != 0);
+        if (self.getPtr(key)) |slot| {
+            slot.* = value;
+            return;
+        }
+        std.debug.assert(self.len + 1 + (self.len + 1) / 2 <= self.keys.len);
+        self.place(key, value);
+        self.len += 1;
+    }
+
+    pub fn get(self: *const Self, key: usize) ?usize {
+        const position = self.find(key) orelse return null;
+        return self.values[position];
+    }
+
+    pub fn getPtr(self: *const Self, key: usize) ?*usize {
+        const position = self.find(key) orelse return null;
+        return &self.values[position];
+    }
+
+    pub fn contains(self: *const Self, key: usize) bool {
+        return self.find(key) != null;
+    }
+
+    pub fn remove(self: *Self, key: usize) bool {
+        var hole = self.find(key) orelse return false;
+        const mask = self.keys.len - 1;
+        var position = hole;
+        while (true) {
+            position = (position + 1) & mask;
+            const moved = self.keys[position];
+            if (moved == 0) break;
+            const ideal = self.home(moved);
+            // Move back only entries whose home is not cyclically within (hole, position].
+            if ((position -% ideal) & mask >= (position -% hole) & mask) {
+                self.keys[hole] = moved;
+                self.values[hole] = self.values[position];
+                hole = position;
+            }
+        }
+        self.keys[hole] = 0;
+        self.len -= 1;
+        return true;
+    }
+
+    inline fn home(self: *const Self, key: usize) usize {
+        const address: u64 = key;
+        return @intCast((address *% 0x9e3779b97f4a7c15) >> self.shift);
+    }
+
+    inline fn find(self: *const Self, key: usize) ?usize {
+        if (self.len == 0) return null;
+        const mask = self.keys.len - 1;
+        var position = self.home(key);
+        while (true) : (position = (position + 1) & mask) {
+            const stored = self.keys[position];
+            if (stored == key) return position;
+            if (stored == 0) return null;
+        }
+    }
+
+    fn place(self: *Self, key: usize, value: usize) void {
+        const mask = self.keys.len - 1;
+        var position = self.home(key);
+        while (self.keys[position] != 0) position = (position + 1) & mask;
+        self.keys[position] = key;
+        self.values[position] = value;
+    }
 };
 
-pub const AddressIndex = AddressIndexWith(.scattered);
-pub const ObjectAddressIndex = AddressIndexWith(.clustered);
-
-/// Map from nonzero object addresses to registry positions. Linear probing with
-/// backward-shift deletion keeps probe chains short under constant allocation churn.
-pub fn AddressIndexWith(comptime layout: Layout) type {
-    return struct {
-        const Self = @This();
-
-        keys: []usize = &.{},
-        values: []usize = &.{},
-        len: usize = 0,
-        shift: u6 = 63,
-
-        pub const empty: Self = .{};
-
-        pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
-            allocator.free(self.keys);
-            allocator.free(self.values);
-            self.* = .{};
-        }
-
-        pub fn clone(self: *const Self, allocator: std.mem.Allocator) !Self {
-            const keys = try allocator.dupe(usize, self.keys);
-            errdefer allocator.free(keys);
-            return .{ .keys = keys, .values = try allocator.dupe(usize, self.values), .len = self.len, .shift = self.shift };
-        }
-
-        pub fn count(self: *const Self) usize {
-            return self.len;
-        }
-
-        pub fn ensureTotalCapacity(self: *Self, allocator: std.mem.Allocator, total: usize) !void {
-            if (total + total / 2 <= self.keys.len) return;
-            const slot_count = std.math.ceilPowerOfTwoAssert(usize, @max(16, total * 2));
-            const keys = try allocator.alloc(usize, slot_count);
-            errdefer allocator.free(keys);
-            const values = try allocator.alloc(usize, slot_count);
-            @memset(keys, 0);
-            const old_keys = self.keys;
-            const old_values = self.values;
-            self.keys = keys;
-            self.values = values;
-            self.shift = @intCast(@as(u7, 64) - std.math.log2_int(usize, slot_count));
-            for (old_keys, old_values) |key, value| if (key != 0) self.place(key, value);
-            allocator.free(old_keys);
-            allocator.free(old_values);
-        }
-
-        pub fn ensureUnusedCapacity(self: *Self, allocator: std.mem.Allocator, extra: usize) !void {
-            return self.ensureTotalCapacity(allocator, self.len + extra);
-        }
-
-        pub fn put(self: *Self, allocator: std.mem.Allocator, key: usize, value: usize) !void {
-            try self.ensureUnusedCapacity(allocator, 1);
-            self.putAssumeCapacity(key, value);
-        }
-
-        pub fn putAssumeCapacity(self: *Self, key: usize, value: usize) void {
-            std.debug.assert(key != 0);
-            if (self.getPtr(key)) |slot| {
-                slot.* = value;
-                return;
-            }
-            std.debug.assert(self.len + 1 + (self.len + 1) / 2 <= self.keys.len);
-            self.place(key, value);
-            self.len += 1;
-        }
-
-        pub fn get(self: *const Self, key: usize) ?usize {
-            const position = self.find(key) orelse return null;
-            return self.values[position];
-        }
-
-        pub fn getPtr(self: *const Self, key: usize) ?*usize {
-            const position = self.find(key) orelse return null;
-            return &self.values[position];
-        }
-
-        pub fn contains(self: *const Self, key: usize) bool {
-            return self.find(key) != null;
-        }
-
-        pub fn remove(self: *Self, key: usize) bool {
-            var hole = self.find(key) orelse return false;
-            const mask = self.keys.len - 1;
-            var position = hole;
-            while (true) {
-                position = (position + 1) & mask;
-                const moved = self.keys[position];
-                if (moved == 0) break;
-                const ideal = self.home(moved);
-                // Move back only entries whose home is not cyclically within (hole, position].
-                if ((position -% ideal) & mask >= (position -% hole) & mask) {
-                    self.keys[hole] = moved;
-                    self.values[hole] = self.values[position];
-                    hole = position;
-                }
-            }
-            self.keys[hole] = 0;
-            self.len -= 1;
-            return true;
-        }
-
-        inline fn home(self: *const Self, key: usize) usize {
-            const address: u64 = key;
-            switch (layout) {
-                .scattered => return @intCast((address *% 0x9e3779b97f4a7c15) >> self.shift),
-                .clustered => {
-                    const region = (address >> 16) *% 0x9e3779b97f4a7c15;
-                    return @intCast(((address >> 4) +% (region >> 32)) & (self.keys.len - 1));
-                },
-            }
-        }
-
-        inline fn find(self: *const Self, key: usize) ?usize {
-            if (self.len == 0) return null;
-            const mask = self.keys.len - 1;
-            var position = self.home(key);
-            while (true) : (position = (position + 1) & mask) {
-                const stored = self.keys[position];
-                if (stored == key) return position;
-                if (stored == 0) return null;
-            }
-        }
-
-        fn place(self: *Self, key: usize, value: usize) void {
-            const mask = self.keys.len - 1;
-            var position = self.home(key);
-            while (self.keys[position] != 0) position = (position + 1) & mask;
-            self.keys[position] = key;
-            self.values[position] = value;
-        }
-    };
-}
-
 test "address index survives churn" {
-    try expectChurn(AddressIndex);
-    try expectChurn(ObjectAddressIndex);
-}
-
-fn expectChurn(comptime Index: type) !void {
     const allocator = std.testing.allocator;
-    var index: Index = .empty;
+    var index: AddressIndex = .empty;
     defer index.deinit(allocator);
     var live: std.AutoHashMapUnmanaged(usize, usize) = .empty;
     defer live.deinit(allocator);

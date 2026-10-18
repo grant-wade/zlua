@@ -1,6 +1,5 @@
 const std = @import("std");
 const compile = @import("../compile.zig");
-const errors = @import("../errors.zig");
 const call_mod = @import("call.zig");
 const metatable_mod = @import("metatable.zig");
 const rollback_mod = @import("rollback.zig");
@@ -60,11 +59,6 @@ pub fn appendUnhandledErrorDebugDump(self: *State, thread: *Thread, err: anyerro
     try out.append(self.allocator, '\n');
     if (self.last_error) |payload| switch (payload) {
         .diagnostic => |message| try appendFmt(self.allocator, out, "last_error={s}\n", .{message}),
-        .argument => |argument| {
-            const rendered = try errors.renderArgumentError(self.allocator, argument);
-            defer self.allocator.free(rendered);
-            try appendFmt(self.allocator, out, "last_error={s}\n", .{rendered});
-        },
         .lua_value => {},
     };
     try appendFmt(self.allocator, out, "allocations strings={d} tables={d} closures={d} upvalues={d} threads={d} bytes={d}\n", .{ stats.strings, stats.tables, stats.closures, stats.upvalues, stats.threads, stats.bytes });
@@ -158,10 +152,6 @@ fn appendDebugStack(self: *State, out: *std.ArrayList(u8), thread: *Thread) !voi
 
 fn appendDebugValue(self: *State, out: *std.ArrayList(u8), value: Value) !void {
     try appendFmt(self.allocator, out, "({s}) ", .{debugValueTypeName(value)});
-    if (value == .table and !self.gc.isTrackedTable(value.table)) {
-        try appendFmt(self.allocator, out, "table: 0x{x}", .{@intFromPtr(value.table)});
-        return;
-    }
     try appendValue(self.allocator, out, value);
 }
 
@@ -517,7 +507,7 @@ pub fn currentFunctionName(self: *State, thread: *Thread, level: i64) ?[]const u
         if (!std.mem.eql(u8, local.name, "name")) continue;
         if (pc < local.start_pc or (local.end_pc != 0 and pc > local.end_pc)) continue;
         const value = thread.stack.items[frame.base + local.register];
-        if (value == .string) return value.string;
+        if (value == .string) return value.string.bytes();
     }
     return frame.debug_name_override orelse frame.proto.debug_name;
 }
@@ -553,7 +543,7 @@ pub fn setThreadHook(self: *State, target: *Thread, hook: Value, mask: []const u
     }
 }
 
-pub fn threadHookMask(self: *State, thread: *Thread) ![]const u8 {
+pub fn threadHookMask(self: *State, thread: *Thread) !*const types.String {
     var bytes: [3]u8 = undefined;
     var len: usize = 0;
     if (thread.hook_call) {
@@ -654,7 +644,7 @@ pub fn tracebackValue(self: *State, thread: *Thread, op: bytecode.Call) !void {
         try self.returnValues(thread, op.base, op.return_count, &.{message});
         return;
     }
-    const text: ?[]const u8 = if (message == .nil) null else try metatable_mod.valueToString(self, thread, message);
+    const text: ?[]const u8 = if (message == .nil) null else (try metatable_mod.valueToString(self, thread, message)).bytes();
     const level = if (op.arg_count >= 2) toInteger(argValue(self, thread, op, 1)) orelse 1 else 1;
     if (level < 0) {
         try appendFmt(self.allocator, &out, "{s}{s}stack traceback:", .{ text orelse "", if (text == null) "" else "\n" });
@@ -676,8 +666,8 @@ pub fn tracebackValue(self: *State, thread: *Thread, op: bytecode.Call) !void {
 pub fn tracebackMessageHandler(self: *State, thread: *Thread, op: bytecode.Call) !void {
     const message = argValue(self, thread, op, 0);
     const text = switch (message) {
-        .string => |bytes| bytes,
-        .integer, .number => try metatable_mod.valueToString(self, thread, message),
+        .string => |string| string.bytes(),
+        .integer, .number => (try metatable_mod.valueToString(self, thread, message)).bytes(),
         else => blk: {
             if (try metatable_mod.getMetaEvent(self, message, .__tostring)) |metamethod| {
                 const result = try call_mod.callOneResult(self, thread, metamethod, &.{message});
@@ -686,7 +676,7 @@ pub fn tracebackMessageHandler(self: *State, thread: *Thread, op: bytecode.Call)
             var out = std.ArrayList(u8).empty;
             defer out.deinit(self.allocator);
             try appendFmt(self.allocator, &out, "(error object is a {s} value)", .{luaTypeName(message)});
-            break :blk try self.strings.intern(out.items);
+            break :blk (try self.strings.intern(out.items)).bytes();
         },
     };
     const traceback = try formatTracebackWith(self, thread, .{ .message = text, .host_frame = thread.host_frame });
@@ -741,7 +731,7 @@ fn appendCoroutineTracebackFrames(self: *State, out: *std.ArrayList(u8), target:
     }
 }
 
-pub fn snapshotCoroutineErrorTraceback(self: *State, target: *Thread) ![]const u8 {
+pub fn snapshotCoroutineErrorTraceback(self: *State, target: *Thread) !*const types.String {
     var out = std.ArrayList(u8).empty;
     defer out.deinit(self.allocator);
     try out.appendSlice(self.allocator, "stack traceback:\n\t'error'");

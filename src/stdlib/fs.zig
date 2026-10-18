@@ -277,10 +277,10 @@ pub fn iteratorNext(state: *State, iterator: Value) ![]const Value {
     if (iterator != .table) return state.fail("fs iterator expected");
     const table = iterator.table;
     if (truthyField(table, "closed")) return &.{};
-    const kind = table.get(.{ .string = "__zlua_fs_iterator" });
+    const kind = table.getLiteral("__zlua_fs_iterator");
     if (kind != .string) return state.fail("fs iterator expected");
-    if (std.mem.eql(u8, kind.string, "walk")) try expandPending(state, table);
-    const queue_value = table.get(.{ .string = "queue" });
+    if (kind.string.eqlBytes("walk")) try expandPending(state, table);
+    const queue_value = table.getLiteral("queue");
     if (queue_value != .table) return &.{};
     const index = integerField(table, "index") orelse 1;
     const count = integerField(table, "count") orelse 0;
@@ -291,12 +291,12 @@ pub fn iteratorNext(state: *State, iterator: Value) ![]const Value {
     const entry = queue_value.table.get(.{ .integer = index });
     try state.setTableRaw(table, .{ .string = try state.strings.intern("index") }, .{ .integer = index + 1 });
     try state.setTableRaw(queue_value.table, .{ .integer = index }, .nil);
-    if (std.mem.eql(u8, kind.string, "walk") and entry == .table) {
-        const entry_kind = entry.table.get(.{ .string = "kind" });
-        const depth = runtime.toInteger(entry.table.get(.{ .string = "depth" })) orelse 1;
+    if (kind.string.eqlBytes("walk") and entry == .table) {
+        const entry_kind = entry.table.getLiteral("kind");
+        const depth = runtime.toInteger(entry.table.getLiteral("depth")) orelse 1;
         const max_depth = integerField(table, "max_depth") orelse std.math.maxInt(i32);
-        if (entry_kind == .string and std.mem.eql(u8, entry_kind.string, "directory") and depth < max_depth) {
-            try state.setTableRaw(table, .{ .string = try state.strings.intern("pending_path") }, entry.table.get(.{ .string = "path" }));
+        if (entry_kind == .string and entry_kind.string.eqlBytes("directory") and depth < max_depth) {
+            try state.setTableRaw(table, .{ .string = try state.strings.intern("pending_path") }, entry.table.getLiteral("path"));
             try state.setTableRaw(table, .{ .string = try state.strings.intern("pending_depth") }, .{ .integer = depth });
             try state.setTableRaw(table, .{ .string = try state.strings.intern("skip_current") }, .{ .boolean = false });
         }
@@ -314,14 +314,14 @@ pub fn iteratorClose(state: *State, thread: *Thread, op: bytecode.Call) !void {
 
 pub fn iteratorSkip(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const table = try expectIteratorTable(state, runtime.argValue(state, thread, op, 0));
-    if (table.get(.{ .string = "pending_path" }) == .nil) return state.fail("fs walker has no current directory to skip");
+    if (table.getLiteral("pending_path") == .nil) return state.fail("fs walker has no current directory to skip");
     try state.setTableRaw(table, .{ .string = try state.strings.intern("skip_current") }, .{ .boolean = true });
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = true }});
 }
 
 pub fn errorTostring(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const value = runtime.argValue(state, thread, op, 0);
-    const message = if (value == .table and value.table.get(.{ .string = "message" }) == .string) value.table.get(.{ .string = "message" }).string else "filesystem error";
+    const message = if (value == .table and value.table.getLiteral("message") == .string) value.table.getLiteral("message").string.bytes() else "filesystem error";
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(message) }});
 }
 
@@ -419,7 +419,7 @@ pub fn dirRemove(state: *State, thread: *Thread, op: bytecode.Call) !void {
 
 pub fn dirClose(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const value = runtime.argValue(state, thread, op, 0);
-    if (value != .table or value.table.get(.{ .string = "__zlua_fs_dir" }) == .nil) return state.fail("fs directory expected");
+    if (value != .table or value.table.getLiteral("__zlua_fs_dir") == .nil) return state.fail("fs directory expected");
     const dir = value.table;
     try state.setTableRaw(dir, .{ .string = try state.strings.intern("__zlua_fs_dir_closed") }, .{ .boolean = true });
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = true }});
@@ -490,17 +490,17 @@ fn newIterator(state: *State, kind: []const u8) !Value {
 }
 
 fn expandPending(state: *State, iterator: *Table) !void {
-    const pending = iterator.get(.{ .string = "pending_path" });
+    const pending = iterator.getLiteral("pending_path");
     if (pending != .string) return;
-    defer state.setTableRaw(iterator, .{ .string = state.strings.intern("pending_path") catch "pending_path" }, .nil) catch {};
+    defer if (state.strings.intern("pending_path")) |key| state.setTableRaw(iterator, .{ .string = key }, .nil) catch {} else |_| {};
     if (truthyField(iterator, "skip_current")) return;
     const depth = integerField(iterator, "pending_depth") orelse 1;
-    const entries = io_mod.fsReadDirAlloc(state, pending.string) catch |err| return state.failValue(try failureValue(state, "walk", pending.string, null, err));
+    const entries = io_mod.fsReadDirAlloc(state, pending.string.bytes()) catch |err| return state.failValue(try failureValue(state, "walk", pending.string.bytes(), null, err));
     defer host.deinitDirectoryEntries(state.allocator, entries);
-    const queue = try state.expectTable(iterator.get(.{ .string = "queue" }));
+    const queue = try state.expectTable(iterator.getLiteral("queue"));
     var count = integerField(iterator, "count") orelse 0;
     for (entries) |entry| {
-        const full = try joinTwo(state, pending.string, entry.name);
+        const full = try joinTwo(state, pending.string.bytes(), entry.name);
         defer state.allocator.free(full);
         count += 1;
         try state.setTableRaw(queue, .{ .integer = count }, try entryValue(state, entry, full, @intCast(depth + 1)));
@@ -616,18 +616,18 @@ fn expectFsFile(state: *State, value: Value) !*const io_lib.File {
 
 fn expectIteratorTable(state: *State, value: Value) !*Table {
     const table = if (value == .table) value.table else if (value == .gmatch_iterator) value.gmatch_iterator else return state.fail("fs iterator expected");
-    if (table.get(.{ .string = "__zlua_fs_iterator" }) == .nil) return state.fail("fs iterator expected");
+    if (table.getLiteral("__zlua_fs_iterator") == .nil) return state.fail("fs iterator expected");
     return table;
 }
 
 fn expectDir(state: *State, value: Value) !*Table {
-    if (value != .table or value.table.get(.{ .string = "__zlua_fs_dir" }) == .nil) return state.fail("fs directory expected");
+    if (value != .table or value.table.getLiteral("__zlua_fs_dir") == .nil) return state.fail("fs directory expected");
     if (truthyField(value.table, "__zlua_fs_dir_closed")) return state.fail("closed fs directory");
     return value.table;
 }
 
 fn dirPath(state: *State, dir: *Table) ![]const u8 {
-    return state.expectString(dir.get(.{ .string = "__zlua_fs_dir_path" }));
+    return state.expectString(dir.getLiteral("__zlua_fs_dir_path"));
 }
 
 fn optionTable(state: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) !?*Table {
@@ -638,14 +638,14 @@ fn optionTable(state: *State, thread: *Thread, op: bytecode.Call, function_name:
 }
 
 fn boolOption(state: *State, table: *Table, operation: []const u8, name: []const u8, default: bool) !bool {
-    const value = table.get(.{ .string = name });
+    const value = table.getBytes(name);
     if (value == .nil) return default;
     if (value != .boolean) return state.failArgumentMessage(operation, 2, "boolean option expected");
     return value.boolean;
 }
 
 fn integerOption(state: *State, table: *Table, operation: []const u8, name: []const u8, default: usize) !usize {
-    const value = table.get(.{ .string = name });
+    const value = table.getBytes(name);
     if (value == .nil) return default;
     const integer = runtime.toInteger(value) orelse return state.failArgumentMessage(operation, 2, "integer option expected");
     if (integer < 0) return state.failArgumentMessage(operation, 2, "non-negative option expected");
@@ -689,12 +689,12 @@ fn set(table_value: Value, state: *State, name: []const u8, value: Value) !void 
 }
 
 fn truthyField(table: *Table, name: []const u8) bool {
-    const value = table.get(.{ .string = name });
+    const value = table.getBytes(name);
     return value == .boolean and value.boolean;
 }
 
 fn integerField(table: *Table, name: []const u8) ?i64 {
-    return runtime.toInteger(table.get(.{ .string = name }));
+    return runtime.toInteger(table.getBytes(name));
 }
 fn integerFromUnsigned(value: u64) Value {
     return .{ .integer = @intCast(@min(value, @as(u64, std.math.maxInt(i64)))) };

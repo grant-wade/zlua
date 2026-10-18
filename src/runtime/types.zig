@@ -1,7 +1,7 @@
 const std = @import("std");
 const compile = @import("../compile.zig");
-const errors = @import("../errors.zig");
 const runtime = @import("../runtime.zig");
+const static_strings = @import("../stdlib/static_strings.zig");
 const table_index = @import("table_index.zig");
 const value_mod = @import("value.zig");
 
@@ -13,6 +13,7 @@ pub const RuntimeError = error{
     RuntimeError,
     StackOverflow,
     UnsupportedOpcode,
+    OutOfMemory,
 };
 
 // Full-byte tags keep the interpreter's frequent type checks to byte loads.
@@ -21,7 +22,7 @@ pub const Value = union(enum(u8)) {
     boolean: bool,
     integer: i64,
     number: f64,
-    string: []const u8,
+    string: *const String,
     table: *Table,
     userdata: *Userdata,
     closure: *Closure,
@@ -61,6 +62,59 @@ pub const Value = union(enum(u8)) {
 };
 
 pub const NativeFn = @import("native_fn.zig").NativeFn;
+
+/// A Lua string, followed by its bytes in the same allocation. Strings of at most
+/// `short_limit` bytes are always interned.
+pub const String = extern struct {
+    gc: StringGc = .{},
+    len: usize,
+    /// `table_index.hashStringKey` of the bytes, valid once `hashed` is set.
+    hash: u32 = 0,
+    hashed: bool = false,
+    /// In the state's intern set.
+    interned: bool = false,
+    /// From the static catalog; never collected or written.
+    static: bool = false,
+
+    pub const short_limit = 40;
+
+    pub inline fn bytes(self: *const String) []const u8 {
+        return (@as([*]const u8, @ptrCast(self)) + @sizeOf(String))[0..self.len];
+    }
+
+    pub inline fn bytesMut(self: *String) []u8 {
+        return (@as([*]u8, @ptrCast(self)) + @sizeOf(String))[0..self.len];
+    }
+
+    pub inline fn isShort(self: *const String) bool {
+        return self.len <= short_limit;
+    }
+
+    pub inline fn eql(self: *const String, other: *const String) bool {
+        if (self == other) return true;
+        if (self.len <= short_limit) return false;
+        return self.len == other.len and std.mem.eql(u8, self.bytes(), other.bytes());
+    }
+
+    pub inline fn eqlBytes(self: *const String, other: []const u8) bool {
+        return self.len == other.len and std.mem.eql(u8, self.bytes(), other);
+    }
+
+    pub inline fn tableHash(self: *const String) u32 {
+        if (self.hashed) return self.hash;
+        return hashLong(@constCast(self));
+    }
+
+    noinline fn hashLong(self: *String) u32 {
+        self.hash = table_index.hashStringKey(self.bytes());
+        self.hashed = true;
+        return self.hash;
+    }
+
+    pub inline fn gcBytes(self: *const String) usize {
+        return @sizeOf(String) + self.len;
+    }
+};
 
 pub const UserdataFinalizer = *const fn (*anyopaque, ?*const anyopaque) void;
 pub const UserdataDeinit = *const fn (std.mem.Allocator, *anyopaque) void;
@@ -227,18 +281,13 @@ pub const ApiCallbackContext = struct {
 };
 
 pub const RuntimeErrorPayload = union(enum) {
+    /// Process-lifetime text.
     diagnostic: []const u8,
-    argument: errors.ArgumentError,
     lua_value: Value,
 
     pub fn luaValue(self: RuntimeErrorPayload, state: anytype) Value {
         return switch (self) {
-            .diagnostic => |message| .{ .string = message },
-            .argument => |argument| blk: {
-                const rendered = errors.renderArgumentError(state.allocator, argument) catch break :blk .{ .string = "bad argument" };
-                defer state.allocator.free(rendered);
-                break :blk .{ .string = state.strings.intern(rendered) catch "bad argument" };
-            },
+            .diagnostic => |message| .{ .string = state.strings.intern(message) catch static_strings.get("not enough memory") },
             .lua_value => |value| value,
         };
     }
@@ -332,7 +381,6 @@ pub const Closure = struct {
     upvalues: []*Upvalue,
     constants: ?[]?Value = null,
     stripped_debug: bool = false,
-    marked: bool = false,
     gc: GcMeta = .{},
 };
 
@@ -343,7 +391,6 @@ pub const Upvalue = struct {
     closed: Value = .nil,
     is_open: bool = true,
     next: ?*Upvalue = null,
-    marked: bool = false,
     gc: GcMeta = .{},
 };
 
@@ -405,7 +452,6 @@ pub const Table = struct {
     metatable: ?*Table = null,
     metatable_prev: ?*Table = null,
     metatable_next: ?*Table = null,
-    marked: bool = false,
     gc: GcMeta = .{},
     finalizer_registered: bool = false,
     finalizer_next: ?*Table = null,
@@ -418,7 +464,7 @@ pub const Table = struct {
     pub inline fn init(allocator: std.mem.Allocator, array_hint: u32, hash_hint: u32) !Table {
         var table = Table{};
         errdefer table.deinit(allocator);
-        try table.array.ensureTotalCapacity(allocator, array_hint);
+        try table.array.ensureTotalCapacityPrecise(allocator, array_hint);
         try table.entries.ensureTotalCapacity(allocator, hash_hint);
         if (hash_hint > linear_entry_limit) try table.entry_index.ensureTotalCapacity(allocator, hash_hint);
         return table;
@@ -445,10 +491,26 @@ pub const Table = struct {
         return .nil;
     }
 
+    pub inline fn getLiteral(self: *const Table, comptime key: []const u8) Value {
+        return self.getStringHashed(key, comptime table_index.hashStringKey(key));
+    }
+
+    pub fn getBytes(self: *const Table, key: []const u8) Value {
+        return self.getStringHashed(key, table_index.hashStringKey(key));
+    }
+
     pub inline fn findStringEntry(self: *const Table, key: []const u8, hash: u32) ?usize {
-        if (self.entry_index.capacity() != 0) return self.entry_index.find(self.entries.items, .{ .string = key }, hash);
+        if (self.entry_index.capacity() != 0) return self.entry_index.findBytes(self.entries.items, key, hash);
         for (self.entries.items, 0..) |entry, index| {
-            if (entry.key == .string and table_index.stringsEqual(entry.key.string, key)) return index;
+            if (entry.key == .string and entry.key.string.eqlBytes(key)) return index;
+        }
+        return null;
+    }
+
+    pub inline fn findStringKey(self: *const Table, key: *const String) ?usize {
+        if (self.entry_index.capacity() != 0) return self.entry_index.find(self.entries.items, .{ .string = key }, key.tableHash());
+        for (self.entries.items, 0..) |entry, index| {
+            if (entry.key == .string and key.eql(entry.key.string)) return index;
         }
         return null;
     }
@@ -473,7 +535,7 @@ pub const Table = struct {
     }
 
     pub fn findEntry(self: *const Table, key: Value) ?usize {
-        if (key == .string) return self.findStringEntry(key.string, table_index.hashStringKey(key.string));
+        if (key == .string) return self.findStringKey(key.string);
         if (self.entry_index.capacity() != 0) return self.entry_index.find(self.entries.items, key, table_index.hashKey(key));
         for (self.entries.items, 0..) |entry, index| {
             if (value_mod.valuesEqual(entry.key, key)) return index;
@@ -643,7 +705,6 @@ pub const Userdata = struct {
     finalizer: ?UserdataFinalizer = null,
     finalizer_data: ?*const anyopaque = null,
     deinit_fn: ?UserdataDeinit = null,
-    marked: bool = false,
     gc: GcMeta = .{},
     finalized: bool = false,
     finalization_pending: bool = false,
@@ -723,7 +784,7 @@ pub const Thread = struct {
     native_marks: [4]NativeMark = undefined,
     native_mark_count: u8 = 0,
     close_error_value: ?Value = null,
-    error_traceback: ?[]const u8 = null,
+    error_traceback: ?*const String = null,
     pending_unwind_error: ?Value = null,
     pending_unwind_resume_frame_count: usize = 0,
     pending_unwind_target_frame_count: usize = 0,
@@ -731,7 +792,6 @@ pub const Thread = struct {
     frame_storage_bytes: usize = 0,
     resume_parent: ?*Thread = null,
     entry: Value = .nil,
-    marked: bool = false,
     gc: GcMeta = .{},
     started: bool = false,
     is_main: bool = false,
@@ -863,14 +923,6 @@ pub const CallFrame = struct {
     }
 };
 
-pub const StringAllocation = struct {
-    bytes: []const u8,
-    marked: bool = false,
-    gc: GcMeta = .{},
-};
-pub const PointerAllocationIndex = @import("address_index.zig").AddressIndex;
-pub const ObjectAllocationIndex = @import("address_index.zig").ObjectAddressIndex;
-
 /// Hashes object addresses, which are distinct and aligned, without Wyhash.
 pub const AddressContext = struct {
     pub fn hash(_: AddressContext, address: usize) u64 {
@@ -883,17 +935,32 @@ pub const AddressContext = struct {
     }
 };
 
-/// Collector scratch state never participates in logical rollback dirtiness.
-pub const GcMeta = struct {
+pub const GcColor = enum(u8) { white, gray, black };
+pub const GcAge = enum(u8) { new, survivor, old };
+
+/// Collector state of a string, with the field names of `GcMeta`.
+pub const StringGc = extern struct {
     epoch: u64 = 0,
     generation: u64 = 0,
-    color: enum { white, gray, black } = .white,
-    age: enum { new, survivor, old } = .new,
+    color: GcColor = .white,
+    age: GcAge = .new,
+};
+
+/// Collector scratch state never participates in logical rollback dirtiness.
+pub const GcMeta = struct {
+    pub const untracked = std.math.maxInt(u32);
+
+    epoch: u64 = 0,
+    generation: u64 = 0,
+    color: GcColor = .white,
+    age: GcAge = .new,
     remembered: bool = false,
     weak_epoch: u64 = 0,
     tables_epoch: u64 = 0,
     has_young: bool = false,
     storage_bytes: usize = 0,
+    /// Position in this type's registry; `untracked` for objects the collector doesn't own.
+    registry_index: u32 = untracked,
 };
 
 /// Queue entries own identities, never pointers into growable registries.

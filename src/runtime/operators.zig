@@ -4,6 +4,7 @@ const call_mod = @import("call.zig");
 const failure_mod = @import("failure.zig");
 const metatable_mod = @import("metatable.zig");
 const state_mod = @import("state.zig");
+const strings_mod = @import("strings.zig");
 const types = @import("types.zig");
 const value_mod = @import("value.zig");
 const vm_mod = @import("vm.zig");
@@ -49,23 +50,43 @@ fn concatValues(self: *State, lhs: Value, rhs: Value) !Value {
 }
 
 fn concatStringValues(self: *State, values: []const Value) !Value {
+    var texts: [256]u8 = undefined;
+    var cached: [16][]const u8 = undefined;
+    var cached_count: usize = 0;
+    var texts_len: usize = 0;
     var scratch: [value_mod.max_number_text_len]u8 = undefined;
     var total: usize = 0;
-    for (values) |value| total += switch (value) {
+    for (values) |value| total +|= switch (value) {
         .string => |string| string.len,
-        else => value_mod.formatNumber(&scratch, value).len,
+        else => blk: {
+            const text = value_mod.formatNumber(&scratch, value);
+            if (cached_count < cached.len and texts_len + text.len <= texts.len) {
+                @memcpy(texts[texts_len..][0..text.len], text);
+                cached[cached_count] = texts[texts_len..][0..text.len];
+                cached_count += 1;
+                texts_len += text.len;
+            }
+            break :blk text.len;
+        },
     };
-    const bytes = try self.allocator.alloc(u8, total);
+    var short: [strings_mod.short_string_limit]u8 = undefined;
+    const long = if (total > short.len) try self.strings.createLong(total) else null;
+    const out = if (long) |string| string.bytesMut() else short[0..total];
     var offset: usize = 0;
+    var number_index: usize = 0;
     for (values) |value| {
         const text = switch (value) {
-            .string => |string| string,
-            else => value_mod.formatNumber(&scratch, value),
+            .string => |string| string.bytes(),
+            else => blk: {
+                defer number_index += 1;
+                break :blk if (number_index < cached_count) cached[number_index] else value_mod.formatNumber(&scratch, value);
+            },
         };
-        @memcpy(bytes[offset..][0..text.len], text);
+        @memcpy(out[offset..][0..text.len], text);
         offset += text.len;
     }
-    return .{ .string = try self.strings.adopt(bytes) };
+    if (long) |string| return .{ .string = string };
+    return .{ .string = try self.strings.internConstant(out) };
 }
 
 pub fn concatRangeToRegister(self: *State, thread: *Thread, op: bytecode.ConcatRange) !void {
@@ -461,8 +482,8 @@ pub fn rawCompare(lhs: Value, rhs: Value, op: CompareOp) ?bool {
         },
         .string => |left| switch (rhs) {
             .string => |right| switch (op) {
-                .lt => std.mem.lessThan(u8, left, right),
-                .le => !std.mem.lessThan(u8, right, left),
+                .lt => std.mem.lessThan(u8, left.bytes(), right.bytes()),
+                .le => !std.mem.lessThan(u8, right.bytes(), left.bytes()),
             },
             else => null,
         },
@@ -525,7 +546,7 @@ pub fn lessThan(lhs: Value, rhs: Value) !bool {
     return switch (lhs) {
         .integer, .number => (try toNumber(lhs)) < (try toNumber(rhs)),
         .string => |left| switch (rhs) {
-            .string => |right| std.mem.lessThan(u8, left, right),
+            .string => |right| std.mem.lessThan(u8, left.bytes(), right.bytes()),
             else => error.RuntimeError,
         },
         else => error.RuntimeError,

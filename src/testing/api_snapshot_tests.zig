@@ -1508,24 +1508,24 @@ test "atomic rollback detachment can fail and resume without losing weak entries
         defer snapshot.deinit();
         while (lua.raw_state.gc.phase != .atomic) _ = try lua.stepGc(.{});
         const weak = lua.raw_state.getGlobal("weak").table;
-        try std.testing.expect(weak.get(.{ .string = "item" }) == .table);
+        try std.testing.expect(weak.getLiteral("item") == .table);
         failing.fail_index = failing.alloc_index + offset;
         const result = lua.stepGc(.{});
         failing.fail_index = std.math.maxInt(usize);
         if (result) |_| {
-            try std.testing.expect(weak.get(.{ .string = "item" }) == .nil);
+            try std.testing.expect(weak.getLiteral("item") == .nil);
             try lua.reset();
-            try std.testing.expect(weak.get(.{ .string = "item" }) == .table);
+            try std.testing.expect(weak.getLiteral("item") == .table);
             break;
         } else |err| {
             try std.testing.expectEqual(error.OutOfMemory, err);
             try std.testing.expectEqual(.atomic, lua.raw_state.gc.phase);
             try std.testing.expect(!lua.raw_state.gc.collecting);
-            try std.testing.expect(weak.get(.{ .string = "item" }) == .table);
+            try std.testing.expect(weak.getLiteral("item") == .table);
             _ = try lua.stepGc(.{});
-            try std.testing.expect(weak.get(.{ .string = "item" }) == .nil);
+            try std.testing.expect(weak.getLiteral("item") == .nil);
             try lua.reset();
-            try std.testing.expect(weak.get(.{ .string = "item" }) == .table);
+            try std.testing.expect(weak.getLiteral("item") == .table);
         }
     }
 }
@@ -1572,25 +1572,25 @@ test "host GC drains table finalizers protects failures and restores pending reg
         \\end
     , .{});
     while (lua.raw_state.gc.phase != .finalize) _ = try lua.stepGc(.{});
-    try std.testing.expectEqualStrings("", lua.raw_state.getGlobal("calls").string);
+    try std.testing.expectEqualStrings("", lua.raw_state.getGlobal("calls").string.bytes());
     var snapshot = try lua.snapshot(a);
     defer snapshot.deinit();
     var worker = try snapshot.newState(a);
     defer worker.deinit();
     for (0..2) |_| {
         try worker.collect();
-        try std.testing.expectEqualStrings("321", worker.raw_state.getGlobal("calls").string);
-        try std.testing.expectEqual(@as(i64, 42), worker.raw_state.getGlobal("saved").table.get(.{ .string = "child" }).table.get(.{ .string = "answer" }).integer);
+        try std.testing.expectEqualStrings("321", worker.raw_state.getGlobal("calls").string.bytes());
+        try std.testing.expectEqual(@as(i64, 42), worker.raw_state.getGlobal("saved").table.getLiteral("child").table.getLiteral("answer").integer);
         try worker.reset();
-        try std.testing.expectEqualStrings("", worker.raw_state.getGlobal("calls").string);
+        try std.testing.expectEqualStrings("", worker.raw_state.getGlobal("calls").string.bytes());
         try std.testing.expect(worker.raw_state.table_pending_finalizer_head != null);
     }
     // A basic host step executes one pending Lua finalizer, including while stopped.
     while (lua.raw_state.gc.phase != .finalize) _ = try lua.stepGc(.{});
     try std.testing.expectEqual(api.GcStepResult.pending, try lua.stepGc(.{}));
-    try std.testing.expectEqualStrings("3", lua.raw_state.getGlobal("calls").string);
+    try std.testing.expectEqualStrings("3", lua.raw_state.getGlobal("calls").string.bytes());
     try lua.collect();
-    try std.testing.expectEqualStrings("321", lua.raw_state.getGlobal("calls").string);
+    try std.testing.expectEqualStrings("321", lua.raw_state.getGlobal("calls").string.bytes());
 }
 
 test "pending scoped finalizers detach snapshot payloads with retryable failure" {

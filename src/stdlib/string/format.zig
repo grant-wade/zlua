@@ -12,8 +12,9 @@ const Value = runtime.Value;
 pub fn format(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const function_name = "string.format";
     const fmt = try state.expectArgumentString(thread, op, function_name, 0);
-    var out = std.ArrayList(u8).empty;
-    defer out.deinit(state.allocator);
+    var builder = state.strings.builder();
+    defer builder.deinit();
+    const out = &builder.buffer;
     var arg: u32 = 0;
     var index: usize = 0;
     while (index < fmt.len) {
@@ -45,7 +46,7 @@ pub fn format(state: *State, thread: *Thread, op: bytecode.Call) !void {
                 try checkFormat(state, form, "-", false);
                 const integer = try state.argumentInteger(thread, op, function_name, arg);
                 const byte_value: [1]u8 = .{@truncate(@as(u64, @bitCast(integer)))};
-                try appendPadded(state.allocator, &out, &byte_value, parseFormatSpec(form), ' ');
+                try appendPadded(state.allocator, out, &byte_value, parseFormatSpec(form), ' ');
             },
             'd', 'i', 'u', 'o', 'x', 'X' => {
                 const integer = try state.argumentInteger(thread, op, function_name, arg);
@@ -55,7 +56,7 @@ pub fn format(state: *State, thread: *Thread, op: bytecode.Call) !void {
                     else => "-#0",
                 };
                 try checkFormat(state, form, flags, true);
-                try appendIntegerFormat(state, &out, integer, parseFormatSpec(form));
+                try appendIntegerFormat(state, out, integer, parseFormatSpec(form));
             },
             'a', 'A' => {
                 try checkFormat(state, form, "-+#0 ", true);
@@ -63,23 +64,23 @@ pub fn format(state: *State, thread: *Thread, op: bytecode.Call) !void {
                 if (builtin.os.tag == .windows and form.len > 2) {
                     return state.failLibrary("modifiers for format '%a'/'%A' not implemented");
                 }
-                try appendFloatFormat(state, &out, number, parseFormatSpec(form));
+                try appendFloatFormat(state, out, number, parseFormatSpec(form));
             },
             'e', 'E', 'f', 'g', 'G' => {
                 const number = try state.argumentNumber(thread, op, function_name, arg);
                 try checkFormat(state, form, "-+#0 ", true);
-                try appendFloatFormat(state, &out, number, parseFormatSpec(form));
+                try appendFloatFormat(state, out, number, parseFormatSpec(form));
             },
             'p' => {
                 try checkFormat(state, form, "-", false);
-                try appendPointer(state, &out, value, parseFormatSpec(form));
+                try appendPointer(state, out, value, parseFormatSpec(form));
             },
             'q' => {
                 if (form.len > 2) return state.failLibrary("specifier '%q' cannot have modifiers");
-                try appendLiteral(state, &out, value, arg);
+                try appendLiteral(state, out, value, arg);
             },
             's' => {
-                const text = try metatable_mod.valueToString(state, thread, value);
+                const text = (try metatable_mod.valueToString(state, thread, value)).bytes();
                 if (form.len == 2) {
                     try out.appendSlice(state.allocator, text);
                 } else {
@@ -90,14 +91,14 @@ pub fn format(state: *State, thread: *Thread, op: bytecode.Call) !void {
                         try out.appendSlice(state.allocator, text);
                     } else {
                         const precision = spec.precision orelse text.len;
-                        try appendPadded(state.allocator, &out, text[0..@min(precision, text.len)], spec, ' ');
+                        try appendPadded(state.allocator, out, text[0..@min(precision, text.len)], spec, ' ');
                     }
                 }
             },
             else => return state.failLibraryFmt("invalid conversion '{s}' to 'format'", .{form}),
         }
     }
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(out.items) }});
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try builder.finish() }});
 }
 
 const max_format = 32;
@@ -203,7 +204,7 @@ fn appendIntegerFormat(state: *State, out: *std.ArrayList(u8), integer: i64, spe
 
 fn appendLiteral(state: *State, out: *std.ArrayList(u8), value: Value, arg: u32) !void {
     switch (value) {
-        .string => |string| try appendQuoted(state.allocator, out, string),
+        .string => |string| try appendQuoted(state.allocator, out, string.bytes()),
         .integer => |integer| if (integer == std.math.minInt(i64))
             try runtime.appendFmt(state.allocator, out, "0x{x}", .{@as(u64, @bitCast(integer))})
         else
@@ -257,7 +258,7 @@ fn appendPointer(state: *State, out: *std.ArrayList(u8), value: Value, spec: For
 
 fn pointerAddress(value: Value) ?usize {
     return switch (value) {
-        .string => |string| @intFromPtr(string.ptr),
+        .string => |string| @intFromPtr(string),
         .table => |table| @intFromPtr(table),
         .userdata => |userdata| @intFromPtr(userdata),
         .closure => |closure| @intFromPtr(closure),

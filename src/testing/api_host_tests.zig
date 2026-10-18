@@ -350,6 +350,7 @@ test "deinit calls each queued userdata __gc once" {
         defer lua.deinit();
         _ = lua.setGcMode(.incremental);
         try runLua(&lua, "ran = 0");
+        lua.stopGc();
         for (1..5) |id| {
             var source: [96]u8 = undefined;
             try runLua(&lua, try std.fmt.bufPrint(&source, "meta = {{ __gc = function() ran = ran + 1; print('gc', {d}) end }}", .{id}));
@@ -359,6 +360,7 @@ test "deinit calls each queued userdata __gc once" {
             item.deinit();
         }
         try runLua(&lua, "meta = nil");
+        lua.restartGc();
         while (try lua.getGlobal("ran", i64) == 0) _ = try lua.stepGc(.{});
     }
     try std.testing.expectEqualStrings("gc\t4\ngc\t3\ngc\t2\ngc\t1\n", stdout.buffered());
