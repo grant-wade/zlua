@@ -440,7 +440,7 @@ test "api memory limit applies to captured output buffers" {
 
     var lua = try State.init(std.testing.allocator, .{
         .stdlib = .base,
-        .limits = .{ .max_memory = 224 * 1024 },
+        .limits = .{ .max_memory = 400 * 1024 },
     });
     defer lua.deinit();
 

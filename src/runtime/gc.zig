@@ -59,8 +59,8 @@ pub const Gc = struct {
     cycle_start_total: usize = 0,
     found_young: bool = false,
     old: types.GcGenerations = .{},
-    /// Owned prototypes before this index have survived a collection; minor cycles sweep only the rest.
-    old_protos: usize = 0,
+    /// Chunks before this index have survived a collection; minor cycles sweep only the rest.
+    old_chunks: usize = 0,
     sweep_cursor: usize = 0,
     major_base: usize = 0,
     work_done: usize = 0,
@@ -518,8 +518,8 @@ pub const Gc = struct {
                     gc.drain();
                     state.gc.phase = .atomic;
                     try gc.atomic();
-                    gc.sweepProtos();
-                    state.gc.old_protos = state.proto_allocations.items.len;
+                    gc.sweepChunks();
+                    state.gc.old_chunks = state.chunk_allocations.items.len;
                     state.gc.phase = .sweep_threads;
                     inline for (.{ "thread_allocations", "closure_allocations", "upvalue_allocations", "string_allocations", "userdata_allocations", "table_allocations" }) |field| {
                         state.gc.sweep_cursor = @field(state.gc.old, field);
@@ -544,7 +544,7 @@ pub const Gc = struct {
             .atomic => {
                 try gc.atomic();
                 if (state.gc.cycle == .major) {
-                    gc.sweepProtos();
+                    gc.sweepChunks();
                     gc.ageAllObjects();
                 }
                 state.gc.phase = .sweep_threads;
@@ -667,7 +667,7 @@ pub const Gc = struct {
         gc.advanceGeneration();
         state.gc.remembered.clearRetainingCapacity();
         inline for (reflection.fieldsOf(types.GcGenerations)) |f| @field(state.gc.old, f) = @field(state, f).items.len;
-        state.gc.old_protos = state.proto_allocations.items.len;
+        state.gc.old_chunks = state.chunk_allocations.items.len;
     }
 
     fn makeAllObjectsYoung(gc: *Gc) void {
@@ -681,7 +681,7 @@ pub const Gc = struct {
             }
             @field(state.gc.old, field) = if (state.rollback) |journal| @field(journal.baseline, field) else 0;
         }
-        state.gc.old_protos = 0;
+        state.gc.old_chunks = 0;
     }
 
     fn finishBaseline(gc: *Gc) void {
@@ -701,6 +701,7 @@ pub const Gc = struct {
         }
         const state = gc.parentState();
         inline for (reflection.fieldsOf(types.GcGenerations)) |field| for (@field(state, field).items) |pointer| clearEpochs(pointer);
+        for (state.chunk_allocations.items) |chunk| chunk.epoch = 0;
         if (state.rollback) |journal| journal.forEachOriginal(clearEpochs);
         gc.epoch = 1;
     }
@@ -890,8 +891,9 @@ pub const Gc = struct {
 
     fn traceClosure(gc: *Gc, closure: *Closure) void {
         const state = gc.parentState();
-        if (closure.constants) |constants| for (constants) |constant| {
-            if (constant) |value| gc.markValue(value);
+        if (closure.chunk) |chunk| if (chunk.epoch != state.gc.epoch) {
+            chunk.epoch = state.gc.epoch;
+            for (chunk.values) |value| gc.markValue(value);
         };
         for (closure.upvalues()) |upvalue| {
             if (!gc.isOld(upvalue)) state.gc.found_young = true;
@@ -1564,7 +1566,7 @@ pub const Gc = struct {
                     upvalue_mod.closeUpvalues(state, item, 0);
                     gc.destroyThread(item);
                 } else if (comptime std.mem.eql(u8, field, "closure_allocations")) {
-                    gc.noteAllocationFreed(closureBytes(item));
+                    gc.noteAllocationFreed(Closure.allocationBytes(item.upvalue_count));
                     gc.destroyClosure(item);
                 } else if (comptime std.mem.eql(u8, field, "userdata_allocations")) {
                     gc.noteAllocationFreed(userdataBytes(item));
@@ -1636,7 +1638,6 @@ pub const Gc = struct {
     pub fn destroyClosure(gc: *Gc, closure: *Closure) void {
         const state = gc.parentState();
         if (rollback.retainCollected(closure)) return;
-        if (closure.constants) |constants| state.allocator.free(constants);
         Closure.destroy(state.allocator, closure);
     }
 
@@ -1655,7 +1656,8 @@ pub const Gc = struct {
             bytes += tableGcBytes(table);
         }
         for (state.userdata_allocations.items) |userdata| bytes += userdataBytes(userdata);
-        for (state.closure_allocations.items) |closure| bytes += closureBytes(closure);
+        for (state.closure_allocations.items) |closure| bytes += Closure.allocationBytes(closure.upvalue_count);
+        for (state.chunk_allocations.items) |chunk| bytes += chunk.allocationBytes();
         bytes += state.upvalue_allocations.items.len * @sizeOf(Upvalue);
         for (state.thread_allocations.items) |thread| bytes += @sizeOf(Thread) + threadCapacityBytes(thread);
 
@@ -1669,33 +1671,23 @@ pub const Gc = struct {
         };
     }
 
-    /// Frees owned prototypes no marked closure uses; minor cycles only consider those loaded since
-    /// the previous collection, whose closures are all young.
-    fn sweepProtos(gc: *Gc) void {
+    /// Frees chunks no closure marked this cycle; minor cycles skip chunks from before the previous collection.
+    fn sweepChunks(gc: *Gc) void {
         const state = gc.parentState();
-        const minor = state.gc.cycle == .minor;
-        const start = if (minor) @max(state.gc.old_protos, state.borrowed_proto_count) else state.borrowed_proto_count;
-        if (state.proto_allocations.items.len <= start) return;
-        var live = std.AutoHashMap(*const proto_mod.Proto, void).init(state.allocator);
-        defer live.deinit();
-        const closures = state.closure_allocations.items[if (minor) state.gc.old.closure_allocations else 0..];
-        for (closures) |closure| {
-            if (gc.isMarked(closure)) live.put(closure.root orelse closure.proto, {}) catch return;
-        }
-        var index = start;
-        while (index < state.proto_allocations.items.len) {
-            const proto = state.proto_allocations.items[index];
-            if (live.contains(proto)) {
+        var index = if (state.gc.cycle == .minor) state.gc.old_chunks else 0;
+        while (index < state.chunk_allocations.items.len) {
+            const chunk = state.chunk_allocations.items[index];
+            if (chunk.epoch == state.gc.epoch) {
                 index += 1;
                 continue;
             }
-            if (state.rollback) |journal| if (index < journal.baseline.proto_allocations) {
+            if (state.rollback) |journal| if (index < journal.baseline.chunk_allocations) {
                 index += 1;
                 continue;
             };
-            _ = state.proto_allocations.swapRemove(index);
-            proto.deinit();
-            state.allocator.destroy(proto);
+            _ = state.chunk_allocations.swapRemove(index);
+            gc.noteAllocationFreed(chunk.allocationBytes());
+            chunk.destroy(state.allocator);
         }
     }
 
@@ -1864,10 +1856,6 @@ fn threadListBytes(thread: *const Thread) usize {
 
 pub fn userdataBytes(userdata: *const Userdata) usize {
     return @sizeOf(Userdata) + if (userdata.payload) |payload| @sizeOf(types.UserdataPayload) + payload.managed_bytes else @as(usize, 0);
-}
-
-fn closureBytes(closure: *const Closure) usize {
-    return Closure.allocationBytes(closure.upvalue_count) + if (closure.constants) |c| c.len * @sizeOf(?Value) else @as(usize, 0);
 }
 
 // Lua's floating-byte parameter encoding, decoded back to a percentage.

@@ -6,7 +6,6 @@ const debug_mod = @import("debug.zig");
 const failure_mod = @import("failure.zig");
 const gc_mod = @import("gc.zig");
 const index_mod = @import("index.zig");
-const load_mod = @import("load.zig");
 const metatable_mod = @import("metatable.zig");
 const operators_mod = @import("operators.zig");
 const rollback_mod = @import("rollback.zig");
@@ -27,11 +26,10 @@ const truthy = value_mod.truthy;
 const toInteger = value_mod.toInteger;
 const toNumber = value_mod.toNumber;
 const toNumberMaybe = value_mod.toNumberMaybe;
-const parseIntegerLiteral = value_mod.parseIntegerLiteral;
-const parseLuaNumber = value_mod.parseLuaNumber;
 const arrayIndex = value_mod.arrayIndex;
 const appendFmt = value_mod.appendFmt;
 const Closure = types.Closure;
+const String = types.String;
 const Table = types.Table;
 const CallFrame = types.CallFrame;
 
@@ -106,10 +104,10 @@ fn executeInstruction(self: *State, thread: *Thread, proto: *const proto_mod.Pro
     switch (instruction) {
         .load_nil => |dest| stack[base + dest] = .nil,
         .load_bool => |op| stack[base + op.dest] = .{ .boolean = op.value },
-        .load_const => |op| stack[base + op.dest] = try protoConstant(self, frame.closure, proto, op.constant),
+        .load_const => |op| stack[base + op.dest] = frame.closure.constants()[op.constant],
         .move => |op| stack[base + op.dest] = stack[base + op.source],
-        .get_global => |op| stack[base + op.register] = globalGet(self, proto, op.name),
-        .set_global => |op| if (!fastGlobalSetExisting(self, proto, op.name, stack[base + op.register])) {
+        .get_global => |op| stack[base + op.register] = globalGet(self, frame.closure.constants()[op.name].string),
+        .set_global => |op| if (!fastGlobalSetExisting(self, frame.closure.constants()[op.name].string, stack[base + op.register])) {
             try self.setGlobal(constantString(proto, op.name), stack[base + op.register]);
         },
         .declare_global => |op| try self.declareGlobal(thread, constantString(proto, op.name), op.table, op.value),
@@ -283,19 +281,18 @@ fn executeInstruction(self: *State, thread: *Thread, proto: *const proto_mod.Pro
         },
         .get_field => |op| {
             const table_value = stack[base + op.table];
-            const name = constantString(proto, op.name);
+            const key = frame.closure.constants()[op.name];
             if (frame.named_vararg_readonly and op.table == proto.param_count) {
-                stack[base + op.dest] = call_mod.namedVarargField(frame.varargs(thread.stack.items), name);
-            } else if (fastTableFieldGet(table_value, name, proto.constant_hashes[op.name])) |value| {
+                stack[base + op.dest] = call_mod.namedVarargField(frame.varargs(thread.stack.items), key.string.bytes());
+            } else if (fastTableFieldGet(table_value, key.string)) |value| {
                 stack[base + op.dest] = value;
             } else {
-                try index_mod.getTableToRegister(self, thread, op.dest, table_value, try closureConstant(self, frame.closure, op.name));
+                try index_mod.getTableToRegister(self, thread, op.dest, table_value, key);
             }
         },
         .set_field => |op| {
             const table_value = stack[base + op.table];
-            // Stored keys must be collectable strings; prototype bytes are only safe for lookups.
-            const key = try closureConstant(self, frame.closure, op.name);
+            const key = frame.closure.constants()[op.name];
             const value = stack[base + op.value];
             if (!fastTableKnownKeySetExistingNoAlloc(self, table_value, key, value) and
                 !try fastTableKnownKeySet(self, table_value, key, value))
@@ -418,15 +415,8 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             },
             .load_const => {
                 const op = instructions[pc].load_const;
-                const decoded = &proto.constant_values[op.constant];
-                if (decoded.* != .string) {
-                    stack[op.dest] = decoded.*;
-                } else {
-                    const constants = frame.closure.constants orelse break :fast_loop;
-                    const cached = &constants[op.constant];
-                    if (cached.* == null) break :fast_loop;
-                    stack[op.dest] = cached.*.?;
-                }
+                const decoded = proto.constant_values[op.constant];
+                stack[op.dest] = if (decoded != .string) decoded else frame.closure.constants()[op.constant];
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
@@ -607,13 +597,13 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             },
             .get_field => {
                 const op = instructions[pc].get_field;
-                const name = constantString(proto, op.name);
+                const key = frame.closure.constants()[op.name].string;
                 const value = if (frame.named_vararg_readonly and op.table == proto.param_count)
-                    call_mod.namedVarargField(frame.varargs(thread.stack.items), name)
+                    call_mod.namedVarargField(frame.varargs(thread.stack.items), key.bytes())
                 else if (stack[op.table] == .string)
-                    stringMethod(self, name, proto.constant_hashes[op.name]) orelse break :fast_loop
+                    stringMethod(self, key) orelse break :fast_loop
                 else
-                    fastTableFieldGet(stack[op.table], name, proto.constant_hashes[op.name]) orelse break :fast_loop;
+                    fastTableFieldGet(stack[op.table], key) orelse break :fast_loop;
                 stack[op.dest] = value;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
@@ -655,8 +645,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             },
             .set_field => {
                 const op = instructions[pc].set_field;
-                const cache = frame.closure.constants orelse break :fast_loop;
-                const key = cache[op.name] orelse break :fast_loop;
+                const key = frame.closure.constants()[op.name];
                 if (!fastTableKnownKeySetExistingNoAlloc(self, stack[op.table], key, stack[op.value])) break :fast_loop;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
@@ -1253,42 +1242,6 @@ pub fn absoluteRegister(_: *State, thread: *Thread, register: usize) usize {
     return frame.base + @as(usize, register);
 }
 
-fn loadConstant(self: *State, constant: bytecode.Constant) !Value {
-    return switch (constant) {
-        .nil => .nil,
-        .boolean => |value| .{ .boolean = value },
-        .integer => |lexeme| try parseIntegerLiteral(lexeme),
-        .number => |lexeme| .{ .number = try parseLuaNumber(lexeme) },
-        .string => |lexeme| .{ .string = try load_mod.decodeStringLiteral(self, lexeme) },
-    };
-}
-
-inline fn protoConstant(self: *State, closure: *Closure, proto: *const proto_mod.Proto, index: bytecode.ConstantIndex) !Value {
-    if (index < proto.constant_values.len) {
-        const decoded = proto.constant_values[index];
-        if (decoded != .string) return decoded;
-    }
-    return closureConstant(self, closure, index);
-}
-
-fn closureConstant(self: *State, closure: *Closure, index: bytecode.ConstantIndex) !Value {
-    if (closure.constants) |cache| if (cache[index]) |value| return value;
-    try rollback_mod.closureWritable(closure);
-    if (closure.constants == null) closure.constants = try allocateConstantCache(self, closure.proto);
-    const constants = closure.constants.?;
-    if (constants[index] == null) constants[index] = try loadConstant(self, closure.proto.constants.items[index]);
-    self.gc.writeBarrier(closure, constants[index].?);
-    return constants[index].?;
-}
-
-fn allocateConstantCache(self: *State, proto: *const proto_mod.Proto) ![]?Value {
-    const constants = try self.allocator.alloc(?Value, proto.constants.items.len);
-    errdefer self.allocator.free(constants);
-    @memset(constants, null);
-    self.gc.noteAllocation(constants.len * @sizeOf(?Value));
-    return constants;
-}
-
 pub fn jumpThread(self: *State, thread: *Thread, offset: bytecode.JumpOffset, auto_gc: bool) !void {
     const frame_index = thread.frames.items.len - 1;
     const frame = &thread.frames.items[frame_index];
@@ -1561,17 +1514,17 @@ pub fn assertProtoPrepared(proto: *const proto_mod.Proto) void {
     std.debug.assert(proto.runtime_prepared or proto.constants.items.len == 0);
 }
 
-inline fn globalGet(self: *State, proto: *const proto_mod.Proto, name: bytecode.ConstantIndex) Value {
+inline fn globalGet(self: *State, key: *const String) Value {
     const table = self.global_table orelse return .nil;
-    return table.getStringHashed(constantString(proto, name), proto.constant_hashes[name]);
+    return table.getString(key);
 }
 
 /// Overwrites an existing non-nil global in place, like `State.setGlobal` without interning.
-fn fastGlobalSetExisting(self: *State, proto: *const proto_mod.Proto, name: bytecode.ConstantIndex, value: Value) bool {
+fn fastGlobalSetExisting(self: *State, key: *const String, value: Value) bool {
     if (value == .nil) return false;
     const table = self.global_table orelse return false;
     if (table.rollback) |record| if (!record.header.detached) return false;
-    const index = table.findStringEntry(constantString(proto, name), proto.constant_hashes[name]) orelse return false;
+    const index = table.findStringKey(key) orelse return false;
     const entry = &table.entries.items[index];
     if (entry.value == .nil) return false;
     entry.value = value;
@@ -1581,26 +1534,26 @@ fn fastGlobalSetExisting(self: *State, proto: *const proto_mod.Proto, name: byte
 }
 
 /// A string's method through its metatable's `__index` table, when that needs no metamethod call.
-fn stringMethod(self: *State, name: []const u8, hash: u32) ?Value {
+fn stringMethod(self: *State, key: *const String) ?Value {
     const metatable = self.string_metatable orelse return null;
     const handler = metatable.metaEvent(.__index);
     if (handler != .table) return null;
-    const value = handler.table.getStringHashed(name, hash);
+    const value = handler.table.getString(key);
     if (value != .nil or index_mod.noIndexMetamethod(handler.table)) return value;
     return null;
 }
 
-fn fastTableFieldGet(table_value: Value, name: []const u8, hash: u32) ?Value {
+fn fastTableFieldGet(table_value: Value, key: *const String) ?Value {
     if (table_value != .table) return null;
     const table = table_value.table;
-    const value = table.getStringHashed(name, hash);
+    const value = table.getString(key);
     if (value != .nil) return value;
     const metatable = table.metatable orelse return value;
     if (metatable.metaEventAbsent(.__index)) return value;
     const handler = metatable.metaEvent(.__index);
     if (handler == .nil) return value;
     if (handler != .table) return null;
-    const inherited = handler.table.getStringHashed(name, hash);
+    const inherited = handler.table.getString(key);
     if (inherited != .nil or index_mod.noIndexMetamethod(handler.table)) return inherited;
     return null;
 }

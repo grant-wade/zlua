@@ -576,6 +576,12 @@ test "api dumps and loads zlua bytecode" {
     try std.testing.expectError(error.LuaError, target_state.loadBytecode("return 1", .{}));
 }
 
+fn ownedChunkCount(lua: *const State) usize {
+    var count: usize = 0;
+    for (lua.raw_state.chunk_allocations.items) |chunk| count += @intFromBool(chunk.root_owner != .snapshot);
+    return count;
+}
+
 test "collections free chunk prototypes once their closures are unreachable" {
     var lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
@@ -589,7 +595,7 @@ test "collections free chunk prototypes once their closures are unreachable" {
         \\end
         \\collectgarbage()
     , .{});
-    try std.testing.expect(lua.raw_state.proto_allocations.items.len - lua.raw_state.borrowed_proto_count < 20);
+    try std.testing.expect(ownedChunkCount(&lua) < 20);
     try std.testing.expectEqual(lua.raw_state.gc.allocationStats().total(), lua.raw_state.gc.known_total);
 
     try lua.doString(
@@ -615,7 +621,7 @@ test "fast field stores keep their keys after the chunk prototype is freed" {
         \\end
         \\collectgarbage()
     , .{});
-    try std.testing.expect(lua.raw_state.proto_allocations.items.len - lua.raw_state.borrowed_proto_count < 20);
+    try std.testing.expect(ownedChunkCount(&lua) < 20);
 
     try lua.doString(
         \\for i, t in pairs(keep) do

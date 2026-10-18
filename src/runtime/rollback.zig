@@ -3,7 +3,6 @@ const std = @import("std");
 const reflection = @import("../reflection.zig");
 const types = @import("types.zig");
 const State = @import("state.zig").State;
-const Proto = @import("../compile/proto.zig").Proto;
 const strings_mod = @import("strings.zig");
 
 const Kind = enum { table, closure, upvalue, thread, userdata };
@@ -63,10 +62,8 @@ pub fn closureWritable(closure: *types.Closure) !void {
     const a = record.header.journal.allocator;
     const upvalues = try a.dupe(*types.Upvalue, closure.upvalues());
     errdefer a.free(upvalues);
-    const constants = if (closure.constants) |c| try a.dupe(?types.Value, c) else null;
     touch(closure);
     record.upvalues = upvalues;
-    closure.constants = constants;
     record.header.detached = true;
 }
 
@@ -106,7 +103,7 @@ pub fn userdataWritable(userdata: *types.Userdata) !void {
 }
 
 const thread_lists = .{ "stack", "frames", "yield_values", "protected_continuations", "generic_for_continuations", "pairs_continuations", "tail_call_continuations", "call_one_continuations" };
-const registries = .{ "string_allocations", "table_allocations", "userdata_allocations", "closure_allocations", "upvalue_allocations", "thread_allocations", "proto_allocations", "source_allocations" };
+const registries = .{ "string_allocations", "table_allocations", "userdata_allocations", "closure_allocations", "upvalue_allocations", "thread_allocations", "chunk_allocations", "source_allocations" };
 const object_lists = .{ "table_allocations", "closure_allocations", "upvalue_allocations", "thread_allocations", "userdata_allocations" };
 const object_types = .{ types.Table, types.Closure, types.Upvalue, types.Thread, types.Userdata };
 const record_lists = .{ "tables", "closures", "upvalues", "threads", "userdata" };
@@ -119,7 +116,7 @@ pub const RegistryLengths = struct {
     closure_allocations: usize = 0,
     upvalue_allocations: usize = 0,
     thread_allocations: usize = 0,
-    proto_allocations: usize = 0,
+    chunk_allocations: usize = 0,
     source_allocations: usize = 0,
 };
 
@@ -338,9 +335,8 @@ pub const Journal = struct {
                 } else if (comptime std.mem.eql(u8, name, "source_allocations")) {
                     if (item.len == 0) continue;
                     a.free(item);
-                } else if (comptime std.mem.eql(u8, name, "proto_allocations")) {
-                    item.deinit();
-                    a.destroy(item);
+                } else if (comptime std.mem.eql(u8, name, "chunk_allocations")) {
+                    item.destroy(a);
                 } else {
                     const T = @typeInfo(@TypeOf(item)).pointer.child;
                     freeStorage(T, a, item);
@@ -415,8 +411,6 @@ fn freeRetainedStrings(a: std.mem.Allocator, saved: *const State, state: *const 
 fn freeStorage(comptime T: type, a: std.mem.Allocator, object: *T) void {
     if (T == types.Table or T == types.Thread) {
         object.deinit(a);
-    } else if (T == types.Closure) {
-        if (object.constants) |c| a.free(c);
     } else if (T == types.Userdata) {
         if (object.payload) |p| p.release(true);
     }

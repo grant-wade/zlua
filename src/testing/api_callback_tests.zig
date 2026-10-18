@@ -210,7 +210,7 @@ test "host registration is native and does not compile or execute Lua" {
     defer first.deinit();
     var second = try lua.register("echo", Callbacks.echo);
     defer second.deinit();
-    try std.testing.expectEqual(@as(usize, 0), lua.raw_state.proto_allocations.items.len);
+    try std.testing.expectEqual(@as(usize, 0), lua.raw_state.chunk_allocations.items.len);
     try std.testing.expectEqual(@as(usize, 0), lua.raw_state.closure_allocations.items.len);
     try std.testing.expectEqual(@as(usize, 0), lua.raw_state.source_allocations.items.len);
     try std.testing.expect(lua.raw_state.getGlobal("__zlua_api_callback") == .nil);

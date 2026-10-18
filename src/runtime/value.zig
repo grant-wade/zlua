@@ -3,7 +3,6 @@ const compile = @import("../compile.zig");
 const types = @import("types.zig");
 const number_format = @import("number_format.zig");
 const static_strings = @import("../stdlib/static_strings.zig");
-const table_index = @import("table_index.zig");
 
 const bytecode = compile.bytecode;
 const proto_mod = compile.proto;
@@ -274,7 +273,14 @@ pub fn appendLuaString(allocator: std.mem.Allocator, out: *std.ArrayList(u8), va
 /// written again, so snapshot workers may share them.
 pub fn prepareProtoTree(proto: *proto_mod.Proto) !void {
     if (proto.runtime_prepared) return;
-    for (proto.children.items) |child| try prepareProtoTree(child);
+    var constant_count: u32 = 0;
+    try prepareProto(proto, &constant_count);
+}
+
+fn prepareProto(proto: *proto_mod.Proto, constant_count: *u32) !void {
+    proto.constant_offset = constant_count.*;
+    constant_count.* = std.math.add(u32, constant_count.*, std.math.cast(u32, proto.constants.items.len) orelse return error.OutOfMemory) catch return error.OutOfMemory;
+    for (proto.children.items) |child| try prepareProto(child, constant_count);
     const values = try proto.arena.allocator().alloc(Value, proto.constants.items.len);
     for (proto.constants.items, values) |constant, *value| {
         value.* = switch (constant) {
@@ -286,11 +292,6 @@ pub fn prepareProtoTree(proto: *proto_mod.Proto) !void {
         };
     }
     proto.constant_values = values;
-    const hashes = try proto.arena.allocator().alloc(u32, proto.constants.items.len);
-    for (proto.constants.items, hashes) |constant, *hash| {
-        hash.* = if (constant == .string) table_index.hashStringKey(constant.string) else 0;
-    }
-    proto.constant_hashes = hashes;
     proto.named_vararg_readonly = proto.hasReadOnlyNamedVararg();
     const instructions = proto.instructions.items;
     const last_stops = instructions.len != 0 and switch (instructions[instructions.len - 1]) {

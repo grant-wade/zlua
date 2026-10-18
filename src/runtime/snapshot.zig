@@ -146,6 +146,12 @@ const Copier = struct {
         for (old.children.items) |child| try self.borrowedProto(child);
     }
 
+    fn chunkRoot(self: *Copier, old: *Proto) !*Proto {
+        if (!self.borrow_protos) return self.proto(old);
+        try self.borrowedProto(old);
+        return old;
+    }
+
     fn proto(self: *Copier, old: *const Proto) anyerror!*Proto {
         const a = self.destination.allocator;
         const new = try a.create(Proto);
@@ -155,9 +161,8 @@ const Copier = struct {
             a.destroy(new);
         }
         try self.map.put(@intFromPtr(old), @intFromPtr(new));
-        inline for (.{ "max_registers", "param_count", "is_vararg", "named_vararg", "defined_line", "last_defined_line", "has_to_close_locals", "runtime_prepared", "named_vararg_readonly", "fast_loop_entry", "fast_loop_call" }) |name| @field(new, name) = @field(old, name);
+        inline for (.{ "max_registers", "param_count", "is_vararg", "named_vararg", "defined_line", "last_defined_line", "has_to_close_locals", "runtime_prepared", "named_vararg_readonly", "fast_loop_entry", "fast_loop_call", "constant_offset" }) |name| @field(new, name) = @field(old, name);
         new.constant_values = try new.arena.allocator().dupe(types.Value, old.constant_values);
-        new.constant_hashes = try new.arena.allocator().dupe(u32, old.constant_hashes);
         new.close_exit_jumps = try new.arena.allocator().dupe(u64, old.close_exit_jumps);
         new.source_name = try self.text(old.source_name);
         new.debug_name = try self.remap(old.debug_name);
@@ -182,13 +187,16 @@ const Copier = struct {
             try self.map.put(@intFromPtr(string), @intFromPtr(duplicate));
         }
         for (source.source_allocations.items) |bytes| _ = try self.text(bytes);
-        try d.proto_allocations.ensureTotalCapacity(a, source.proto_allocations.items.len);
-        for (source.proto_allocations.items) |old| {
-            if (self.borrow_protos) {
-                try self.borrowedProto(old);
-                d.proto_allocations.appendAssumeCapacity(old);
-                d.borrowed_proto_count += 1;
-            } else d.proto_allocations.appendAssumeCapacity(try self.proto(old));
+        try d.chunk_allocations.ensureTotalCapacity(a, source.chunk_allocations.items.len);
+        for (source.chunk_allocations.items) |old| {
+            if (old.root_owner == .host) continue;
+            const chunk = try a.create(types.Chunk);
+            errdefer a.destroy(chunk);
+            try self.map.put(@intFromPtr(old), @intFromPtr(chunk));
+            const constants = try self.values(types.Value, old.values);
+            errdefer a.free(constants);
+            chunk.* = .{ .root = try self.chunkRoot(old.root), .root_owner = if (self.borrow_protos) .snapshot else .state, .values = constants };
+            d.chunk_allocations.appendAssumeCapacity(chunk);
         }
         try self.shells(types.Table, source.table_allocations.items, &d.table_allocations, .{});
         try self.shells(types.Thread, source.thread_allocations.items, &d.thread_allocations, .{});
@@ -211,9 +219,8 @@ const Copier = struct {
         }
         for (source.closure_allocations.items, d.closure_allocations.items) |old, new| {
             new.proto = try self.mapped(old.proto);
-            new.root = if (old.root) |root| try self.mapped(root) else null;
+            new.chunk = if (old.chunk) |chunk| try self.mapped(chunk) else null;
             for (old.upvalues(), new.upvalues()) |upvalue, *slot| slot.* = try self.mapped(upvalue);
-            if (old.constants) |v| new.constants = try self.values(?types.Value, v);
             new.stripped_debug = old.stripped_debug;
         }
         for (source.upvalue_allocations.items, d.upvalue_allocations.items) |old, new| {
@@ -378,9 +385,9 @@ comptime {
     @setEvalBranchQuota(1000000);
     review(State, .{
         .external = "allocator allocator_lifetime options",
-        .rebuilt = "borrowed_proto_count strings api_roots gc budget",
+        .rebuilt = "strings api_roots gc budget",
         .remapped = "global_table table_metatable_head table_finalizer_head table_pending_finalizer_head userdata_pending_finalizer_head userdata_lua_pending_head string_metatable number_metatable boolean_metatable nil_metatable file_metatable fs_file_metatable io_input io_output library_tables last_error",
-        .copied = "string_allocations table_allocations userdata_allocations closure_allocations upvalue_allocations thread_allocations proto_allocations source_allocations stdout stderr table_metatable_count table_finalizer_serial stdin_pos file_generation error_handled warnings_on random_state",
+        .copied = "string_allocations table_allocations userdata_allocations closure_allocations upvalue_allocations thread_allocations chunk_allocations source_allocations stdout stderr table_metatable_count table_finalizer_serial stdin_pos file_generation error_handled warnings_on random_state",
         .transient = "execution_depth userdata_scope value_roots rollback snapshot_busy discarding exit_request local_zone current_thread api_callback_dispatch api_callback_user_data active_api_callback coroutine_close_depth",
     });
     review(budget_mod.Budget, .{
@@ -390,7 +397,7 @@ comptime {
     review(gc_mod.Gc, .{
         .rebuilt = "next_total known_total",
         .copied = "running mode params",
-        .transient = "epoch generation phase cycle work remembered weak tables finalizers major_pending cycle_start_total found_young old old_protos sweep_cursor major_base work_done minor_count collecting stress_collect stress_step stress_mark mark_all_stack_registers conservative_depth",
+        .transient = "epoch generation phase cycle work remembered weak tables finalizers major_pending cycle_start_total found_young old old_chunks sweep_cursor major_base work_done minor_count collecting stress_collect stress_step stress_mark mark_all_stack_registers conservative_depth",
     });
     review(types.Thread, .{
         .copied = "exposed stack frames yield_values protected_continuations generic_for_continuations pairs_continuations tail_call_continuations call_one_continuations hook_call hook_line hook_return hook_count hook_count_remaining pending_yield_hook_return continuation_order continuation_frame_count last_result_base last_result_count last_transfer_base last_transfer_count yield_result_base yield_result_count pending_unwind_resume_frame_count pending_unwind_target_frame_count started is_main closing status stack_error_space host_frame frame_storage_bytes",
@@ -409,9 +416,14 @@ comptime {
         .transient = "rollback gc metamethod_absent weak_epoch tables_epoch",
     });
     review(types.Closure, .{
-        .remapped = "proto root constants",
+        .remapped = "proto chunk",
         .copied = "upvalue_count stripped_debug",
         .transient = "rollback gc",
+    });
+    review(types.Chunk, .{
+        .remapped = "root values",
+        .rebuilt = "root_owner",
+        .transient = "epoch",
     });
     review(types.Upvalue, .{
         .remapped = "owner closed next",
@@ -426,7 +438,7 @@ comptime {
     });
     review(Proto, .{
         .rebuilt = "allocator arena",
-        .copied = "constants instructions line_info locals upvalues error_sites max_registers param_count is_vararg named_vararg source_name debug_name defined_line last_defined_line has_to_close_locals runtime_prepared named_vararg_readonly fast_loop_entry fast_loop_call constant_values constant_hashes close_exit_jumps",
+        .copied = "constants instructions line_info locals upvalues error_sites max_registers param_count is_vararg named_vararg source_name debug_name defined_line last_defined_line has_to_close_locals runtime_prepared named_vararg_readonly fast_loop_entry fast_loop_call constant_values constant_offset close_exit_jumps",
         .remapped = "children",
     });
     review(types.Value, .{ .remapped = "string table userdata closure thread coroutine_wrapper gmatch_iterator", .external = "nil boolean integer number native_print native_tostring native_getmetatable native_setmetatable native_rawequal native_rawget native_rawset native_rawlen native_next native_pairs native_ipairs native_ipairs_iter native_table_create native_select native_assert native_error native_pcall native_xpcall native_collectgarbage native_debug_traceback native_coroutine_create native_coroutine_resume native_coroutine_yield native_coroutine_status native_coroutine_running native_coroutine_isyieldable native_coroutine_close native_coroutine_wrap native api_callback" });

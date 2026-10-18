@@ -718,7 +718,8 @@ test "snapshot workers share immutable bytecode but keep closures and caches pri
     try std.testing.expectEqual(lc.proto, rc.proto);
     try std.testing.expectEqualStrings("retained-constant", try lf.call(.{}, []const u8));
     try std.testing.expectEqualStrings("retained-constant", try rf.call(.{}, []const u8));
-    try std.testing.expect(lc.constants.?.ptr != rc.constants.?.ptr);
+    try std.testing.expect(lc.chunk.? != rc.chunk.?);
+    try std.testing.expect(lc.constants()[0].string != rc.constants()[0].string);
 }
 
 test "snapshot recapture preserves old bytecode owner and captures modified worker" {
@@ -1085,12 +1086,12 @@ test "incremental module loads and native coroutine trampolines are reclaimed" {
     var snapshot = try lua.snapshot(a);
     defer snapshot.deinit();
     const sources = lua.raw_state.source_allocations.items.len;
-    const protos = lua.raw_state.proto_allocations.items.len;
+    const chunks = lua.raw_state.chunk_allocations.items.len;
     for (0..3) |_| {
         try lua.doString("assert(require('fresh').value==42); assert(coroutine.resume(co,true))", .{});
         try lua.reset();
         try std.testing.expectEqual(sources, lua.raw_state.source_allocations.items.len);
-        try std.testing.expectEqual(protos, lua.raw_state.proto_allocations.items.len);
+        try std.testing.expectEqual(chunks, lua.raw_state.chunk_allocations.items.len);
     }
 }
 

@@ -159,9 +159,7 @@ pub const State = struct {
     closure_allocations: std.ArrayList(*Closure) = .empty,
     upvalue_allocations: std.ArrayList(*Upvalue) = .empty,
     thread_allocations: std.ArrayList(*Thread) = .empty,
-    proto_allocations: std.ArrayList(*proto_mod.Proto) = .empty,
-    /// Prefix owned by the API state's retained immutable snapshot.
-    borrowed_proto_count: usize = 0,
+    chunk_allocations: std.ArrayList(*types.Chunk) = .empty,
     source_allocations: std.ArrayList([]const u8) = .empty,
     api_roots: std.ArrayList(Value) = .empty,
     stdout: std.ArrayList(u8) = .empty,
@@ -370,15 +368,12 @@ pub const State = struct {
                 self.allocator.destroy(table);
             } else self.gc.destroyTable(table);
         }
-        for (self.proto_allocations.items[self.borrowed_proto_count..]) |proto| {
-            proto.deinit();
-            self.allocator.destroy(proto);
-        }
+        for (self.chunk_allocations.items) |chunk| chunk.destroy(self.allocator);
         for (self.source_allocations.items) |source| self.allocator.free(source);
         for (self.string_allocations.items) |string| strings_mod.destroy(self.allocator, string);
         self.api_roots.deinit(self.allocator);
         self.source_allocations.deinit(self.allocator);
-        self.proto_allocations.deinit(self.allocator);
+        self.chunk_allocations.deinit(self.allocator);
         self.thread_allocations.deinit(self.allocator);
         self.upvalue_allocations.deinit(self.allocator);
         self.closure_allocations.deinit(self.allocator);
@@ -535,7 +530,7 @@ pub const State = struct {
     pub fn newClosure(self: *State, thread: *Thread, proto: *const proto_mod.Proto) !Value {
         const parent = thread.frames.items[thread.frames.items.len - 1];
         vm_mod.assertProtoPrepared(proto);
-        const closure = try Closure.create(self.allocator, proto.upvalues.items.len, .{ .proto = proto, .root = parent.closure.root orelse parent.closure.proto, .stripped_debug = parent.closure.stripped_debug });
+        const closure = try Closure.create(self.allocator, proto.upvalues.items.len, .{ .proto = proto, .chunk = parent.closure.chunk, .stripped_debug = parent.closure.stripped_debug });
         errdefer Closure.destroy(self.allocator, closure);
         const upvalues = closure.upvalues();
         for (proto.upvalues.items, upvalues) |desc, *upvalue| {

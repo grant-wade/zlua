@@ -51,9 +51,9 @@ pub fn loadSourceAsClosureNamedEnv(self: *State, source: []const u8, source_name
     errdefer proto.deinit();
     if (source_name) |name| try setProtoSourceName(proto, name);
     try value_mod.prepareProtoTree(proto);
-    try self.registerAllocation("proto_allocations", proto);
-    errdefer _ = self.proto_allocations.pop();
-    const closure = try newRootClosureWithEnv(self, proto, environment);
+    const chunk = try newChunk(self, proto, .state);
+    errdefer discardNewChunk(self, chunk);
+    const closure = try newLoadedClosure(self, chunk, environment, false);
     self.gc.notePrototype(proto);
     return .{ .closure = closure };
 }
@@ -80,11 +80,11 @@ pub fn loadBinaryDump(self: *State, source: []const u8, environment: Value) !Val
     }
     if (reader.pos != source.len) return self.fail("bad binary chunk");
     try value_mod.prepareProtoTree(proto);
-    try self.registerAllocation("proto_allocations", proto);
-    errdefer _ = self.proto_allocations.pop();
-    const closure = try newDumpedClosure(self, proto, environment, stripped_debug);
+    const chunk = try newChunk(self, proto, .state);
+    errdefer discardNewChunk(self, chunk);
+    const closure = try newLoadedClosure(self, chunk, environment, stripped_debug);
     self.gc.notePrototype(proto);
-    return closure;
+    return .{ .closure = closure };
 }
 
 pub fn loadFileAsClosure(self: *State, path: []const u8) !Value {
@@ -126,7 +126,9 @@ pub fn decodeStringLiteral(self: *State, lexeme: []const u8) !*const types.Strin
 }
 
 fn decodeShortString(self: *State, lexeme: []const u8) !*const types.String {
-    var out = std.ArrayList(u8).empty;
+    const body = lexeme[1 .. lexeme.len - 1];
+    if (std.mem.indexOfScalar(u8, body, '\\') == null) return self.strings.internConstant(body);
+    var out = try std.ArrayList(u8).initCapacity(self.allocator, body.len);
     errdefer out.deinit(self.allocator);
 
     var index: usize = 1;
@@ -237,17 +239,59 @@ fn normalizeLongStringLineEnds(self: *State, content: []const u8) ![]const u8 {
     return out.toOwnedSlice(self.allocator);
 }
 
-pub fn newRootClosure(self: *State, proto: *const proto_mod.Proto) !*Closure {
-    return newRootClosureWithEnv(self, proto, defaultEnvironment(self));
+/// `proto` stays owned by the caller.
+pub fn newRootClosure(self: *State, proto: *proto_mod.Proto) !*Closure {
+    const chunk = try newChunk(self, proto, .host);
+    errdefer discardNewChunk(self, chunk);
+    return newLoadedClosure(self, chunk, defaultEnvironment(self), false);
 }
 
-fn newRootClosureWithEnv(self: *State, proto: *const proto_mod.Proto, environment: Value) !*Closure {
-    return newLoadedClosure(self, proto, environment, false);
+pub fn newChunk(self: *State, root: *proto_mod.Proto, root_owner: types.Chunk.RootOwner) !*types.Chunk {
+    const values = try self.allocator.alloc(Value, treeConstantCount(root));
+    errdefer self.allocator.free(values);
+    try loadTreeConstants(self, root, values);
+    const chunk = try self.allocator.create(types.Chunk);
+    errdefer self.allocator.destroy(chunk);
+    chunk.* = .{ .root = root, .root_owner = root_owner, .values = values };
+    try self.registerAllocation("chunk_allocations", chunk);
+    self.gc.noteAllocation(chunk.allocationBytes());
+    return chunk;
 }
 
-fn newLoadedClosure(self: *State, proto: *const proto_mod.Proto, environment: Value, stripped_debug: bool) !*Closure {
+/// `chunk` must be the most recently registered chunk; its root is not freed.
+pub fn discardNewChunk(self: *State, chunk: *types.Chunk) void {
+    const popped = self.chunk_allocations.pop();
+    std.debug.assert(popped == chunk);
+    self.gc.noteAllocationFreed(chunk.allocationBytes());
+    chunk.root_owner = .host;
+    chunk.destroy(self.allocator);
+}
+
+fn treeConstantCount(proto: *const proto_mod.Proto) usize {
+    var count = proto.constants.items.len;
+    for (proto.children.items) |child| count += treeConstantCount(child);
+    return count;
+}
+
+fn loadTreeConstants(self: *State, proto: *const proto_mod.Proto, values: []Value) !void {
+    for (proto.constants.items, values[proto.constant_offset..][0..proto.constants.items.len]) |constant, *value| value.* = try loadConstant(self, constant);
+    for (proto.children.items) |child| try loadTreeConstants(self, child, values);
+}
+
+fn loadConstant(self: *State, constant: compile.bytecode.Constant) !Value {
+    return switch (constant) {
+        .nil => .nil,
+        .boolean => |value| .{ .boolean = value },
+        .integer => |lexeme| try value_mod.parseIntegerLiteral(lexeme),
+        .number => |lexeme| .{ .number = try value_mod.parseLuaNumber(lexeme) },
+        .string => |lexeme| .{ .string = try decodeStringLiteral(self, lexeme) },
+    };
+}
+
+fn newLoadedClosure(self: *State, chunk: *types.Chunk, environment: Value, stripped_debug: bool) !*Closure {
+    const proto = chunk.root;
     vm_mod.assertProtoPrepared(proto);
-    const closure = try Closure.create(self.allocator, proto.upvalues.items.len, .{ .proto = proto, .stripped_debug = stripped_debug });
+    const closure = try Closure.create(self.allocator, proto.upvalues.items.len, .{ .proto = proto, .chunk = chunk, .stripped_debug = stripped_debug });
     errdefer Closure.destroy(self.allocator, closure);
     const upvalues = closure.upvalues();
     for (proto.upvalues.items, upvalues) |desc, *slot| {
@@ -270,10 +314,6 @@ fn newLoadedClosure(self: *State, proto: *const proto_mod.Proto, environment: Va
 
 fn defaultEnvironment(self: *State) Value {
     return if (self.global_table) |table| .{ .table = table } else self.getGlobalValue("_G");
-}
-
-fn newDumpedClosure(self: *State, proto: *const proto_mod.Proto, environment: Value, stripped_debug: bool) !Value {
-    return .{ .closure = try newLoadedClosure(self, proto, environment, stripped_debug) };
 }
 
 fn failLoadDiagnostic(self: *State, source_name: ?[]const u8, source_text: []const u8, diagnostic: ?errors.Diagnostic, fallback: []const u8) RuntimeError {

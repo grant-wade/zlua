@@ -3,6 +3,7 @@ const compile = @import("../compile.zig");
 const call_mod = @import("call.zig");
 const debug_mod = @import("debug.zig");
 const host = @import("host.zig");
+const load_mod = @import("load.zig");
 const State = @import("state.zig").State;
 const types = @import("types.zig");
 const upvalue_mod = @import("upvalue.zig");
@@ -337,10 +338,10 @@ fn callableEntryClosure(self: *State) !*Closure {
     _ = try proto.emit(.{ .vararg = .{ .dest = 1, .count = bytecode.multret_count } }, 0);
     _ = try proto.emit(.{ .call = .{ .base = 0, .arg_count = bytecode.multret_arg_count, .return_count = bytecode.multret_count } }, 0);
     _ = try proto.emit(.{ .ret = .{ .first = 0, .count = bytecode.multret_count } }, 0);
-    try self.registerAllocation("proto_allocations", proto);
-    errdefer _ = self.proto_allocations.pop();
+    const chunk = try load_mod.newChunk(self, proto, .state);
+    errdefer load_mod.discardNewChunk(self, chunk);
 
-    const closure = try Closure.create(self.allocator, 0, .{ .proto = proto });
+    const closure = try Closure.create(self.allocator, 0, .{ .proto = proto, .chunk = chunk });
     errdefer Closure.destroy(self.allocator, closure);
     try self.registerAllocation("closure_allocations", closure);
     self.gc.noteAllocation(Closure.allocationBytes(0));

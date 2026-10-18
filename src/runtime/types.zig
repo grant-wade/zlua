@@ -373,19 +373,54 @@ pub const CoroutineResumeResult = union(enum) {
     failure: Value,
 };
 
+/// A loaded prototype tree's constants in one State, with its strings interned there.
+pub const Chunk = struct {
+    root: *proto_mod.Proto,
+    root_owner: RootOwner,
+    /// Collector epoch of the last mark.
+    epoch: u32 = 0,
+    /// Each prototype's constants, starting at its `constant_offset`.
+    values: []Value,
+
+    pub const RootOwner = enum {
+        /// Freed with the chunk.
+        state,
+        /// Shared with the snapshot this State was created from.
+        snapshot,
+        /// Owned by the host that executed it.
+        host,
+    };
+
+    pub fn allocationBytes(self: *const Chunk) usize {
+        return @sizeOf(Chunk) + self.values.len * @sizeOf(Value);
+    }
+
+    pub fn destroy(self: *Chunk, allocator: std.mem.Allocator) void {
+        if (self.root_owner == .state) {
+            self.root.deinit();
+            allocator.destroy(self.root);
+        }
+        allocator.free(self.values);
+        allocator.destroy(self);
+    }
+};
+
 /// A Lua function, followed by its `upvalue_count` upvalue pointers in the same allocation.
 pub const Closure = struct {
     gc: GcHeader = .{},
     rollback: ?*@import("rollback.zig").Record(Closure) = null,
     proto: *const proto_mod.Proto,
-    /// Loaded chunk prototype that owns `proto`; null when `proto` is that root.
-    root: ?*const proto_mod.Proto = null,
-    constants: ?[]?Value = null,
+    /// Null for host frames.
+    chunk: ?*Chunk = null,
     upvalue_count: u32 = 0,
     stripped_debug: bool = false,
 
     comptime {
         std.debug.assert(@sizeOf(Closure) % @alignOf(*Upvalue) == 0);
+    }
+
+    pub inline fn constants(self: *const Closure) [*]const Value {
+        return self.chunk.?.values.ptr + self.proto.constant_offset;
     }
 
     pub inline fn upvalues(self: *const Closure) []*Upvalue {
@@ -407,7 +442,6 @@ pub const Closure = struct {
         return closure;
     }
 
-    /// Frees the allocation only; `constants` belongs to the caller.
     pub fn destroy(allocator: std.mem.Allocator, closure: *Closure) void {
         const memory: [*]align(@alignOf(Closure)) u8 = @ptrCast(closure);
         allocator.free(memory[0..allocationBytes(closure.upvalue_count)]);
@@ -536,6 +570,11 @@ pub const Table = struct {
     /// Raw read of a string key whose `table_index.hashStringKey` the caller already knows.
     pub inline fn getStringHashed(self: *const Table, key: []const u8, hash: u32) Value {
         if (self.findStringEntry(key, hash)) |index| return self.entries.items[index].value;
+        return .nil;
+    }
+
+    pub inline fn getString(self: *const Table, key: *const String) Value {
+        if (self.findStringKey(key)) |index| return self.entries.items[index].value;
         return .nil;
     }
 
