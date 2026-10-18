@@ -288,7 +288,7 @@ const FunctionCompiler = struct {
         if (instructions.len == 0) return false;
         // Short-circuit branches may bypass the final operation, so they need the move.
         for (instructions) |instruction| switch (instruction) {
-            .jmp, .test_op, .test_set, .compare_branch => return false,
+            .jmp, .test_op, .test_set, .compare_branch, .compare_branch_k => return false,
             else => {},
         };
         switch (instructions[instructions.len - 1]) {
@@ -300,7 +300,7 @@ const FunctionCompiler = struct {
                 if (op.register != source) return false;
                 op.register = dest;
             },
-            inline .load_bool, .load_const, .move, .get_table, .get_field, .new_table, .closure, .add, .sub, .mul, .div, .idiv, .mod, .pow, .unm, .band, .bor, .bxor, .bnot, .shl, .shr, .eq, .lt, .le, .not, .len, .concat, .concat_range => |*op| {
+            inline .load_bool, .load_const, .move, .get_table, .get_field, .new_table, .closure, .add, .sub, .mul, .div, .idiv, .mod, .pow, .unm, .band, .bor, .bxor, .bnot, .shl, .shr, .eq, .lt, .le, .not, .len, .concat, .concat_range, .add_k, .sub_k, .mul_k, .div_k, .idiv_k, .mod_k, .band_k, .bor_k, .bxor_k, .shl_k, .shr_k => |*op| {
                 if (op.dest != source) return false;
                 op.dest = dest;
             },
@@ -843,6 +843,7 @@ const FunctionCompiler = struct {
         }
 
         if (binary.op == .concat and try self.compileConcatChain(binary, dest)) return;
+        if (try self.compileBinaryConstant(binary, dest)) return;
 
         const mark = self.registerMark();
         const direct_left = self.sourceRegister(binary.left);
@@ -867,6 +868,30 @@ const FunctionCompiler = struct {
         }
         self.current_line = right_line;
         self.release(mark);
+    }
+
+    fn compileBinaryConstant(self: *FunctionCompiler, binary: ast.BinaryExpr, dest: bytecode.Register) anyerror!bool {
+        if (constantBinaryInstruction(binary.op, .{ .dest = 0, .left = 0, .constant = 0 }) == null) return false;
+        const constant = (try self.numericConstant(binary.right)) orelse return false;
+        const mark = self.registerMark();
+        const left_origin = try self.exprOrigin(binary.left);
+        const right_origin = try self.exprOrigin(binary.right);
+        const left = self.sourceRegister(binary.left) orelse left: {
+            try self.compileExprForcedLine(binary.left, dest, binary.op_line);
+            break :left dest;
+        };
+        self.current_line = binary.op_line;
+        const instruction = constantBinaryInstruction(binary.op, .{ .dest = dest, .left = left, .constant = constant }).?;
+        _ = try self.emitWithErrorSite(instruction, binaryErrorOp(binary.op), &.{ left_origin, right_origin }, null);
+        self.current_line = exprLine(binary.right.*);
+        self.release(mark);
+        return true;
+    }
+
+    fn numericConstant(self: *FunctionCompiler, expr: *const ast.Expr) !?bytecode.ConstantIndex {
+        const value = (try self.foldConstant(expr)) orelse return null;
+        var buffer: [fold.render_buffer_len]u8 = undefined;
+        return try self.addConstant(fold.constant(&buffer, value));
     }
 
     fn compileConcatChain(self: *FunctionCompiler, binary: ast.BinaryExpr, dest: bytecode.Register) anyerror!bool {
@@ -966,6 +991,7 @@ const FunctionCompiler = struct {
             },
             else => return null,
         }
+        if (try self.compileCompareBranchConstant(binary, branch_op, branch_jump_if_truthy, swap_operands)) |pc| return pc;
 
         const mark = self.registerMark();
         var left_origin = try self.exprOrigin(binary.left);
@@ -994,6 +1020,47 @@ const FunctionCompiler = struct {
             .right = branch_right,
             .op = branch_op,
             .jump_if_truthy = branch_jump_if_truthy,
+            .offset = 0,
+        } }, .compare, &.{ left_origin, right_origin }, null);
+        self.release(mark);
+        return pc;
+    }
+
+    fn compileCompareBranchConstant(self: *FunctionCompiler, binary: ast.BinaryExpr, branch_op: bytecode.CompareBranchOp, jump_if_truthy: bool, swap_operands: bool) anyerror!?usize {
+        const branch_left = if (swap_operands) binary.right else binary.left;
+        const branch_right = if (swap_operands) binary.left else binary.right;
+        var operand = branch_left;
+        var op: bytecode.CompareConstantOp = switch (branch_op) {
+            .eq => .eq,
+            .lt => .lt,
+            .le => .le,
+        };
+        const constant = if (try self.numericConstant(branch_right)) |constant| constant else if (try self.numericConstant(branch_left)) |constant| constant: {
+            operand = branch_right;
+            op = switch (branch_op) {
+                .eq => .eq,
+                .lt => .gt,
+                .le => .ge,
+            };
+            break :constant constant;
+        } else return null;
+        const short_constant = std.math.cast(u16, constant) orelse return null;
+
+        const mark = self.registerMark();
+        var left_origin = try self.exprOrigin(binary.left);
+        var right_origin = try self.exprOrigin(binary.right);
+        if (swap_operands) std.mem.swap(proto_mod.OperandOrigin, &left_origin, &right_origin);
+        const register = self.sourceRegister(operand) orelse register: {
+            const register = try self.allocReg();
+            if (operand == binary.left) try self.compileExprForcedLine(operand, register, binary.op_line) else try self.compileExpr(operand, register);
+            break :register register;
+        };
+        self.current_line = binary.op_line;
+        const pc = try self.emitWithErrorSite(.{ .compare_branch_k = .{
+            .register = register,
+            .constant = short_constant,
+            .op = op,
+            .jump_if_truthy = jump_if_truthy,
             .offset = 0,
         } }, .compare, &.{ left_origin, right_origin }, null);
         self.release(mark);
@@ -1581,6 +1648,23 @@ fn binaryInstruction(op: ast.BinaryOp, dest: bytecode.Register, left: bytecode.R
     };
 }
 
+fn constantBinaryInstruction(op: ast.BinaryOp, binary: bytecode.BinaryConstant) ?bytecode.Instruction {
+    return switch (op) {
+        .add => .{ .add_k = binary },
+        .sub => .{ .sub_k = binary },
+        .mul => .{ .mul_k = binary },
+        .div => .{ .div_k = binary },
+        .idiv => .{ .idiv_k = binary },
+        .mod => .{ .mod_k = binary },
+        .bit_and => .{ .band_k = binary },
+        .bit_or => .{ .bor_k = binary },
+        .bit_xor => .{ .bxor_k = binary },
+        .shift_left => .{ .shl_k = binary },
+        .shift_right => .{ .shr_k = binary },
+        else => null,
+    };
+}
+
 fn ungroupedExpr(expr: *const ast.Expr) *const ast.Expr {
     var current = expr;
     while (current.* == .grouped) current = current.grouped;
@@ -1786,7 +1870,7 @@ test "lowers comparison conditions to direct branch" {
     var found_compare_branch = false;
     var found_test_op = false;
     for (proto.instructions.items) |instruction| switch (instruction) {
-        .compare_branch => found_compare_branch = true,
+        .compare_branch, .compare_branch_k => found_compare_branch = true,
         .test_op => found_test_op = true,
         else => {},
     };
@@ -1840,7 +1924,7 @@ test "leaves operations PUC refuses to fold for run time" {
 
     var operations: usize = 0;
     for (proto.instructions.items) |instruction| switch (instruction) {
-        .idiv, .mod, .bor, .unm, .div => operations += 1,
+        .idiv_k, .mod_k, .bor_k, .unm, .div_k => operations += 1,
         else => {},
     };
     try std.testing.expectEqual(@as(usize, 5), operations);

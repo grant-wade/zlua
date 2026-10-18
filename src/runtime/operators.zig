@@ -119,17 +119,19 @@ pub fn finishConcatRange(self: *State, thread: *Thread, dest: usize, first: usiz
 }
 
 pub fn binaryOpToRegister(self: *State, thread: *Thread, op: bytecode.Binary, kind: BinaryOp) !void {
-    const lhs = vm_mod.get(self, thread, op.left);
-    const rhs = vm_mod.get(self, thread, op.right);
+    return binaryValuesToRegister(self, thread, op.dest, vm_mod.get(self, thread, op.left), vm_mod.get(self, thread, op.right), kind);
+}
+
+pub fn binaryValuesToRegister(self: *State, thread: *Thread, dest: bytecode.Register, lhs: Value, rhs: Value, kind: BinaryOp) !void {
     if (kind == .concat and luaStringLike(lhs) and luaStringLike(rhs)) {
-        vm_mod.set(self, thread, op.dest, try concatValues(self, lhs, rhs));
+        vm_mod.set(self, thread, dest, try concatValues(self, lhs, rhs));
         return;
     }
     const raw = rawBinaryOp(lhs, rhs, kind) catch |err| switch (err) {
         error.RuntimeError => if ((kind == .idiv or kind == .mod) and (toInteger(rhs) orelse 1) == 0) return failure_mod.failDivisionByZero(self, thread, lhs, rhs, kind) else return err,
     };
     if (raw) |value| {
-        vm_mod.set(self, thread, op.dest, value);
+        vm_mod.set(self, thread, dest, value);
         return;
     }
 
@@ -137,8 +139,8 @@ pub fn binaryOpToRegister(self: *State, thread: *Thread, op: bytecode.Binary, ki
     const metamethod = (try metatable_mod.getEitherMetamethod(self, lhs, rhs, metamethod_name)) orelse {
         return failure_mod.failBinaryTypeError(self, thread, lhs, rhs, kind);
     };
-    const result = try call_mod.callOneMetamethodWithContinuation(self, thread, metamethod_name, metamethod, &.{ lhs, rhs }, .{ .value = vm_mod.absoluteRegister(self, thread, op.dest) });
-    vm_mod.set(self, thread, op.dest, result);
+    const result = try call_mod.callOneMetamethodWithContinuation(self, thread, metamethod_name, metamethod, &.{ lhs, rhs }, .{ .value = vm_mod.absoluteRegister(self, thread, dest) });
+    vm_mod.set(self, thread, dest, result);
 }
 
 pub fn unaryOpToRegister(self: *State, thread: *Thread, op: bytecode.Unary, kind: UnaryMetamethodOp) !void {
@@ -198,29 +200,42 @@ pub fn compareValuesToRegister(self: *State, thread: *Thread, op: bytecode.Binar
 }
 
 pub fn compareBranch(self: *State, thread: *Thread, op: bytecode.CompareBranch) !void {
-    const lhs = vm_mod.get(self, thread, op.left);
-    const rhs = vm_mod.get(self, thread, op.right);
-    switch (op.op) {
+    return compareBranchValues(self, thread, vm_mod.get(self, thread, op.left), vm_mod.get(self, thread, op.right), op.op, op.jump_if_truthy, op.offset);
+}
+
+pub fn compareBranchConstant(self: *State, thread: *Thread, op: bytecode.CompareBranchConstant, constant: Value) !void {
+    const value = vm_mod.get(self, thread, op.register);
+    return switch (op.op) {
+        .eq => compareBranchValues(self, thread, value, constant, .eq, op.jump_if_truthy, op.offset),
+        .lt => compareBranchValues(self, thread, value, constant, .lt, op.jump_if_truthy, op.offset),
+        .le => compareBranchValues(self, thread, value, constant, .le, op.jump_if_truthy, op.offset),
+        .gt => compareBranchValues(self, thread, constant, value, .lt, op.jump_if_truthy, op.offset),
+        .ge => compareBranchValues(self, thread, constant, value, .le, op.jump_if_truthy, op.offset),
+    };
+}
+
+fn compareBranchValues(self: *State, thread: *Thread, lhs: Value, rhs: Value, kind: bytecode.CompareBranchOp, jump_if_truthy: bool, offset: bytecode.JumpOffset) !void {
+    switch (kind) {
         .eq => {
-            if (valuesEqual(lhs, rhs)) return jumpIfBranchResult(self, thread, true, op.jump_if_truthy, op.offset);
-            if (!equalityHasMetamethod(lhs, rhs)) return jumpIfBranchResult(self, thread, false, op.jump_if_truthy, op.offset);
-            const metamethod = (try metatable_mod.getEitherMetamethod(self, lhs, rhs, "__eq")) orelse return jumpIfBranchResult(self, thread, false, op.jump_if_truthy, op.offset);
-            const continuation: BranchContinuation = .{ .jump_if_truthy = op.jump_if_truthy, .offset = op.offset };
+            if (valuesEqual(lhs, rhs)) return jumpIfBranchResult(self, thread, true, jump_if_truthy, offset);
+            if (!equalityHasMetamethod(lhs, rhs)) return jumpIfBranchResult(self, thread, false, jump_if_truthy, offset);
+            const metamethod = (try metatable_mod.getEitherMetamethod(self, lhs, rhs, "__eq")) orelse return jumpIfBranchResult(self, thread, false, jump_if_truthy, offset);
+            const continuation: BranchContinuation = .{ .jump_if_truthy = jump_if_truthy, .offset = offset };
             const result = try call_mod.callOneMetamethodWithContinuation(self, thread, "__eq", metamethod, &.{ lhs, rhs }, .{ .branch_truthy = continuation });
-            try jumpIfBranchResult(self, thread, truthy(result), op.jump_if_truthy, op.offset);
+            try jumpIfBranchResult(self, thread, truthy(result), jump_if_truthy, offset);
         },
-        .lt => try compareBranchOrder(self, thread, lhs, rhs, .lt, "__lt", op.jump_if_truthy, op.offset),
+        .lt => try compareBranchOrder(self, thread, lhs, rhs, .lt, "__lt", jump_if_truthy, offset),
         .le => {
-            if (rawCompare(lhs, rhs, .le)) |result| return jumpIfBranchResult(self, thread, result, op.jump_if_truthy, op.offset);
+            if (rawCompare(lhs, rhs, .le)) |result| return jumpIfBranchResult(self, thread, result, jump_if_truthy, offset);
             if (try metatable_mod.getEitherMetamethod(self, lhs, rhs, "__le")) |metamethod| {
-                const continuation: BranchContinuation = .{ .jump_if_truthy = op.jump_if_truthy, .offset = op.offset };
+                const continuation: BranchContinuation = .{ .jump_if_truthy = jump_if_truthy, .offset = offset };
                 const result = try call_mod.callOneMetamethodWithContinuation(self, thread, "__le", metamethod, &.{ lhs, rhs }, .{ .branch_truthy = continuation });
-                return jumpIfBranchResult(self, thread, truthy(result), op.jump_if_truthy, op.offset);
+                return jumpIfBranchResult(self, thread, truthy(result), jump_if_truthy, offset);
             }
             const lt = (try metatable_mod.getEitherMetamethod(self, lhs, rhs, "__lt")) orelse return failure_mod.failCompareTypeError(self, thread, lhs, rhs);
-            const continuation: BranchContinuation = .{ .jump_if_truthy = op.jump_if_truthy, .offset = op.offset };
+            const continuation: BranchContinuation = .{ .jump_if_truthy = jump_if_truthy, .offset = offset };
             const result = try call_mod.callOneMetamethodWithContinuation(self, thread, "__lt", lt, &.{ rhs, lhs }, .{ .branch_inverted_truthy = continuation });
-            try jumpIfBranchResult(self, thread, !truthy(result), op.jump_if_truthy, op.offset);
+            try jumpIfBranchResult(self, thread, !truthy(result), jump_if_truthy, offset);
         },
     }
 }
@@ -401,6 +416,40 @@ pub fn equalityHasMetamethod(lhs: Value, rhs: Value) bool {
         .table => |table| rhs == .table and !(metatable_mod.noMetaEvent(table, .__eq) and metatable_mod.noMetaEvent(rhs.table, .__eq)),
         .userdata => rhs == .userdata,
         else => false,
+    };
+}
+
+pub inline fn rawCompareConstantResult(value: Value, constant: Value, op: bytecode.CompareConstantOp) ?bool {
+    return switch (op) {
+        .eq => valuesEqual(value, constant),
+        .lt => rawCompare(value, constant, .lt),
+        .le => rawCompare(value, constant, .le),
+        .gt => rawCompare(constant, value, .lt),
+        .ge => rawCompare(constant, value, .le),
+    };
+}
+
+pub fn constantBinaryOp(comptime tag: std.meta.Tag(bytecode.Instruction)) BinaryOp {
+    return switch (tag) {
+        .add_k => .add,
+        .sub_k => .sub,
+        .mul_k => .mul,
+        .div_k => .div,
+        .idiv_k => .idiv,
+        .mod_k => .mod,
+        .band_k => .band,
+        .bor_k => .bor,
+        .bxor_k => .bxor,
+        .shl_k => .shl,
+        .shr_k => .shr,
+        else => @compileError("not a constant binary instruction"),
+    };
+}
+
+pub inline fn rawBinaryOpFast(lhs: Value, rhs: Value, comptime op: BinaryOp) ?Value {
+    return switch (op) {
+        .band, .bor, .bxor, .shl, .shr => rawIntegerBitwiseOpFast(lhs, rhs, op),
+        else => rawNumericBinaryOpFast(lhs, rhs, op),
     };
 }
 

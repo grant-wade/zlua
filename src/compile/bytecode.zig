@@ -94,6 +94,19 @@ pub const Instruction = union(enum(u8)) {
     tfor_loop: GenericFor,
 
     concat_range: ConcatRange,
+
+    add_k: BinaryConstant,
+    sub_k: BinaryConstant,
+    mul_k: BinaryConstant,
+    div_k: BinaryConstant,
+    idiv_k: BinaryConstant,
+    mod_k: BinaryConstant,
+    band_k: BinaryConstant,
+    bor_k: BinaryConstant,
+    bxor_k: BinaryConstant,
+    shl_k: BinaryConstant,
+    shr_k: BinaryConstant,
+    compare_branch_k: CompareBranchConstant,
 };
 
 pub const LoadBool = struct {
@@ -181,6 +194,13 @@ pub const Binary = struct {
     right: Register,
 };
 
+/// `left` op a numeric constant.
+pub const BinaryConstant = struct {
+    dest: Register,
+    left: Register,
+    constant: ConstantIndex,
+};
+
 /// Concatenates `count` (at least 2) registers from `first` right to left into `dest`,
 /// like PUC OP_CONCAT. Operand registers are scratch space.
 pub const ConcatRange = struct {
@@ -201,6 +221,23 @@ pub const CompareBranch = struct {
     op: CompareBranchOp,
     jump_if_truthy: bool,
     offset: JumpOffset,
+};
+
+/// Compares a register with a numeric constant; `gt` and `ge` put the constant on the left.
+pub const CompareBranchConstant = struct {
+    register: Register,
+    constant: u16,
+    op: CompareConstantOp,
+    jump_if_truthy: bool,
+    offset: JumpOffset,
+};
+
+pub const CompareConstantOp = enum {
+    eq,
+    lt,
+    le,
+    gt,
+    ge,
 };
 
 pub const Test = struct {

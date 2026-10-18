@@ -621,6 +621,8 @@ const verified_chunk_program =
     \\local x, y, flag, maybe = 7, 2, true, nil
     \\add(x + y, x - y, x * y, x / y, x // y, x % y, x ^ y, -x)
     \\add(x & y, x | y, x ~ y, ~x, x << y, x >> y)
+    \\add(x + 1, x - 1, x * 2, x / 2, x // 2, x % 2, x & 1, x | 1, x ~ 1, x << 1, x >> 1)
+    \\if y < x then add("lt") end
     \\add(x == y, x < y, x <= y, not x, #"abc", "a" .. x .. y, x .. y, [[long]])
     \\if x > y and y >= 1 then add("cmp") end
     \\if maybe then add("never") end
@@ -689,6 +691,8 @@ const ChunkMutation = enum {
     jump_past_end,
     jump_before_start,
     branch_past_end,
+    constant_branch_past_end,
+    constant_operand_kind,
     child_index,
     upvalue_index,
     captured_register,
@@ -782,6 +786,15 @@ fn applyChunkMutation(root: *proto_mod.Proto, mutation: ChunkMutation) !bool {
         .branch_past_end => {
             const site = findSite(root, .compare_branch) orelse return false;
             site.op().compare_branch.offset = @intCast(site.proto.instructions.items.len - site.pc);
+        },
+        .constant_branch_past_end => {
+            const site = findSite(root, .compare_branch_k) orelse return false;
+            site.op().compare_branch_k.offset = @intCast(site.proto.instructions.items.len - site.pc);
+        },
+        .constant_operand_kind => {
+            const site = findSite(root, .add_k) orelse return false;
+            try site.proto.constants.append(site.proto.allocator, .{ .string = "k" });
+            site.op().add_k.constant = @intCast(site.proto.constants.items.len - 1);
         },
         .child_index => {
             const site = findSite(root, .closure) orelse return false;

@@ -338,6 +338,24 @@ fn executeInstruction(self: *State, thread: *Thread, proto: *const proto_mod.Pro
         .close => |register| if (thread.open_upvalues != null) upvalue_mod.closeUpvalues(self, thread, base + register),
         .check_close => |register| try upvalue_mod.checkToBeClosedRegister(self, thread, register),
         .close_tbc => |register| try upvalue_mod.closeToBeClosedRegister(self, thread, register, null),
+        inline .add_k, .sub_k, .mul_k, .div_k, .idiv_k, .mod_k, .band_k, .bor_k, .bxor_k, .shl_k, .shr_k => |op, tag| {
+            const kind = comptime operators_mod.constantBinaryOp(tag);
+            const lhs = stack[base + op.left];
+            const rhs = proto.constant_values[op.constant];
+            if (operators_mod.rawBinaryOpFast(lhs, rhs, kind)) |value| {
+                stack[base + op.dest] = value;
+            } else {
+                try operators_mod.binaryValuesToRegister(self, thread, op.dest, lhs, rhs, kind);
+            }
+        },
+        .compare_branch_k => |op| {
+            const constant = proto.constant_values[op.constant];
+            if (operators_mod.rawCompareConstantResult(stack[base + op.register], constant, op.op)) |result| {
+                if (result == op.jump_if_truthy) try jumpThreadMaybeFast(self, thread, op.offset, true);
+            } else {
+                try operators_mod.compareBranchConstant(self, thread, op, constant);
+            }
+        },
     }
 }
 
@@ -641,6 +659,39 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 const key = cache[op.name] orelse break :fast_loop;
                 if (!fastTableKnownKeySetExistingNoAlloc(self, stack[op.table], key, stack[op.value])) break :fast_loop;
                 pc += 1;
+                continue :fast_loop std.meta.activeTag(instructions[pc]);
+            },
+            inline .add_k, .sub_k, .mul_k, .div_k, .idiv_k, .mod_k, .band_k, .bor_k, .bxor_k, .shl_k, .shr_k => |tag| {
+                const op = @field(instructions[pc], @tagName(tag));
+                const kind = comptime operators_mod.constantBinaryOp(tag);
+                const value = operators_mod.rawBinaryOpFast(stack[op.left], proto.constant_values[op.constant], kind) orelse break :fast_loop;
+                stack[op.dest] = value;
+                pc += 1;
+                continue :fast_loop std.meta.activeTag(instructions[pc]);
+            },
+            .compare_branch_k => {
+                if (proto.jumpExitsToBeClosed(pc)) break :fast_loop;
+                const op = instructions[pc].compare_branch_k;
+                const value = stack[op.register];
+                const constant = proto.constant_values[op.constant];
+                const result = if (value == .integer and constant == .integer) switch (op.op) {
+                    .eq => value.integer == constant.integer,
+                    .lt => value.integer < constant.integer,
+                    .le => value.integer <= constant.integer,
+                    .gt => value.integer > constant.integer,
+                    .ge => value.integer >= constant.integer,
+                } else operators_mod.rawCompareConstantResult(value, constant, op.op) orelse break :fast_loop;
+                pc += 1;
+                if (result == op.jump_if_truthy) {
+                    const source_pc = pc;
+                    pc = jumpTarget(source_pc, op.offset);
+                    count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
+                    if (pc < source_pc) {
+                        frame.last_hook_line = null;
+                        if (self.budget.fastLoopInterrupted()) break :fast_loop;
+                    }
+                }
+                if (pc >= instructions.len) break :fast_loop;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .compare_branch => {
@@ -1409,6 +1460,18 @@ fn plainFastLoopCanStart(instruction: bytecode.Instruction) bool {
         .set_array,
         .set_field,
         .compare_branch,
+        .compare_branch_k,
+        .add_k,
+        .sub_k,
+        .mul_k,
+        .div_k,
+        .idiv_k,
+        .mod_k,
+        .band_k,
+        .bor_k,
+        .bxor_k,
+        .shl_k,
+        .shr_k,
         .jmp,
         .test_op,
         .test_set,

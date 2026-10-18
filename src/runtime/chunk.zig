@@ -226,6 +226,18 @@ fn appendBinaryInstruction(allocator: std.mem.Allocator, out: *std.ArrayList(u8)
             try appendBinaryU16(allocator, out, op.first);
             try appendBinaryU16(allocator, out, op.count);
         },
+        .add_k, .sub_k, .mul_k, .div_k, .idiv_k, .mod_k, .band_k, .bor_k, .bxor_k, .shl_k, .shr_k => |op| {
+            try appendBinaryU16(allocator, out, op.dest);
+            try appendBinaryU16(allocator, out, op.left);
+            try appendBinaryU32(allocator, out, op.constant);
+        },
+        .compare_branch_k => |op| {
+            try appendBinaryU16(allocator, out, op.register);
+            try appendBinaryU16(allocator, out, op.constant);
+            try out.append(allocator, @intCast(@intFromEnum(op.op)));
+            try appendBinaryBool(allocator, out, op.jump_if_truthy);
+            try appendBinaryI32(allocator, out, op.offset);
+        },
     }
 }
 
@@ -346,6 +358,8 @@ fn verifyInstruction(proto: *const proto_mod.Proto, instruction: bytecode.Instru
         .add, .sub, .mul, .div, .idiv, .mod, .pow, .band, .bor, .bxor, .shl, .shr, .eq, .lt, .le, .concat => |op| op.dest < registers and op.left < registers and op.right < registers,
         .unm, .bnot, .not, .len => |op| op.dest < registers and op.source < registers,
         .concat_range => |op| op.dest < registers and op.count >= 2 and registerRange(registers, op.first, op.count),
+        .add_k, .sub_k, .mul_k, .div_k, .idiv_k, .mod_k, .band_k, .bor_k, .bxor_k, .shl_k, .shr_k => |op| op.dest < registers and op.left < registers and isNumericConstant(proto, op.constant),
+        .compare_branch_k => |op| op.register < registers and isNumericConstant(proto, op.constant) and validJump(proto, pc, op.offset),
         .jmp => |offset| validJump(proto, pc, offset),
         .compare_branch => |op| op.left < registers and op.right < registers and validJump(proto, pc, op.offset),
         .test_op => |op| op.register < registers and validJump(proto, pc, op.offset),
@@ -370,6 +384,10 @@ fn registerRange(registers: usize, first: usize, count: usize) bool {
 fn validJump(proto: *const proto_mod.Proto, pc: usize, offset: bytecode.JumpOffset) bool {
     const target = @as(i64, @intCast(pc)) + 1 + offset;
     return target >= 0 and target <= @as(i64, @intCast(proto.instructions.items.len));
+}
+
+fn isNumericConstant(proto: *const proto_mod.Proto, index: bytecode.ConstantIndex) bool {
+    return index < proto.constants.items.len and (proto.constants.items[index] == .integer or proto.constants.items[index] == .number);
 }
 
 fn isStringConstant(proto: *const proto_mod.Proto, index: bytecode.ConstantIndex) bool {
@@ -566,6 +584,18 @@ pub const BinaryChunkReader = struct {
             .tfor_call => .{ .tfor_call = .{ .base = try self.readU16(), .variable_count = try self.readU16(), .offset = try self.readI32() } },
             .tfor_loop => .{ .tfor_loop = .{ .base = try self.readU16(), .variable_count = try self.readU16(), .offset = try self.readI32() } },
             .concat_range => .{ .concat_range = try self.readConcatRange() },
+            .add_k => .{ .add_k = try self.readBinaryConstant() },
+            .sub_k => .{ .sub_k = try self.readBinaryConstant() },
+            .mul_k => .{ .mul_k = try self.readBinaryConstant() },
+            .div_k => .{ .div_k = try self.readBinaryConstant() },
+            .idiv_k => .{ .idiv_k = try self.readBinaryConstant() },
+            .mod_k => .{ .mod_k = try self.readBinaryConstant() },
+            .band_k => .{ .band_k = try self.readBinaryConstant() },
+            .bor_k => .{ .bor_k = try self.readBinaryConstant() },
+            .bxor_k => .{ .bxor_k = try self.readBinaryConstant() },
+            .shl_k => .{ .shl_k = try self.readBinaryConstant() },
+            .shr_k => .{ .shr_k = try self.readBinaryConstant() },
+            .compare_branch_k => .{ .compare_branch_k = .{ .register = try self.readU16(), .constant = try self.readU16(), .op = try self.readEnum(bytecode.CompareConstantOp), .jump_if_truthy = try self.readBool(), .offset = try self.readI32() } },
         };
     }
 
@@ -581,6 +611,10 @@ pub const BinaryChunkReader = struct {
 
     fn readBinary(self: *Self) !bytecode.Binary {
         return .{ .dest = try self.readU16(), .left = try self.readU16(), .right = try self.readU16() };
+    }
+
+    fn readBinaryConstant(self: *Self) !bytecode.BinaryConstant {
+        return .{ .dest = try self.readU16(), .left = try self.readU16(), .constant = try self.readU32() };
     }
 
     fn readErrorSite(self: *Self, proto: *proto_mod.Proto) !proto_mod.ErrorSite {

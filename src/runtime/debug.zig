@@ -2,6 +2,7 @@ const std = @import("std");
 const compile = @import("../compile.zig");
 const call_mod = @import("call.zig");
 const metatable_mod = @import("metatable.zig");
+const operators_mod = @import("operators.zig");
 const rollback_mod = @import("rollback.zig");
 const State = @import("state.zig").State;
 const types = @import("types.zig");
@@ -339,6 +340,12 @@ pub fn messageHandlerCallName(thread: *Thread) ?CallName {
         .set_global, .set_table, .set_array, .set_field => "newindex",
         .concat, .concat_range => "concat",
         .compare_branch => |op| @tagName(op.op),
+        .compare_branch_k => |op| switch (op.op) {
+            .eq => "eq",
+            .lt, .gt => "lt",
+            .le, .ge => "le",
+        },
+        inline .add_k, .sub_k, .mul_k, .div_k, .idiv_k, .mod_k, .band_k, .bor_k, .bxor_k, .shl_k, .shr_k => |_, tag| @tagName(comptime operators_mod.constantBinaryOp(tag)),
         .close, .ret => "close",
         inline .add, .sub, .mul, .div, .idiv, .mod, .pow, .unm, .band, .bor, .bxor, .bnot, .shl, .shr, .eq, .lt, .le, .len => |_, tag| @tagName(tag),
         else => return null,

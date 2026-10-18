@@ -310,7 +310,7 @@ fn closeExitJumps(proto: *proto_mod.Proto) ![]const u64 {
     for (instructions, 0..) |instruction, index| {
         const offset: bytecode.JumpOffset = switch (instruction) {
             .jmp => |offset| offset,
-            inline .compare_branch, .test_op, .test_set, .for_loop, .for_prep, .tfor_prep, .tfor_loop => |op| op.offset,
+            inline .compare_branch, .compare_branch_k, .test_op, .test_set, .for_loop, .for_prep, .tfor_prep, .tfor_loop => |op| op.offset,
             else => continue,
         };
         const source = index + 1;
