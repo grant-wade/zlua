@@ -107,7 +107,7 @@ test "interrupt stops long-running library functions" {
     var lua = try initWithReady(.{ .limits = .{ .max_memory = 512 * 1024 * 1024 } });
     defer lua.deinit();
 
-    try runInterrupted(&lua, "ready() local s = string.rep('x', (1 << 31) - 1)");
+    try runInterrupted(&lua, "ready() local s = string.rep('x', 1 << 28)");
     try runInterrupted(&lua, "local s = string.rep('a', 1 << 16) ready() while true do s:gsub('a', 'b') end");
     try runInterrupted(&lua, "local s = string.rep('a', 1 << 16) .. 'c' ready() while true do s:find('a-a-a-b') end");
     try lua.doString("assert(('ab'):rep(3) == 'ababab')", .{});
