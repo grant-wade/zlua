@@ -187,7 +187,7 @@ fn appendRuntimeErrorPrefix(self: *State, out: *std.ArrayList(u8), thread: ?*Thr
     }
     const site = currentErrorSite(self, active) orelse return;
     const frame = active.frames.items[active.frames.items.len - 1];
-    try appendFmt(self.allocator, out, "{s}:{d}: ", .{ load_mod.runtimeSourceName(frame.proto.source_name), site.line });
+    try appendFmt(self.allocator, out, "{s}:{d}: ", .{ load_mod.runtimeSourceName(frame.closure.proto.source_name), site.line });
 }
 
 fn currentErrorSite(self: *State, thread: *Thread) ?proto_mod.ErrorSite {
@@ -201,10 +201,10 @@ pub fn instructionErrorSite(self: *State, thread: *Thread) ?proto_mod.ErrorSite 
     const frame = thread.frames.items[thread.frames.items.len - 1];
     if (frame.closure.stripped_debug) return null;
     if (frame.pc == 0) return null;
-    return frame.proto.errorSiteAt(frame.pc - 1) orelse blk: {
-        if (frame.proto.line_info.items.len == 0) return null;
-        const pc = @min(frame.pc - 1, frame.proto.line_info.items.len - 1);
-        break :blk proto_mod.ErrorSite{ .line = frame.proto.line_info.items[pc].line, .op = .call };
+    return frame.closure.proto.errorSiteAt(frame.pc - 1) orelse blk: {
+        if (frame.closure.proto.line_info.items.len == 0) return null;
+        const pc = @min(frame.pc - 1, frame.closure.proto.line_info.items.len - 1);
+        break :blk proto_mod.ErrorSite{ .line = frame.closure.proto.line_info.items[pc].line, .op = .call };
     };
 }
 

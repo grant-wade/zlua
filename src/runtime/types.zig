@@ -860,6 +860,8 @@ pub const Thread = struct {
     exposed: bool = false,
     stack: std.ArrayList(Value) = .empty,
     frames: std.ArrayList(CallFrame) = .empty,
+    /// Extra state of the frames with `has_extra`, at their frame index.
+    frame_extras: std.ArrayList(FrameExtra) = .empty,
     yield_values: std.ArrayList(Value) = .empty,
     protected_continuations: std.ArrayList(ProtectedContinuation) = .empty,
     generic_for_continuations: std.ArrayList(GenericForContinuation) = .empty,
@@ -932,7 +934,7 @@ pub const Thread = struct {
         errdefer thread.deinit(allocator);
         const proto = closure.proto;
         try thread.ensureStack(allocator, @max(proto.max_registers, 1), stack_value_limit);
-        try thread.frames.append(allocator, .{ .closure = closure, .proto = proto, .base = 0, .pc = 0, .return_start = 0, .return_count = 0 });
+        try thread.frames.append(allocator, .{ .closure = closure, .base = 0, .pc = 0, .return_start = 0, .return_count = 0 });
         return thread;
     }
 
@@ -941,7 +943,8 @@ pub const Thread = struct {
     }
 
     pub fn deinit(self: *Thread, allocator: std.mem.Allocator) void {
-        for (self.frames.items) |*frame| frame.deinit(allocator);
+        for (0..self.frames.items.len) |index| self.releaseFrame(index, allocator);
+        self.frame_extras.deinit(allocator);
         self.yield_values.deinit(allocator);
         self.protected_continuations.deinit(allocator);
         self.generic_for_continuations.deinit(allocator);
@@ -953,9 +956,37 @@ pub const Thread = struct {
         self.* = undefined;
     }
 
-    pub fn releaseFrame(self: *Thread, frame: *CallFrame, allocator: std.mem.Allocator) void {
-        self.frame_storage_bytes -= frame.storageBytes();
-        frame.deinit(allocator);
+    /// Frees the extra state of frame `index`, which stays on the frame list.
+    pub fn releaseFrame(self: *Thread, index: usize, allocator: std.mem.Allocator) void {
+        const frame = &self.frames.items[index];
+        if (!frame.has_extra) return;
+        frame.has_extra = false;
+        const extra = &self.frame_extras.items[index];
+        if (extra.pending_returns) |returns| {
+            self.frame_storage_bytes -= returns.len * @sizeOf(Value);
+            allocator.free(returns);
+        }
+        extra.* = .{};
+    }
+
+    /// The extra state of frame `index`, or defaults when it has none.
+    pub fn frameExtra(self: *const Thread, index: usize) FrameExtra {
+        return if (self.frames.items[index].has_extra) self.frame_extras.items[index] else .{};
+    }
+
+    /// The extra state of frame `index`, created on first use.
+    pub fn frameExtraMut(self: *Thread, allocator: std.mem.Allocator, index: usize) !*FrameExtra {
+        const frame = &self.frames.items[index];
+        if (!frame.has_extra) {
+            if (self.frame_extras.items.len <= index) try self.frame_extras.appendNTimes(allocator, .{}, index + 1 - self.frame_extras.items.len);
+            self.frame_extras.items[index] = .{};
+            frame.has_extra = true;
+        }
+        return &self.frame_extras.items[index];
+    }
+
+    pub inline fn clearHookLine(self: *Thread, index: usize) void {
+        if (self.frames.items[index].has_extra) self.frame_extras.items[index].last_hook_line = null;
     }
 
     pub fn noteContinuation(self: *Thread, frame_count: usize) void {
@@ -984,7 +1015,7 @@ pub const Thread = struct {
     /// the frame's registers and any running native function's arguments.
     pub fn scratchRegister(self: *const Thread) u32 {
         const frame_count = self.frames.items.len;
-        const registers = self.frames.items[frame_count - 1].proto.max_registers;
+        const registers = self.frames.items[frame_count - 1].closure.proto.max_registers;
         const call = self.native_call orelse return registers;
         if (call.frame_count != frame_count) return registers;
         return @max(registers, call.base + 1 + call.arg_count);
@@ -1018,40 +1049,35 @@ pub const NativeCall = struct {
 
 pub const CallFrame = struct {
     closure: *Closure,
-    proto: *const proto_mod.Proto,
-    base: usize,
-    pc: usize,
-    return_start: usize,
-    return_count: u16,
+    base: u32,
+    pc: u32,
+    return_start: u32,
     /// Stack index of the first extra argument, which sits below `base`.
-    vararg_base: usize = 0,
+    vararg_base: u32 = 0,
     vararg_count: u32 = 0,
-    vararg_table_local: Value = .nil,
+    return_count: u16,
     named_vararg_readonly: bool = false,
-    last_hook_line: ?usize = null,
-    debug_name_override: ?[]const u8 = null,
-    debug_namewhat_override: ?[]const u8 = null,
     is_tail_call: bool = false,
-    pending_returns: ?[]Value = null,
-
-    pub fn storageBytes(self: CallFrame) usize {
-        const returns = if (self.pending_returns) |values| values.len else 0;
-        return returns * @sizeOf(Value);
-    }
-
-    pub fn deinit(self: *CallFrame, allocator: std.mem.Allocator) void {
-        if (self.pending_returns) |returns| allocator.free(returns);
-        self.pending_returns = null;
-    }
+    /// `Thread.frame_extras` holds this frame's `FrameExtra` at the same index.
+    has_extra: bool = false,
 
     /// Stack index of the first argument the frame was called with.
     pub fn argumentBase(self: CallFrame) usize {
-        return if (self.vararg_count != 0) self.vararg_base - self.proto.param_count else self.base;
+        return if (self.vararg_count != 0) self.vararg_base - self.closure.proto.param_count else self.base;
     }
 
     pub fn varargs(self: CallFrame, stack: []const Value) []const Value {
         return stack[self.vararg_base..][0..self.vararg_count];
     }
+};
+
+/// Rarely set state of a call frame.
+pub const FrameExtra = struct {
+    debug_name_override: ?[]const u8 = null,
+    debug_namewhat_override: ?[]const u8 = null,
+    last_hook_line: ?usize = null,
+    pending_returns: ?[]Value = null,
+    vararg_table_local: Value = .nil,
 };
 
 /// Hashes object addresses, which are distinct and aligned, without Wyhash.

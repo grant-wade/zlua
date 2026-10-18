@@ -97,7 +97,7 @@ pub fn checkToBeClosedRegister(self: *State, thread: *Thread, register: bytecode
 fn toBeClosedLocalName(self: *State, thread: *Thread, register: bytecode.Register) ?[]const u8 {
     _ = self;
     const frame = thread.frames.items[thread.frames.items.len - 1];
-    for (frame.proto.locals.items) |local| {
+    for (frame.closure.proto.locals.items) |local| {
         if (!local.to_close or local.register != register) continue;
         if (!localActiveAt(local, frame.pc)) continue;
         return local.name;
@@ -148,10 +148,10 @@ pub fn closeToBeClosedExitingPc(self: *State, thread: *Thread, frame_index: usiz
     var pending_error = error_value;
     var close_failed = false;
 
-    var index = frame.proto.locals.items.len;
+    var index = frame.closure.proto.locals.items.len;
     while (index > 0) {
         index -= 1;
-        const local = frame.proto.locals.items[index];
+        const local = frame.closure.proto.locals.items[index];
         if (!local.to_close) continue;
         if (!localActiveAt(local, source_pc) or localActiveAt(local, target_pc)) continue;
         const value = thread.stack.items[frame.base + local.register];
@@ -170,7 +170,7 @@ pub fn closeToBeClosedExitingPc(self: *State, thread: *Thread, frame_index: usiz
 }
 
 pub fn hasPendingToBeClosed(thread: *const Thread, frame: *const types.CallFrame, instruction_index: usize) bool {
-    for (frame.proto.locals.items) |local| {
+    for (frame.closure.proto.locals.items) |local| {
         if (!local.to_close or !localActiveAt(local, instruction_index)) continue;
         const value = thread.stack.items[frame.base + local.register];
         if (value != .nil and !(value == .boolean and !value.boolean)) return true;
@@ -186,10 +186,10 @@ pub fn closeActiveToBeClosedInTopFrame(self: *State, thread: *Thread, error_valu
     var pending_error = error_value;
     var close_failed = false;
 
-    var index = frame.proto.locals.items.len;
+    var index = frame.closure.proto.locals.items.len;
     while (index > 0) {
         index -= 1;
-        const local = frame.proto.locals.items[index];
+        const local = frame.closure.proto.locals.items[index];
         if (!local.to_close or !localActiveAt(local, pc)) continue;
 
         closeToBeClosedRegister(self, thread, local.register, pending_error) catch |err| {
@@ -219,7 +219,7 @@ pub fn closeFramesTo(self: *State, thread: *Thread, frame_count: usize, error_va
         };
         const frame = thread.frames.items[thread.frames.items.len - 1];
         closeUpvalues(self, thread, frame.base);
-        thread.releaseFrame(&thread.frames.items[thread.frames.items.len - 1], self.allocator);
+        thread.releaseFrame(thread.frames.items.len - 1, self.allocator);
         thread.frames.items.len -= 1;
     }
     if (close_failed) return self.rethrowValue(pending_error.?);
@@ -230,7 +230,7 @@ fn discardFramesTo(self: *State, thread: *Thread, frame_count: usize) void {
     while (thread.frames.items.len > frame_count) {
         const frame = thread.frames.items[thread.frames.items.len - 1];
         closeUpvalues(self, thread, frame.base);
-        thread.releaseFrame(&thread.frames.items[thread.frames.items.len - 1], self.allocator);
+        thread.releaseFrame(thread.frames.items.len - 1, self.allocator);
         thread.frames.items.len -= 1;
     }
 }

@@ -73,13 +73,17 @@ pub fn threadWritable(thread: *types.Thread) !void {
     errdefer replacement.deinit(a);
     inline for (thread_lists) |name| {
         if (comptime std.mem.eql(u8, name, "frames")) {
-            try replacement.frames.ensureTotalCapacity(a, thread.frames.items.len);
-            for (thread.frames.items) |frame| {
-                var copy = frame;
-                copy.pending_returns = if (frame.pending_returns) |values| try a.dupe(types.Value, values) else null;
-                replacement.frames.appendAssumeCapacity(copy);
+            try replacement.frames.appendSlice(a, thread.frames.items);
+            for (replacement.frames.items) |*frame| frame.has_extra = false;
+            try replacement.frame_extras.appendNTimes(a, .{}, thread.frame_extras.items.len);
+            for (thread.frames.items, 0..) |frame, index| {
+                if (!frame.has_extra) continue;
+                var extra = thread.frame_extras.items[index];
+                if (extra.pending_returns) |values| extra.pending_returns = try a.dupe(types.Value, values);
+                replacement.frame_extras.items[index] = extra;
+                replacement.frames.items[index].has_extra = true;
             }
-        } else @field(replacement, name) = try duplicateList(a, @field(thread, name));
+        } else if (comptime !std.mem.eql(u8, name, "frame_extras")) @field(replacement, name) = try duplicateList(a, @field(thread, name));
     }
     touch(thread);
     thread.* = replacement;
@@ -99,7 +103,7 @@ pub fn userdataWritable(userdata: *types.Userdata) !void {
     record.header.detached = true;
 }
 
-const thread_lists = .{ "stack", "frames", "yield_values", "protected_continuations", "generic_for_continuations", "pairs_continuations", "tail_call_continuations", "call_one_continuations" };
+const thread_lists = .{ "stack", "frames", "frame_extras", "yield_values", "protected_continuations", "generic_for_continuations", "pairs_continuations", "tail_call_continuations", "call_one_continuations" };
 const registries = .{ "string_allocations", "table_allocations", "userdata_allocations", "closure_allocations", "upvalue_allocations", "thread_allocations", "chunk_allocations", "source_allocations" };
 const object_lists = .{ "table_allocations", "closure_allocations", "upvalue_allocations", "thread_allocations", "userdata_allocations" };
 const object_types = .{ types.Table, types.Closure, types.Upvalue, types.Thread, types.Userdata };

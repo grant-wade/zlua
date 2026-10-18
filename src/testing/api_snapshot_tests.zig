@@ -1708,9 +1708,9 @@ test "managed accounting includes suspended varargs and pending return buffers" 
     const thread = lua.raw_state.getGlobal("co").thread;
     var vararg_count: usize = 0;
     var pending_count: usize = 0;
-    for (thread.frames.items) |frame| {
+    for (thread.frames.items, 0..) |frame, index| {
         vararg_count += frame.vararg_count;
-        if (frame.pending_returns) |values| pending_count += values.len;
+        if (thread.frameExtra(index).pending_returns) |values| pending_count += values.len;
     }
     try std.testing.expect(vararg_count >= 3);
     try std.testing.expectEqual(@as(usize, 3), pending_count);

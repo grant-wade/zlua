@@ -272,7 +272,7 @@ const Copier = struct {
         }
         for (target.frames.items) |frame| {
             if (index >= frame.vararg_base and index - frame.vararg_base < frame.vararg_count) return true;
-            for (frame.proto.locals.items) |local| {
+            for (frame.closure.proto.locals.items) |local| {
                 if (index == frame.base + local.register and @import("value.zig").localActiveAt(local, frame.pc)) return true;
             }
         }
@@ -291,11 +291,13 @@ const Copier = struct {
             out.* = if (v == .string and liveSlot(old, index)) try self.value(v) else try self.storedValue(v);
         }
         try new.frames.ensureTotalCapacity(a, old.frames.items.len);
-        for (old.frames.items) |f| {
-            new.frames.appendAssumeCapacity(.{ .closure = try self.mapped(f.closure), .proto = try self.mapped(f.proto), .base = f.base, .pc = f.pc, .return_start = f.return_start, .return_count = f.return_count, .vararg_base = f.vararg_base, .vararg_count = f.vararg_count });
-            const frame = &new.frames.items[new.frames.items.len - 1];
-            if (f.pending_returns) |v| frame.pending_returns = try self.values(types.Value, v);
-            inline for (.{ "vararg_table_local", "named_vararg_readonly", "last_hook_line", "debug_name_override", "debug_namewhat_override", "is_tail_call" }) |name| @field(frame, name) = try self.remap(@field(f, name));
+        for (old.frames.items, 0..) |f, index| {
+            new.frames.appendAssumeCapacity(.{ .closure = try self.mapped(f.closure), .base = f.base, .pc = f.pc, .return_start = f.return_start, .return_count = f.return_count, .vararg_base = f.vararg_base, .vararg_count = f.vararg_count, .named_vararg_readonly = f.named_vararg_readonly, .is_tail_call = f.is_tail_call });
+            if (!f.has_extra) continue;
+            const old_extra = old.frame_extras.items[index];
+            const extra = try new.frameExtraMut(a, index);
+            if (old_extra.pending_returns) |v| extra.pending_returns = try self.values(types.Value, v);
+            inline for (.{ "vararg_table_local", "last_hook_line", "debug_name_override", "debug_namewhat_override" }) |name| @field(extra, name) = try self.remap(@field(old_extra, name));
         }
         inline for (.{ "yield_values", "protected_continuations", "generic_for_continuations", "pairs_continuations", "tail_call_continuations", "call_one_continuations" }) |name| {
             const items = @field(old, name).items;
@@ -399,14 +401,15 @@ comptime {
         .transient = "epoch generation phase cycle work remembered weak tables finalizers major_pending cycle_start_total found_young old old_chunks sweep_cursor major_base work_done minor_count collecting stress_collect stress_step stress_mark mark_all_stack_registers conservative_depth",
     });
     review(types.Thread, .{
-        .copied = "exposed stack frames yield_values protected_continuations generic_for_continuations pairs_continuations tail_call_continuations call_one_continuations hook_call hook_line hook_return hook_count hook_count_remaining pending_yield_hook_return continuation_order continuation_frame_count last_result_base last_result_count last_transfer_base last_transfer_count yield_result_base yield_result_count pending_unwind_resume_frame_count pending_unwind_target_frame_count started is_main closing status stack_error_space host_frame frame_storage_bytes",
+        .copied = "exposed stack frames frame_extras yield_values protected_continuations generic_for_continuations pairs_continuations tail_call_continuations call_one_continuations hook_call hook_line hook_return hook_count hook_count_remaining pending_yield_hook_return continuation_order continuation_frame_count last_result_base last_result_count last_transfer_base last_transfer_count yield_result_base yield_result_count pending_unwind_resume_frame_count pending_unwind_target_frame_count started is_main closing status stack_error_space host_frame frame_storage_bytes",
         .rebuilt = "storage_bytes",
         .remapped = "open_upvalues hook close_error_value error_traceback pending_unwind_error entry error_handler",
         .transient = "rollback gc hook_running hook_return_name hook_level2_func hook_transfer_index_base hook_transfer_stack_base hook_transfer_count hook_transfer_values next_call_name next_call_namewhat native_call_depth native_call protected_close_depth resume_parent native_marks native_mark_count",
     });
     review(types.CallFrame, .{
-        .copied = "base pc return_start return_count vararg_base vararg_count named_vararg_readonly last_hook_line debug_name_override debug_namewhat_override is_tail_call pending_returns",
-        .remapped = "closure proto vararg_table_local",
+        .copied = "base pc return_start return_count vararg_base vararg_count named_vararg_readonly is_tail_call",
+        .remapped = "closure",
+        .rebuilt = "has_extra",
     });
     review(types.Table, .{
         .copied = "array hash used_as_metatable finalizer_registered finalizer_order",

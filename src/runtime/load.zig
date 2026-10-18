@@ -103,7 +103,7 @@ fn loadFileAsClosureNamed(self: *State, path: []const u8, source_name: ?[]const 
 
 pub fn setRootThreadArgs(self: *State, thread: *Thread, args: []const Value) !void {
     const frame = &thread.frames.items[0];
-    const proto = frame.proto;
+    const proto = frame.closure.proto;
     const param_count = @min(args.len, proto.param_count);
     if (!proto.is_vararg or args.len <= proto.param_count) {
         for (args[0..param_count], 0..) |arg, index| thread.stack.items[index] = arg;
@@ -113,7 +113,7 @@ pub fn setRootThreadArgs(self: *State, thread: *Thread, args: []const Value) !vo
     try thread.ensureStack(self.allocator, base + @max(proto.max_registers, 1), call_mod.callStackValueLimit(self, thread));
     for (args, 0..) |arg, index| thread.stack.items[index] = arg;
     for (args[0..param_count], 0..) |arg, index| thread.stack.items[base + index] = arg;
-    frame.base = base;
+    frame.base = @intCast(base);
     frame.vararg_base = param_count;
     frame.vararg_count = @intCast(args.len - param_count);
 }

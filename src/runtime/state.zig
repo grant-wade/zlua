@@ -648,7 +648,7 @@ pub const State = struct {
         const frame = thread.frames.items[thread.frames.items.len - 1];
         if (frame.closure.stripped_debug or debug_mod.isCoroutineEntryFrame(frame)) return;
         const site = failure_mod.instructionErrorSite(self, thread) orelse return;
-        try appendFmt(self.allocator, out, "{s}:{d}: ", .{ load_mod.runtimeSourceName(frame.proto.source_name), site.line });
+        try appendFmt(self.allocator, out, "{s}:{d}: ", .{ load_mod.runtimeSourceName(frame.closure.proto.source_name), site.line });
     }
 
     const CallName = struct { name: []const u8, namewhat: []const u8 };
@@ -659,8 +659,8 @@ pub const State = struct {
         const namewhat = call.namewhat orelse return false;
         if (!std.mem.eql(u8, namewhat, "metamethod")) return false;
         const frame = thread.frames.items[thread.frames.items.len - 1];
-        if (frame.pc == 0 or frame.pc > frame.proto.instructions.items.len) return false;
-        return switch (frame.proto.instructions.items[frame.pc - 1]) {
+        if (frame.pc == 0 or frame.pc > frame.closure.proto.instructions.items.len) return false;
+        return switch (frame.closure.proto.instructions.items[frame.pc - 1]) {
             .tfor_prep, .tfor_call => true,
             else => false,
         };
@@ -674,7 +674,7 @@ pub const State = struct {
             return .{ .name = name, .namewhat = "metamethod" };
         }
         const frame = thread.frames.items[thread.frames.items.len - 1];
-        if (call.base >= frame.proto.max_registers) return null;
+        if (call.base >= frame.closure.proto.max_registers) return null;
         const site = failure_mod.instructionErrorSite(self, thread) orelse return null;
         const origin = site.call_name orelse return null;
         return switch (origin) {

@@ -70,7 +70,7 @@ fn runThreadLoop(self: *State, thread: *Thread, target_frame_count: usize) anyer
             }
         }
         var frame = &thread.frames.items[thread.frames.items.len - 1];
-        const proto = frame.proto;
+        const proto = frame.closure.proto;
         if (frame.pc >= proto.instructions.items.len) {
             try call_mod.returnFromFrame(self, thread, 0, 0);
             continue;
@@ -370,9 +370,9 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
 
     var frame_index = thread.frames.items.len - 1;
     var frame = &thread.frames.items[frame_index];
-    var proto = frame.proto;
-    var pc = frame.pc;
-    var base = frame.base;
+    var proto = frame.closure.proto;
+    var pc: usize = frame.pc;
+    var base: usize = frame.base;
     // Widen before wrapping subtraction: program counters may be only 32 bits.
     var count_bias: u64 = 0 -% @as(u64, pc);
     defer self.budget.instructions = self.budget.instructions +| (pc +% count_bias);
@@ -386,7 +386,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             if (!try fastLoopCanResume(self, thread, target_frame_count)) return true;
             frame_index = thread.frames.items.len - 1;
             frame = &thread.frames.items[frame_index];
-            proto = frame.proto;
+            proto = frame.closure.proto;
             pc = frame.pc;
             count_bias = executed -% pc;
             base = frame.base;
@@ -678,7 +678,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     pc = jumpTarget(source_pc, op.offset);
                     count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                     if (pc < source_pc) {
-                        frame.last_hook_line = null;
+                        if (frame.has_extra) thread.frame_extras.items[frame_index].last_hook_line = null;
                         if (self.budget.fastLoopInterrupted()) break :fast_loop;
                     }
                 }
@@ -700,7 +700,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     pc = jumpTarget(source_pc, op.offset);
                     count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                     if (pc < source_pc) {
-                        frame.last_hook_line = null;
+                        if (frame.has_extra) thread.frame_extras.items[frame_index].last_hook_line = null;
                         if (self.budget.fastLoopInterrupted()) break :fast_loop;
                     }
                 }
@@ -714,7 +714,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 pc = jumpTarget(source_pc, offset);
                 count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                 if (pc < source_pc) {
-                    frame.last_hook_line = null;
+                    if (frame.has_extra) thread.frame_extras.items[frame_index].last_hook_line = null;
                     if (self.budget.fastLoopInterrupted()) break :fast_loop;
                 }
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
@@ -728,7 +728,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     pc = jumpTarget(source_pc, op.offset);
                     count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                     if (pc < source_pc) {
-                        frame.last_hook_line = null;
+                        if (frame.has_extra) thread.frame_extras.items[frame_index].last_hook_line = null;
                         if (self.budget.fastLoopInterrupted()) break :fast_loop;
                     }
                 }
@@ -745,7 +745,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     pc = jumpTarget(source_pc, op.offset);
                     count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                     if (pc < source_pc) {
-                        frame.last_hook_line = null;
+                        if (frame.has_extra) thread.frame_extras.items[frame_index].last_hook_line = null;
                         if (self.budget.fastLoopInterrupted()) break :fast_loop;
                     }
                 }
@@ -774,7 +774,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     pc = jumpTarget(source_pc, op.offset);
                     count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                     if (pc < source_pc) {
-                        frame.last_hook_line = null;
+                        if (frame.has_extra) thread.frame_extras.items[frame_index].last_hook_line = null;
                         if (self.budget.fastLoopInterrupted()) break :fast_loop;
                     }
                 }
@@ -807,11 +807,11 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     thread.next_call_name = null;
                     thread.next_call_namewhat = null;
                     pc += 1;
-                    frame.pc = pc;
+                    frame.pc = @intCast(pc);
                     segment_start = pc +% count_bias;
                     continue :frames;
                 }
-                if (callee != .closure or !callee.closure.proto.fast_loop_call) {
+                if (callee != .closure or !callee.closure.proto.fast_loop_call or thread.next_call_name != null or thread.next_call_namewhat != null) {
                     // Natives and frames needing setup run through the general call path in place.
                     @branchHint(.unlikely);
                     if (thread.hook != .nil) break :fast_loop;
@@ -820,7 +820,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                         thread.last_transfer_count = 0;
                     }
                     pc += 1;
-                    frame.pc = pc;
+                    frame.pc = @intCast(pc);
                     segment_start = pc +% count_bias;
                     try call_mod.callValue(self, thread, op);
                     resync = segment_start;
@@ -849,24 +849,19 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 const executed_count = pc +% count_bias -% segment_start;
                 const copied = @min(op.arg_count, param_count);
                 clearRegisters(thread.stack.items[callee_base + copied .. stack_end]);
-                frame.pc = pc + 1;
+                frame.pc = @intCast(pc + 1);
                 frame = &@as([*]CallFrame, @ptrCast(frame))[1];
                 frame.* = .{
                     .closure = closure,
-                    .proto = callee_proto,
-                    .base = callee_base,
+                    .base = @intCast(callee_base),
                     .pc = 0,
-                    .return_start = function_slot,
+                    .return_start = @intCast(function_slot),
                     .return_count = op.return_count,
-                    .vararg_base = argument_base + param_count,
+                    .vararg_base = @intCast(argument_base + param_count),
                     .vararg_count = vararg_count,
                     .named_vararg_readonly = callee_proto.named_vararg_readonly,
-                    .debug_name_override = thread.next_call_name,
-                    .debug_namewhat_override = thread.next_call_namewhat,
                 };
                 thread.frames.items.len = callee_index + 1;
-                thread.next_call_name = null;
-                thread.next_call_namewhat = null;
                 if (executed_count != 0) {
                     thread.last_result_count = 0;
                     thread.last_transfer_count = 0;
@@ -893,7 +888,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 if (op.count == bytecode.multret_count) {
                     thread.last_result_base = base + op.dest;
                     thread.last_result_count = count;
-                    frame.pc = pc;
+                    frame.pc = @intCast(pc);
                     segment_start = pc +% count_bias;
                 }
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
@@ -901,7 +896,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             .new_table => {
                 const op = instructions[pc].new_table;
                 pc += 1;
-                frame.pc = pc;
+                frame.pc = @intCast(pc);
                 stack[op.dest] = try self.newTableWithHints(op.array_hint, op.hash_hint);
                 if (self.gc.running and self.gc.shouldRunAuto()) {
                     resync = pc +% count_bias;
@@ -913,7 +908,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 const op = instructions[pc].set_list;
                 if (op.count == bytecode.multret_count and pc +% count_bias != segment_start) break :fast_loop;
                 pc += 1;
-                frame.pc = pc;
+                frame.pc = @intCast(pc);
                 try setList(self, thread, op);
                 resync = pc +% count_bias;
                 continue :frames;
@@ -927,7 +922,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     thread.last_transfer_count = 0;
                 }
                 pc += 1;
-                frame.pc = pc;
+                frame.pc = @intCast(pc);
                 segment_start = pc +% count_bias;
                 try call_mod.tailCallValue(self, thread, op);
                 resync = segment_start;
@@ -939,7 +934,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 if (frame_index < return_floor or frame_index == 0) break :fast_loop;
                 const open_here = if (thread.open_upvalues) |upvalue| upvalue.cell.open.stack_index >= base else false;
                 if (proto.has_to_close_locals or op.count == bytecode.multret_count or frame.return_count == bytecode.multret_count or
-                    frame.pending_returns != null or open_here)
+                    (frame.has_extra and thread.frame_extras.items[frame_index].pending_returns != null) or open_here)
                 {
                     @branchHint(.unlikely);
                     if (thread.hook != .nil) break :fast_loop;
@@ -948,7 +943,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                         thread.last_transfer_count = 0;
                     }
                     pc += 1;
-                    frame.pc = pc;
+                    frame.pc = @intCast(pc);
                     segment_start = pc +% count_bias;
                     try call_mod.returnFromFrame(self, thread, op.first, op.count);
                     resync = segment_start;
@@ -968,7 +963,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 segment_start = pc +% count_bias +% 1;
                 frame_index -= 1;
                 frame = &(@as([*]CallFrame, @ptrCast(frame)) - 1)[0];
-                proto = frame.proto;
+                proto = frame.closure.proto;
                 pc = frame.pc;
                 count_bias = segment_start -% pc;
                 base = frame.base;
@@ -991,7 +986,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 pc = jumpTarget(source_pc, op.offset);
                 count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                 if (pc < source_pc) {
-                    frame.last_hook_line = null;
+                    if (frame.has_extra) thread.frame_extras.items[frame_index].last_hook_line = null;
                     if (self.budget.fastLoopInterrupted()) break :fast_loop;
                 }
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
@@ -1007,7 +1002,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
         }
 
         if (pc +% count_bias == segment_start) return segment_start != 0;
-        frame.pc = pc;
+        frame.pc = @intCast(pc);
         thread.last_result_count = 0;
         thread.last_transfer_count = 0;
         return true;
@@ -1076,7 +1071,7 @@ noinline fn fastLoopCanResume(self: *State, thread: *Thread, target_frame_count:
     if (thread.pending_unwind_error != null or thread.pending_yield_hook_return) return false;
     if (call_mod.hasPendingContinuations(thread) and frame_count <= thread.continuation_frame_count) return false;
     if (thread.hook != .nil or self.budget.active() or self.options.trace_vm or self.budget.fastLoopInterrupted() or self.stressPending()) return false;
-    return thread.frames.items[frame_count - 1].pc < thread.frames.items[frame_count - 1].proto.instructions.items.len;
+    return thread.frames.items[frame_count - 1].pc < thread.frames.items[frame_count - 1].closure.proto.instructions.items.len;
 }
 
 fn fastTableArraySet(self: *State, table_value: Value, key_value: Value, value: Value) !bool {
@@ -1225,8 +1220,8 @@ fn fastTableKnownKeySet(self: *State, table_value: Value, key: Value, value: Val
 }
 
 fn traceInstruction(self: *State, frame: CallFrame, pc: usize, instruction: bytecode.Instruction) !void {
-    const line = if (pc < frame.proto.line_info.items.len) frame.proto.line_info.items[pc].line else 0;
-    try appendFmt(self.allocator, &self.stderr, "[trace-vm] {s}:{d} pc={d} op={s}\n", .{ frame.proto.source_name, line, pc, @tagName(instruction) });
+    const line = if (pc < frame.closure.proto.line_info.items.len) frame.closure.proto.line_info.items[pc].line else 0;
+    try appendFmt(self.allocator, &self.stderr, "[trace-vm] {s}:{d} pc={d} op={s}\n", .{ frame.closure.proto.source_name, line, pc, @tagName(instruction) });
 }
 
 pub fn get(_: *State, thread: *Thread, register: usize) Value {
@@ -1249,23 +1244,24 @@ pub fn jumpThread(self: *State, thread: *Thread, offset: bytecode.JumpOffset, au
     const frame = &thread.frames.items[frame_index];
     const source_pc = frame.pc;
     const target_pc = jumpTarget(source_pc, offset);
-    if (source_pc != 0 and frame.proto.jumpExitsToBeClosed(source_pc - 1)) try upvalue_mod.closeToBeClosedExitingPc(self, thread, frame_index, source_pc, target_pc, null);
-    thread.frames.items[frame_index].pc = target_pc;
+    if (source_pc != 0 and frame.closure.proto.jumpExitsToBeClosed(source_pc - 1)) try upvalue_mod.closeToBeClosedExitingPc(self, thread, frame_index, source_pc, target_pc, null);
+    thread.frames.items[frame_index].pc = @intCast(target_pc);
     if (target_pc < source_pc) {
-        thread.frames.items[frame_index].last_hook_line = null;
+        thread.clearHookLine(frame_index);
         if (auto_gc and self.gc.running and self.gc.shouldRunAuto()) try self.gc.autoStep(thread);
     }
 }
 
 pub fn jumpThreadMaybeFast(self: *State, thread: *Thread, offset: bytecode.JumpOffset, auto_gc: bool) !void {
-    const frame = &thread.frames.items[thread.frames.items.len - 1];
-    if (frame.proto.has_to_close_locals) return jumpThread(self, thread, offset, auto_gc);
+    const frame_index = thread.frames.items.len - 1;
+    const frame = &thread.frames.items[frame_index];
+    if (frame.closure.proto.has_to_close_locals) return jumpThread(self, thread, offset, auto_gc);
 
     const source_pc = frame.pc;
     const target_pc = jumpTarget(source_pc, offset);
-    frame.pc = target_pc;
+    frame.pc = @intCast(target_pc);
     if (target_pc < source_pc) {
-        frame.last_hook_line = null;
+        thread.clearHookLine(frame_index);
         if (auto_gc and self.gc.running and self.gc.shouldRunAuto()) try self.gc.autoStep(thread);
     }
 }
@@ -1306,7 +1302,8 @@ fn forPrep(self: *State, thread: *Thread, op: bytecode.ForLoop) !void {
 }
 
 fn forLoop(self: *State, thread: *Thread, op: bytecode.ForLoop) !void {
-    const frame = &thread.frames.items[thread.frames.items.len - 1];
+    const frame_index = thread.frames.items.len - 1;
+    const frame = &thread.frames.items[frame_index];
     const absolute_base = frame.base + op.base;
     const stack = thread.stack.items;
     const current = stack[absolute_base];
@@ -1317,13 +1314,13 @@ fn forLoop(self: *State, thread: *Thread, op: bytecode.ForLoop) !void {
         stack[absolute_base] = .{ .integer = next };
         const wrapped = (step.integer > 0 and next < current.integer) or (step.integer < 0 and next > current.integer);
         if (!wrapped and forLoopContinuesInteger(next, limit.integer, step.integer)) {
-            if (frame.proto.has_to_close_locals) {
+            if (frame.closure.proto.has_to_close_locals) {
                 try jumpThread(self, thread, op.offset, false);
             } else {
                 const source_pc = frame.pc;
                 const target_pc = jumpTarget(source_pc, op.offset);
-                frame.pc = target_pc;
-                if (target_pc < source_pc) frame.last_hook_line = null;
+                frame.pc = @intCast(target_pc);
+                if (target_pc < source_pc) thread.clearHookLine(frame_index);
             }
         }
         return;
@@ -1332,13 +1329,13 @@ fn forLoop(self: *State, thread: *Thread, op: bytecode.ForLoop) !void {
     const next = (try toNumber(current)) + (try toNumber(step));
     stack[absolute_base] = .{ .number = next };
     if (forLoopContinuesNumber(next, try toNumber(limit), try toNumber(step))) {
-        if (frame.proto.has_to_close_locals) {
+        if (frame.closure.proto.has_to_close_locals) {
             try jumpThread(self, thread, op.offset, false);
         } else {
             const source_pc = frame.pc;
             const target_pc = jumpTarget(source_pc, op.offset);
-            frame.pc = target_pc;
-            if (target_pc < source_pc) frame.last_hook_line = null;
+            frame.pc = @intCast(target_pc);
+            if (target_pc < source_pc) thread.clearHookLine(frame_index);
         }
     }
 }

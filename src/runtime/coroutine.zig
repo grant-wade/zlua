@@ -319,8 +319,7 @@ fn startCoroutine(self: *State, target: *Thread, args: []const Value) !void {
             break :blk .{ trampoline, 1 + args.len };
         },
     };
-    var frame = try call_mod.prepareClosureFrame(self, target, closure, 0, 0, arg_count, 0, bytecode.multret_count);
-    errdefer target.releaseFrame(&frame, self.allocator);
+    const frame = try call_mod.prepareClosureFrame(self, target, closure, 0, 0, arg_count, 0, bytecode.multret_count);
     try target.frames.append(self.allocator, frame);
     target.started = true;
     if (target.hook_call and !target.hook_running) try debug_mod.callHook(self, target, "call");

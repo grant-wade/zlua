@@ -46,7 +46,7 @@ pub fn getinfo(state: *State, thread: *Thread, op: bytecode.Call) !void {
             const frame_index = info_thread.frames.items.len - depth;
             const frame = info_thread.frames.items[frame_index];
             const tail = frame.is_tail_call or (depth == 2 and info_thread.frames.items.len != 0 and info_thread.frames.items[info_thread.frames.items.len - 1].is_tail_call);
-            break :blk .{ frame.closure, .{ .closure = frame.closure }, frame.proto.source_name, debug_mod.currentWhat(state, info_thread, target.integer), if (debug_mod.currentLine(state, info_thread, target.integer)) |line| @as(i64, @intCast(line)) else -1, debug_mod.currentFunctionName(state, info_thread, target.integer), tail };
+            break :blk .{ frame.closure, .{ .closure = frame.closure }, frame.closure.proto.source_name, debug_mod.currentWhat(state, info_thread, target.integer), if (debug_mod.currentLine(state, info_thread, target.integer)) |line| @as(i64, @intCast(line)) else -1, debug_mod.currentFunctionName(state, info_thread, target.integer), tail };
         },
         .closure => .{ target.closure, target, target.closure.proto.source_name, "Lua", @as(i64, -1), null, false },
         .api_callback, .gmatch_iterator, .native, .native_print, .native_tostring, .native_getmetatable, .native_setmetatable, .native_rawequal, .native_rawget, .native_rawset, .native_rawlen, .native_next, .native_pairs, .native_ipairs, .native_ipairs_iter, .native_table_create, .native_select, .native_assert, .native_error, .native_pcall, .native_xpcall, .native_collectgarbage, .native_debug_traceback, .native_coroutine_create, .native_coroutine_resume, .native_coroutine_yield, .native_coroutine_status, .native_coroutine_running, .native_coroutine_isyieldable, .native_coroutine_close, .native_coroutine_wrap => .{ null, target, "[C]", "C", @as(i64, -1), null, false },
@@ -278,7 +278,7 @@ pub fn getlocal(state: *State, thread: *Thread, op: bytecode.Call) !void {
     }
     const local = visibleLocalAtIndex(local_thread, frame_index, index, local_thread == thread) orelse return state.returnValues(thread, op.base, op.return_count, &.{.nil});
     switch (local) {
-        .vararg_table => try state.returnValues(thread, op.base, op.return_count, &.{ .{ .string = try state.strings.intern("(vararg table)") }, frame.vararg_table_local }),
+        .vararg_table => try state.returnValues(thread, op.base, op.return_count, &.{ .{ .string = try state.strings.intern("(vararg table)") }, local_thread.frameExtra(frame_index).vararg_table_local }),
         .local => |debug_local| try state.returnValues(thread, op.base, op.return_count, &.{ .{ .string = try state.strings.intern(debug_local.name) }, local_thread.stack.items[frame.base + debug_local.register] }),
         .temporary => |register| try state.returnValues(thread, op.base, op.return_count, &.{ .{ .string = try state.strings.intern("(temporary)") }, local_thread.stack.items[frame.base + register] }),
     }
@@ -308,7 +308,7 @@ pub fn setlocal(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const local = visibleLocalAtIndex(local_thread, frame_index, index, local_thread == thread) orelse return state.returnValues(thread, op.base, op.return_count, &.{.nil});
     switch (local) {
         .vararg_table => {
-            frame.vararg_table_local = value;
+            (try local_thread.frameExtraMut(state.allocator, frame_index)).vararg_table_local = value;
             try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern("(vararg table)") }});
         },
         .local => |debug_local| {
@@ -336,7 +336,7 @@ pub fn getregistry(state: *State, thread: *Thread, op: bytecode.Call) !void {
 
 pub fn sethook(state: *State, thread: *Thread, op: bytecode.Call) !void {
     if (op.arg_count == 0) {
-        debug_mod.setThreadHook(state, thread, .nil, "", 0);
+        try debug_mod.setThreadHook(state, thread, .nil, "", 0);
         try state.returnValues(thread, op.base, op.return_count, &.{});
         return;
     }
@@ -347,7 +347,7 @@ pub fn sethook(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const mask = if (hook == .nil) "" else try state.expectArgumentString(thread, op, "debug.sethook", hook_index + 1);
     const count = if (op.arg_count > hook_index + 2) hookCount(runtime.argValue(state, thread, op, hook_index + 2)) else 0;
 
-    debug_mod.setThreadHook(state, target, hook, mask, if (count > 0) @intCast(count) else 0);
+    try debug_mod.setThreadHook(state, target, hook, mask, if (count > 0) @intCast(count) else 0);
     try state.returnValues(thread, op.base, op.return_count, &.{});
 }
 
@@ -512,7 +512,7 @@ fn visibleLocalAtIndex(thread: *Thread, frame_index: usize, index: i64, include_
 }
 
 fn hasSyntheticVarargTableLocal(frame: anytype) bool {
-    return frame.proto.is_vararg and !frame.proto.named_vararg and frame.proto.defined_line != 0;
+    return frame.closure.proto.is_vararg and !frame.closure.proto.named_vararg and frame.closure.proto.defined_line != 0;
 }
 
 fn localOrTemporaryAtIndex(thread: *Thread, frame_index: usize, index: i64, include_temporaries: bool) ?VisibleLocal {
@@ -521,7 +521,7 @@ fn localOrTemporaryAtIndex(thread: *Thread, frame_index: usize, index: i64, incl
     const pc = if (frame.pc == 0) 0 else frame.pc - 1;
     const expose_named_locals = !frame.closure.stripped_debug;
     if (expose_named_locals) {
-        for (frame.proto.locals.items) |local| {
+        for (frame.closure.proto.locals.items) |local| {
             if (std.mem.eql(u8, local.name, "_ENV")) continue;
             if (!runtime.localActiveAt(local, pc)) continue;
             seen += 1;
@@ -532,9 +532,9 @@ fn localOrTemporaryAtIndex(thread: *Thread, frame_index: usize, index: i64, incl
     if (!include_temporaries) return null;
 
     const register_limit = if (frame_index + 1 < thread.frames.items.len)
-        @min(frame.proto.max_registers, thread.frames.items[frame_index + 1].argumentBase() - 1 - frame.base)
+        @min(frame.closure.proto.max_registers, thread.frames.items[frame_index + 1].argumentBase() - 1 - frame.base)
     else
-        frame.proto.max_registers;
+        frame.closure.proto.max_registers;
     for (0..register_limit) |register_usize| {
         const register: bytecode.Register = @intCast(register_usize);
         if (envLocalUsesRegister(frame, register)) continue;
@@ -547,14 +547,14 @@ fn localOrTemporaryAtIndex(thread: *Thread, frame_index: usize, index: i64, incl
 }
 
 fn envLocalUsesRegister(frame: anytype, register: bytecode.Register) bool {
-    for (frame.proto.locals.items) |local| {
+    for (frame.closure.proto.locals.items) |local| {
         if (local.register == register and std.mem.eql(u8, local.name, "_ENV")) return true;
     }
     return false;
 }
 
 fn activeLocalUsesRegister(frame: anytype, pc: usize, register: bytecode.Register) bool {
-    for (frame.proto.locals.items) |local| {
+    for (frame.closure.proto.locals.items) |local| {
         if (std.mem.eql(u8, local.name, "_ENV")) continue;
         if (local.register == register and runtime.localActiveAt(local, pc)) return true;
     }
@@ -562,7 +562,7 @@ fn activeLocalUsesRegister(frame: anytype, pc: usize, register: bytecode.Registe
 }
 
 fn inactiveLocalUsesRegister(frame: anytype, pc: usize, register: bytecode.Register) bool {
-    for (frame.proto.locals.items) |local| {
+    for (frame.closure.proto.locals.items) |local| {
         if (std.mem.eql(u8, local.name, "_ENV")) continue;
         if (local.register == register and !runtime.localActiveAt(local, pc)) return true;
     }

@@ -949,11 +949,13 @@ pub const Gc = struct {
             gc.markValue(continuation.context.error_handler);
             gc.markValue(continuation.context.previous_error_handler);
         }
-        for (thread.frames.items) |frame| {
+        for (thread.frames.items, 0..) |frame, index| {
             gc.markClosure(frame.closure);
-            gc.markValue(frame.vararg_table_local);
             gc.markStackRange(thread, frame.vararg_base, frame.vararg_count);
-            if (frame.pending_returns) |returns| for (returns) |value| gc.markValue(value);
+            if (!frame.has_extra) continue;
+            const extra = thread.frame_extras.items[index];
+            gc.markValue(extra.vararg_table_local);
+            if (extra.pending_returns) |returns| for (returns) |value| gc.markValue(value);
         }
         var current = thread.open_upvalues;
         while (current) |upvalue| : (current = upvalue.next) gc.markUpvalue(upvalue);
@@ -969,7 +971,7 @@ pub const Gc = struct {
         for (frames, 0..) |frame, index| {
             const live_end = if (index + 1 < frames.len) frames[index + 1].base else innermostLiveEnd(thread, frame);
             if (live_end > frame.base) gc.markStackRange(thread, frame.base, live_end - frame.base);
-            for (frame.proto.locals.items) |local| {
+            for (frame.closure.proto.locals.items) |local| {
                 if (frame.base + local.register < live_end or !localActiveAt(local, frame.pc)) continue;
                 gc.markStackRange(thread, frame.base + local.register, 1);
             }
@@ -1804,13 +1806,16 @@ fn threadCapacityBytes(thread: *const Thread) usize {
 
 fn frameStorageBytes(thread: *const Thread) usize {
     var bytes: usize = 0;
-    for (thread.frames.items) |frame| bytes += frame.storageBytes();
+    for (thread.frames.items, 0..) |frame, index| {
+        if (!frame.has_extra) continue;
+        if (thread.frame_extras.items[index].pending_returns) |returns| bytes += returns.len * @sizeOf(Value);
+    }
     return bytes;
 }
 
 fn threadListBytes(thread: *const Thread) usize {
     var bytes: usize = 0;
-    inline for (.{ "stack", "frames", "yield_values", "protected_continuations", "generic_for_continuations", "pairs_continuations", "tail_call_continuations", "call_one_continuations" }) |name| {
+    inline for (.{ "stack", "frames", "frame_extras", "yield_values", "protected_continuations", "generic_for_continuations", "pairs_continuations", "tail_call_continuations", "call_one_continuations" }) |name| {
         const list = @field(thread, name);
         const T = @typeInfo(@TypeOf(list.items)).pointer.child;
         bytes += list.capacity * @sizeOf(T);
@@ -1839,9 +1844,9 @@ fn innermostLiveEnd(thread: *const Thread, frame: types.CallFrame) usize {
 }
 
 fn callerLiveEnd(frame: types.CallFrame) usize {
-    const whole = frame.base + frame.proto.max_registers;
-    if (frame.pc == 0 or frame.pc > frame.proto.instructions.items.len) return whole;
-    const op = switch (frame.proto.instructions.items[frame.pc - 1]) {
+    const whole = frame.base + frame.closure.proto.max_registers;
+    if (frame.pc == 0 or frame.pc > frame.closure.proto.instructions.items.len) return whole;
+    const op = switch (frame.closure.proto.instructions.items[frame.pc - 1]) {
         .call, .tail_call => |op| op,
         else => return whole,
     };
