@@ -215,7 +215,7 @@ const Copier = struct {
             }
             new.entries.items.len = retained;
             try new.rebuildEntryIndex(a);
-            inline for (.{ "metatable", "metatable_prev", "metatable_next", "finalizer_registered", "finalizer_next", "finalizer_prev", "finalizer_order" }) |name| @field(new, name) = try self.remap(@field(old, name));
+            inline for (.{ "metatable", "used_as_metatable", "finalizer_registered", "finalizer_next", "finalizer_prev", "finalizer_order" }) |name| @field(new, name) = try self.remap(@field(old, name));
         }
         for (source.closure_allocations.items, d.closure_allocations.items) |old, new| {
             new.proto = try self.mapped(old.proto);
@@ -233,7 +233,7 @@ const Copier = struct {
         }
         for (source.thread_allocations.items, d.thread_allocations.items) |old, new| try self.thread(old, new);
         for (source.userdata_allocations.items, d.userdata_allocations.items) |old, new| try self.userdata(old, new);
-        inline for (.{ "global_table", "table_metatable_head", "table_finalizer_head", "table_pending_finalizer_head", "userdata_pending_finalizer_head", "userdata_lua_pending_head", "table_metatable_count", "table_finalizer_serial", "stdin_pos", "file_generation", "last_error", "error_handled", "warnings_on", "string_metatable", "number_metatable", "boolean_metatable", "nil_metatable", "file_metatable", "fs_file_metatable", "io_input", "io_output", "random_state" }) |name| @field(d, name) = try self.remap(@field(source, name));
+        inline for (.{ "global_table", "table_finalizer_head", "table_pending_finalizer_head", "userdata_pending_finalizer_head", "userdata_lua_pending_head", "table_finalizer_serial", "stdin_pos", "file_generation", "last_error", "error_handled", "warnings_on", "string_metatable", "number_metatable", "boolean_metatable", "nil_metatable", "file_metatable", "fs_file_metatable", "io_input", "io_output", "random_state" }) |name| @field(d, name) = try self.remap(@field(source, name));
         inline for (.{ "running", "mode", "params" }) |name| @field(d.gc, name) = @field(source.gc, name);
         inline for (.{ "instructions", "base" }) |name| @field(d.budget, name) = @field(source.budget, name);
         for (&d.library_tables.values, source.library_tables.values) |*slot, table| slot.* = try self.remap(table);
@@ -386,8 +386,8 @@ comptime {
     review(State, .{
         .external = "allocator allocator_lifetime options",
         .rebuilt = "strings api_roots gc budget",
-        .remapped = "global_table table_metatable_head table_finalizer_head table_pending_finalizer_head userdata_pending_finalizer_head userdata_lua_pending_head string_metatable number_metatable boolean_metatable nil_metatable file_metatable fs_file_metatable io_input io_output library_tables last_error",
-        .copied = "string_allocations table_allocations userdata_allocations closure_allocations upvalue_allocations thread_allocations chunk_allocations source_allocations stdout stderr table_metatable_count table_finalizer_serial stdin_pos file_generation error_handled warnings_on random_state",
+        .remapped = "global_table table_finalizer_head table_pending_finalizer_head userdata_pending_finalizer_head userdata_lua_pending_head string_metatable number_metatable boolean_metatable nil_metatable file_metatable fs_file_metatable io_input io_output library_tables last_error",
+        .copied = "string_allocations table_allocations userdata_allocations closure_allocations upvalue_allocations thread_allocations chunk_allocations source_allocations stdout stderr table_finalizer_serial stdin_pos file_generation error_handled warnings_on random_state",
         .transient = "execution_depth userdata_scope value_roots rollback snapshot_busy discarding exit_request local_zone current_thread api_callback_dispatch api_callback_user_data active_api_callback coroutine_close_depth",
     });
     review(budget_mod.Budget, .{
@@ -410,10 +410,10 @@ comptime {
         .remapped = "closure proto vararg_table_local",
     });
     review(types.Table, .{
-        .copied = "array entries finalizer_registered finalizer_order",
-        .remapped = "metatable metatable_prev metatable_next finalizer_next finalizer_prev",
+        .copied = "array entries used_as_metatable finalizer_registered finalizer_order",
+        .remapped = "metatable finalizer_next finalizer_prev",
         .rebuilt = "entry_index storage_bytes",
-        .transient = "rollback gc metamethod_absent weak_epoch tables_epoch",
+        .transient = "rollback gc metamethod_absent in_weak_list in_table_list",
     });
     review(types.Closure, .{
         .remapped = "proto chunk",

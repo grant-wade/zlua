@@ -178,8 +178,8 @@ pub const Gc = struct {
     fn tableCandidate(gc: *Gc, table: *Table) void {
         const state = gc.parentState();
         if (@intFromEnum(state.gc.phase) >= @intFromEnum(types.GcPhase.sweep_threads)) return;
-        if (table.tables_epoch == state.gc.epoch) return;
-        table.tables_epoch = state.gc.epoch;
+        if (table.in_table_list) return;
+        table.in_table_list = true;
         state.gc.tables.appendAssumeCapacity(table);
     }
 
@@ -485,6 +485,7 @@ pub const Gc = struct {
         gc.convergeEphemerons();
         gc.clearWeakTables();
         gc.clearDeadHashKeys();
+        gc.clearTableLists();
         if (!state.gc.mark_all_stack_registers) gc.clearUnmarkedStackSlots();
     }
 
@@ -719,22 +720,26 @@ pub const Gc = struct {
 
     fn clearEpochs(object: anytype) void {
         object.gc.epoch = 0;
-        if (@TypeOf(object) == *Table) {
-            object.weak_epoch = 0;
-            object.tables_epoch = 0;
-        }
     }
 
     fn clearGeneration(object: anytype) void {
         object.gc.generation = 0;
     }
 
+    /// Every table in the lists must still be allocated.
+    pub fn clearTableLists(gc: *Gc) void {
+        const state = gc.parentState();
+        for (state.gc.weak.items) |table| table.in_weak_list = false;
+        for (state.gc.tables.items) |table| table.in_table_list = false;
+        state.gc.weak.clearRetainingCapacity();
+        state.gc.tables.clearRetainingCapacity();
+    }
+
     fn resetMarks(gc: *Gc) void {
         const state = gc.parentState();
         gc.advanceEpoch();
         state.gc.work.clearRetainingCapacity();
-        state.gc.weak.clearRetainingCapacity();
-        state.gc.tables.clearRetainingCapacity();
+        gc.clearTableLists();
         state.gc.finalizers.clearRetainingCapacity();
         state.gc.work_done = 0;
     }
@@ -822,8 +827,8 @@ pub const Gc = struct {
             gc.noteYoung(entry.value);
         }
         const mode = gc.weakMode(table);
-        if (@intFromEnum(state.gc.phase) < @intFromEnum(types.GcPhase.sweep_threads) and (mode.keys or mode.values) and table.weak_epoch != state.gc.epoch) {
-            table.weak_epoch = state.gc.epoch;
+        if (@intFromEnum(state.gc.phase) < @intFromEnum(types.GcPhase.sweep_threads) and (mode.keys or mode.values) and !table.in_weak_list) {
+            table.in_weak_list = true;
             state.gc.weak.appendAssumeCapacity(table);
         }
         if (table.metatable) |metatable| gc.markTable(metatable);
@@ -1159,9 +1164,8 @@ pub const Gc = struct {
     noinline fn writeTableBarrierSlow(gc: *Gc, table: *Table, key: Value, value: Value, mode_key: bool) void {
         const state = gc.parentState();
         gc.rememberObject(.{ .table = table });
-        if (mode_key) {
-            var current = state.table_metatable_head;
-            while (current) |dependent| : (current = dependent.metatable_next) {
+        if (mode_key and table.used_as_metatable) {
+            for (state.table_allocations.items) |dependent| {
                 if (dependent.metatable != table) continue;
                 gc.rememberObject(.{ .table = dependent });
                 if (state.gc.phase != .pause and dependent.gc.color != .gray) {
@@ -1609,11 +1613,6 @@ pub const Gc = struct {
 
     pub fn destroyTable(gc: *Gc, table: *Table) void {
         const state = gc.parentState();
-        rollback.touch(table);
-        if (table.metatable != null) {
-            gc.unlinkTableMetatable(table);
-            state.table_metatable_count -= 1;
-        }
         if (rollback.retainCollected(table)) return;
         table.deinit(state.allocator);
         state.allocator.destroy(table);
@@ -1691,7 +1690,7 @@ pub const Gc = struct {
         }
     }
 
-    pub fn noteTableMetatableChanged(gc: *Gc, table: *Table, old_has_metatable: bool) void {
+    pub fn noteTableMetatableChanged(gc: *Gc, table: *Table) void {
         const state = gc.parentState();
         rollback.touch(table);
         if (!gc.isTrackedTable(table)) return;
@@ -1715,38 +1714,7 @@ pub const Gc = struct {
                 }
             }
         }
-        const new_has_metatable = table.metatable != null;
-        if (old_has_metatable == new_has_metatable) return;
-        if (new_has_metatable) {
-            table.metatable_prev = null;
-            table.metatable_next = state.table_metatable_head;
-            if (state.table_metatable_head) |head| {
-                rollback.touch(head);
-                head.metatable_prev = table;
-            }
-            state.table_metatable_head = table;
-            state.table_metatable_count += 1;
-        } else {
-            gc.unlinkTableMetatable(table);
-            state.table_metatable_count -= 1;
-        }
-    }
-
-    fn unlinkTableMetatable(gc: *Gc, table: *Table) void {
-        const state = gc.parentState();
-        rollback.touch(table);
-        if (table.metatable_prev) |prev| {
-            rollback.touch(prev);
-            prev.metatable_next = table.metatable_next;
-        } else if (state.table_metatable_head == table) {
-            state.table_metatable_head = table.metatable_next;
-        }
-        if (table.metatable_next) |next| {
-            rollback.touch(next);
-            next.metatable_prev = table.metatable_prev;
-        }
-        table.metatable_prev = null;
-        table.metatable_next = null;
+        if (table.metatable) |metatable| metatable.used_as_metatable = true;
     }
 
     pub fn setMode(gc: *Gc, mode: GcMode) GcMode {

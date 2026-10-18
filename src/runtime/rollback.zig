@@ -173,6 +173,10 @@ pub const Journal = struct {
             @field(self, records) = try a.alloc(Record(T), objects.len);
             for (objects, @field(self, records)) |object, *record| {
                 record.* = .{ .header = .{ .journal = self, .kind = kindOf(T) }, .object = object, .original = object.* };
+                if (T == types.Table) {
+                    record.original.in_weak_list = false;
+                    record.original.in_table_list = false;
+                }
             }
             count += objects.len;
         }
@@ -255,8 +259,7 @@ pub const Journal = struct {
     pub fn reset(self: *Journal, state: *State, prepared: []*types.UserdataPayload) void {
         state.gc.work.clearRetainingCapacity();
         state.gc.remembered.clearRetainingCapacity();
-        state.gc.weak.clearRetainingCapacity();
-        state.gc.tables.clearRetainingCapacity();
+        state.gc.clearTableLists();
         state.gc.finalizers.clearRetainingCapacity();
         state.discarding = true;
         self.last_restored_objects = self.dirty.items.len + self.destroyNewObjects(state);

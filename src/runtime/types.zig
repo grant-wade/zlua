@@ -515,8 +515,8 @@ pub const Table = struct {
     entries: std.ArrayList(TableEntry) = .empty,
     entry_index: TableEntryIndex = .{},
     metatable: ?*Table = null,
-    metatable_prev: ?*Table = null,
-    metatable_next: ?*Table = null,
+    /// Has been some table's metatable.
+    used_as_metatable: bool = false,
     finalizer_registered: bool = false,
     finalizer_next: ?*Table = null,
     finalizer_prev: ?*Table = null,
@@ -524,10 +524,10 @@ pub const Table = struct {
     /// Bit `e` set: this metatable has no raw value for `MetaEvent` `e`. Hash-part
     /// writes that may turn nil into non-nil clear the whole set.
     metamethod_absent: u32 = 0,
-    /// Collector epoch in which this table joined `Gc.weak`.
-    weak_epoch: u32 = 0,
-    /// Collector epoch in which this table joined `Gc.tables`.
-    tables_epoch: u32 = 0,
+    /// In `Gc.weak`.
+    in_weak_list: bool = false,
+    /// In `Gc.tables`.
+    in_table_list: bool = false,
     /// Capacity bytes last reported to the collector.
     storage_bytes: usize = 0,
 

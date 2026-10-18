@@ -145,9 +145,8 @@ pub fn getMetaEvent(self: *State, value: Value, event: types.MetaEvent) !?Value 
 
 pub fn setTableMetatableRaw(self: *State, table: *Table, metatable: ?*Table) void {
     rollback_mod.touch(table);
-    const old_has_metatable = table.metatable != null;
     table.metatable = metatable;
-    self.gc.noteTableMetatableChanged(table, old_has_metatable);
+    self.gc.noteTableMetatableChanged(table);
     if (metatable) |mt| self.gc.writeBarrier(table, .{ .table = mt });
 }
 
