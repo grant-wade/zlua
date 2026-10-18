@@ -4,6 +4,22 @@ const api = @import("../api.zig");
 const coroutine_mod = @import("../runtime/coroutine.zig");
 const a = std.testing.allocator;
 
+/// `a` with every in-place resize and remap refused.
+const no_resize_allocator: std.mem.Allocator = .{ .ptr = undefined, .vtable = &.{
+    .alloc = struct {
+        fn alloc(_: *anyopaque, len: usize, alignment: std.mem.Alignment, ret_addr: usize) ?[*]u8 {
+            return a.rawAlloc(len, alignment, ret_addr);
+        }
+    }.alloc,
+    .resize = std.mem.Allocator.noResize,
+    .remap = std.mem.Allocator.noRemap,
+    .free = struct {
+        fn free(_: *anyopaque, memory: []u8, alignment: std.mem.Alignment, ret_addr: usize) void {
+            a.rawFree(memory, alignment, ret_addr);
+        }
+    }.free,
+} };
+
 test "snapshot accepts stateless allocator with undefined context" {
     const allocator = std.heap.smp_allocator;
     var lua = try api.State.init(allocator, .{ .stdlib = .full });
@@ -398,7 +414,7 @@ fn allocationFixture() !api.State {
 test "snapshot capture and newState allocation failures release every partial graph" {
     var lua = try allocationFixture();
     defer lua.deinit();
-    try std.testing.checkAllAllocationFailures(a, struct {
+    try std.testing.checkAllAllocationFailures(no_resize_allocator, struct {
         fn run(allocator: std.mem.Allocator, state: *api.State) !void {
             var snapshot = try state.snapshot(allocator);
             defer snapshot.deinit();
@@ -409,7 +425,7 @@ test "snapshot capture and newState allocation failures release every partial gr
     }.run, .{&lua});
     var snapshot = try lua.snapshot(a);
     defer snapshot.deinit();
-    try std.testing.checkAllAllocationFailures(a, struct {
+    try std.testing.checkAllAllocationFailures(no_resize_allocator, struct {
         fn run(allocator: std.mem.Allocator, image: *const api.Snapshot) !void {
             var worker = try image.newState(allocator);
             defer worker.deinit();
@@ -556,7 +572,7 @@ test "snapshot userdata copy allocation failures never run application finalizer
     defer cb.deinit();
     try lua.setGlobal("identity", cb);
     try lua.addMemoryFile("file", "bytes");
-    try std.testing.checkAllAllocationFailures(a, struct {
+    try std.testing.checkAllAllocationFailures(no_resize_allocator, struct {
         fn run(allocator: std.mem.Allocator, state: *api.State) !void {
             var snapshot = try state.snapshot(allocator);
             defer snapshot.deinit();
@@ -569,7 +585,7 @@ test "snapshot userdata copy allocation failures never run application finalizer
     try std.testing.expect(disposals > 0);
     var snapshot = try lua.snapshot(a);
     defer snapshot.deinit();
-    try std.testing.checkAllAllocationFailures(a, struct {
+    try std.testing.checkAllAllocationFailures(no_resize_allocator, struct {
         fn run(allocator: std.mem.Allocator, image: *const api.Snapshot) !void {
             var worker = try image.newState(allocator);
             defer worker.deinit();
@@ -1114,7 +1130,7 @@ test "journal newState first-write coroutine and GC allocation failures release 
     , .{});
     var snapshot = try source.snapshot(a);
     defer snapshot.deinit();
-    try std.testing.checkAllAllocationFailures(a, struct {
+    try std.testing.checkAllAllocationFailures(no_resize_allocator, struct {
         fn run(allocator: std.mem.Allocator, image: *const api.Snapshot) !void {
             var worker = try image.newState(allocator);
             defer worker.deinit();
