@@ -272,8 +272,8 @@ pub fn getlocal(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const frame = &local_thread.frames.items[frame_index];
     if (index < 0) {
         const vararg_index: usize = @intCast(-index - 1);
-        if (vararg_index >= frame.varargs.len) return state.returnValues(thread, op.base, op.return_count, &.{.nil});
-        try state.returnValues(thread, op.base, op.return_count, &.{ .{ .string = try state.strings.intern("(vararg)") }, frame.varargs[vararg_index] });
+        if (vararg_index >= frame.vararg_count) return state.returnValues(thread, op.base, op.return_count, &.{.nil});
+        try state.returnValues(thread, op.base, op.return_count, &.{ .{ .string = try state.strings.intern("(vararg)") }, local_thread.stack.items[frame.vararg_base + vararg_index] });
         return;
     }
     const local = visibleLocalAtIndex(local_thread, frame_index, index, local_thread == thread) orelse return state.returnValues(thread, op.base, op.return_count, &.{.nil});
@@ -300,8 +300,8 @@ pub fn setlocal(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const frame = &local_thread.frames.items[frame_index];
     if (index < 0) {
         const vararg_index: usize = @intCast(-index - 1);
-        if (vararg_index >= frame.varargs.len) return state.returnValues(thread, op.base, op.return_count, &.{.nil});
-        if (frame.owns_varargs) @constCast(frame.varargs.ptr)[vararg_index] = value;
+        if (vararg_index >= frame.vararg_count) return state.returnValues(thread, op.base, op.return_count, &.{.nil});
+        local_thread.stack.items[frame.vararg_base + vararg_index] = value;
         try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern("(vararg)") }});
         return;
     }
@@ -532,7 +532,7 @@ fn localOrTemporaryAtIndex(thread: *Thread, frame_index: usize, index: i64, incl
     if (!include_temporaries) return null;
 
     const register_limit = if (frame_index + 1 < thread.frames.items.len)
-        @min(frame.proto.max_registers, thread.frames.items[frame_index + 1].base - 1 - frame.base)
+        @min(frame.proto.max_registers, thread.frames.items[frame_index + 1].argumentBase() - 1 - frame.base)
     else
         frame.proto.max_registers;
     for (0..register_limit) |register_usize| {

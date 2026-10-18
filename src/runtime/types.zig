@@ -835,7 +835,7 @@ pub const Thread = struct {
     pending_unwind_error: ?Value = null,
     pending_unwind_resume_frame_count: usize = 0,
     pending_unwind_target_frame_count: usize = 0,
-    /// Bytes of owned varargs and pending returns held by this thread's frames.
+    /// Bytes of pending returns held by this thread's frames.
     frame_storage_bytes: usize = 0,
     /// Capacity bytes last reported to the collector.
     storage_bytes: usize = 0,
@@ -855,7 +855,7 @@ pub const Thread = struct {
         errdefer thread.deinit(allocator);
         const proto = closure.proto;
         try thread.ensureStack(allocator, @max(proto.max_registers, 1), stack_value_limit);
-        try thread.frames.append(allocator, .{ .closure = closure, .proto = proto, .base = 0, .pc = 0, .return_start = 0, .return_count = 0, .varargs = &.{} });
+        try thread.frames.append(allocator, .{ .closure = closure, .proto = proto, .base = 0, .pc = 0, .return_start = 0, .return_count = 0 });
         return thread;
     }
 
@@ -946,8 +946,9 @@ pub const CallFrame = struct {
     pc: usize,
     return_start: usize,
     return_count: u16,
-    varargs: []const Value,
-    owns_varargs: bool = false,
+    /// Stack index of the first extra argument, which sits below `base`.
+    vararg_base: usize = 0,
+    vararg_count: u32 = 0,
     vararg_table_local: Value = .nil,
     named_vararg_readonly: bool = false,
     last_hook_line: ?usize = null,
@@ -957,17 +958,22 @@ pub const CallFrame = struct {
     pending_returns: ?[]Value = null,
 
     pub fn storageBytes(self: CallFrame) usize {
-        const varargs = if (self.owns_varargs) self.varargs.len else 0;
         const returns = if (self.pending_returns) |values| values.len else 0;
-        return (varargs + returns) * @sizeOf(Value);
+        return returns * @sizeOf(Value);
     }
 
     pub fn deinit(self: *CallFrame, allocator: std.mem.Allocator) void {
-        if (self.owns_varargs) allocator.free(self.varargs);
         if (self.pending_returns) |returns| allocator.free(returns);
-        self.varargs = &.{};
-        self.owns_varargs = false;
         self.pending_returns = null;
+    }
+
+    /// Stack index of the first argument the frame was called with.
+    pub fn argumentBase(self: CallFrame) usize {
+        return if (self.vararg_count != 0) self.vararg_base - self.proto.param_count else self.base;
+    }
+
+    pub fn varargs(self: CallFrame, stack: []const Value) []const Value {
+        return stack[self.vararg_base..][0..self.vararg_count];
     }
 };
 

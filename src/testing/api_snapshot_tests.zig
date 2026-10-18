@@ -1668,7 +1668,7 @@ test "managed accounting includes suspended varargs and pending return buffers" 
     var vararg_count: usize = 0;
     var pending_count: usize = 0;
     for (thread.frames.items) |frame| {
-        if (frame.owns_varargs) vararg_count += frame.varargs.len;
+        vararg_count += frame.vararg_count;
         if (frame.pending_returns) |values| pending_count += values.len;
     }
     try std.testing.expect(vararg_count >= 3);

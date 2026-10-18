@@ -388,7 +388,7 @@ test "host callback arguments from multiple results survive a full collection" {
     );
 }
 
-test "thread frame storage stays current while frames hold varargs and pending returns" {
+test "thread frame storage stays current while frames hold pending returns" {
     const Host = struct {
         var seen: [8]usize = undefined;
         var count: usize = 0;
@@ -417,5 +417,5 @@ test "thread frame storage stays current while frames hold varargs and pending r
         \\closing(1, 2)
         \\probe()
     );
-    try std.testing.expectEqualSlices(usize, &.{ 0, 3, 4, 2, 4, 0 }, Host.seen[0..Host.count]);
+    try std.testing.expectEqualSlices(usize, &.{ 0, 0, 0, 0, 2, 0 }, Host.seen[0..Host.count]);
 }

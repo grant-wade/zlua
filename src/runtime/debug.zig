@@ -85,7 +85,7 @@ fn appendDebugFrames(self: *State, out: *std.ArrayList(u8), thread: *Thread) !vo
             "<end>";
         try appendFmt(self.allocator, out, "  frame {d}: {s}:{d} pc={d} op={s} func={s} base={d} return={d}@{d} registers={d}\n", .{ index, frame.proto.source_name, line, pc, instruction, name, frame.base, frame.return_count, frame.return_start, frame.proto.max_registers });
         try appendDebugLocals(self, out, thread, frame);
-        try appendDebugVarargs(self, out, frame);
+        try appendDebugVarargs(self, out, frame, thread.stack.items);
         try appendDebugUpvalues(self, out, frame);
     }
 }
@@ -110,12 +110,12 @@ fn appendDebugLocals(self: *State, out: *std.ArrayList(u8), thread: *Thread, fra
     if (!found) try out.appendSlice(self.allocator, "    locals: <none>\n");
 }
 
-fn appendDebugVarargs(self: *State, out: *std.ArrayList(u8), frame: CallFrame) !void {
-    if (frame.varargs.len == 0) {
+fn appendDebugVarargs(self: *State, out: *std.ArrayList(u8), frame: CallFrame, stack: []const Value) !void {
+    if (frame.vararg_count == 0) {
         try out.appendSlice(self.allocator, "    varargs: <none>\n");
         return;
     }
-    for (frame.varargs, 0..) |value, index| {
+    for (frame.varargs(stack), 0..) |value, index| {
         try appendFmt(self.allocator, out, "    vararg {d} = ", .{index});
         try appendDebugValue(self, out, value);
         try out.append(self.allocator, '\n');
@@ -367,8 +367,8 @@ fn isDirectCallee(frames: []const CallFrame, index: usize) bool {
     const caller = frames[index - 1];
     const callee = frames[index];
     return switch (currentInstruction(caller) orelse return false) {
-        .call => |op| callee.base == caller.base + op.base + 1,
-        .tfor_call => |op| callee.base > caller.base + op.base and callee.base <= caller.base + caller.proto.max_registers,
+        .call => |op| callee.argumentBase() == caller.base + op.base + 1,
+        .tfor_call => |op| callee.argumentBase() > caller.base + op.base and callee.argumentBase() <= caller.base + caller.proto.max_registers,
         else => false,
     };
 }
@@ -485,7 +485,7 @@ pub fn currentExtraArgs(self: *State, thread: *Thread, level: i64) ?usize {
     const depth: usize = @intCast(level);
     if (depth > thread.frames.items.len) return null;
     const frame = thread.frames.items[thread.frames.items.len - depth];
-    return frame.varargs.len;
+    return frame.vararg_count;
 }
 
 pub fn currentWhat(self: *State, thread: *Thread, level: i64) []const u8 {

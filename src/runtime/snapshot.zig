@@ -265,6 +265,7 @@ const Copier = struct {
             if (index >= base and index - base < @field(target, prefix ++ "_count")) return true;
         }
         for (target.frames.items) |frame| {
+            if (index >= frame.vararg_base and index - frame.vararg_base < frame.vararg_count) return true;
             for (frame.proto.locals.items) |local| {
                 if (index == frame.base + local.register and @import("value.zig").localActiveAt(local, frame.pc)) return true;
             }
@@ -285,10 +286,8 @@ const Copier = struct {
         }
         try new.frames.ensureTotalCapacity(a, old.frames.items.len);
         for (old.frames.items) |f| {
-            new.frames.appendAssumeCapacity(.{ .closure = try self.mapped(f.closure), .proto = try self.mapped(f.proto), .base = f.base, .pc = f.pc, .return_start = f.return_start, .return_count = f.return_count, .varargs = &.{} });
+            new.frames.appendAssumeCapacity(.{ .closure = try self.mapped(f.closure), .proto = try self.mapped(f.proto), .base = f.base, .pc = f.pc, .return_start = f.return_start, .return_count = f.return_count, .vararg_base = f.vararg_base, .vararg_count = f.vararg_count });
             const frame = &new.frames.items[new.frames.items.len - 1];
-            frame.varargs = try self.values(types.Value, f.varargs);
-            frame.owns_varargs = true;
             if (f.pending_returns) |v| frame.pending_returns = try self.values(types.Value, v);
             inline for (.{ "vararg_table_local", "named_vararg_readonly", "last_hook_line", "debug_name_override", "debug_namewhat_override", "is_tail_call" }) |name| @field(frame, name) = try self.remap(@field(f, name));
         }
@@ -400,9 +399,8 @@ comptime {
         .transient = "rollback gc hook_running hook_return_name hook_level2_func hook_transfer_index_base hook_transfer_stack_base hook_transfer_count hook_transfer_values next_call_name next_call_namewhat native_call_depth native_call protected_close_depth resume_parent native_marks native_mark_count",
     });
     review(types.CallFrame, .{
-        .copied = "base pc return_start return_count varargs named_vararg_readonly last_hook_line debug_name_override debug_namewhat_override is_tail_call pending_returns",
+        .copied = "base pc return_start return_count vararg_base vararg_count named_vararg_readonly last_hook_line debug_name_override debug_namewhat_override is_tail_call pending_returns",
         .remapped = "closure proto vararg_table_local",
-        .rebuilt = "owns_varargs",
     });
     review(types.Table, .{
         .copied = "array entries finalizer_registered finalizer_order",

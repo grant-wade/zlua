@@ -82,9 +82,6 @@ pub fn threadWritable(thread: *types.Thread) !void {
             try replacement.frames.ensureTotalCapacity(a, thread.frames.items.len);
             for (thread.frames.items) |frame| {
                 var copy = frame;
-                copy.varargs = try a.dupe(types.Value, frame.varargs);
-                errdefer a.free(copy.varargs);
-                copy.owns_varargs = true;
                 copy.pending_returns = if (frame.pending_returns) |values| try a.dupe(types.Value, values) else null;
                 replacement.frames.appendAssumeCapacity(copy);
             }

@@ -2,6 +2,7 @@ const std = @import("std");
 const compile = @import("../compile.zig");
 const errors = @import("../errors.zig");
 const frontend = @import("../frontend.zig");
+const call_mod = @import("call.zig");
 const chunk_mod = @import("chunk.zig");
 const io_mod = @import("io.zig");
 const state_mod = @import("state.zig");
@@ -101,15 +102,20 @@ fn loadFileAsClosureNamed(self: *State, path: []const u8, source_name: ?[]const 
 }
 
 pub fn setRootThreadArgs(self: *State, thread: *Thread, args: []const Value) !void {
-    const proto = thread.frames.items[0].proto;
+    const frame = &thread.frames.items[0];
+    const proto = frame.proto;
     const param_count = @min(args.len, proto.param_count);
-    for (args[0..param_count], 0..) |arg, index| thread.stack.items[index] = arg;
-
-    if (!proto.is_vararg or args.len <= proto.param_count) return;
-    const owned_args = try self.allocator.dupe(Value, args[proto.param_count..]);
-    thread.frames.items[0].varargs = owned_args;
-    thread.frames.items[0].owns_varargs = true;
-    thread.frame_storage_bytes += owned_args.len * @sizeOf(Value);
+    if (!proto.is_vararg or args.len <= proto.param_count) {
+        for (args[0..param_count], 0..) |arg, index| thread.stack.items[index] = arg;
+        return;
+    }
+    const base = args.len;
+    try thread.ensureStack(self.allocator, base + @max(proto.max_registers, 1), call_mod.callStackValueLimit(self, thread));
+    for (args, 0..) |arg, index| thread.stack.items[index] = arg;
+    for (args[0..param_count], 0..) |arg, index| thread.stack.items[base + index] = arg;
+    frame.base = base;
+    frame.vararg_base = param_count;
+    frame.vararg_count = @intCast(args.len - param_count);
 }
 
 pub fn decodeStringLiteral(self: *State, lexeme: []const u8) !*const types.String {

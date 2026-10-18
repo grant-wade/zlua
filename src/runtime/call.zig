@@ -336,33 +336,38 @@ pub fn resolveReturnCount(self: *State, count: u16, available: usize) !usize {
 }
 
 pub fn prepareClosureFrame(self: *State, thread: *Thread, closure: *Closure, source_base: usize, frame_base: usize, arg_count: usize, return_start: usize, return_count: u16) !CallFrame {
-    const register_count = @max(closure.proto.max_registers, 1);
-    const param_count = @as(usize, closure.proto.param_count);
+    const proto = closure.proto;
+    const register_count = @max(proto.max_registers, 1);
+    const param_count = @as(usize, proto.param_count);
     const copied = @min(arg_count, param_count);
-    const varargs = try captureVarargs(self, thread, source_base + 1 + param_count, if (closure.proto.is_vararg and arg_count > param_count) arg_count - param_count else 0);
-    errdefer if (varargs.len != 0) self.allocator.free(varargs);
-    try thread.ensureStack(self.allocator, frame_base + register_count, callStackValueLimit(self, thread));
+    const vararg_count = if (proto.is_vararg and arg_count > param_count) arg_count - param_count else 0;
+    const base = if (vararg_count != 0) frame_base + arg_count else frame_base;
+    try thread.ensureStack(self.allocator, base + register_count, callStackValueLimit(self, thread));
 
+    const stack = thread.stack.items;
     if (frame_base != source_base + 1) {
-        for (0..copied) |index| thread.stack.items[frame_base + index] = thread.stack.items[source_base + 1 + index];
+        const moved = if (vararg_count != 0) arg_count else copied;
+        for (0..moved) |index| stack[frame_base + index] = stack[source_base + 1 + index];
     }
-    for (copied..register_count) |index| thread.stack.items[frame_base + index] = .nil;
+    if (vararg_count != 0) {
+        for (0..param_count) |index| stack[base + index] = stack[frame_base + index];
+    }
+    for (copied..register_count) |index| stack[base + index] = .nil;
 
-    const readonly_vararg = closure.proto.named_vararg_readonly;
-    if (closure.proto.named_vararg and !readonly_vararg) {
-        thread.stack.items[frame_base + param_count] = try namedVarargTable(self, varargs);
+    const readonly_vararg = proto.named_vararg_readonly;
+    if (proto.named_vararg and !readonly_vararg) {
+        stack[base + param_count] = try namedVarargTable(self, stack[frame_base + param_count ..][0..vararg_count]);
     }
-    thread.frame_storage_bytes += varargs.len * @sizeOf(Value);
 
     return .{
         .closure = closure,
-        .proto = closure.proto,
-        .base = frame_base,
+        .proto = proto,
+        .base = base,
         .pc = 0,
         .return_start = return_start,
         .return_count = return_count,
-        .varargs = varargs,
-        .owns_varargs = varargs.len != 0,
+        .vararg_base = frame_base + param_count,
+        .vararg_count = @intCast(vararg_count),
         .named_vararg_readonly = readonly_vararg,
     };
 }
@@ -800,7 +805,9 @@ fn callClosure(self: *State, thread: *Thread, op: bytecode.Call, closure: *Closu
 
     const caller = thread.frames.items[thread.frames.items.len - 1];
     const base = caller.base + op.base;
-    if (base + 1 + @max(closure.proto.max_registers, 1) > self.stackValueLimit()) try checkStackValueOverflow(self, thread, base + 1 + @max(closure.proto.max_registers, 1));
+    const shifted: usize = if (closure.proto.is_vararg and op.arg_count > closure.proto.param_count) op.arg_count else 0;
+    const frame_end = base + 1 + shifted + @max(closure.proto.max_registers, 1);
+    if (frame_end > self.stackValueLimit()) try checkStackValueOverflow(self, thread, frame_end);
     var frame = try prepareClosureFrame(self, thread, closure, base, base + 1, @intCast(op.arg_count), base, op.return_count);
     frame.debug_name_override = debug_name_override;
     frame.debug_namewhat_override = debug_namewhat_override;
@@ -833,7 +840,7 @@ pub fn tailCallValue(self: *State, thread: *Thread, op: bytecode.Call) anyerror!
             if (thread.frames.items[thread.frames.items.len - 1].proto.has_to_close_locals) try upvalue_mod.closeActiveToBeClosedInTopFrame(self, thread, null);
             const frame = thread.frames.items[thread.frames.items.len - 1];
             upvalue_mod.closeUpvalues(self, thread, frame.base);
-            const new_frame = try prepareClosureFrame(self, thread, closure, frame.base + resolved.base, frame.base, @intCast(resolved.arg_count), frame.return_start, frame.return_count);
+            const new_frame = try prepareClosureFrame(self, thread, closure, frame.base + resolved.base, frame.argumentBase(), @intCast(resolved.arg_count), frame.return_start, frame.return_count);
             var tail_frame = new_frame;
             tail_frame.is_tail_call = true;
             thread.releaseFrame(&thread.frames.items[thread.frames.items.len - 1], self.allocator);
@@ -959,13 +966,6 @@ pub fn returnFromFrame(self: *State, thread: *Thread, first: u32, count: u16) !v
     thread.last_result_count = return_count;
 }
 
-fn captureVarargs(self: *State, thread: *Thread, source_start: usize, count: usize) ![]const Value {
-    if (count == 0) return &.{};
-    const values = try self.allocator.alloc(Value, count);
-    for (0..count) |index| values[index] = thread.stack.items[source_start + index];
-    return values;
-}
-
 fn namedVarargTable(self: *State, varargs: []const Value) !Value {
     const table_value = try self.newTableWithHints(@intCast(varargs.len), 1);
     const table = table_value.table;
@@ -1009,11 +1009,11 @@ pub fn resolveResultCount(self: *State, thread: *Thread, source_start: usize, co
 pub fn loadVarargs(self: *State, thread: *Thread, op: bytecode.Vararg) !void {
     const frame = thread.frames.items[thread.frames.items.len - 1];
     if (frame.proto.named_vararg and !frame.named_vararg_readonly) return loadNamedVarargs(self, thread, frame, op);
-    const actual_count = try resolveReturnCount(self, op.count, frame.varargs.len);
+    const actual_count = try resolveReturnCount(self, op.count, frame.vararg_count);
     const dest = frame.base + op.dest;
     try thread.ensureStack(self.allocator, dest + actual_count, callStackValueLimit(self, thread));
-    const copied = @min(actual_count, frame.varargs.len);
-    for (0..copied) |index| thread.stack.items[dest + index] = frame.varargs[index];
+    const copied = @min(actual_count, frame.vararg_count);
+    for (0..copied) |index| thread.stack.items[dest + index] = thread.stack.items[frame.vararg_base + index];
     for (copied..actual_count) |index| thread.stack.items[dest + index] = .nil;
     thread.last_result_base = dest;
     thread.last_result_count = actual_count;

@@ -912,7 +912,7 @@ pub const Gc = struct {
         for (thread.frames.items) |frame| {
             gc.markClosure(frame.closure);
             gc.markValue(frame.vararg_table_local);
-            for (frame.varargs) |value| gc.markValue(value);
+            gc.markStackRange(thread, frame.vararg_base, frame.vararg_count);
             if (frame.pending_returns) |returns| for (returns) |value| gc.markValue(value);
         }
         var current = thread.open_upvalues;

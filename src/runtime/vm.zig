@@ -255,7 +255,7 @@ fn executeInstruction(self: *State, thread: *Thread, proto: *const proto_mod.Pro
             const table_value = stack[base + op.table];
             const key_value = stack[base + op.key];
             if (frame.named_vararg_readonly and op.table == proto.param_count) {
-                stack[base + op.dest] = call_mod.namedVarargRead(frame.varargs, key_value);
+                stack[base + op.dest] = call_mod.namedVarargRead(frame.varargs(thread.stack.items), key_value);
             } else if (fastTableRawGet(table_value, key_value)) |value| {
                 stack[base + op.dest] = value;
             } else {
@@ -285,7 +285,7 @@ fn executeInstruction(self: *State, thread: *Thread, proto: *const proto_mod.Pro
             const table_value = stack[base + op.table];
             const name = constantString(proto, op.name);
             if (frame.named_vararg_readonly and op.table == proto.param_count) {
-                stack[base + op.dest] = call_mod.namedVarargField(frame.varargs, name);
+                stack[base + op.dest] = call_mod.namedVarargField(frame.varargs(thread.stack.items), name);
             } else if (fastTableFieldGet(table_value, name, proto.constant_hashes[op.name])) |value| {
                 stack[base + op.dest] = value;
             } else {
@@ -596,7 +596,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 const table_value = stack[op.table];
                 const key = stack[op.key];
                 const value = if (frame.named_vararg_readonly and op.table == proto.param_count)
-                    call_mod.namedVarargRead(frame.varargs, key)
+                    call_mod.namedVarargRead(frame.varargs(thread.stack.items), key)
                 else if (arrayValue(table_value, key)) |hit|
                     hit
                 else
@@ -609,7 +609,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 const op = instructions[pc].get_field;
                 const name = constantString(proto, op.name);
                 const value = if (frame.named_vararg_readonly and op.table == proto.param_count)
-                    call_mod.namedVarargField(frame.varargs, name)
+                    call_mod.namedVarargField(frame.varargs(thread.stack.items), name)
                 else if (stack[op.table] == .string)
                     stringMethod(self, name, proto.constant_hashes[op.name]) orelse break :fast_loop
                 else
@@ -857,7 +857,6 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     .pc = 0,
                     .return_start = function_slot,
                     .return_count = op.return_count,
-                    .varargs = &.{},
                     .debug_name_override = thread.next_call_name,
                     .debug_namewhat_override = thread.next_call_namewhat,
                 };
@@ -917,7 +916,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 if (frame_index < return_floor or frame_index == 0) break :fast_loop;
                 const open_here = if (thread.open_upvalues) |upvalue| upvalue.stack_index >= base else false;
                 if (proto.has_to_close_locals or op.count == bytecode.multret_count or frame.return_count == bytecode.multret_count or
-                    frame.owns_varargs or frame.pending_returns != null or open_here)
+                    frame.pending_returns != null or open_here)
                 {
                     @branchHint(.unlikely);
                     if (thread.hook != .nil) break :fast_loop;
