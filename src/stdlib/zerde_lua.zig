@@ -222,7 +222,7 @@ pub fn LuaSource(comptime Encoder: type) type {
                     defer _ = self.visiting.remove(table);
 
                     try zerde.events.beginStruct(self.encoder, field_count);
-                    for (table.entries.items) |entry| {
+                    for (table.entries()) |entry| {
                         if (entry.value == .nil) continue;
                         const name = switch (entry.key) {
                             .string => |string| string.bytes(),
@@ -277,7 +277,7 @@ fn tableShape(table: *Table) LuaSourceShape {
         shape.integer_count += 1;
         shape.max_index = @max(shape.max_index, index + 1);
     }
-    for (table.entries.items) |entry| {
+    for (table.entries()) |entry| {
         if (entry.value == .nil) continue;
         if (positiveIntegerIndex(entry.key)) |index| {
             shape.integer_count += 1;

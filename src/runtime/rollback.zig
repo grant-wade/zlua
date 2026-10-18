@@ -46,13 +46,10 @@ pub fn tableWritable(table: *types.Table) !void {
     const a = record.header.journal.allocator;
     var array = try duplicateList(a, table.array);
     errdefer array.deinit(a);
-    var entries = try duplicateList(a, table.entries);
-    errdefer entries.deinit(a);
-    const index = try table.entry_index.clone(a);
+    const hash = if (table.hash) |part| try part.clone(a) else null;
     touch(table);
     table.array = array;
-    table.entries = entries;
-    table.entry_index = index;
+    table.hash = hash;
     record.header.detached = true;
 }
 

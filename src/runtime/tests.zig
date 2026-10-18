@@ -1182,7 +1182,7 @@ test "weak key tables clear unreachable keys" {
 
     try state.gc.collect();
 
-    try std.testing.expectEqual(@as(usize, 0), weak.table.entries.items.len);
+    try std.testing.expectEqual(@as(usize, 0), weak.table.entries().len);
 }
 
 test "ephemeron table marks value when key is reachable" {

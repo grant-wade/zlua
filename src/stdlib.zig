@@ -196,8 +196,7 @@ fn newStaticTable(state: *State, comptime fields: []const StaticField, extra_fie
         break :blk entries;
     };
     const value = try state.newTableWithHints(0, @intCast(fields.len + @as(usize, extra_fields)));
-    value.table.entries.appendSliceAssumeCapacity(&entries);
-    value.table.reindexEntries();
+    value.table.appendEntriesAssumeCapacity(&entries);
     return value;
 }
 
@@ -774,17 +773,17 @@ test "IO files share one PUC-layout metatable and method table" {
     try std.testing.expect(stdin.metatable == stdout.metatable);
     try std.testing.expect(stdin.metatable == stderr.metatable);
     const metatable = stdin.metatable.?;
-    try std.testing.expectEqual(@as(usize, 5), metatable.entries.items.len);
+    try std.testing.expectEqual(@as(usize, 5), metatable.entries().len);
     try std.testing.expect(metatable.get(.{ .string = static_strings.get("read") }) == .nil);
     try std.testing.expect(metatable.get(.{ .string = static_strings.get("__gc") }) == .native);
     try std.testing.expect(metatable.get(.{ .string = static_strings.get("__close") }) == .native);
     try std.testing.expect(metatable.get(.{ .string = static_strings.get("__tostring") }) == .native);
     try std.testing.expectEqualStrings("FILE*", metatable.get(.{ .string = static_strings.get("__name") }).string.bytes());
     const methods = metatable.get(.{ .string = static_strings.get("__index") }).table;
-    try std.testing.expectEqual(@as(usize, 7), methods.entries.items.len);
+    try std.testing.expectEqual(@as(usize, 7), methods.entries().len);
     try std.testing.expect(methods.get(.{ .string = static_strings.get("read") }) == .native);
     try std.testing.expect(methods.get(.{ .string = static_strings.get("setvbuf") }) == .native);
-    try std.testing.expectEqual(@as(usize, 14), io_table.entries.items.len);
+    try std.testing.expectEqual(@as(usize, 14), io_table.entries().len);
     try std.testing.expect(state.io_input.? == stdin);
     try std.testing.expect(state.io_output.? == stdout);
 }

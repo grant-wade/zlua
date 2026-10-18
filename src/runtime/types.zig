@@ -463,7 +463,7 @@ pub const TableEntry = struct {
     value: Value,
 };
 
-pub const TableEntryIndex = table_index.EntryIndex;
+pub const TableHashPart = table_index.HashPart;
 
 /// Metamethod events whose absence a metatable caches in
 /// `Table.metamethod_absent`. Tag names are the event keys.
@@ -503,17 +503,24 @@ pub const MetaEvent = enum(u5) {
     inline fn bit(event: MetaEvent) u32 {
         return @as(u32, 1) << @intFromEnum(event);
     }
+
+    fn nameHash(event: MetaEvent) u32 {
+        return name_hashes[@intFromEnum(event)];
+    }
+
+    const name_hashes = blk: {
+        @setEvalBranchQuota(100_000);
+        var hashes: [@typeInfo(MetaEvent).@"enum".field_names.len]u32 = undefined;
+        for (&hashes, 0..) |*hash, index| hash.* = table_index.hashStringKey(@tagName(@as(MetaEvent, @enumFromInt(index))));
+        break :blk hashes;
+    };
 };
 
 pub const Table = struct {
-    // Up to this many entries, a linear scan beats maintaining a hash index.
-    const linear_entry_limit = 4;
-
     gc: GcHeader = .{},
     rollback: ?*@import("rollback.zig").Record(Table) = null,
     array: std.ArrayList(Value) = .empty,
-    entries: std.ArrayList(TableEntry) = .empty,
-    entry_index: TableEntryIndex = .{},
+    hash: ?*TableHashPart = null,
     metatable: ?*Table = null,
     /// Has been some table's metatable.
     used_as_metatable: bool = false,
@@ -535,14 +542,12 @@ pub const Table = struct {
         var table = Table{};
         errdefer table.deinit(allocator);
         try table.array.ensureTotalCapacityPrecise(allocator, array_hint);
-        try table.entries.ensureTotalCapacityPrecise(allocator, hash_hint);
-        if (hash_hint > linear_entry_limit) try table.entry_index.ensureTotalCapacity(allocator, hash_hint);
+        if (hash_hint != 0) table.hash = try TableHashPart.create(allocator, try TableHashPart.capacityFor(hash_hint));
         return table;
     }
 
     pub fn deinit(self: *Table, allocator: std.mem.Allocator) void {
-        self.entry_index.deinit(allocator);
-        self.entries.deinit(allocator);
+        if (self.hash) |part| part.destroy(allocator);
         self.array.deinit(allocator);
         self.* = undefined;
     }
@@ -552,7 +557,40 @@ pub const Table = struct {
     }
 
     pub inline fn reserveEntries(self: *Table, allocator: std.mem.Allocator, count: usize) !void {
-        if (count > self.entries.capacity) try self.entries.ensureTotalCapacityPrecise(allocator, try grownCapacity(TableEntry, count));
+        if (count > self.entryCapacity()) try self.growHash(allocator, count);
+    }
+
+    fn growHash(self: *Table, allocator: std.mem.Allocator, count: usize) !void {
+        const part = try TableHashPart.create(allocator, try TableHashPart.capacityFor(count));
+        if (self.hash) |old| {
+            for (old.entries()) |entry| part.appendAssumeCapacity(entry.key, entry.value);
+            old.destroy(allocator);
+        }
+        self.hash = part;
+    }
+
+    pub inline fn entries(self: *const Table) []TableEntry {
+        const part = self.hash orelse return &.{};
+        return part.entries();
+    }
+
+    pub inline fn entryCapacity(self: *const Table) usize {
+        const part = self.hash orelse return 0;
+        return part.capacity;
+    }
+
+    /// `count` must not exceed the current number of entries.
+    pub fn truncateEntries(self: *Table, count: usize) void {
+        const part = self.hash orelse return;
+        if (count == part.len) return;
+        part.len = @intCast(count);
+        part.reindex();
+    }
+
+    /// The keys must be distinct and absent, and capacity reserved.
+    pub fn appendEntriesAssumeCapacity(self: *Table, new_entries: []const TableEntry) void {
+        const part = self.hash.?;
+        for (new_entries) |entry| part.appendAssumeCapacity(entry.key, entry.value);
     }
 
     fn grownCapacity(comptime T: type, count: usize) !usize {
@@ -563,18 +601,18 @@ pub const Table = struct {
         if (value_mod.arrayIndex(key)) |index| {
             if (index <= self.array.items.len) return self.array.items[index - 1];
         }
-        if (self.findEntry(key)) |index| return self.entries.items[index].value;
+        if (self.findEntry(key)) |index| return self.entries()[index].value;
         return .nil;
     }
 
     /// Raw read of a string key whose `table_index.hashStringKey` the caller already knows.
     pub inline fn getStringHashed(self: *const Table, key: []const u8, hash: u32) Value {
-        if (self.findStringEntry(key, hash)) |index| return self.entries.items[index].value;
+        if (self.findStringEntry(key, hash)) |index| return self.entries()[index].value;
         return .nil;
     }
 
     pub inline fn getString(self: *const Table, key: *const String) Value {
-        if (self.findStringKey(key)) |index| return self.entries.items[index].value;
+        if (self.findStringKey(key)) |index| return self.entries()[index].value;
         return .nil;
     }
 
@@ -587,19 +625,13 @@ pub const Table = struct {
     }
 
     pub inline fn findStringEntry(self: *const Table, key: []const u8, hash: u32) ?usize {
-        if (self.entry_index.capacity() != 0) return self.entry_index.findBytes(self.entries.items, key, hash);
-        for (self.entries.items, 0..) |entry, index| {
-            if (entry.key == .string and entry.key.string.eqlBytes(key)) return index;
-        }
-        return null;
+        const part = self.hash orelse return null;
+        return part.findBytes(key, hash);
     }
 
     pub inline fn findStringKey(self: *const Table, key: *const String) ?usize {
-        if (self.entry_index.capacity() != 0) return self.entry_index.find(self.entries.items, .{ .string = key }, key.tableHash());
-        for (self.entries.items, 0..) |entry, index| {
-            if (entry.key == .string and key.eql(entry.key.string)) return index;
-        }
-        return null;
+        const part = self.hash orelse return null;
+        return part.find(.{ .string = key });
     }
 
     pub inline fn metaEventAbsent(self: *const Table, event: MetaEvent) bool {
@@ -610,7 +642,7 @@ pub const Table = struct {
     pub fn metaEvent(self: *Table, event: MetaEvent) Value {
         if (self.metaEventAbsent(event)) return .nil;
         const value = switch (event) {
-            inline else => |tag| self.getStringHashed(@tagName(tag), comptime table_index.hashStringKey(@tagName(tag))),
+            inline else => |tag| self.getStringHashed(@tagName(tag), comptime tag.nameHash()),
         };
         if (value == .nil) self.metamethod_absent |= event.bit();
         return value;
@@ -622,17 +654,8 @@ pub const Table = struct {
     }
 
     pub fn findEntry(self: *const Table, key: Value) ?usize {
-        if (key == .string) return self.findStringKey(key.string);
-        if (self.entry_index.capacity() != 0) return self.entry_index.find(self.entries.items, key, table_index.hashKey(key));
-        for (self.entries.items, 0..) |entry, index| {
-            if (value_mod.valuesEqual(entry.key, key)) return index;
-        }
-        return null;
-    }
-
-    pub fn rebuildEntryIndex(self: *Table, allocator: std.mem.Allocator) !void {
-        if (self.entry_index.capacity() == 0 and self.entries.items.len <= linear_entry_limit) return;
-        try self.entry_index.rebuild(allocator, self.entries.items);
+        const part = self.hash orelse return null;
+        return part.find(key);
     }
 
     /// Insert an absent hash key using reserved storage. The caller must check
@@ -640,10 +663,10 @@ pub const Table = struct {
     pub fn insertHashEntryNoAlloc(self: *Table, key: Value, value: Value) bool {
         if (self.rollback) |record| if (!record.header.detached) return false;
         if (value == .nil) return true;
-        if (self.entry_index.capacity() != 0 or self.entries.items.len >= linear_entry_limit or
-            self.entries.items.len == self.entries.capacity) return false;
+        const part = self.hash orelse return false;
+        if (part.slot_count != 0 or part.len == part.capacity) return false;
         self.invalidateMetaEvents();
-        self.entries.appendAssumeCapacity(.{ .key = key, .value = value });
+        part.appendAssumeCapacity(key, value);
         return true;
     }
 
@@ -671,20 +694,12 @@ pub const Table = struct {
         }
         self.invalidateMetaEvents();
         if (self.findEntry(key)) |index| {
-            self.entries.items[index].value = value;
+            self.entries()[index].value = value;
             return;
         }
         if (value != .nil) {
-            // Reserve everything first so allocation failure cannot leave a partial index.
-            try self.reserveEntries(allocator, self.entries.items.len + 1);
-            if (self.entry_index.capacity() == 0 and self.entries.items.len == linear_entry_limit) {
-                try self.entry_index.rebuild(allocator, self.entries.items);
-            }
-            if (self.entry_index.capacity() != 0) {
-                try self.entry_index.ensureUnusedCapacity(allocator, 1);
-                self.entry_index.insertAssumeCapacity(table_index.hashKey(key), self.entries.items.len);
-            }
-            self.entries.appendAssumeCapacity(.{ .key = key, .value = value });
+            try self.reserveEntries(allocator, self.entries().len + 1);
+            self.hash.?.appendAssumeCapacity(key, value);
         }
     }
 
@@ -698,8 +713,9 @@ pub const Table = struct {
             return false;
         }
         if (self.findEntry(key)) |index| {
-            if (self.entries.items[index].value == .nil) return false;
-            self.entries.items[index].value = value;
+            const entry = &self.entries()[index];
+            if (entry.value == .nil) return false;
+            entry.value = value;
             return true;
         }
         return false;
@@ -709,7 +725,7 @@ pub const Table = struct {
         var border = self.array.items.len;
         while (border > 0 and self.array.items[border - 1] == .nil) border -= 1;
         if (border != self.array.items.len) self.trimArray(border);
-        if (self.entries.items.len == 0) return @intCast(border);
+        if (self.entries().len == 0) return @intCast(border);
         while (border < std.math.maxInt(i64)) {
             const next_index = border + 1;
             if (self.get(.{ .integer = @intCast(next_index) }) == .nil) break;
@@ -749,32 +765,24 @@ pub const Table = struct {
     }
 
     fn firstHashEntryFrom(self: *const Table, start: usize) [2]Value {
-        var index = start;
-        while (index < self.entries.items.len) : (index += 1) {
-            const entry = self.entries.items[index];
+        const hash_entries = self.entries();
+        if (start >= hash_entries.len) return .{ .nil, .nil };
+        for (hash_entries[start..]) |entry| {
             if (entry.value != .nil) return .{ entry.key, entry.value };
         }
         return .{ .nil, .nil };
     }
 
     pub fn removeHashKey(self: *Table, key: Value) void {
-        if (self.entries.items.len == 0) return;
+        if (self.entries().len == 0) return;
         if (self.findEntry(key)) |index| self.removeEntryAt(index);
     }
 
     /// Removes one entry, keeping the order of the rest for `next`.
     pub fn removeEntryAt(self: *Table, index: usize) void {
-        std.mem.copyForwards(TableEntry, self.entries.items[index .. self.entries.items.len - 1], self.entries.items[index + 1 ..]);
-        self.entries.items.len -= 1;
-        self.reindexEntries();
-    }
-
-    /// Restores the index after entries were removed or moved. Never allocates,
-    /// since the index already holds at least as many slots as entries.
-    pub fn reindexEntries(self: *Table) void {
-        if (self.entry_index.capacity() == 0) return;
-        self.entry_index.clearRetainingCapacity();
-        for (self.entries.items, 0..) |entry, position| self.entry_index.insertAssumeCapacity(table_index.hashKey(entry.key), position);
+        const hash_entries = self.entries();
+        std.mem.copyForwards(TableEntry, hash_entries[index .. hash_entries.len - 1], hash_entries[index + 1 ..]);
+        self.truncateEntries(hash_entries.len - 1);
     }
 };
 

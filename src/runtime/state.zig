@@ -277,7 +277,7 @@ pub const State = struct {
         const metatable = (try state.newTableWithHints(0, 5)).table;
         state.fs_file_metatable = metatable;
         errdefer state.fs_file_metatable = null;
-        for (file_metatable.entries.items) |entry| {
+        for (file_metatable.entries()) |entry| {
             if (entry.value != .nil) try state.setTableRaw(metatable, entry.key, entry.value);
         }
         const methods = try state.newTableWithHints(0, 12);
@@ -699,7 +699,7 @@ pub const State = struct {
         const package = globals.getLiteral("package");
         const loaded = if (package == .table) package.table.getLiteral("loaded") else Value.nil;
         const modules = if (loaded == .table) loaded.table else globals;
-        for (modules.entries.items) |entry| {
+        for (modules.entries()) |entry| {
             if (entry.key != .string or entry.value != .table or entry.value.table == globals) continue;
             if (findFunctionField(entry.value.table, callee)) |key| {
                 try appendFmt(self.allocator, out, "{s}.{s}", .{ entry.key.string.bytes(), key });
@@ -710,7 +710,7 @@ pub const State = struct {
     }
 
     fn findFunctionField(table: *Table, callee: Value) ?[]const u8 {
-        for (table.entries.items) |entry| {
+        for (table.entries()) |entry| {
             if (entry.key == .string and valuesEqual(entry.value, callee)) return entry.key.string.bytes();
         }
         return null;

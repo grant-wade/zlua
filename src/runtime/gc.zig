@@ -822,7 +822,7 @@ pub const Gc = struct {
         const state = gc.parentState();
         gc.tableCandidate(table);
         for (table.array.items) |value| gc.noteYoung(value);
-        for (table.entries.items) |entry| {
+        for (table.entries()) |entry| {
             gc.noteYoung(entry.key);
             gc.noteYoung(entry.value);
         }
@@ -838,7 +838,7 @@ pub const Gc = struct {
             return;
         }
         if (weak.values) {
-            for (table.entries.items) |entry| if (entry.value != .nil) gc.markValue(entry.key);
+            for (table.entries()) |entry| if (entry.value != .nil) gc.markValue(entry.key);
             gc.markWeakTableStrings(table, false, true);
             return;
         }
@@ -848,7 +848,7 @@ pub const Gc = struct {
             return;
         }
         for (table.array.items) |value| gc.markValue(value);
-        for (table.entries.items) |entry| {
+        for (table.entries()) |entry| {
             if (entry.value == .nil) continue;
             gc.markValue(entry.key);
             gc.markValue(entry.value);
@@ -869,7 +869,7 @@ pub const Gc = struct {
         if (values) {
             for (table.array.items) |value| gc.markWeakString(value);
         }
-        for (table.entries.items) |entry| {
+        for (table.entries()) |entry| {
             if (entry.value == .nil) continue;
             if (keys) gc.markWeakString(entry.key);
             if (values) gc.markWeakString(entry.value);
@@ -1000,7 +1000,7 @@ pub const Gc = struct {
 
     fn markEphemeronValues(gc: *Gc, table: *Table) bool {
         var changed = false;
-        for (table.entries.items) |entry| {
+        for (table.entries()) |entry| {
             if (entry.value == .nil) continue;
             if (gc.valueIsWeaklyCleared(entry.key)) continue;
             gc.markValue(entry.key);
@@ -1074,7 +1074,7 @@ pub const Gc = struct {
                     break;
                 }
             };
-            if (!changed) for (table.entries.items) |entry| {
+            if (!changed) for (table.entries()) |entry| {
                 if ((weak.values and gc.valueIsWeaklyCleared(entry.value)) or
                     (weak.keys and gc.valueIsWeaklyCleared(entry.key)) or
                     (entry.value == .nil and gc.valueIsCollectableUnmarked(entry.key)))
@@ -1114,14 +1114,12 @@ pub const Gc = struct {
         for (state.gc.tables.items) |table| {
             if (!gc.isMarked(table)) continue;
             var write_index: usize = 0;
-            for (table.entries.items) |entry| {
+            for (table.entries()) |entry| {
                 if (entry.value == .nil and gc.valueIsCollectableUnmarked(entry.key)) continue;
-                table.entries.items[write_index] = entry;
+                table.entries()[write_index] = entry;
                 write_index += 1;
             }
-            if (write_index == table.entries.items.len) continue;
-            table.entries.items.len = write_index;
-            table.reindexEntries();
+            table.truncateEntries(write_index);
         }
     }
 
@@ -1134,14 +1132,12 @@ pub const Gc = struct {
 
     fn removeEntriesWhere(gc: *Gc, table: *Table, comptime field: []const u8) void {
         var write_index: usize = 0;
-        for (table.entries.items) |entry| {
+        for (table.entries()) |entry| {
             if (gc.valueIsWeaklyCleared(@field(entry, field))) continue;
-            table.entries.items[write_index] = entry;
+            table.entries()[write_index] = entry;
             write_index += 1;
         }
-        if (write_index == table.entries.items.len) return;
-        table.entries.items.len = write_index;
-        table.reindexEntries();
+        table.truncateEntries(write_index);
     }
 
     fn clearWeakTableKeys(gc: *Gc, table: *Table) void {
@@ -1781,7 +1777,8 @@ pub const Gc = struct {
 const managed_lists = .{ "table_allocations", "userdata_allocations", "closure_allocations", "upvalue_allocations", "thread_allocations" };
 
 pub fn tableCapacityBytes(table: *const Table) usize {
-    return table.array.capacity * @sizeOf(Value) + table.entries.capacity * @sizeOf(TableEntry) + table.entry_index.capacity() * @sizeOf(types.TableEntryIndex.Slot);
+    const hash_bytes = if (table.hash) |part| types.TableHashPart.allocationBytes(part.capacity) else 0;
+    return table.array.capacity * @sizeOf(Value) + hash_bytes;
 }
 
 fn protoBytes(proto: *const proto_mod.Proto) usize {

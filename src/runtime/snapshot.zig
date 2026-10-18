@@ -206,15 +206,13 @@ const Copier = struct {
         for (source.table_allocations.items, d.table_allocations.items) |old, new| {
             new.array = try self.list(types.Value, old.array.items);
             // Tombstone keys may reference swept objects; keep valid ones for next() without dereferencing.
-            new.entries = try self.list(types.TableEntry, old.entries.items);
-            var retained: usize = 0;
-            for (new.entries.items) |entry| {
-                if (entry.key == .nil) continue;
-                new.entries.items[retained] = entry;
-                retained += 1;
+            if (old.hash) |part| {
+                new.hash = try types.TableHashPart.create(a, part.capacity);
+                for (part.entries()) |entry| {
+                    const copied = try self.remap(entry);
+                    if (copied.key != .nil) new.hash.?.appendAssumeCapacity(copied.key, copied.value);
+                }
             }
-            new.entries.items.len = retained;
-            try new.rebuildEntryIndex(a);
             inline for (.{ "metatable", "used_as_metatable", "finalizer_registered", "finalizer_next", "finalizer_prev", "finalizer_order" }) |name| @field(new, name) = try self.remap(@field(old, name));
         }
         for (source.closure_allocations.items, d.closure_allocations.items) |old, new| {
@@ -410,9 +408,9 @@ comptime {
         .remapped = "closure proto vararg_table_local",
     });
     review(types.Table, .{
-        .copied = "array entries used_as_metatable finalizer_registered finalizer_order",
+        .copied = "array hash used_as_metatable finalizer_registered finalizer_order",
         .remapped = "metatable finalizer_next finalizer_prev",
-        .rebuilt = "entry_index storage_bytes",
+        .rebuilt = "storage_bytes",
         .transient = "rollback gc metamethod_absent in_weak_list in_table_list",
     });
     review(types.Closure, .{

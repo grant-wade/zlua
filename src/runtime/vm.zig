@@ -1117,7 +1117,7 @@ fn fastTableKnownKeySetExistingNoAlloc(self: *State, table_value: Value, key: Va
     const table = table_value.table;
     if (table.rollback) |record| if (!record.header.detached) return false;
     if (table.findStringKey(key.string)) |index| {
-        const slot = &table.entries.items[index].value;
+        const slot = &table.entries()[index].value;
         if (slot.* == .nil) {
             if (!index_mod.noNewindexMetamethod(table)) return false;
             table.invalidateMetaEvents();
@@ -1525,7 +1525,7 @@ fn fastGlobalSetExisting(self: *State, key: *const String, value: Value) bool {
     const table = self.global_table orelse return false;
     if (table.rollback) |record| if (!record.header.detached) return false;
     const index = table.findStringKey(key) orelse return false;
-    const entry = &table.entries.items[index];
+    const entry = &table.entries()[index];
     if (entry.value == .nil) return false;
     entry.value = value;
     self.gc.writeExistingKeyBarrier(table, entry.key, value);
