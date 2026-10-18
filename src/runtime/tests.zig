@@ -1495,6 +1495,35 @@ test "minor cycles trace old suspended threads changed without barriers" {
     try std.testing.expectEqual(.old, young.table.gc.age);
 }
 
+test "epoch wraparound clears stale marks" {
+    var state = try State.init(std.testing.allocator);
+    defer state.deinit();
+    try entry_mod.executeSourceChunk(&state,
+        \\weak = setmetatable({}, {__mode = "v"})
+        \\holder = {child = {}}
+        \\weak[1] = holder.child
+    );
+    const holder = state.getGlobal("holder").table;
+    holder.gc.epoch = 2;
+    holder.gc.color = .black;
+    state.gc.epoch = std.math.maxInt(u32);
+    try state.gc.collect();
+    try std.testing.expect(state.getGlobal("weak").table.get(.{ .integer = 1 }) == .table);
+}
+
+test "generation wraparound keeps earlier objects old" {
+    var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .none });
+    defer state.deinit();
+    const table = try state.newTableWithHints(0, 0);
+    const handle = try state.rootValue(table);
+    defer state.unrootValue(handle);
+    table.table.gc.generation = 1;
+    state.gc.generation = std.math.maxInt(u32);
+    state.gc.normalizeBaseline();
+    try std.testing.expectEqual(@as(u32, 1), state.gc.generation);
+    try std.testing.expect(state.gc.isOld(table.table));
+}
+
 test "changing weak modes after propagation retraces newly strong edges" {
     var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .none });
     defer state.deinit();

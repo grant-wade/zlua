@@ -46,8 +46,8 @@ pub const Gc = struct {
     params: GcParams = .{},
     next_total: usize = 0,
     known_total: usize = 0,
-    epoch: u64 = 1,
-    generation: u64 = 1,
+    epoch: u32 = 1,
+    generation: u32 = 1,
     phase: types.GcPhase = .pause,
     cycle: types.GcCycle = .major,
     work: std.ArrayList(types.GcObject) = .empty,
@@ -664,7 +664,7 @@ pub const Gc = struct {
 
     fn ageAllObjects(gc: *Gc) void {
         const state = gc.parentState();
-        state.gc.generation += 1;
+        gc.advanceGeneration();
         state.gc.remembered.clearRetainingCapacity();
         inline for (reflection.fieldsOf(types.GcGenerations)) |f| @field(state.gc.old, f) = @field(state, f).items.len;
         state.gc.old_protos = state.proto_allocations.items.len;
@@ -694,9 +694,43 @@ pub const Gc = struct {
         gc.resetAutoThreshold();
     }
 
+    pub fn advanceEpoch(gc: *Gc) void {
+        if (gc.epoch < std.math.maxInt(u32)) {
+            gc.epoch += 1;
+            return;
+        }
+        const state = gc.parentState();
+        inline for (reflection.fieldsOf(types.GcGenerations)) |field| for (@field(state, field).items) |pointer| clearEpochs(pointer);
+        if (state.rollback) |journal| journal.forEachOriginal(clearEpochs);
+        gc.epoch = 1;
+    }
+
+    pub fn advanceGeneration(gc: *Gc) void {
+        if (gc.generation < std.math.maxInt(u32)) {
+            gc.generation += 1;
+            return;
+        }
+        const state = gc.parentState();
+        inline for (reflection.fieldsOf(types.GcGenerations)) |field| for (@field(state, field).items) |pointer| clearGeneration(pointer);
+        if (state.rollback) |journal| journal.forEachOriginal(clearGeneration);
+        gc.generation = 1;
+    }
+
+    fn clearEpochs(object: anytype) void {
+        object.gc.epoch = 0;
+        if (@TypeOf(object) == *Table) {
+            object.weak_epoch = 0;
+            object.tables_epoch = 0;
+        }
+    }
+
+    fn clearGeneration(object: anytype) void {
+        object.gc.generation = 0;
+    }
+
     fn resetMarks(gc: *Gc) void {
         const state = gc.parentState();
-        state.gc.epoch += 1;
+        gc.advanceEpoch();
         state.gc.work.clearRetainingCapacity();
         state.gc.weak.clearRetainingCapacity();
         state.gc.tables.clearRetainingCapacity();

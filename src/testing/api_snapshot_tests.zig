@@ -73,6 +73,30 @@ test "snapshot reset keeps metamethod absence caches consistent" {
     }
 }
 
+test "epoch wraparound clears stale marks in rollback originals" {
+    var lua = try api.State.init(a, .{ .stdlib = .full });
+    defer lua.deinit();
+    try lua.doString(
+        \\weak = setmetatable({}, {__mode = "v"})
+        \\holder = {child = {}}
+        \\weak[1] = holder.child
+    , .{});
+    var snapshot = try lua.snapshot(a);
+    defer snapshot.deinit();
+    var worker = try snapshot.newState(a);
+    defer worker.deinit();
+    const journal = worker.raw_state.rollback.?;
+    for (journal.tables) |*record| {
+        record.original.gc.epoch = 1;
+        record.original.gc.color = .black;
+    }
+    worker.raw_state.gc.epoch = std.math.maxInt(u32);
+    try worker.doString("holder.touched = true; collectgarbage()", .{});
+    for (journal.tables) |record| try std.testing.expectEqual(@as(u32, 0), record.original.gc.epoch);
+    try worker.reset();
+    try worker.doString("collectgarbage(); assert(weak[1] == holder.child)", .{});
+}
+
 test "reset without baseline fails" {
     var lua = try api.State.init(a, .{});
     defer lua.deinit();

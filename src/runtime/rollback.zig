@@ -191,6 +191,10 @@ pub const Journal = struct {
         return self;
     }
 
+    pub fn forEachOriginal(self: *Journal, comptime f: anytype) void {
+        inline for (record_lists) |records| for (@field(self, records)) |*record| f(&record.original);
+    }
+
     pub fn attach(self: *Journal, state: *State) void {
         state.rollback = self;
         inline for (record_lists) |records| for (@field(self, records)) |*record| {
@@ -297,8 +301,8 @@ pub const Journal = struct {
         const gc_tables = state.gc.tables;
         const gc_finalizers = state.gc.finalizers;
         const string_scratch = state.strings.scratch;
-        const epoch = state.gc.epoch + 1;
-        const generation = state.gc.generation + 1;
+        const epoch = state.gc.epoch;
+        const generation = state.gc.generation;
         state.* = self.saved;
         state.gc.work = gc_work;
         state.gc.remembered = gc_remembered;
@@ -308,6 +312,8 @@ pub const Journal = struct {
         state.strings.scratch = string_scratch;
         state.gc.epoch = epoch;
         state.gc.generation = generation;
+        state.gc.advanceEpoch();
+        state.gc.advanceGeneration();
         state.api_roots = roots;
         state.api_roots.clearRetainingCapacity();
         state.api_callback_dispatch = callback_dispatch;

@@ -491,9 +491,9 @@ pub const Table = struct {
     /// writes that may turn nil into non-nil clear the whole set.
     metamethod_absent: u32 = 0,
     /// Collector epoch in which this table joined `Gc.weak`.
-    weak_epoch: u64 = 0,
+    weak_epoch: u32 = 0,
     /// Collector epoch in which this table joined `Gc.tables`.
-    tables_epoch: u64 = 0,
+    tables_epoch: u32 = 0,
     /// Capacity bytes last reported to the collector.
     storage_bytes: usize = 0,
 
@@ -1010,9 +1010,9 @@ pub const GcHeader = extern struct {
     pub const untracked = std.math.maxInt(u32);
 
     /// Collector epoch of the last mark; `color` is stale when it differs.
-    epoch: u64 = 0,
+    epoch: u32 = 0,
     /// Collector generation at allocation; any older generation means old.
-    generation: u64 = 0,
+    generation: u32 = 0,
     /// Position in this type's registry; `untracked` for strings and objects the collector doesn't own.
     registry_index: u32 = untracked,
     color: GcColor = .white,
