@@ -691,7 +691,6 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                         if (self.budget.fastLoopInterrupted()) break :fast_loop;
                     }
                 }
-                if (pc >= instructions.len) break :fast_loop;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .compare_branch => {
@@ -714,7 +713,6 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                         if (self.budget.fastLoopInterrupted()) break :fast_loop;
                     }
                 }
-                if (pc >= instructions.len) break :fast_loop;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .jmp => {
@@ -728,7 +726,6 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     frame.last_hook_line = null;
                     if (self.budget.fastLoopInterrupted()) break :fast_loop;
                 }
-                if (pc >= instructions.len) break :fast_loop;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .test_op => {
@@ -744,7 +741,6 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                         if (self.budget.fastLoopInterrupted()) break :fast_loop;
                     }
                 }
-                if (pc >= instructions.len) break :fast_loop;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .test_set => {
@@ -762,7 +758,6 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                         if (self.budget.fastLoopInterrupted()) break :fast_loop;
                     }
                 }
-                if (pc >= instructions.len) break :fast_loop;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .for_loop => {
@@ -792,7 +787,6 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                         if (self.budget.fastLoopInterrupted()) break :fast_loop;
                     }
                 }
-                if (pc >= instructions.len) break :fast_loop;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .call => {
@@ -978,7 +972,6 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     frame.last_hook_line = null;
                     if (self.budget.fastLoopInterrupted()) break :fast_loop;
                 }
-                if (pc >= instructions.len) break :fast_loop;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .close => {

@@ -298,9 +298,23 @@ pub fn prepareProtoTree(proto: *proto_mod.Proto) !void {
         else => false,
     };
     if (proto.has_to_close_locals) proto.close_exit_jumps = try closeExitJumps(proto);
-    proto.fast_loop_entry = last_stops;
+    proto.fast_loop_entry = last_stops and jumpTargetsInBounds(instructions);
     proto.fast_loop_call = proto.fast_loop_entry and !proto.is_vararg and !proto.named_vararg;
     proto.runtime_prepared = true;
+}
+
+fn jumpTargetsInBounds(instructions: []const bytecode.Instruction) bool {
+    for (instructions, 0..) |instruction, index| {
+        const offset: bytecode.JumpOffset = switch (instruction) {
+            .jmp => |offset| offset,
+            inline .compare_branch, .compare_branch_k, .test_op, .test_set, .for_loop, .for_prep, .tfor_prep, .tfor_loop => |op| op.offset,
+            else => continue,
+        };
+        const source = index + 1;
+        const target = if (offset >= 0) source + @as(usize, @intCast(offset)) else source -% @as(usize, @intCast(-offset));
+        if (target >= instructions.len) return false;
+    }
+    return true;
 }
 
 fn closeExitJumps(proto: *proto_mod.Proto) ![]const u64 {
