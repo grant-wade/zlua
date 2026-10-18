@@ -39,6 +39,7 @@ pub fn copyFrozen(source: *const State, allocator: std.mem.Allocator, lifetime: 
 fn copyGraph(source: *const State, allocator: std.mem.Allocator, lifetime: ?*types.AllocatorLifetime, error_root: ?usize, borrow_protos: bool) !State {
     var destination = State{
         .allocator = allocator,
+        .object_pool = try @import("object_pool.zig").ObjectPool.create(allocator),
         .allocator_lifetime = lifetime,
         .options = source.options,
     };
@@ -63,7 +64,8 @@ const Copier = struct {
         const a = self.destination.allocator;
         try destination.ensureTotalCapacity(a, source.len);
         for (source) |old| {
-            const new = if (T == types.Closure) try types.Closure.create(a, old.upvalue_count, initial) else try a.create(T);
+            const objects = self.destination.allocatorFor(T);
+            const new = if (T == types.Closure) try types.Closure.create(objects, old.upvalue_count, initial) else try objects.create(T);
             if (T != types.Closure) new.* = initial;
             new.gc.registry_index = @intCast(destination.items.len);
             destination.appendAssumeCapacity(new);
@@ -386,7 +388,7 @@ comptime {
     @setEvalBranchQuota(1000000);
     review(State, .{
         .external = "allocator allocator_lifetime options",
-        .rebuilt = "strings api_roots gc budget",
+        .rebuilt = "object_pool strings api_roots gc budget",
         .remapped = "global_table table_finalizer_head table_pending_finalizer_head userdata_pending_finalizer_head userdata_lua_pending_head string_metatable number_metatable boolean_metatable nil_metatable file_metatable fs_file_metatable io_input io_output library_tables last_error",
         .copied = "string_allocations table_allocations userdata_allocations closure_allocations upvalue_allocations thread_allocations chunk_allocations source_allocations stdout stderr table_finalizer_serial stdin_pos file_generation error_handled warnings_on random_state",
         .transient = "execution_depth userdata_scope value_roots rollback snapshot_busy discarding exit_request local_zone current_thread api_callback_dispatch api_callback_user_data active_api_callback coroutine_close_depth",

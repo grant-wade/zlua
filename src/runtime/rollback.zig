@@ -335,7 +335,7 @@ pub const Journal = struct {
         inline for (registries) |name| {
             for (@field(state, name).items[@field(self.baseline, name)..]) |item| {
                 if (comptime std.mem.eql(u8, name, "string_allocations")) {
-                    strings_mod.destroy(a, item);
+                    strings_mod.destroy(state.objects(), item);
                 } else if (comptime std.mem.eql(u8, name, "source_allocations")) {
                     if (item.len == 0) continue;
                     a.free(item);
@@ -344,7 +344,7 @@ pub const Journal = struct {
                 } else {
                     const T = @typeInfo(@TypeOf(item)).pointer.child;
                     freeStorage(T, a, item);
-                    destroyObject(T, a, item);
+                    destroyObject(T, state, item);
                 }
                 count += 1;
             }
@@ -364,7 +364,7 @@ pub const Journal = struct {
             }
             if (record.header.dead) {
                 freeStorage(T, self.allocator, record.object);
-                destroyObject(T, self.allocator, record.object);
+                destroyObject(T, state, record.object);
             }
         };
         if (self.registries_detached) {
@@ -409,7 +409,7 @@ fn freeRetainedStrings(a: std.mem.Allocator, saved: *const State, state: *const 
     live.ensureTotalCapacity(@intCast(state.string_allocations.items.len)) catch return;
     for (state.string_allocations.items) |string| live.putAssumeCapacity(string, {});
     for (saved.string_allocations.items) |string| {
-        if (!live.contains(string)) strings_mod.destroy(a, string);
+        if (!live.contains(string)) strings_mod.destroy(state.objects(), string);
     }
 }
 fn freeStorage(comptime T: type, a: std.mem.Allocator, object: *T) void {
@@ -424,7 +424,8 @@ fn restoreUpvalues(a: std.mem.Allocator, record: *Record(types.Closure)) void {
     a.free(record.upvalues);
     record.upvalues = &.{};
 }
-fn destroyObject(comptime T: type, a: std.mem.Allocator, object: *T) void {
+fn destroyObject(comptime T: type, state: *const State, object: *T) void {
+    const a = state.allocatorFor(T);
     if (T == types.Closure) types.Closure.destroy(a, object) else a.destroy(object);
 }
 fn kindOf(comptime T: type) Kind {

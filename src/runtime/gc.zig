@@ -1557,7 +1557,7 @@ pub const Gc = struct {
             if (strings) {
                 if (item.interned) state.strings.set.remove(item);
                 gc.noteAllocationFreed(item.gcBytes());
-                if (!retained) strings_mod.destroy(state.allocator, item);
+                if (!retained) strings_mod.destroy(state.objects(), item);
             } else {
                 if (tables) {
                     gc.noteAllocationFreed(tableGcBytes(item));
@@ -1574,7 +1574,7 @@ pub const Gc = struct {
                     gc.destroyUserdata(item);
                 } else {
                     gc.noteAllocationFreed(@sizeOf(Upvalue));
-                    if (!rollback.retainCollected(item)) state.allocator.destroy(item);
+                    if (!rollback.retainCollected(item)) state.objects().destroy(item);
                 }
             }
         }
@@ -1612,7 +1612,7 @@ pub const Gc = struct {
         const state = gc.parentState();
         if (rollback.retainCollected(table)) return;
         table.deinit(state.allocator);
-        state.allocator.destroy(table);
+        state.objects().destroy(table);
     }
 
     pub fn destroyUserdata(gc: *Gc, userdata: *Userdata) void {
@@ -1634,7 +1634,7 @@ pub const Gc = struct {
     pub fn destroyClosure(gc: *Gc, closure: *Closure) void {
         const state = gc.parentState();
         if (rollback.retainCollected(closure)) return;
-        Closure.destroy(state.allocator, closure);
+        Closure.destroy(state.objects(), closure);
     }
 
     pub fn destroyThread(gc: *Gc, thread: *Thread) void {

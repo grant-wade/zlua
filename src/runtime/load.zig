@@ -291,12 +291,12 @@ fn loadConstant(self: *State, constant: compile.bytecode.Constant) !Value {
 fn newLoadedClosure(self: *State, chunk: *types.Chunk, environment: Value, stripped_debug: bool) !*Closure {
     const proto = chunk.root;
     vm_mod.assertProtoPrepared(proto);
-    const closure = try Closure.create(self.allocator, proto.upvalues.items.len, .{ .proto = proto, .chunk = chunk, .stripped_debug = stripped_debug });
-    errdefer Closure.destroy(self.allocator, closure);
+    const closure = try Closure.create(self.objects(), proto.upvalues.items.len, .{ .proto = proto, .chunk = chunk, .stripped_debug = stripped_debug });
+    errdefer Closure.destroy(self.objects(), closure);
     const upvalues = closure.upvalues();
     for (proto.upvalues.items, upvalues) |desc, *slot| {
-        const upvalue = try self.allocator.create(Upvalue);
-        errdefer self.allocator.destroy(upvalue);
+        const upvalue = try self.objects().create(Upvalue);
+        errdefer self.objects().destroy(upvalue);
         upvalue.* = .{ .cell = .{ .closed = if (std.mem.eql(u8, desc.name, "_ENV")) environment else .nil } };
         try self.registerAllocation("upvalue_allocations", upvalue);
         self.gc.noteAllocation(@sizeOf(Upvalue));

@@ -13,6 +13,7 @@ const host = @import("host.zig");
 const index_mod = @import("index.zig");
 const load_mod = @import("load.zig");
 const metatable_mod = @import("metatable.zig");
+const ObjectPool = @import("object_pool.zig").ObjectPool;
 const rollback_mod = @import("rollback.zig");
 const strings_mod = @import("strings.zig");
 const timezone = @import("timezone.zig");
@@ -143,6 +144,8 @@ pub const State = struct {
     snapshot_busy: bool = false,
     discarding: bool = false,
     allocator: std.mem.Allocator,
+    /// Holds the tables, upvalues, closures and strings, over `allocator`.
+    object_pool: *ObjectPool,
     global_table: ?*Table = null,
     strings: strings_mod.Strings = .{},
     string_allocations: std.ArrayList(*types.String) = .empty,
@@ -204,6 +207,14 @@ pub const State = struct {
         return initWithOptions(allocator, .{});
     }
 
+    pub inline fn objects(self: *const State) std.mem.Allocator {
+        return self.object_pool.allocator();
+    }
+
+    pub inline fn allocatorFor(self: *const State, comptime T: type) std.mem.Allocator {
+        return if (T == Table or T == types.Upvalue or T == Closure or T == types.String) self.objects() else self.allocator;
+    }
+
     pub fn initWithOptions(allocator: std.mem.Allocator, options: StateOptions) !State {
         const NoopObserver = struct {
             fn observe(_: void, _: StartupPhase, _: *State) void {}
@@ -219,6 +230,7 @@ pub const State = struct {
     ) !State {
         var state = State{
             .allocator = allocator,
+            .object_pool = try ObjectPool.create(allocator),
             .options = options,
             .warnings_on = options.warnings,
         };
@@ -358,17 +370,17 @@ pub const State = struct {
         self.gc.finalizers.deinit(self.allocator);
         for (self.thread_allocations.items) |thread| self.gc.destroyThread(thread);
         for (self.closure_allocations.items) |closure| self.gc.destroyClosure(closure);
-        for (self.upvalue_allocations.items) |upvalue| self.allocator.destroy(upvalue);
+        for (self.upvalue_allocations.items) |upvalue| self.objects().destroy(upvalue);
         for (self.userdata_allocations.items) |userdata| self.gc.destroyUserdata(userdata);
         for (self.table_allocations.items) |table| {
             if (self.discarding) {
                 table.deinit(self.allocator);
-                self.allocator.destroy(table);
+                self.objects().destroy(table);
             } else self.gc.destroyTable(table);
         }
         for (self.chunk_allocations.items) |chunk| chunk.destroy(self.allocator);
         for (self.source_allocations.items) |source| self.allocator.free(source);
-        for (self.string_allocations.items) |string| strings_mod.destroy(self.allocator, string);
+        for (self.string_allocations.items) |string| strings_mod.destroy(self.objects(), string);
         self.api_roots.deinit(self.allocator);
         self.source_allocations.deinit(self.allocator);
         self.chunk_allocations.deinit(self.allocator);
@@ -378,6 +390,7 @@ pub const State = struct {
         self.userdata_allocations.deinit(self.allocator);
         self.table_allocations.deinit(self.allocator);
         self.string_allocations.deinit(self.allocator);
+        self.object_pool.destroy();
         self.* = undefined;
     }
 
@@ -495,8 +508,8 @@ pub const State = struct {
     }
 
     pub fn newTableWithHints(self: *State, array_hint: u32, hash_hint: u32) !Value {
-        const table = try self.allocator.create(Table);
-        errdefer self.allocator.destroy(table);
+        const table = try self.objects().create(Table);
+        errdefer self.objects().destroy(table);
         table.* = try Table.init(self.allocator, array_hint, hash_hint);
         errdefer table.deinit(self.allocator);
         try self.registerAllocation("table_allocations", table);
@@ -528,8 +541,8 @@ pub const State = struct {
     pub fn newClosure(self: *State, thread: *Thread, proto: *const proto_mod.Proto) !Value {
         const parent = thread.frames.items[thread.frames.items.len - 1];
         vm_mod.assertProtoPrepared(proto);
-        const closure = try Closure.create(self.allocator, proto.upvalues.items.len, .{ .proto = proto, .chunk = parent.closure.chunk, .stripped_debug = parent.closure.stripped_debug });
-        errdefer Closure.destroy(self.allocator, closure);
+        const closure = try Closure.create(self.objects(), proto.upvalues.items.len, .{ .proto = proto, .chunk = parent.closure.chunk, .stripped_debug = parent.closure.stripped_debug });
+        errdefer Closure.destroy(self.objects(), closure);
         const upvalues = closure.upvalues();
         for (proto.upvalues.items, upvalues) |desc, *upvalue| {
             upvalue.* = if (desc.in_stack)

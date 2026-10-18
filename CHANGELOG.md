@@ -11,6 +11,7 @@
 - Each loaded chunk interns its string constants once for all of its closures, and field and global lookups compare those strings by pointer.
 - Upvalues are 56 bytes instead of 72.
 - Call frames are 40 bytes instead of 136.
+- Tables, upvalues, closures, and strings of up to 128 bytes come from per-state size-class slabs.
 
 ### Fixes
 

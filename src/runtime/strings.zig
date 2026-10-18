@@ -200,8 +200,8 @@ pub const Strings = struct {
     fn create(strings: *Strings, len: usize) !*String {
         const state = strings.parentState();
         const size = std.math.add(usize, @sizeOf(String), len) catch return error.OutOfMemory;
-        const memory = try state.allocator.alignedAlloc(u8, .of(String), size);
-        errdefer state.allocator.free(memory);
+        const memory = try state.objects().alignedAlloc(u8, .of(String), size);
+        errdefer state.objects().free(memory);
         const string: *String = @ptrCast(memory.ptr);
         string.* = .{ .len = len };
         try state.registerAllocation("string_allocations", string);

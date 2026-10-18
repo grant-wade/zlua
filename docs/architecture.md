@@ -118,6 +118,7 @@ For measurement, `State.initWithOptionsObserved` exposes the startup phases (sta
 | `gc.zig` | The collector as `State.gc` (`state.gc.collect()`, barriers, allocation accounting), with its own fields. |
 | `budget.zig` | Instruction counting, `max_instructions` and per-call budgets, and host interrupts as `State.budget`. |
 | `strings.zig` | String creation, interning, and `Builder` as `State.strings` (`state.strings.intern(...)`). |
+| `object_pool.zig` | Size-class slabs for tables, upvalues, closures, and strings of up to 128 bytes, in blocks from the state allocator. |
 | `debug.zig`, `coroutine.zig` | Debug info, hooks, and tracebacks; coroutines. |
 
 ### Values and Heap Objects
@@ -164,7 +165,7 @@ Several limits keep running code in check:
 - `max_instructions` is a cumulative budget for the whole state. You can query and reset it through the Zig API, and host calls can narrow it further with per-call deadlines.
 - Instruction budgets and interrupt polls share a single checkpoint in the dispatch loop.
 - Interrupts use an atomic flag that survives state moves and resets. `error.Interrupted` bypasses `pcall`, `xpcall`, and `__close` handlers.
-- `max_memory` is enforced by the embedding API's bounded allocator. If you use the runtime directly, you need to supply your own bounded allocator.
+- `max_memory` is enforced by the embedding API's bounded allocator, which sees object pool blocks rather than individual objects. If you use the runtime directly, you need to supply your own bounded allocator.
 
 ### Garbage Collection
 

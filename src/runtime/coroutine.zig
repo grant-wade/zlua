@@ -340,8 +340,8 @@ fn callableEntryClosure(self: *State) !*Closure {
     const chunk = try load_mod.newChunk(self, proto, .state);
     errdefer load_mod.discardNewChunk(self, chunk);
 
-    const closure = try Closure.create(self.allocator, 0, .{ .proto = proto, .chunk = chunk });
-    errdefer Closure.destroy(self.allocator, closure);
+    const closure = try Closure.create(self.objects(), 0, .{ .proto = proto, .chunk = chunk });
+    errdefer Closure.destroy(self.objects(), closure);
     try self.registerAllocation("closure_allocations", closure);
     self.gc.noteAllocation(Closure.allocationBytes(0));
     return closure;

@@ -27,8 +27,8 @@ pub fn captureUpvalue(self: *State, thread: *Thread, stack_index: usize) !*Upval
         previous = upvalue;
     }
 
-    const upvalue = try self.allocator.create(Upvalue);
-    errdefer self.allocator.destroy(upvalue);
+    const upvalue = try self.objects().create(Upvalue);
+    errdefer self.objects().destroy(upvalue);
     upvalue.* = .{ .cell = .{ .open = .{ .owner = thread, .stack_index = stack_index } }, .next = current };
     try self.registerAllocation("upvalue_allocations", upvalue);
     self.gc.noteAllocation(@sizeOf(Upvalue));
