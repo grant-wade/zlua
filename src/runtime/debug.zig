@@ -122,11 +122,11 @@ fn appendDebugVarargs(self: *State, out: *std.ArrayList(u8), frame: CallFrame) !
 }
 
 fn appendDebugUpvalues(self: *State, out: *std.ArrayList(u8), frame: CallFrame) !void {
-    if (frame.closure.upvalues.len == 0) {
+    if (frame.closure.upvalue_count == 0) {
         try out.appendSlice(self.allocator, "    upvalues: <none>\n");
         return;
     }
-    for (frame.closure.upvalues, 0..) |upvalue, index| {
+    for (frame.closure.upvalues(), 0..) |upvalue, index| {
         const name = if (index < frame.proto.upvalues.items.len) frame.proto.upvalues.items[index].name else "?";
         const value = if (upvalue.is_open) upvalue.owner.stack.items[upvalue.stack_index] else upvalue.closed;
         try appendFmt(self.allocator, out, "    upvalue U{d} {s} {s}", .{ index, name, if (upvalue.is_open) "open" else "closed" });

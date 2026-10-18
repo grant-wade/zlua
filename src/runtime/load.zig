@@ -51,10 +51,7 @@ pub fn loadSourceAsClosureNamedEnv(self: *State, source: []const u8, source_name
     if (source_name) |name| try setProtoSourceName(proto, name);
     try value_mod.prepareProtoTree(proto);
     try self.registerAllocation("proto_allocations", proto);
-    errdefer {
-        const removed = self.proto_allocations.pop().?;
-        if (self.rollback) |journal| journal.freed(@intFromPtr(removed));
-    }
+    errdefer _ = self.proto_allocations.pop();
     const closure = try newRootClosureWithEnv(self, proto, environment);
     self.gc.notePrototype(proto);
     return .{ .closure = closure };
@@ -83,10 +80,7 @@ pub fn loadBinaryDump(self: *State, source: []const u8, environment: Value) !Val
     if (reader.pos != source.len) return self.fail("bad binary chunk");
     try value_mod.prepareProtoTree(proto);
     try self.registerAllocation("proto_allocations", proto);
-    errdefer {
-        _ = self.proto_allocations.pop();
-        if (self.rollback) |journal| journal.freed(@intFromPtr(proto));
-    }
+    errdefer _ = self.proto_allocations.pop();
     const closure = try newDumpedClosure(self, proto, environment, stripped_debug);
     self.gc.notePrototype(proto);
     return closure;
@@ -242,13 +236,15 @@ pub fn newRootClosure(self: *State, proto: *const proto_mod.Proto) !*Closure {
 }
 
 fn newRootClosureWithEnv(self: *State, proto: *const proto_mod.Proto, environment: Value) !*Closure {
-    var upvalues: []*Upvalue = if (proto.upvalues.items.len == 0)
-        &.{}
-    else
-        try self.allocator.alloc(*Upvalue, proto.upvalues.items.len);
-    errdefer if (upvalues.len != 0) self.allocator.free(upvalues);
+    return newLoadedClosure(self, proto, environment, false);
+}
 
-    for (proto.upvalues.items, 0..) |desc, index| {
+fn newLoadedClosure(self: *State, proto: *const proto_mod.Proto, environment: Value, stripped_debug: bool) !*Closure {
+    vm_mod.assertProtoPrepared(proto);
+    const closure = try Closure.create(self.allocator, proto.upvalues.items.len, .{ .proto = proto, .stripped_debug = stripped_debug });
+    errdefer Closure.destroy(self.allocator, closure);
+    const upvalues = closure.upvalues();
+    for (proto.upvalues.items, upvalues) |desc, *slot| {
         const upvalue = try self.allocator.create(Upvalue);
         errdefer self.allocator.destroy(upvalue);
         upvalue.* = .{
@@ -259,15 +255,10 @@ fn newRootClosureWithEnv(self: *State, proto: *const proto_mod.Proto, environmen
         };
         try self.registerAllocation("upvalue_allocations", upvalue);
         self.gc.noteAllocation(@sizeOf(Upvalue));
-        upvalues[index] = upvalue;
+        slot.* = upvalue;
     }
-
-    const closure = try self.allocator.create(Closure);
-    errdefer self.allocator.destroy(closure);
-    vm_mod.assertProtoPrepared(proto);
-    closure.* = .{ .proto = proto, .upvalues = upvalues };
     try self.registerAllocation("closure_allocations", closure);
-    self.gc.noteAllocation(@sizeOf(Closure));
+    self.gc.noteAllocation(Closure.allocationBytes(upvalues.len));
     return closure;
 }
 
@@ -276,33 +267,7 @@ fn defaultEnvironment(self: *State) Value {
 }
 
 fn newDumpedClosure(self: *State, proto: *const proto_mod.Proto, environment: Value, stripped_debug: bool) !Value {
-    var upvalues: []*Upvalue = if (proto.upvalues.items.len == 0)
-        &.{}
-    else
-        try self.allocator.alloc(*Upvalue, proto.upvalues.items.len);
-    errdefer if (upvalues.len != 0) self.allocator.free(upvalues);
-
-    for (proto.upvalues.items, 0..) |desc, index| {
-        const upvalue = try self.allocator.create(Upvalue);
-        errdefer self.allocator.destroy(upvalue);
-        upvalue.* = .{
-            .owner = undefined,
-            .stack_index = 0,
-            .closed = if (std.mem.eql(u8, desc.name, "_ENV")) environment else .nil,
-            .is_open = false,
-        };
-        try self.registerAllocation("upvalue_allocations", upvalue);
-        self.gc.noteAllocation(@sizeOf(Upvalue));
-        upvalues[index] = upvalue;
-    }
-
-    const closure = try self.allocator.create(Closure);
-    vm_mod.assertProtoPrepared(proto);
-    closure.* = .{ .proto = proto, .upvalues = upvalues, .stripped_debug = stripped_debug };
-    errdefer self.allocator.destroy(closure);
-    try self.registerAllocation("closure_allocations", closure);
-    self.gc.noteAllocation(@sizeOf(Closure));
-    return .{ .closure = closure };
+    return .{ .closure = try newLoadedClosure(self, proto, environment, stripped_debug) };
 }
 
 fn failLoadDiagnostic(self: *State, source_name: ?[]const u8, source_text: []const u8, diagnostic: ?errors.Diagnostic, fallback: []const u8) RuntimeError {

@@ -14,7 +14,6 @@ const proto_mod = compile.proto;
 const Value = types.Value;
 const CoroutineResumeResult = types.CoroutineResumeResult;
 const Closure = types.Closure;
-const Upvalue = types.Upvalue;
 const Thread = types.Thread;
 const ThreadStatus = types.ThreadStatus;
 const argValue = value_mod.argValue;
@@ -339,18 +338,12 @@ fn callableEntryClosure(self: *State) !*Closure {
     _ = try proto.emit(.{ .call = .{ .base = 0, .arg_count = bytecode.multret_arg_count, .return_count = bytecode.multret_count } }, 0);
     _ = try proto.emit(.{ .ret = .{ .first = 0, .count = bytecode.multret_count } }, 0);
     try self.registerAllocation("proto_allocations", proto);
-    errdefer {
-        _ = self.proto_allocations.pop();
-        if (self.rollback) |journal| journal.freed(@intFromPtr(proto));
-    }
+    errdefer _ = self.proto_allocations.pop();
 
-    const upvalues = try self.allocator.alloc(*Upvalue, 0);
-    errdefer self.allocator.free(upvalues);
-    const closure = try self.allocator.create(Closure);
-    closure.* = .{ .proto = proto, .upvalues = upvalues };
-    errdefer self.allocator.destroy(closure);
+    const closure = try Closure.create(self.allocator, 0, .{ .proto = proto });
+    errdefer Closure.destroy(self.allocator, closure);
     try self.registerAllocation("closure_allocations", closure);
-    self.gc.noteAllocation(@sizeOf(Closure));
+    self.gc.noteAllocation(Closure.allocationBytes(0));
     return closure;
 }
 

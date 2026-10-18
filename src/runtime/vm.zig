@@ -420,14 +420,14 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             },
             .get_upvalue => {
                 const op = instructions[pc].get_upvalue;
-                const upvalue = frame.closure.upvalues[op.upvalue];
+                const upvalue = frame.closure.upvalues()[op.upvalue];
                 stack[op.register] = if (upvalue.is_open) upvalue.owner.stack.items[upvalue.stack_index] else upvalue.closed;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .set_upvalue => {
                 const op = instructions[pc].set_upvalue;
-                const upvalue = frame.closure.upvalues[op.upvalue];
+                const upvalue = frame.closure.upvalues()[op.upvalue];
                 if (upvalue.is_open) {
                     if (upvalue.owner.rollback) |record| if (!record.header.detached) break :fast_loop;
                     rollback_mod.touch(upvalue);

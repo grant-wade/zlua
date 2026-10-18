@@ -44,13 +44,13 @@ pub fn captureUpvalue(self: *State, thread: *Thread, stack_index: usize) !*Upval
 pub fn readUpvalue(self: *State, thread: *Thread, index: bytecode.UpvalueIndex) Value {
     _ = self;
     const frame = thread.frames.items[thread.frames.items.len - 1];
-    const upvalue = frame.closure.upvalues[index];
+    const upvalue = frame.closure.upvalues()[index];
     return if (upvalue.is_open) upvalue.owner.stack.items[upvalue.stack_index] else upvalue.closed;
 }
 
 pub fn writeUpvalue(self: *State, thread: *Thread, index: bytecode.UpvalueIndex, value: Value) !void {
     const frame = thread.frames.items[thread.frames.items.len - 1];
-    const upvalue = frame.closure.upvalues[index];
+    const upvalue = frame.closure.upvalues()[index];
     rollback_mod.touch(upvalue);
     if (upvalue.is_open) {
         try rollback_mod.threadWritable(upvalue.owner);

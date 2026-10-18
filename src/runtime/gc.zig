@@ -89,7 +89,7 @@ pub const Gc = struct {
     pub fn prepareRegistration(gc: *Gc, comptime field: []const u8) !void {
         const state = gc.parentState();
         inline for (managed_lists) |name| if (comptime std.mem.eql(u8, field, name)) {
-            if (@field(state, field).items.len >= types.GcMeta.untracked) return error.OutOfMemory;
+            if (@field(state, field).items.len >= types.GcHeader.untracked) return error.OutOfMemory;
             try gc.reserveQueues(1);
         };
     }
@@ -98,12 +98,11 @@ pub const Gc = struct {
         const state = gc.parentState();
         inline for (managed_lists) |name| if (comptime std.mem.eql(u8, field, name)) {
             item.gc.generation = state.gc.generation;
-            if (comptime std.mem.eql(u8, field, "table_allocations")) item.gc.storage_bytes = tableCapacityBytes(item);
+            if (comptime std.mem.eql(u8, field, "table_allocations")) item.storage_bytes = tableCapacityBytes(item);
             if (comptime std.mem.eql(u8, field, "thread_allocations")) {
-                item.gc.storage_bytes = threadCapacityBytes(item);
-                gc.noteAllocation(item.gc.storage_bytes);
+                item.storage_bytes = threadCapacityBytes(item);
+                gc.noteAllocation(item.storage_bytes);
             }
-            if (comptime std.mem.eql(u8, field, "closure_allocations")) gc.noteAllocation(item.upvalues.len * @sizeOf(*Upvalue));
             item.gc.registry_index = @intCast(@field(state, field).items.len - 1);
             if (@intFromEnum(state.gc.phase) >= @intFromEnum(types.GcPhase.sweep_threads)) {
                 const tag = comptime name[0 .. name.len - "_allocations".len];
@@ -178,8 +177,8 @@ pub const Gc = struct {
     fn tableCandidate(gc: *Gc, table: *Table) void {
         const state = gc.parentState();
         if (@intFromEnum(state.gc.phase) >= @intFromEnum(types.GcPhase.sweep_threads)) return;
-        if (table.gc.tables_epoch == state.gc.epoch) return;
-        table.gc.tables_epoch = state.gc.epoch;
+        if (table.tables_epoch == state.gc.epoch) return;
+        table.tables_epoch = state.gc.epoch;
         state.gc.tables.appendAssumeCapacity(table);
     }
 
@@ -190,7 +189,7 @@ pub const Gc = struct {
                 state.gc.found_young = true;
             },
             inline .table, .gmatch_iterator, .userdata, .closure, .thread, .coroutine_wrapper => |pointer| {
-                if (pointer.gc.registry_index != types.GcMeta.untracked and !gc.isOld(pointer)) state.gc.found_young = true;
+                if (pointer.gc.registry_index != types.GcHeader.untracked and !gc.isOld(pointer)) state.gc.found_young = true;
             },
             else => {},
         }
@@ -248,8 +247,8 @@ pub const Gc = struct {
 
     pub fn refreshAllocationTotal(gc: *Gc) usize {
         const state = gc.parentState();
-        for (state.table_allocations.items) |table| table.gc.storage_bytes = tableCapacityBytes(table);
-        for (state.thread_allocations.items) |thread| thread.gc.storage_bytes = threadCapacityBytes(thread);
+        for (state.table_allocations.items) |table| table.storage_bytes = tableCapacityBytes(table);
+        for (state.thread_allocations.items) |thread| thread.storage_bytes = threadCapacityBytes(thread);
         const total = state.gc.allocationStats().total();
         state.gc.known_total = total;
         return total;
@@ -262,16 +261,16 @@ pub const Gc = struct {
 
     pub fn noteTableCapacityDelta(gc: *Gc, table: *Table, old_capacity_bytes: usize) void {
         _ = old_capacity_bytes;
-        gc.syncStorage(&table.gc, tableCapacityBytes(table));
+        gc.syncStorage(&table.storage_bytes, tableCapacityBytes(table));
     }
 
-    fn syncStorage(gc: *Gc, meta: *types.GcMeta, bytes: usize) void {
-        if (bytes >= meta.storage_bytes) gc.noteAllocation(bytes - meta.storage_bytes) else gc.noteAllocationFreed(meta.storage_bytes - bytes);
-        meta.storage_bytes = bytes;
+    fn syncStorage(gc: *Gc, reported: *usize, bytes: usize) void {
+        if (bytes >= reported.*) gc.noteAllocation(bytes - reported.*) else gc.noteAllocationFreed(reported.* - bytes);
+        reported.* = bytes;
     }
 
     pub fn syncThreadStorage(gc: *Gc, thread: *Thread) void {
-        gc.syncStorage(&thread.gc, threadCapacityBytes(thread));
+        gc.syncStorage(&thread.storage_bytes, threadCapacityBytes(thread));
     }
 
     pub fn collectGarbageValue(gc: *Gc, thread: *Thread, op: bytecode.Call) !void {
@@ -677,9 +676,9 @@ pub const Gc = struct {
             for (@field(state, field).items) |pointer| {
                 pointer.gc.generation = state.gc.generation;
                 pointer.gc.age = .new;
-                if (comptime !std.mem.eql(u8, field, "string_allocations")) pointer.gc.remembered = false;
+                pointer.gc.remembered = false;
             }
-            @field(state.gc.old, field) = 0;
+            @field(state.gc.old, field) = if (state.rollback) |journal| @field(journal.baseline, field) else 0;
         }
         state.gc.old_protos = 0;
     }
@@ -787,8 +786,8 @@ pub const Gc = struct {
             gc.noteYoung(entry.value);
         }
         const mode = gc.weakMode(table);
-        if (@intFromEnum(state.gc.phase) < @intFromEnum(types.GcPhase.sweep_threads) and (mode.keys or mode.values) and table.gc.weak_epoch != state.gc.epoch) {
-            table.gc.weak_epoch = state.gc.epoch;
+        if (@intFromEnum(state.gc.phase) < @intFromEnum(types.GcPhase.sweep_threads) and (mode.keys or mode.values) and table.weak_epoch != state.gc.epoch) {
+            table.weak_epoch = state.gc.epoch;
             state.gc.weak.appendAssumeCapacity(table);
         }
         if (table.metatable) |metatable| gc.markTable(metatable);
@@ -859,7 +858,7 @@ pub const Gc = struct {
         if (closure.constants) |constants| for (constants) |constant| {
             if (constant) |value| gc.markValue(value);
         };
-        for (closure.upvalues) |upvalue| {
+        for (closure.upvalues()) |upvalue| {
             if (!gc.isOld(upvalue)) state.gc.found_young = true;
             gc.markUpvalue(upvalue);
         }
@@ -1412,18 +1411,24 @@ pub const Gc = struct {
 
     pub fn removeRegistryItem(gc: *Gc, comptime field: []const u8, index: usize) void {
         const state = gc.parentState();
-        const boundary = &@field(state.gc.old, field);
         var hole = index;
-        if (hole < boundary.*) {
-            boundary.* -= 1;
-            if (hole != boundary.*) {
-                @field(state, field).items[hole] = @field(state, field).items[boundary.*];
-                gc.updateIndex(field, hole);
-            }
-            hole = boundary.*;
-        }
+        if (state.rollback) |journal| hole = gc.shrinkPrefix(field, hole, &@field(journal.baseline, field));
+        hole = gc.shrinkPrefix(field, hole, &@field(state.gc.old, field));
         _ = @field(state, field).swapRemove(hole);
         if (hole < @field(state, field).items.len) gc.updateIndex(field, hole);
+    }
+
+    /// Fills a hole inside the registry prefix `[0, boundary)` from its last item, shrinking the
+    /// prefix, and returns the new hole.
+    fn shrinkPrefix(gc: *Gc, comptime field: []const u8, hole: usize, boundary: *usize) usize {
+        if (hole >= boundary.*) return hole;
+        const state = gc.parentState();
+        boundary.* -= 1;
+        if (hole != boundary.*) {
+            @field(state, field).items[hole] = @field(state, field).items[boundary.*];
+            gc.updateIndex(field, hole);
+        }
+        return boundary.*;
     }
 
     fn promoteYoung(gc: *Gc) void {
@@ -1483,10 +1488,10 @@ pub const Gc = struct {
                 state.gc.sweep_cursor += 1;
                 continue;
             }
+            const retained = if (state.rollback) |journal| index < @field(journal.baseline, field) else false;
             gc.removeRegistryItem(field, index);
             if (strings) {
                 if (item.interned) state.strings.set.remove(item);
-                const retained = if (state.rollback) |journal| journal.keepString(item) else false;
                 gc.noteAllocationFreed(item.gcBytes());
                 if (!retained) strings_mod.destroy(state.allocator, item);
             } else {
@@ -1494,7 +1499,7 @@ pub const Gc = struct {
                     gc.noteAllocationFreed(tableGcBytes(item));
                     gc.destroyTable(item);
                 } else if (comptime std.mem.eql(u8, field, "thread_allocations")) {
-                    gc.noteAllocationFreed(@sizeOf(Thread) + item.gc.storage_bytes);
+                    gc.noteAllocationFreed(@sizeOf(Thread) + item.storage_bytes);
                     upvalue_mod.closeUpvalues(state, item, 0);
                     gc.destroyThread(item);
                 } else if (comptime std.mem.eql(u8, field, "closure_allocations")) {
@@ -1505,10 +1510,7 @@ pub const Gc = struct {
                     gc.destroyUserdata(item);
                 } else {
                     gc.noteAllocationFreed(@sizeOf(Upvalue));
-                    if (!rollback.retainCollected(item)) {
-                        if (state.rollback) |journal| journal.freed(@intFromPtr(item));
-                        state.allocator.destroy(item);
-                    }
+                    if (!rollback.retainCollected(item)) state.allocator.destroy(item);
                 }
             }
         }
@@ -1537,7 +1539,7 @@ pub const Gc = struct {
 
     inline fn trackedIn(gc: *Gc, comptime field: []const u8, pointer: anytype) bool {
         const index = pointer.gc.registry_index;
-        if (index == types.GcMeta.untracked) return false;
+        if (index == types.GcHeader.untracked) return false;
         if (std.debug.runtime_safety) std.debug.assert(@field(gc.parentState(), field).items[index] == pointer);
         return true;
     }
@@ -1550,7 +1552,6 @@ pub const Gc = struct {
             state.table_metatable_count -= 1;
         }
         if (rollback.retainCollected(table)) return;
-        if (state.rollback) |journal| journal.freed(@intFromPtr(table));
         table.deinit(state.allocator);
         state.allocator.destroy(table);
     }
@@ -1558,7 +1559,6 @@ pub const Gc = struct {
     pub fn destroyUserdata(gc: *Gc, userdata: *Userdata) void {
         const state = gc.parentState();
         if (rollback.retainCollected(userdata)) return;
-        if (state.rollback) |journal| journal.freed(@intFromPtr(userdata));
         if (userdata.payload) |payload| {
             payload.release(state.discarding);
             state.allocator.destroy(userdata);
@@ -1575,16 +1575,13 @@ pub const Gc = struct {
     pub fn destroyClosure(gc: *Gc, closure: *Closure) void {
         const state = gc.parentState();
         if (rollback.retainCollected(closure)) return;
-        if (state.rollback) |journal| journal.freed(@intFromPtr(closure));
         if (closure.constants) |constants| state.allocator.free(constants);
-        if (closure.upvalues.len != 0) state.allocator.free(closure.upvalues);
-        state.allocator.destroy(closure);
+        Closure.destroy(state.allocator, closure);
     }
 
     pub fn destroyThread(gc: *Gc, thread: *Thread) void {
         const state = gc.parentState();
         if (rollback.retainCollected(thread)) return;
-        if (state.rollback) |journal| journal.freed(@intFromPtr(thread));
         thread.deinit(state.allocator);
         state.allocator.destroy(thread);
     }
@@ -1631,13 +1628,10 @@ pub const Gc = struct {
                 index += 1;
                 continue;
             }
-            if (state.rollback) |journal| {
-                if (!journal.isNew(@intFromPtr(proto))) {
-                    index += 1;
-                    continue;
-                }
-                journal.freed(@intFromPtr(proto));
-            }
+            if (state.rollback) |journal| if (index < journal.baseline.proto_allocations) {
+                index += 1;
+                continue;
+            };
             _ = state.proto_allocations.swapRemove(index);
             proto.deinit();
             state.allocator.destroy(proto);
@@ -1740,7 +1734,7 @@ pub const Gc = struct {
         var proto = proto_mod.Proto.init(state.allocator);
         defer proto.deinit();
         proto.source_name = "=[C]";
-        var closure = Closure{ .proto = &proto, .upvalues = &.{} };
+        var closure = Closure{ .proto = &proto };
         const thread = entry_mod.newHostThread(state, &closure) catch return;
         defer entry_mod.retireHostThread(state, thread);
         state.current_thread = thread;
@@ -1753,7 +1747,7 @@ pub const Gc = struct {
         var proto = proto_mod.Proto.init(state.allocator);
         defer proto.deinit();
         proto.source_name = "=[C]";
-        var closure = Closure{ .proto = &proto, .upvalues = &.{} };
+        var closure = Closure{ .proto = &proto };
         const thread = try entry_mod.newHostThread(state, &closure);
         defer entry_mod.retireHostThread(state, thread);
         const previous_thread = state.current_thread;
@@ -1812,7 +1806,7 @@ pub fn userdataBytes(userdata: *const Userdata) usize {
 }
 
 fn closureBytes(closure: *const Closure) usize {
-    return @sizeOf(Closure) + closure.upvalues.len * @sizeOf(*Upvalue) + if (closure.constants) |c| c.len * @sizeOf(?Value) else @as(usize, 0);
+    return Closure.allocationBytes(closure.upvalue_count) + if (closure.constants) |c| c.len * @sizeOf(?Value) else @as(usize, 0);
 }
 
 // Lua's floating-byte parameter encoding, decoded back to a percentage.

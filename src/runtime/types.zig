@@ -66,7 +66,7 @@ pub const NativeFn = @import("native_fn.zig").NativeFn;
 /// A Lua string, followed by its bytes in the same allocation. Strings of at most
 /// `short_limit` bytes are always interned.
 pub const String = extern struct {
-    gc: StringGc = .{},
+    gc: GcHeader = .{},
     len: usize,
     /// `table_index.hashStringKey` of the bytes, valid once `hashed` is set.
     hash: u32 = 0,
@@ -373,25 +373,55 @@ pub const CoroutineResumeResult = union(enum) {
     failure: Value,
 };
 
+/// A Lua function, followed by its `upvalue_count` upvalue pointers in the same allocation.
 pub const Closure = struct {
+    gc: GcHeader = .{},
     rollback: ?*@import("rollback.zig").Record(Closure) = null,
     proto: *const proto_mod.Proto,
     /// Loaded chunk prototype that owns `proto`; null when `proto` is that root.
     root: ?*const proto_mod.Proto = null,
-    upvalues: []*Upvalue,
     constants: ?[]?Value = null,
+    upvalue_count: u32 = 0,
     stripped_debug: bool = false,
-    gc: GcMeta = .{},
+
+    comptime {
+        std.debug.assert(@sizeOf(Closure) % @alignOf(*Upvalue) == 0);
+    }
+
+    pub inline fn upvalues(self: *const Closure) []*Upvalue {
+        const base: [*]*Upvalue = @ptrCast(@alignCast(@as([*]u8, @ptrCast(@constCast(self))) + @sizeOf(Closure)));
+        return base[0..self.upvalue_count];
+    }
+
+    pub fn allocationBytes(upvalue_count: usize) usize {
+        return @sizeOf(Closure) + upvalue_count * @sizeOf(*Upvalue);
+    }
+
+    /// Allocates `initial` with room for `upvalue_count` upvalues, which start undefined.
+    pub fn create(allocator: std.mem.Allocator, upvalue_count: usize, initial: Closure) !*Closure {
+        const count = std.math.cast(u32, upvalue_count) orelse return error.OutOfMemory;
+        const memory = try allocator.alignedAlloc(u8, .of(Closure), allocationBytes(count));
+        const closure: *Closure = @ptrCast(memory.ptr);
+        closure.* = initial;
+        closure.upvalue_count = count;
+        return closure;
+    }
+
+    /// Frees the allocation only; `constants` belongs to the caller.
+    pub fn destroy(allocator: std.mem.Allocator, closure: *Closure) void {
+        const memory: [*]align(@alignOf(Closure)) u8 = @ptrCast(closure);
+        allocator.free(memory[0..allocationBytes(closure.upvalue_count)]);
+    }
 };
 
 pub const Upvalue = struct {
+    gc: GcHeader = .{},
     rollback: ?*@import("rollback.zig").Record(Upvalue) = null,
     owner: *Thread,
     stack_index: usize,
     closed: Value = .nil,
     is_open: bool = true,
     next: ?*Upvalue = null,
-    gc: GcMeta = .{},
 };
 
 pub const TableEntry = struct {
@@ -445,6 +475,7 @@ pub const Table = struct {
     // Up to this many entries, a linear scan beats maintaining a hash index.
     const linear_entry_limit = 4;
 
+    gc: GcHeader = .{},
     rollback: ?*@import("rollback.zig").Record(Table) = null,
     array: std.ArrayList(Value) = .empty,
     entries: std.ArrayList(TableEntry) = .empty,
@@ -452,7 +483,6 @@ pub const Table = struct {
     metatable: ?*Table = null,
     metatable_prev: ?*Table = null,
     metatable_next: ?*Table = null,
-    gc: GcMeta = .{},
     finalizer_registered: bool = false,
     finalizer_next: ?*Table = null,
     finalizer_prev: ?*Table = null,
@@ -460,6 +490,12 @@ pub const Table = struct {
     /// Bit `e` set: this metatable has no raw value for `MetaEvent` `e`. Hash-part
     /// writes that may turn nil into non-nil clear the whole set.
     metamethod_absent: u32 = 0,
+    /// Collector epoch in which this table joined `Gc.weak`.
+    weak_epoch: u64 = 0,
+    /// Collector epoch in which this table joined `Gc.tables`.
+    tables_epoch: u64 = 0,
+    /// Capacity bytes last reported to the collector.
+    storage_bytes: usize = 0,
 
     pub inline fn init(allocator: std.mem.Allocator, array_hint: u32, hash_hint: u32) !Table {
         var table = Table{};
@@ -694,6 +730,7 @@ pub const ValueRoots = struct {
 };
 
 pub const Userdata = struct {
+    gc: GcHeader = .{},
     scope_readers: usize = 0,
     scope_writers: usize = 0,
     rollback: ?*@import("rollback.zig").Record(Userdata) = null,
@@ -705,7 +742,6 @@ pub const Userdata = struct {
     finalizer: ?UserdataFinalizer = null,
     finalizer_data: ?*const anyopaque = null,
     deinit_fn: ?UserdataDeinit = null,
-    gc: GcMeta = .{},
     finalized: bool = false,
     finalization_pending: bool = false,
     finalizer_next: ?*Userdata = null,
@@ -731,6 +767,7 @@ pub const FinalizerObject = union(enum) {
 };
 
 pub const Thread = struct {
+    gc: GcHeader = .{},
     rollback: ?*@import("rollback.zig").Record(Thread) = null,
     /// A Lua value has exposed this thread beyond its current host call.
     exposed: bool = false,
@@ -790,9 +827,10 @@ pub const Thread = struct {
     pending_unwind_target_frame_count: usize = 0,
     /// Bytes of owned varargs and pending returns held by this thread's frames.
     frame_storage_bytes: usize = 0,
+    /// Capacity bytes last reported to the collector.
+    storage_bytes: usize = 0,
     resume_parent: ?*Thread = null,
     entry: Value = .nil,
-    gc: GcMeta = .{},
     started: bool = false,
     is_main: bool = false,
     closing: bool = false,
@@ -938,29 +976,22 @@ pub const AddressContext = struct {
 pub const GcColor = enum(u8) { white, gray, black };
 pub const GcAge = enum(u8) { new, survivor, old };
 
-/// Collector state of a string, with the field names of `GcMeta`.
-pub const StringGc = extern struct {
-    epoch: u64 = 0,
-    generation: u64 = 0,
-    color: GcColor = .white,
-    age: GcAge = .new,
-};
-
-/// Collector scratch state never participates in logical rollback dirtiness.
-pub const GcMeta = struct {
+/// Collector state embedded in every collectable object.
+pub const GcHeader = extern struct {
     pub const untracked = std.math.maxInt(u32);
 
+    /// Collector epoch of the last mark; `color` is stale when it differs.
     epoch: u64 = 0,
+    /// Collector generation at allocation; any older generation means old.
     generation: u64 = 0,
+    /// Position in this type's registry; `untracked` for strings and objects the collector doesn't own.
+    registry_index: u32 = untracked,
     color: GcColor = .white,
     age: GcAge = .new,
+    /// In `Gc.remembered`.
     remembered: bool = false,
-    weak_epoch: u64 = 0,
-    tables_epoch: u64 = 0,
+    /// Referenced a young object when last traced.
     has_young: bool = false,
-    storage_bytes: usize = 0,
-    /// Position in this type's registry; `untracked` for objects the collector doesn't own.
-    registry_index: u32 = untracked,
 };
 
 /// Queue entries own identities, never pointers into growable registries.

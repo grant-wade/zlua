@@ -6,7 +6,8 @@
 
 - Strings store their header and bytes in one allocation, and `Value` is 16 bytes instead of 24. Short strings are always interned and compare by pointer, and string hashes are cached.
 - Concatenation, `string.rep`, `string.format`, `string.gsub`, `string.upper`, `string.lower`, `string.reverse`, `string.char`, `table.concat`, and `utf8.char` build results in place or in a reused buffer.
-- The collector keeps mark state and registry positions in object headers instead of address maps.
+- The collector keeps mark state and registry positions in a 24-byte header shared by every object type, and closures store their upvalue pointers in the same allocation.
+- Snapshot workers find the objects created since capture by registry position, without a per-object hash table.
 
 ### Fixes
 

@@ -832,6 +832,37 @@ test "incremental no-op reset allocates nothing and visits no heap objects" {
     }
 }
 
+test "reset frees objects created after capture across baseline collection and mode switches" {
+    var lua = try api.State.init(a, .{ .stdlib = .full });
+    defer lua.deinit();
+    try lua.doString(
+        \\baseline = {}
+        \\for i = 1, 200 do baseline[i] = {i, ("baseline-%d-long-enough-to-skip-interning"):format(i), function() return i end} end
+    , .{});
+    var snapshot = try lua.snapshot(a);
+    defer snapshot.deinit();
+    var worker = try snapshot.newState(a);
+    defer worker.deinit();
+    for (0..3) |_| {
+        try worker.doString(
+            \\kept = {}
+            \\for i = 1, 300 do kept[i] = {i, ("new-%d-long-enough-to-skip-interning"):format(i), function() return i end, coroutine.create(function() end)} end
+            \\baseline = nil
+            \\collectgarbage()
+            \\collectgarbage("incremental")
+            \\for i = 1, 300 do local _ = {i} end
+            \\collectgarbage()
+            \\collectgarbage("generational")
+            \\for i = 1, 300 do kept[#kept + 1] = {i} end
+            \\collectgarbage("step")
+            \\collectgarbage()
+            \\assert(#kept == 600 and kept[9][3]() == 9)
+        , .{});
+        try worker.reset();
+        try worker.doString("assert(#baseline == 200 and baseline[7][1] == 7 and baseline[7][3]() == 7 and kept == nil)", .{});
+    }
+}
+
 test "incremental existing writes preserve metamethods aliases keys and debug mutations" {
     var lua = try api.State.init(a, .{ .stdlib = .full });
     defer lua.deinit();

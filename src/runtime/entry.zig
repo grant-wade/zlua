@@ -44,13 +44,14 @@ pub fn retireHostThread(self: *State, thread: *Thread) void {
         const index = thread.gc.registry_index;
         self.gc.forgetThread(thread);
         self.gc.removeRegistryItem("thread_allocations", index);
-        self.gc.noteAllocationFreed(@sizeOf(Thread) + thread.gc.storage_bytes);
+        self.gc.noteAllocationFreed(@sizeOf(Thread) + thread.storage_bytes);
         self.gc.destroyThread(thread);
         return;
     }
     // Drop storage borrowed from the host stack, keeping the observable thread and its hook.
     const retained = Thread{
         .gc = thread.gc,
+        .storage_bytes = thread.storage_bytes,
         .exposed = true,
         .is_main = true,
         .started = true,
@@ -149,7 +150,7 @@ pub fn callFunctionHandled(self: *State, function: Value, args: []const Value, h
     var proto = proto_mod.Proto.init(self.allocator);
     defer proto.deinit();
     proto.source_name = "=[C]";
-    var closure = Closure{ .proto = &proto, .upvalues = &.{} };
+    var closure = Closure{ .proto = &proto };
     const thread = newHostThread(self, &closure) catch |err| switch (err) {
         error.StackOverflow => return self.fail("stack overflow"),
         else => return err,

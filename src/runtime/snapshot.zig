@@ -63,8 +63,8 @@ const Copier = struct {
         const a = self.destination.allocator;
         try destination.ensureTotalCapacity(a, source.len);
         for (source) |old| {
-            const new = try a.create(T);
-            new.* = initial;
+            const new = if (T == types.Closure) try types.Closure.create(a, old.upvalue_count, initial) else try a.create(T);
+            if (T != types.Closure) new.* = initial;
             new.gc.registry_index = @intCast(destination.items.len);
             destination.appendAssumeCapacity(new);
             try self.map.put(@intFromPtr(old), @intFromPtr(new));
@@ -192,7 +192,7 @@ const Copier = struct {
         }
         try self.shells(types.Table, source.table_allocations.items, &d.table_allocations, .{});
         try self.shells(types.Thread, source.thread_allocations.items, &d.thread_allocations, .{});
-        try self.shells(types.Closure, source.closure_allocations.items, &d.closure_allocations, .{ .proto = undefined, .upvalues = &.{} });
+        try self.shells(types.Closure, source.closure_allocations.items, &d.closure_allocations, .{ .proto = undefined });
         try self.shells(types.Upvalue, source.upvalue_allocations.items, &d.upvalue_allocations, .{ .owner = undefined, .stack_index = 0 });
         try self.shells(types.Userdata, source.userdata_allocations.items, &d.userdata_allocations, .{ .ptr = undefined, .type_id = 0, .type_name = "", .finalized = true });
         for (source.table_allocations.items, d.table_allocations.items) |old, new| {
@@ -212,7 +212,7 @@ const Copier = struct {
         for (source.closure_allocations.items, d.closure_allocations.items) |old, new| {
             new.proto = try self.mapped(old.proto);
             new.root = if (old.root) |root| try self.mapped(root) else null;
-            new.upvalues = try self.values(*types.Upvalue, old.upvalues);
+            for (old.upvalues(), new.upvalues()) |upvalue, *slot| slot.* = try self.mapped(upvalue);
             if (old.constants) |v| new.constants = try self.values(?types.Value, v);
             new.stripped_debug = old.stripped_debug;
         }
@@ -395,6 +395,7 @@ comptime {
     });
     review(types.Thread, .{
         .copied = "exposed stack frames yield_values protected_continuations generic_for_continuations pairs_continuations tail_call_continuations call_one_continuations hook_call hook_line hook_return hook_count hook_count_remaining pending_yield_hook_return continuation_order continuation_frame_count last_result_base last_result_count last_transfer_base last_transfer_count yield_result_base yield_result_count pending_unwind_resume_frame_count pending_unwind_target_frame_count started is_main closing status stack_error_space host_frame frame_storage_bytes",
+        .rebuilt = "storage_bytes",
         .remapped = "open_upvalues hook close_error_value error_traceback pending_unwind_error entry error_handler",
         .transient = "rollback gc hook_running hook_return_name hook_level2_func hook_transfer_index_base hook_transfer_stack_base hook_transfer_count hook_transfer_values next_call_name next_call_namewhat native_call_depth native_call protected_close_depth resume_parent native_marks native_mark_count",
     });
@@ -406,12 +407,12 @@ comptime {
     review(types.Table, .{
         .copied = "array entries finalizer_registered finalizer_order",
         .remapped = "metatable metatable_prev metatable_next finalizer_next finalizer_prev",
-        .rebuilt = "entry_index",
-        .transient = "rollback gc metamethod_absent",
+        .rebuilt = "entry_index storage_bytes",
+        .transient = "rollback gc metamethod_absent weak_epoch tables_epoch",
     });
     review(types.Closure, .{
-        .remapped = "proto root upvalues constants",
-        .copied = "stripped_debug",
+        .remapped = "proto root constants",
+        .copied = "upvalue_count stripped_debug",
         .transient = "rollback gc",
     });
     review(types.Upvalue, .{

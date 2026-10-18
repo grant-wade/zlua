@@ -127,7 +127,7 @@ For measurement, `State.initWithOptionsObserved` exposes the startup phases (sta
 | Object | Key data |
 | --- | --- |
 | `String` | Length, cached hash, interning flags, and GC state, followed by the bytes in the same allocation. |
-| `Closure` | Proto, Lua upvalues, lazily loaded constants, and debug-strip state. |
+| `Closure` | Proto, lazily loaded constants, and debug-strip state, followed by its upvalue pointers in the same allocation. |
 | `Upvalue` | An open stack slot or a closed stored value. |
 | `Table` | Array part, hash entries and index, metatable, and GC flags. |
 | `Userdata` | Native pointer, type information, metatable, `__gc` registration, host finalizer, and deinit hook. |
@@ -170,13 +170,13 @@ Several limits keep running code in check:
 
 The collector never moves objects, so their addresses stay stable. It supports two modes: generational mode, the default, concentrates on recently allocated objects, while incremental mode spreads a full collection across VM safepoints and calls to `State.stepGc`.
 
-Each object type has a registry in the state, with old objects before young ones. Objects keep their mark, age, and generation in a header, and objects other than strings also keep their registry position.
+Each object type has a registry in the state, with old objects before young ones. Every object embeds the same collector header, holding its mark, age, and generation, and for objects other than strings its registry position.
 
 Collection starts from globals, embedding handles, active calls, and suspended coroutines and follows references from there. Write barriers keep those references valid when Lua or host code changes an object between steps. Thread stacks are the exception, since they have no per-register barrier. Instead, running threads are revisited at each atomic step, and an old thread is remembered for minor collections when it runs, suspends, or has a register written from another thread. Collections mark each frame's registers up to its pending call, much like Lua's stack top, and clear the dead registers above it. Only collections that start inside a debug hook, which can interrupt an instruction, mark whole stacks. In generational mode, a major collection ages its survivors at the atomic step, as Lua's `atomic2gen` does, so objects allocated while it sweeps stay young. A loaded chunk's prototypes are freed once none of its closures are marked; minor collections only consider chunks loaded since the previous collection. Prototypes are shared with snapshots, so string constants that become table keys or values are interned per state rather than referenced from prototype memory.
 
 Weak tables and finalizers get special handling, so unreachable objects can be cleared or finalized without losing objects that become reachable again. Tables and userdata registered for a Lua `__gc` share one finalizer queue, which runs newest first. A userdata's host finalizer waits until the userdata is unreachable after its `__gc` has run. Errors raised inside `__gc` become Lua warnings.
 
-Snapshots interact with the collector too. Taking a snapshot saves the heap and GC settings without running a collection. Resetting restores the saved objects without repeating a full-heap scan, after which generational collections focus on new allocations. The storage kept for reset still counts toward the state's memory limit, even when it is no longer part of the live Lua heap.
+Snapshots interact with the collector too. Taking a snapshot saves the heap and GC settings without running a collection. Resetting restores the saved objects without repeating a full-heap scan, after which generational collections focus on new allocations. Each registry keeps the objects that existed at capture before those created since, and reset frees the objects past that prefix. In such a state, switching to generational mode leaves the objects that existed at capture to major collections. The storage kept for reset still counts toward the state's memory limit, even when it is no longer part of the live Lua heap.
 
 See [Garbage Collection](embedding.md#garbage-collection) for the controls available to embedders.
 

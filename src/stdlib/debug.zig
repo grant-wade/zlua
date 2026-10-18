@@ -63,7 +63,7 @@ pub fn getinfo(state: *State, thread: *Thread, op: bytecode.Call) !void {
     try state.setTableRaw(table, .{ .string = try state.strings.intern("linedefined") }, .{ .integer = if (line_range) |range| @intCast(range.defined) else 0 });
     try state.setTableRaw(table, .{ .string = try state.strings.intern("lastlinedefined") }, .{ .integer = if (line_range) |range| @intCast(range.last) else 0 });
     const nups: i64 = if (target_closure) |closure| blk: {
-        const count: i64 = @intCast(closure.upvalues.len);
+        const count: i64 = @intCast(closure.upvalue_count);
         break :blk if (target == .integer and count == 1 and !std.mem.eql(u8, what, "main")) 2 else count;
     } else if (nativeUpvalueId(target_func, 0) != null) 1 else 0;
     try state.setTableRaw(table, .{ .string = try state.strings.intern("nups") }, .{ .integer = nups });
@@ -212,9 +212,9 @@ pub fn upvaluejoin(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const second = runtime.argValue(state, thread, op, 2);
     const second_index = upvalueIndex(runtime.argValue(state, thread, op, 3)) orelse return state.failArgumentMessage("debug.upvaluejoin", 4, "invalid upvalue index");
     const replacement = getClosureUpvalue(second, second_index) orelse return state.failArgumentMessage("debug.upvaluejoin", 3, "invalid upvalue index");
-    if (first != .closure or first_index >= first.closure.upvalues.len) return state.failArgumentMessage("debug.upvaluejoin", 1, "invalid upvalue index");
+    if (first != .closure or first_index >= first.closure.upvalue_count) return state.failArgumentMessage("debug.upvaluejoin", 1, "invalid upvalue index");
     try @import("../runtime/rollback.zig").closureWritable(first.closure);
-    first.closure.upvalues[first_index] = replacement;
+    first.closure.upvalues()[first_index] = replacement;
     state.gc.upvalueBarrier(first.closure, replacement);
     try state.returnValues(thread, op.base, op.return_count, &.{});
 }
@@ -463,8 +463,8 @@ fn nativeUpvalueId(value: Value, index: usize) ?[]const u8 {
 
 fn getClosureUpvalue(value: Value, index: usize) ?*runtime.Upvalue {
     if (value != .closure) return null;
-    if (index >= value.closure.upvalues.len) return null;
-    return value.closure.upvalues[index];
+    if (index >= value.closure.upvalue_count) return null;
+    return value.closure.upvalues()[index];
 }
 
 fn getFunctionLocal(state: *State, thread: *Thread, op: bytecode.Call, target: Value, index_value: Value) !void {

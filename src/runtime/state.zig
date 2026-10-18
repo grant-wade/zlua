@@ -202,7 +202,6 @@ pub const State = struct {
         try self.gc.prepareRegistration(field);
         try @field(self, field).append(self.allocator, item);
         self.gc.registeredAllocation(field, item);
-        if (self.rollback) |journal| journal.allocated(field, item);
     }
 
     pub fn init(allocator: std.mem.Allocator) !State {
@@ -536,21 +535,18 @@ pub const State = struct {
 
     pub fn newClosure(self: *State, thread: *Thread, proto: *const proto_mod.Proto) !Value {
         const parent = thread.frames.items[thread.frames.items.len - 1];
-        const upvalues = try self.allocator.alloc(*Upvalue, proto.upvalues.items.len);
-        errdefer self.allocator.free(upvalues);
-        for (proto.upvalues.items, 0..) |desc, index| {
-            upvalues[index] = if (desc.in_stack)
+        vm_mod.assertProtoPrepared(proto);
+        const closure = try Closure.create(self.allocator, proto.upvalues.items.len, .{ .proto = proto, .root = parent.closure.root orelse parent.closure.proto, .stripped_debug = parent.closure.stripped_debug });
+        errdefer Closure.destroy(self.allocator, closure);
+        const upvalues = closure.upvalues();
+        for (proto.upvalues.items, upvalues) |desc, *upvalue| {
+            upvalue.* = if (desc.in_stack)
                 try upvalue_mod.captureUpvalue(self, thread, parent.base + desc.index)
             else
-                parent.closure.upvalues[desc.index];
+                parent.closure.upvalues()[desc.index];
         }
-
-        const closure = try self.allocator.create(Closure);
-        vm_mod.assertProtoPrepared(proto);
-        closure.* = .{ .proto = proto, .root = parent.closure.root orelse parent.closure.proto, .upvalues = upvalues, .stripped_debug = parent.closure.stripped_debug };
-        errdefer self.allocator.destroy(closure);
         try self.registerAllocation("closure_allocations", closure);
-        self.gc.noteAllocation(@sizeOf(Closure));
+        self.gc.noteAllocation(Closure.allocationBytes(upvalues.len));
         return .{ .closure = closure };
     }
 

@@ -5,22 +5,8 @@ const types = @import("types.zig");
 const State = @import("state.zig").State;
 const Proto = @import("../compile/proto.zig").Proto;
 const strings_mod = @import("strings.zig");
-const AddressIndex = @import("address_index.zig").AddressIndex;
 
-const Kind = enum { table, closure, upvalue, thread, userdata, string, source, proto };
-/// Packed as the kind in the low three bits and the length above them.
-const Allocation = struct {
-    kind: Kind,
-    len: usize = 0,
-
-    fn encode(self: Allocation) usize {
-        return self.len << 3 | @intFromEnum(self.kind);
-    }
-
-    fn decode(value: usize) Allocation {
-        return .{ .kind = @enumFromInt(value & 7), .len = value >> 3 };
-    }
-};
+const Kind = enum { table, closure, upvalue, thread, userdata };
 const Header = struct {
     journal: *Journal,
     kind: Kind,
@@ -34,6 +20,8 @@ pub fn Record(comptime T: type) type {
         object: *T,
         original: T,
         pristine: ?*types.UserdataPayload = null,
+        /// The baseline upvalues of a detached closure.
+        upvalues: if (T == types.Closure) []*types.Upvalue else void = if (T == types.Closure) &.{} else {},
     };
 }
 
@@ -73,11 +61,11 @@ pub fn closureWritable(closure: *types.Closure) !void {
     const record = closure.rollback orelse return;
     if (record.header.detached) return;
     const a = record.header.journal.allocator;
-    const upvalues = try a.dupe(*types.Upvalue, closure.upvalues);
+    const upvalues = try a.dupe(*types.Upvalue, closure.upvalues());
     errdefer a.free(upvalues);
     const constants = if (closure.constants) |c| try a.dupe(?types.Value, c) else null;
     touch(closure);
-    closure.upvalues = upvalues;
+    record.upvalues = upvalues;
     closure.constants = constants;
     record.header.detached = true;
 }
@@ -126,6 +114,18 @@ const object_lists = .{ "table_allocations", "closure_allocations", "upvalue_all
 const object_types = .{ types.Table, types.Closure, types.Upvalue, types.Thread, types.Userdata };
 const record_lists = .{ "tables", "closures", "upvalues", "threads", "userdata" };
 
+/// One length per name in `registries`.
+pub const RegistryLengths = struct {
+    string_allocations: usize = 0,
+    table_allocations: usize = 0,
+    userdata_allocations: usize = 0,
+    closure_allocations: usize = 0,
+    upvalue_allocations: usize = 0,
+    thread_allocations: usize = 0,
+    proto_allocations: usize = 0,
+    source_allocations: usize = 0,
+};
+
 pub fn copyPayload(a: std.mem.Allocator, lifetime: ?*types.AllocatorLifetime, p: *types.UserdataPayload) !*types.UserdataPayload {
     const result = try a.create(types.UserdataPayload);
     errdefer a.destroy(result);
@@ -159,7 +159,10 @@ pub const Journal = struct {
     userdata: []Record(types.Userdata) = &.{},
     dirty: std.ArrayList(*Header) = .empty,
     eager: std.ArrayList(*Record(types.Userdata)) = .empty,
-    new_objects: AddressIndex = .empty,
+    /// Registry lengths at `attach`.
+    attached: RegistryLengths = .{},
+    /// Baseline objects still in each registry; they precede every object allocated since `attach`.
+    baseline: RegistryLengths = .{},
     registries_detached: bool = false,
     output_detached: bool = false,
     /// Logical restored records, independent of heap size.
@@ -198,35 +201,14 @@ pub const Journal = struct {
             record.original.rollback = record;
         };
         state.gc.normalizeBaseline();
+        inline for (registries) |name| @field(self.attached, name) = @field(state, name).items.len;
+        self.baseline = self.attached;
         self.saved = state.*;
         self.saved.rollback = self;
     }
 
     pub fn prepareAllocation(self: *Journal, state: *State) !void {
         try self.detachRegistries(state);
-        try self.new_objects.ensureUnusedCapacity(self.allocator, 1);
-    }
-
-    pub fn allocated(self: *Journal, comptime field: []const u8, item: anytype) void {
-        const kind: Kind = comptime if (std.mem.eql(u8, field, "string_allocations")) .string else if (std.mem.eql(u8, field, "source_allocations")) .source else if (std.mem.eql(u8, field, "proto_allocations")) .proto else kindOf(@typeInfo(@TypeOf(item)).pointer.child);
-        const address = switch (kind) {
-            .source => @intFromPtr(item.ptr),
-            else => @intFromPtr(item),
-        };
-        const len = switch (kind) {
-            .source => item.len,
-            else => 0,
-        };
-        if (kind == .source and len == 0) return;
-        self.new_objects.putAssumeCapacity(address, (Allocation{ .kind = kind, .len = len }).encode());
-    }
-
-    pub fn isNew(self: *const Journal, address: usize) bool {
-        return self.new_objects.contains(address);
-    }
-
-    pub fn freed(self: *Journal, address: usize) void {
-        _ = self.new_objects.remove(address);
     }
 
     pub fn detachRegistries(self: *Journal, state: *State) !void {
@@ -260,12 +242,6 @@ pub const Journal = struct {
         }
     }
 
-    pub fn keepString(self: *Journal, string: *const types.String) bool {
-        if (!self.isNew(@intFromPtr(string))) return true;
-        self.freed(@intFromPtr(string));
-        return false;
-    }
-
     pub fn prepareReset(self: *Journal) ![]*types.UserdataPayload {
         const copies = try self.allocator.alloc(*types.UserdataPayload, self.eager.items.len);
         errdefer self.allocator.free(copies);
@@ -285,22 +261,20 @@ pub const Journal = struct {
         state.gc.tables.clearRetainingCapacity();
         state.gc.finalizers.clearRetainingCapacity();
         state.discarding = true;
-        self.last_restored_objects = self.dirty.items.len + self.new_objects.count();
-        for (self.new_objects.keys, self.new_objects.values) |address, value| {
-            if (address != 0) destroyAllocation(self.allocator, address, Allocation.decode(value));
-        }
-        self.new_objects.deinit(self.allocator);
+        self.last_restored_objects = self.dirty.items.len + self.destroyNewObjects(state);
         for (self.dirty.items) |h| switch (h.kind) {
-            inline .table, .closure, .upvalue, .thread, .userdata => |kind| {
+            inline else => |kind| {
                 const T = typeOf(kind);
                 const record: *Record(T) = @fieldParentPtr("header", h);
-                if (h.detached) freeStorage(T, self.allocator, record.object);
+                if (h.detached) {
+                    freeStorage(T, self.allocator, record.object);
+                    if (T == types.Closure) restoreUpvalues(self.allocator, record);
+                }
                 record.object.* = record.original;
                 h.dirty = false;
                 h.detached = false;
                 h.dead = false;
             },
-            else => unreachable,
         };
         for (self.eager.items, prepared) |record, payload| {
             if (record.object.payload) |old| old.release(true);
@@ -345,8 +319,34 @@ pub const Journal = struct {
         state.file_generation = file_generation +% 1;
         state.budget.call_deadline = null;
         state.budget.checkpoint = 0;
+        self.baseline = self.attached;
         self.registries_detached = false;
         self.output_detached = false;
+    }
+
+    /// Frees every object allocated since `attach` and still registered, returning how many.
+    fn destroyNewObjects(self: *Journal, state: *State) usize {
+        const a = self.allocator;
+        var count: usize = 0;
+        inline for (registries) |name| {
+            for (@field(state, name).items[@field(self.baseline, name)..]) |item| {
+                if (comptime std.mem.eql(u8, name, "string_allocations")) {
+                    strings_mod.destroy(a, item);
+                } else if (comptime std.mem.eql(u8, name, "source_allocations")) {
+                    if (item.len == 0) continue;
+                    a.free(item);
+                } else if (comptime std.mem.eql(u8, name, "proto_allocations")) {
+                    item.deinit();
+                    a.destroy(item);
+                } else {
+                    const T = @typeInfo(@TypeOf(item)).pointer.child;
+                    freeStorage(T, a, item);
+                    destroyObject(T, a, item);
+                }
+                count += 1;
+            }
+        }
+        return count;
     }
 
     /// End tracking while preserving the current logical state. Capture and
@@ -355,10 +355,13 @@ pub const Journal = struct {
         state.rollback = null;
         inline for (object_types, record_lists) |T, records| for (@field(self, records)) |*record| {
             record.object.rollback = null;
-            if (record.header.detached) freeStorage(T, self.allocator, &record.original);
+            if (record.header.detached) {
+                freeStorage(T, self.allocator, &record.original);
+                if (T == types.Closure) self.allocator.free(record.upvalues);
+            }
             if (record.header.dead) {
                 freeStorage(T, self.allocator, record.object);
-                self.allocator.destroy(record.object);
+                destroyObject(T, self.allocator, record.object);
             }
         };
         if (self.registries_detached) {
@@ -378,7 +381,6 @@ pub const Journal = struct {
         self.eager.deinit(a);
         inline for (record_lists) |records| a.free(@field(self, records));
         self.dirty.deinit(a);
-        self.new_objects.deinit(a);
         a.destroy(self);
     }
 };
@@ -411,31 +413,21 @@ fn freeStorage(comptime T: type, a: std.mem.Allocator, object: *T) void {
     if (T == types.Table or T == types.Thread) {
         object.deinit(a);
     } else if (T == types.Closure) {
-        a.free(object.upvalues);
         if (object.constants) |c| a.free(c);
     } else if (T == types.Userdata) {
         if (object.payload) |p| p.release(true);
     }
 }
-fn destroyAllocation(a: std.mem.Allocator, address: usize, allocation: Allocation) void {
-    switch (allocation.kind) {
-        .string => strings_mod.destroy(a, @as(*const types.String, @ptrFromInt(address))),
-        .source => a.free(@as([*]const u8, @ptrFromInt(address))[0..allocation.len]),
-        .proto => {
-            const p: *Proto = @ptrFromInt(address);
-            p.deinit();
-            a.destroy(p);
-        },
-        inline else => |tag| {
-            const T = typeOf(tag);
-            const object: *T = @ptrFromInt(address);
-            freeStorage(T, a, object);
-            a.destroy(object);
-        },
-    }
+fn restoreUpvalues(a: std.mem.Allocator, record: *Record(types.Closure)) void {
+    @memcpy(record.object.upvalues(), record.upvalues);
+    a.free(record.upvalues);
+    record.upvalues = &.{};
+}
+fn destroyObject(comptime T: type, a: std.mem.Allocator, object: *T) void {
+    if (T == types.Closure) types.Closure.destroy(a, object) else a.destroy(object);
 }
 fn kindOf(comptime T: type) Kind {
-    inline for (.{ Kind.table, Kind.closure, Kind.upvalue, Kind.thread, Kind.userdata }) |kind| if (T == typeOf(kind)) return kind;
+    inline for (comptime std.enums.values(Kind)) |kind| if (T == typeOf(kind)) return kind;
     @compileError("unknown rollback allocation " ++ @typeName(T));
 }
 fn typeOf(comptime kind: Kind) type {
@@ -445,6 +437,5 @@ fn typeOf(comptime kind: Kind) type {
         .upvalue => types.Upvalue,
         .thread => types.Thread,
         .userdata => types.Userdata,
-        else => @compileError("not a managed shell"),
     };
 }
