@@ -167,6 +167,15 @@ pub fn closeToBeClosedExitingPc(self: *State, thread: *Thread, frame_index: usiz
     if (close_failed) return self.rethrowValue(pending_error.?);
 }
 
+pub fn hasPendingToBeClosed(thread: *const Thread, frame: *const types.CallFrame, instruction_index: usize) bool {
+    for (frame.proto.locals.items) |local| {
+        if (!local.to_close or !localActiveAt(local, instruction_index)) continue;
+        const value = thread.stack.items[frame.base + local.register];
+        if (value != .nil and !(value == .boolean and !value.boolean)) return true;
+    }
+    return false;
+}
+
 pub fn closeActiveToBeClosedInTopFrame(self: *State, thread: *Thread, error_value: ?Value) !void {
     const frame_index = thread.frames.items.len - 1;
     const frame = thread.frames.items[frame_index];

@@ -536,7 +536,7 @@ pub fn setThreadHook(self: *State, target: *Thread, hook: Value, mask: []const u
     target.hook_line = std.mem.indexOfScalar(u8, mask, 'l') != null;
     target.hook_return = std.mem.indexOfScalar(u8, mask, 'r') != null;
     target.hook_count = count;
-    target.hook_count_remaining = hookDispatchInterval(count);
+    target.hook_count_remaining = count;
     if (target.hook_line and target.frames.items.len != 0) {
         const frame_index = target.frames.items.len - 1;
         target.frames.items[frame_index].last_hook_line = lineForFrame(target.frames.items[frame_index]);
@@ -606,12 +606,8 @@ pub fn callCountHook(self: *State, thread: *Thread) !void {
         thread.hook_count_remaining -= 1;
         return;
     }
-    thread.hook_count_remaining = hookDispatchInterval(thread.hook_count);
+    thread.hook_count_remaining = thread.hook_count;
     try callHook(self, thread, "count");
-}
-
-fn hookDispatchInterval(count: u32) u32 {
-    return if (count == 0) 0 else count * 2;
 }
 
 pub fn tracebackValue(self: *State, thread: *Thread, op: bytecode.Call) !void {

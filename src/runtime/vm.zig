@@ -605,7 +605,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 if (arraySlot(stack[op.table], stack[op.key])) |slot| {
                     const table = stack[op.table].table;
                     slot.* = stack[op.value];
-                    writeTableBarrierFast(self, table, stack[op.key], stack[op.value]);
+                    self.gc.writeTableBarrier(table, stack[op.key], stack[op.value]);
                     pc += 1;
                     continue :fast_loop std.meta.activeTag(instructions[pc]);
                 }
@@ -908,6 +908,34 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 if (frame_index + 1 == return_floor or self.budget.fastLoopInterrupted()) return true;
                 continue :frames;
             },
+            .get_global => {
+                const op = instructions[pc].get_global;
+                stack[op.register] = globalGet(self, proto, op.name);
+                pc += 1;
+                continue :fast_loop std.meta.activeTag(instructions[pc]);
+            },
+            .tfor_prep => {
+                const op = instructions[pc].tfor_prep;
+                const pair = fastGenericForStep(stack[op.base], stack[op.base + 1], stack[op.base + 2]) orelse break :fast_loop;
+                stack[op.base + 2] = pair[0];
+                for (0..op.variable_count) |index| stack[op.base + 4 + index] = if (index < pair.len) pair[index] else .nil;
+                pc += 1;
+                continue :fast_loop std.meta.activeTag(instructions[pc]);
+            },
+            .tfor_loop => {
+                if (proto.jumpExitsToBeClosed(pc)) break :fast_loop;
+                const op = instructions[pc].tfor_loop;
+                pc += 1;
+                const source_pc = pc;
+                pc = jumpTarget(source_pc, op.offset);
+                count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
+                if (pc < source_pc) {
+                    frame.last_hook_line = null;
+                    if (self.budget.fastLoopInterrupted()) break :fast_loop;
+                }
+                if (pc >= instructions.len) break :fast_loop;
+                continue :fast_loop std.meta.activeTag(instructions[pc]);
+            },
             .close => {
                 const first = base + instructions[pc].close;
                 if (thread.open_upvalues) |upvalue| if (upvalue.stack_index >= first) upvalue_mod.closeUpvalues(self, thread, first);
@@ -924,6 +952,23 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
         thread.last_transfer_count = 0;
         return true;
     }
+}
+
+/// Null when the loop ends or needs the general path.
+inline fn fastGenericForStep(iterator: Value, state: Value, control: Value) ?[2]Value {
+    if (state != .table) return null;
+    const table = state.table;
+    const pair: [2]Value = switch (iterator) {
+        .native_next => if (control == .number) return null else table.next(control) catch return null,
+        .native_ipairs_iter => pair: {
+            if (control != .integer) return null;
+            const next_index = control.integer +% 1;
+            break :pair .{ .{ .integer = next_index }, table.get(.{ .integer = next_index }) };
+        },
+        else => return null,
+    };
+    if (pair[0] == .nil or pair[1] == .nil) return null;
+    return pair;
 }
 
 /// Small frames clear their registers inline; a `memset` call costs more than the stores.
@@ -950,13 +995,6 @@ inline fn arraySlot(table_value: Value, key: Value) ?*Value {
     if (table.rollback) |record| if (!record.header.detached) return null;
     const slot = &table.array.items[@intCast(index)];
     return if (slot.* != .nil) slot else null;
-}
-
-/// `Gc.writeTableBarrier` for non-string keys, skipping the call when it would do nothing.
-inline fn writeTableBarrierFast(self: *State, table: *Table, key: Value, value: Value) void {
-    const meta = &table.gc;
-    if (self.gc.phase == .pause and meta.generation == self.gc.generation and (meta.age != .old or meta.remembered)) return;
-    self.gc.writeTableBarrier(table, key, value);
 }
 
 fn fastReturnFloor(thread: *const Thread, target_frame_count: usize) usize {
@@ -1021,9 +1059,12 @@ fn fastTableKnownKeySetExistingNoAlloc(self: *State, table_value: Value, key: Va
         if (slot.* == .nil) {
             if (!index_mod.noNewindexMetamethod(table)) return false;
             table.invalidateMetaEvents();
+            slot.* = value;
+            self.gc.writeTableBarrier(table, key, value);
+            return true;
         }
         slot.* = value;
-        self.gc.writeTableBarrier(table, key, value);
+        self.gc.writeExistingKeyBarrier(table, key, value);
         return true;
     }
     if (!index_mod.noNewindexMetamethod(table) or !table.insertHashEntryNoAlloc(key, value)) return false;
@@ -1098,7 +1139,6 @@ fn setTableArrayRawIndex(self: *State, table: *Table, index_u32: u32, value: Val
         return;
     }
     try self.setTableRaw(table, key, value);
-    self.gc.writeTableBarrier(table, key, value);
 }
 
 fn fastTableKnownKeySet(self: *State, table_value: Value, key: Value, value: Value) !bool {
@@ -1115,7 +1155,6 @@ fn fastTableKnownKeySet(self: *State, table_value: Value, key: Value, value: Val
     if (!index_mod.noNewindexMetamethod(table)) return false;
     if (value == .nil) return true;
     try self.setTableRaw(table, key, value);
-    self.gc.writeTableBarrier(table, key, value);
     return true;
 }
 
@@ -1180,7 +1219,7 @@ pub fn jumpThread(self: *State, thread: *Thread, offset: bytecode.JumpOffset, au
     const frame = &thread.frames.items[frame_index];
     const source_pc = frame.pc;
     const target_pc = jumpTarget(source_pc, offset);
-    if (frame.proto.has_to_close_locals) try upvalue_mod.closeToBeClosedExitingPc(self, thread, frame_index, source_pc, target_pc, null);
+    if (source_pc != 0 and frame.proto.jumpExitsToBeClosed(source_pc - 1)) try upvalue_mod.closeToBeClosedExitingPc(self, thread, frame_index, source_pc, target_pc, null);
     thread.frames.items[frame_index].pc = target_pc;
     if (target_pc < source_pc) {
         thread.frames.items[frame_index].last_hook_line = null;
@@ -1350,6 +1389,7 @@ fn plainFastLoopCanStart(instruction: bytecode.Instruction) bool {
         .load_bool,
         .load_const,
         .move,
+        .get_global,
         .get_upvalue,
         .set_upvalue,
         .add,
@@ -1380,6 +1420,8 @@ fn plainFastLoopCanStart(instruction: bytecode.Instruction) bool {
         .test_op,
         .test_set,
         .for_loop,
+        .tfor_prep,
+        .tfor_loop,
         .new_table,
         .set_list,
         .call,
@@ -1445,7 +1487,7 @@ fn fastGlobalSetExisting(self: *State, proto: *const proto_mod.Proto, name: byte
     const entry = &table.entries.items[index];
     if (entry.value == .nil) return false;
     entry.value = value;
-    self.gc.writeTableBarrier(table, entry.key, value);
+    self.gc.writeExistingKeyBarrier(table, entry.key, value);
     self.gc.markValue(value);
     return true;
 }

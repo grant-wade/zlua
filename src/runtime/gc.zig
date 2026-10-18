@@ -13,6 +13,7 @@ const State = @import("state.zig").State;
 const types = @import("types.zig");
 const upvalue_mod = @import("upvalue.zig");
 const value_mod = @import("value.zig");
+const static_strings = @import("../stdlib/static_strings.zig");
 
 const bytecode = compile.bytecode;
 const proto_mod = compile.proto;
@@ -1106,10 +1107,23 @@ pub const Gc = struct {
         gc.removeEntriesWhere(table, "key");
     }
 
-    pub fn writeTableBarrier(gc: *Gc, table: *Table, key: Value, value: Value) void {
+    pub inline fn writeTableBarrier(gc: *Gc, table: *Table, key: Value, value: Value) void {
+        const mode_key = key == .string and key.string == static_strings.get("__mode");
+        if (!mode_key and !isCollectable(key) and !isCollectable(value)) return;
+        if (!mode_key and gc.phase == .pause and table.gc.generation == gc.generation and (table.gc.age != .old or table.gc.remembered)) return;
+        gc.writeTableBarrierSlow(table, key, value, mode_key);
+    }
+
+    /// `key` must already be in `table`.
+    pub inline fn writeExistingKeyBarrier(gc: *Gc, table: *Table, key: Value, value: Value) void {
+        if (!isCollectable(value) and !(key == .string and key.string == static_strings.get("__mode"))) return;
+        gc.writeTableBarrier(table, key, value);
+    }
+
+    noinline fn writeTableBarrierSlow(gc: *Gc, table: *Table, key: Value, value: Value, mode_key: bool) void {
         const state = gc.parentState();
         gc.rememberObject(.{ .table = table });
-        if (key == .string and key.string.eqlBytes("__mode")) {
+        if (mode_key) {
             var current = state.table_metatable_head;
             while (current) |dependent| : (current = dependent.metatable_next) {
                 if (dependent.metatable != table) continue;
@@ -1128,13 +1142,26 @@ pub const Gc = struct {
         if (!weak.values and (!weak.keys or !gc.valueIsWeaklyCleared(key))) gc.markValue(value);
     }
 
-    pub fn writeBarrier(gc: *Gc, parent: anytype, child: Value) void {
+    pub inline fn writeBarrier(gc: *Gc, parent: anytype, child: Value) void {
+        if (!isCollectable(child)) return;
+        gc.writeBarrierSlow(parent, child);
+    }
+
+    noinline fn writeBarrierSlow(gc: *Gc, parent: anytype, child: Value) void {
         const state = gc.parentState();
         const T = @typeInfo(@TypeOf(parent)).pointer.child;
         const tag = comptime if (T == Table) "table" else if (T == Userdata) "userdata" else if (T == Closure) "closure" else if (T == Upvalue) "upvalue" else "thread";
         gc.rememberObject(@unionInit(types.GcObject, tag, parent));
         if (state.gc.phase == .pause or !gc.isMarked(parent)) return;
         gc.markValue(child);
+    }
+
+    inline fn isCollectable(value: Value) bool {
+        return switch (value) {
+            .string => |string| !string.static,
+            .table, .userdata, .closure, .thread, .coroutine_wrapper, .gmatch_iterator => true,
+            else => false,
+        };
     }
 
     fn prepareLuaFinalizers(gc: *Gc) void {

@@ -414,7 +414,6 @@ pub const State = struct {
     pub fn setGlobalString(self: *State, key: *const types.String, value: Value) !void {
         const table = self.global_table orelse return error.RuntimeError;
         try self.setTableRaw(table, .{ .string = key }, value);
-        self.gc.writeTableBarrier(table, .{ .string = key }, value);
         self.gc.markValue(value);
     }
 

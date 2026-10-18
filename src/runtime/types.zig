@@ -653,25 +653,35 @@ pub const Table = struct {
         return false;
     }
 
-    pub fn len(self: *const Table) i64 {
-        var result = self.array.items.len;
-        while (result > 0 and self.array.items[result - 1] == .nil) result -= 1;
-        if (self.entries.items.len == 0) return @intCast(result);
-        while (result < std.math.maxInt(i64)) {
-            const next_index = result + 1;
+    pub fn len(self: *Table) i64 {
+        var border = self.array.items.len;
+        while (border > 0 and self.array.items[border - 1] == .nil) border -= 1;
+        if (border != self.array.items.len) self.trimArray(border);
+        if (self.entries.items.len == 0) return @intCast(border);
+        while (border < std.math.maxInt(i64)) {
+            const next_index = border + 1;
             if (self.get(.{ .integer = @intCast(next_index) }) == .nil) break;
-            result = next_index;
+            border = next_index;
         }
-        return @intCast(result);
+        return @intCast(border);
+    }
+
+    fn trimArray(self: *Table, border: usize) void {
+        if (self.rollback) |record| if (!record.header.detached) return;
+        self.array.items.len = border;
     }
 
     pub fn next(self: *const Table, key: Value) ![2]Value {
         if (key == .nil) return self.firstEntryAfterArray(0);
-        if (value_mod.arrayIndex(key)) |index| {
+        const array_index = value_mod.arrayIndex(key);
+        if (array_index) |index| {
             if (index <= self.array.items.len) return self.firstEntryAfterArray(index);
         }
         if (self.findEntry(key)) |index| {
             return self.firstHashEntryFrom(index + 1);
+        }
+        if (array_index) |index| {
+            if (index <= self.array.capacity) return self.firstHashEntryFrom(0);
         }
         return error.RuntimeError;
     }

@@ -830,7 +830,7 @@ pub fn tailCallValue(self: *State, thread: *Thread, op: bytecode.Call) anyerror!
     const callee = vm_mod.get(self, thread, resolved.base);
     switch (callee) {
         .closure => |closure| {
-            try upvalue_mod.closeActiveToBeClosedInTopFrame(self, thread, null);
+            if (thread.frames.items[thread.frames.items.len - 1].proto.has_to_close_locals) try upvalue_mod.closeActiveToBeClosedInTopFrame(self, thread, null);
             const frame = thread.frames.items[thread.frames.items.len - 1];
             upvalue_mod.closeUpvalues(self, thread, frame.base);
             const new_frame = try prepareClosureFrame(self, thread, closure, frame.base + resolved.base, frame.base, @intCast(resolved.arg_count), frame.return_start, frame.return_count);
@@ -875,7 +875,8 @@ pub fn tailCallValue(self: *State, thread: *Thread, op: bytecode.Call) anyerror!
 pub fn returnFromFrame(self: *State, thread: *Thread, first: u32, count: u16) !void {
     const frame_index = thread.frames.items.len - 1;
     var frame = &thread.frames.items[frame_index];
-    if (frame.pending_returns == null and !frame.proto.has_to_close_locals and (!thread.hook_return or thread.hook_running)) {
+    const pending_close = frame.proto.has_to_close_locals and frame.pc != 0 and upvalue_mod.hasPendingToBeClosed(thread, frame, frame.pc - 1);
+    if (frame.pending_returns == null and !pending_close and (!thread.hook_return or thread.hook_running)) {
         const source_start = frame.base + first;
         const source_count = try resolveResultCount(self, thread, source_start, count);
         upvalue_mod.closeUpvalues(self, thread, frame.base);
