@@ -80,7 +80,7 @@ pub const Proto = struct {
     named_vararg_readonly: bool = false,
     /// No to-be-closed locals and a last opcode that stops dispatch, so the fast loop may run it.
     fast_loop_entry: bool = false,
-    /// `fast_loop_entry` with fixed parameters, so calls need not capture varargs.
+    /// `fast_loop_entry` and no vararg table to build at call time.
     fast_loop_call: bool = false,
     /// Decoded constants indexed like `constants`; `.string` slots are per-State via the closure cache.
     constant_values: []const RuntimeValue = &.{},

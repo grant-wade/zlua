@@ -840,13 +840,23 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 const callee_index = frame_index + 1;
                 if (callee_index >= frame_limit) break :fast_loop;
                 const function_slot = base + op.base;
-                const callee_base = function_slot + 1;
+                const argument_base = function_slot + 1;
+                const param_count = callee_proto.param_count;
+                var callee_base = argument_base;
+                var vararg_count: u32 = 0;
+                if (callee_proto.is_vararg and op.arg_count > param_count) {
+                    @branchHint(.unlikely);
+                    vararg_count = op.arg_count - param_count;
+                    callee_base += op.arg_count;
+                    if (callee_base + callee_proto.max_registers > stack_limit) break :fast_loop;
+                    shiftParameters(thread.stack.items, argument_base, callee_base, param_count);
+                }
                 const register_count = @max(callee_proto.max_registers, 1);
                 const stack_end = callee_base + register_count;
                 if (stack_end > stack_limit) break :fast_loop;
 
                 const executed_count = pc +% count_bias -% segment_start;
-                const copied = @min(op.arg_count, callee_proto.param_count);
+                const copied = @min(op.arg_count, param_count);
                 clearRegisters(thread.stack.items[callee_base + copied .. stack_end]);
                 frame.pc = pc + 1;
                 frame = &@as([*]CallFrame, @ptrCast(frame))[1];
@@ -857,6 +867,9 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     .pc = 0,
                     .return_start = function_slot,
                     .return_count = op.return_count,
+                    .vararg_base = argument_base + param_count,
+                    .vararg_count = vararg_count,
+                    .named_vararg_readonly = callee_proto.named_vararg_readonly,
                     .debug_name_override = thread.next_call_name,
                     .debug_namewhat_override = thread.next_call_namewhat,
                 };
@@ -875,6 +888,24 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 base = callee_base;
                 if (self.budget.fastLoopInterrupted()) return true;
                 continue :frames;
+            },
+            .vararg => {
+                const op = instructions[pc].vararg;
+                if (proto.named_vararg and !frame.named_vararg_readonly) break :fast_loop;
+                const available = frame.vararg_count;
+                const count: usize = if (op.count == bytecode.multret_count) available else op.count;
+                if (base + op.dest + count > stack_limit) break :fast_loop;
+                const copied = @min(count, available);
+                for (0..copied) |index| stack[op.dest + index] = thread.stack.items[frame.vararg_base + index];
+                clearRegisters(stack[op.dest + copied .. op.dest + count]);
+                pc += 1;
+                if (op.count == bytecode.multret_count) {
+                    thread.last_result_base = base + op.dest;
+                    thread.last_result_count = count;
+                    frame.pc = pc;
+                    segment_start = pc +% count_bias;
+                }
+                continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .new_table => {
                 const op = instructions[pc].new_table;
@@ -898,8 +929,9 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             },
             .tail_call => {
                 const op = instructions[pc].tail_call;
-                if (thread.hook != .nil or op.arg_count == bytecode.multret_arg_count) break :fast_loop;
+                if (thread.hook != .nil) break :fast_loop;
                 if (pc +% count_bias != segment_start) {
+                    if (op.arg_count == bytecode.multret_arg_count) break :fast_loop;
                     thread.last_result_count = 0;
                     thread.last_transfer_count = 0;
                 }
@@ -1009,6 +1041,10 @@ inline fn fastGenericForStep(iterator: Value, state: Value, control: Value) ?[2]
 }
 
 /// Small frames clear their registers inline; a `memset` call costs more than the stores.
+noinline fn shiftParameters(stack: []Value, source: usize, dest: usize, count: usize) void {
+    for (0..count) |index| stack[dest + index] = stack[source + index];
+}
+
 inline fn clearRegisters(registers: []Value) void {
     if (registers.len > 16) return @memset(registers, .nil);
     for (registers) |*register| register.* = .nil;
@@ -1472,6 +1508,7 @@ fn plainFastLoopCanStart(instruction: bytecode.Instruction) bool {
         .tfor_loop,
         .new_table,
         .set_list,
+        .vararg,
         .call,
         .tail_call,
         .ret,

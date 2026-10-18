@@ -299,7 +299,7 @@ pub fn prepareProtoTree(proto: *proto_mod.Proto) !void {
     };
     if (proto.has_to_close_locals) proto.close_exit_jumps = try closeExitJumps(proto);
     proto.fast_loop_entry = last_stops and jumpTargetsInBounds(instructions);
-    proto.fast_loop_call = proto.fast_loop_entry and !proto.is_vararg and !proto.named_vararg;
+    proto.fast_loop_call = proto.fast_loop_entry and (!proto.named_vararg or proto.named_vararg_readonly);
     proto.runtime_prepared = true;
 }
 
