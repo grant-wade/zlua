@@ -510,8 +510,9 @@ pub const MetaEvent = enum(u5) {
 
     const name_hashes = blk: {
         @setEvalBranchQuota(100_000);
-        var hashes: [@typeInfo(MetaEvent).@"enum".field_names.len]u32 = undefined;
-        for (&hashes, 0..) |*hash, index| hash.* = table_index.hashStringKey(@tagName(@as(MetaEvent, @enumFromInt(index))));
+        const events = std.enums.values(MetaEvent);
+        var hashes: [events.len]u32 = undefined;
+        for (events, &hashes) |event, *hash| hash.* = table_index.hashStringKey(@tagName(event));
         break :blk hashes;
     };
 };
