@@ -1164,7 +1164,8 @@ fn fastTableArraySetIndex(self: *State, table_value: Value, index_u32: u32, valu
     if (value == .nil or !index_mod.noNewindexMetamethod(table)) return false;
     if (index == table.array.items.len + 1) {
         const old_capacity_bytes = gc_mod.tableCapacityBytes(table);
-        try table.array.append(self.allocator, value);
+        try table.reserveArray(self.allocator, index);
+        table.array.appendAssumeCapacity(value);
         table.removeHashKey(key_value);
         self.gc.noteTableCapacityDelta(table, old_capacity_bytes);
         self.gc.writeTableBarrier(table, key_value, value);
@@ -1196,7 +1197,8 @@ fn setTableArrayRawIndex(self: *State, table: *Table, index_u32: u32, value: Val
     if (value == .nil) return;
     if (index == table.array.items.len + 1) {
         const old_capacity_bytes = gc_mod.tableCapacityBytes(table);
-        try table.array.append(self.allocator, value);
+        try table.reserveArray(self.allocator, index);
+        table.array.appendAssumeCapacity(value);
         self.gc.noteTableCapacityDelta(table, old_capacity_bytes);
         self.gc.writeTableBarrier(table, key, value);
         return;
@@ -1418,6 +1420,7 @@ fn fastSetListRaw(self: *State, thread: *Thread, table_value: Value, source_star
     if (grow_to > table.array.items.len) {
         const old_capacity_bytes = gc_mod.tableCapacityBytes(table);
         const old_len = table.array.items.len;
+        try table.reserveArray(self.allocator, grow_to);
         try table.array.resize(self.allocator, grow_to);
         @memset(table.array.items[old_len..], .nil);
         self.gc.noteTableCapacityDelta(table, old_capacity_bytes);

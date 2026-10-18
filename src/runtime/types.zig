@@ -501,7 +501,7 @@ pub const Table = struct {
         var table = Table{};
         errdefer table.deinit(allocator);
         try table.array.ensureTotalCapacityPrecise(allocator, array_hint);
-        try table.entries.ensureTotalCapacity(allocator, hash_hint);
+        try table.entries.ensureTotalCapacityPrecise(allocator, hash_hint);
         if (hash_hint > linear_entry_limit) try table.entry_index.ensureTotalCapacity(allocator, hash_hint);
         return table;
     }
@@ -511,6 +511,18 @@ pub const Table = struct {
         self.entries.deinit(allocator);
         self.array.deinit(allocator);
         self.* = undefined;
+    }
+
+    pub inline fn reserveArray(self: *Table, allocator: std.mem.Allocator, count: usize) !void {
+        if (count > self.array.capacity) try self.array.ensureTotalCapacityPrecise(allocator, try grownCapacity(Value, count));
+    }
+
+    pub inline fn reserveEntries(self: *Table, allocator: std.mem.Allocator, count: usize) !void {
+        if (count > self.entries.capacity) try self.entries.ensureTotalCapacityPrecise(allocator, try grownCapacity(TableEntry, count));
+    }
+
+    fn grownCapacity(comptime T: type, count: usize) !usize {
+        return std.math.ceilPowerOfTwo(usize, @max(count, 64 / @sizeOf(T))) catch error.OutOfMemory;
     }
 
     pub fn get(self: *const Table, key: Value) Value {
@@ -604,7 +616,8 @@ pub const Table = struct {
                 return;
             }
             if (value != .nil and index == self.array.items.len + 1) {
-                try self.array.append(allocator, value);
+                try self.reserveArray(allocator, index);
+                self.array.appendAssumeCapacity(value);
                 self.removeHashKey(key);
                 return;
             }
@@ -624,7 +637,7 @@ pub const Table = struct {
         }
         if (value != .nil) {
             // Reserve everything first so allocation failure cannot leave a partial index.
-            try self.entries.ensureUnusedCapacity(allocator, 1);
+            try self.reserveEntries(allocator, self.entries.items.len + 1);
             if (self.entry_index.capacity() == 0 and self.entries.items.len == linear_entry_limit) {
                 try self.entry_index.rebuild(allocator, self.entries.items);
             }
