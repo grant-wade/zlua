@@ -22,12 +22,10 @@ const bytecode = compile.bytecode;
 const Value = types.Value;
 const ProtectedCallResult = types.ProtectedCallResult;
 const ProtectedCallContext = types.ProtectedCallContext;
-const ProtectedContinuation = types.ProtectedContinuation;
 const CallOneContinuationResult = types.CallOneContinuationResult;
 const Closure = types.Closure;
 const Thread = types.Thread;
 const CallFrame = types.CallFrame;
-const freeProtectedResult = value_mod.freeProtectedResult;
 const argValue = value_mod.argValue;
 const truthy = value_mod.truthy;
 const lua_max_c_calls = state_mod.lua_max_c_calls;
@@ -185,10 +183,7 @@ pub fn protectedCallContextWithErrors(self: *State, thread: *Thread) ProtectedCa
 }
 
 pub fn runProtectedCall(self: *State, thread: *Thread, context: ProtectedCallContext, callable: Value, args: []const Value) anyerror!ProtectedCallResult {
-    const saved_error = [_]Value{if (context.last_error) |payload| switch (payload) {
-        .lua_value => |value| value,
-        .diagnostic => .nil,
-    } else .nil};
+    const saved_error = [_]Value{savedErrorValue(context)};
     var roots: types.ValueRoots = undefined;
     self.pushValueRoots(&roots, &saved_error);
     defer self.popValueRoots(&roots);
@@ -196,23 +191,7 @@ pub fn runProtectedCall(self: *State, thread: *Thread, context: ProtectedCallCon
     thread.stack.items[context.absolute_base] = callable;
     for (args, 0..) |arg, index| thread.stack.items[context.absolute_base + 1 + index] = arg;
 
-    thread.error_handler = context.error_handler;
-    self.last_error = null;
-    return runProtectedBody(self, thread, context, args.len) catch |err| {
-        if (err != error.CoroutineYield) thread.error_handler = context.previous_error_handler;
-        return err;
-    };
-}
-
-fn runProtectedBody(self: *State, thread: *Thread, context: ProtectedCallContext, arg_count: usize) anyerror!ProtectedCallResult {
-    const callee = thread.stack.items[context.absolute_base];
-    invokeValue(self, thread, .{ .base = context.relative_base, .arg_count = @intCast(arg_count), .return_count = bytecode.multret_count }, 0) catch |err| {
-        return protectedCallFailure(self, thread, context, callee, err);
-    };
-    vm_mod.runThreadUntil(self, thread, context.frame_count) catch |err| {
-        return protectedCallFailure(self, thread, context, callee, err);
-    };
-
+    if (try callProtected(self, thread, context, args.len)) |failure| return .{ .failure = failure };
     const values = try self.allocator.alloc(Value, thread.last_result_count);
     errdefer self.allocator.free(values);
     for (values, 0..) |*value, index| value.* = thread.stack.items[thread.last_result_base + index];
@@ -220,7 +199,62 @@ fn runProtectedBody(self: *State, thread: *Thread, context: ProtectedCallContext
     return .{ .success = values };
 }
 
-fn protectedCallFailure(self: *State, thread: *Thread, context: ProtectedCallContext, callee: Value, err: anyerror) anyerror!ProtectedCallResult {
+fn savedErrorValue(context: ProtectedCallContext) Value {
+    const payload = context.last_error orelse return .nil;
+    return switch (payload) {
+        .lua_value => |value| value,
+        .diagnostic => .nil,
+    };
+}
+
+/// Calls the value at `context.absolute_base` with the `arg_count` values above it. Returns null on
+/// success with the results at `thread.last_result_base`, or the caught error value.
+fn callProtected(self: *State, thread: *Thread, context: ProtectedCallContext, arg_count: usize) anyerror!?Value {
+    thread.error_handler = context.error_handler;
+    self.last_error = null;
+    return callProtectedBody(self, thread, context, arg_count) catch |err| {
+        if (err != error.CoroutineYield) thread.error_handler = context.previous_error_handler;
+        return err;
+    };
+}
+
+fn callProtectedBody(self: *State, thread: *Thread, context: ProtectedCallContext, arg_count: usize) anyerror!?Value {
+    const callee = thread.stack.items[context.absolute_base];
+    invokeValue(self, thread, .{ .base = context.relative_base, .arg_count = @intCast(arg_count), .return_count = bytecode.multret_count }, 0) catch |err| {
+        return try protectedCallFailure(self, thread, context, callee, err);
+    };
+    if (thread.frames.items.len > context.frame_count) vm_mod.runThreadUntil(self, thread, context.frame_count) catch |err| {
+        return try protectedCallFailure(self, thread, context, callee, err);
+    };
+    return null;
+}
+
+/// `base` is the register that receives `true` followed by the results.
+fn finishProtectedSuccess(self: *State, thread: *Thread, context: ProtectedCallContext, base: u32, return_count: u16) !void {
+    thread.error_handler = context.previous_error_handler;
+    self.last_error = context.last_error;
+    if (thread.frames.items.len < self.callFrameLimit() and context.stack_len < self.stackValueLimit()) thread.stack_error_space = false;
+    const dest = thread.frames.items[thread.frames.items.len - 1].base + base;
+    const source = thread.last_result_base;
+    const count = thread.last_result_count;
+    const actual_count = try resolveReturnCount(self, return_count, count + 1);
+    const stored_count = @max(actual_count, count + 1);
+    try thread.ensureStack(self.allocator, dest + stored_count, callStackValueLimit(self, thread));
+    const stack = thread.stack.items;
+    if (source > dest + 1) {
+        std.mem.copyForwards(Value, stack[dest + 1 ..][0..count], stack[source..][0..count]);
+    } else if (source < dest + 1) {
+        std.mem.copyBackwards(Value, stack[dest + 1 ..][0..count], stack[source..][0..count]);
+    }
+    stack[dest] = .{ .boolean = true };
+    @memset(stack[dest + 1 + count .. dest + stored_count], .nil);
+    thread.last_result_base = dest;
+    thread.last_result_count = actual_count;
+    thread.last_transfer_base = dest;
+    thread.last_transfer_count = count + 1;
+}
+
+fn protectedCallFailure(self: *State, thread: *Thread, context: ProtectedCallContext, callee: Value, err: anyerror) anyerror!Value {
     switch (err) {
         error.RuntimeError, error.StackOverflow, error.UnsupportedOpcode, error.OutOfMemory => {
             if (thread.frames.items.len < context.frame_count) return err;
@@ -231,8 +265,7 @@ fn protectedCallFailure(self: *State, thread: *Thread, context: ProtectedCallCon
                 if (callee != .closure) pushNativeMark(thread, context.frame_count, callee);
                 try applyMessageHandler(self, thread);
             }
-            const failure = try restoreProtectedCall(self, thread, context, self.currentErrorValue());
-            return .{ .failure = failure };
+            return restoreProtectedCall(self, thread, context, self.currentErrorValue());
         },
         else => return err,
     }
@@ -272,13 +305,9 @@ fn errorProtectedContinuationIndex(thread: *Thread) ?usize {
 
 pub fn completeReadyProtectedContinuation(self: *State, thread: *Thread) !bool {
     const index = readyProtectedContinuationIndex(thread) orelse return false;
-    const continuation = thread.protected_continuations.items[index];
-    const values = try coroutine_mod.copyStackSlice(self, thread, thread.last_result_base, thread.last_result_count);
-    defer self.allocator.free(values);
-    _ = try restoreProtectedCall(self, thread, continuation.context, .nil);
-    _ = thread.protected_continuations.orderedRemove(index);
+    const continuation = thread.protected_continuations.orderedRemove(index);
     thread.refreshContinuationFrameCount();
-    try returnProtectedContinuationSuccess(self, thread, continuation, values);
+    try finishProtectedSuccess(self, thread, continuation.context, continuation.base, continuation.return_count);
     return true;
 }
 
@@ -302,25 +331,12 @@ pub fn completeProtectedContinuationError(self: *State, thread: *Thread) !bool {
         break;
     }
     thread.refreshContinuationFrameCount();
-    try returnProtectedResult(self, thread, continuation.base, continuation.return_count, .{ .failure = failure });
+    try returnProtectedFailure(self, thread, continuation.base, continuation.return_count, failure);
     return true;
 }
 
-fn returnProtectedContinuationSuccess(self: *State, thread: *Thread, continuation: ProtectedContinuation, values: []Value) !void {
-    try returnProtectedResult(self, thread, continuation.base, continuation.return_count, .{ .success = values });
-}
-
-fn returnProtectedResult(self: *State, thread: *Thread, base: u32, return_count: u16, result: ProtectedCallResult) !void {
-    switch (result) {
-        .success => |values| {
-            var returns = std.ArrayList(Value).empty;
-            defer returns.deinit(self.allocator);
-            try returns.append(self.allocator, .{ .boolean = true });
-            try returns.appendSlice(self.allocator, values);
-            try self.returnValues(thread, base, return_count, returns.items);
-        },
-        .failure => |error_value| try self.returnValues(thread, base, return_count, &.{ .{ .boolean = false }, try caughtErrorValue(self, error_value) }),
-    }
+fn returnProtectedFailure(self: *State, thread: *Thread, base: u32, return_count: u16, error_value: Value) !void {
+    try self.returnValues(thread, base, return_count, &.{ .{ .boolean = false }, try caughtErrorValue(self, error_value) });
 }
 
 pub fn collectArgs(self: *State, thread: *Thread, op: bytecode.Call, first: u32) ![]Value {
@@ -1096,31 +1112,37 @@ pub fn caughtErrorValue(self: *State, value: Value) !Value {
 
 fn pcallValues(self: *State, thread: *Thread, op: bytecode.Call) !void {
     if (op.arg_count == 0) return self.failArgumentMessage("pcall", 1, "value expected");
-    const args = try collectArgs(self, thread, op, 1);
-    defer self.allocator.free(args);
-    try protectedCallValues(self, thread, op, argValue(self, thread, op, 0), args, .nil);
+    try protectedCallValues(self, thread, op, op.arg_count - 1, .nil);
 }
 
 fn xpcallValues(self: *State, thread: *Thread, op: bytecode.Call) !void {
     const handler = argValue(self, thread, op, 1);
     if (!functionLike(handler)) return self.failArgumentType("xpcall", 2, "function", handler);
-    const args = try collectArgs(self, thread, op, 2);
-    defer self.allocator.free(args);
-    try protectedCallValues(self, thread, op, argValue(self, thread, op, 0), args, handler);
+    const callee = thread.frames.items[thread.frames.items.len - 1].base + op.base + 1;
+    const arg_count = op.arg_count - 2;
+    std.mem.copyForwards(Value, thread.stack.items[callee + 1 ..][0..arg_count], thread.stack.items[callee + 2 ..][0..arg_count]);
+    try protectedCallValues(self, thread, op, arg_count, handler);
 }
 
-fn protectedCallValues(self: *State, thread: *Thread, op: bytecode.Call, callable: Value, args: []const Value, handler: Value) !void {
+/// Calls register `op.base + 1` in place with the `arg_count` values above it.
+fn protectedCallValues(self: *State, thread: *Thread, op: bytecode.Call, arg_count: u32, handler: Value) !void {
     var context = protectedCallContextWithErrors(self, thread);
+    context.relative_base = op.base + 1;
+    context.absolute_base = thread.frames.items[thread.frames.items.len - 1].base + op.base + 1;
     context.error_handler = handler;
-    const result = runProtectedCall(self, thread, context, callable, args) catch |err| switch (err) {
+    const saved_error = [_]Value{savedErrorValue(context)};
+    var roots: types.ValueRoots = undefined;
+    self.pushValueRoots(&roots, &saved_error);
+    defer self.popValueRoots(&roots);
+    const failure = callProtected(self, thread, context, arg_count) catch |err| switch (err) {
         error.CoroutineYield => {
             try pushProtectedContinuation(self, thread, context, op.base, op.return_count);
             return err;
         },
         else => return err,
     };
-    defer freeProtectedResult(self.allocator, result);
-    try returnProtectedResult(self, thread, op.base, op.return_count, result);
+    if (failure) |error_value| return returnProtectedFailure(self, thread, op.base, op.return_count, error_value);
+    try finishProtectedSuccess(self, thread, context, op.base, op.return_count);
 }
 
 fn pushTailCallContinuation(self: *State, thread: *Thread, frame_count: usize, base: u32, return_count: u16) !void {
