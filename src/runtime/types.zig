@@ -533,18 +533,74 @@ pub const MetaEvent = enum(u5) {
     };
 };
 
+/// A table's array part.
+pub const TableArray = struct {
+    ptr: [*]Value = empty_ptr,
+    len: u32 = 0,
+    capacity: u32 = 0,
+
+    const empty_ptr: [*]Value = @ptrFromInt(@alignOf(Value));
+
+    pub inline fn items(self: TableArray) []Value {
+        return self.ptr[0..self.len];
+    }
+
+    pub inline fn allocatedSlice(self: TableArray) []Value {
+        return self.ptr[0..self.capacity];
+    }
+
+    pub fn ensureTotalCapacityPrecise(self: *TableArray, allocator: std.mem.Allocator, capacity: usize) !void {
+        if (capacity <= self.capacity) return;
+        const new_capacity = std.math.cast(u32, capacity) orelse return error.OutOfMemory;
+        if (self.capacity != 0) {
+            if (allocator.remap(self.allocatedSlice(), new_capacity)) |memory| {
+                self.ptr = memory.ptr;
+                self.capacity = new_capacity;
+                return;
+            }
+        }
+        const memory = try allocator.alloc(Value, new_capacity);
+        @memcpy(memory[0..self.len], self.items());
+        if (self.capacity != 0) allocator.free(self.allocatedSlice());
+        self.ptr = memory.ptr;
+        self.capacity = new_capacity;
+    }
+
+    /// New elements are undefined.
+    pub fn resize(self: *TableArray, allocator: std.mem.Allocator, new_len: usize) !void {
+        try self.ensureTotalCapacityPrecise(allocator, new_len);
+        self.len = @intCast(new_len);
+    }
+
+    pub inline fn appendAssumeCapacity(self: *TableArray, value: Value) void {
+        self.ptr[self.len] = value;
+        self.len += 1;
+    }
+
+    /// A copy with the same capacity.
+    pub fn clone(self: TableArray, allocator: std.mem.Allocator) !TableArray {
+        if (self.capacity == 0) return .{};
+        const memory = try allocator.alloc(Value, self.capacity);
+        @memcpy(memory[0..self.len], self.items());
+        return .{ .ptr = memory.ptr, .len = self.len, .capacity = self.capacity };
+    }
+
+    pub fn deinit(self: *TableArray, allocator: std.mem.Allocator) void {
+        if (self.capacity != 0) allocator.free(self.allocatedSlice());
+        self.* = .{};
+    }
+};
+
 pub const Table = struct {
     gc: GcHeader = .{},
     rollback: ?*@import("rollback.zig").Record(Table) = null,
-    array: std.ArrayList(Value) = .empty,
+    array: TableArray = .{},
     hash: ?*TableHashPart = null,
     metatable: ?*Table = null,
     /// Has been some table's metatable.
     used_as_metatable: bool = false,
+    /// In `State.table_finalizers` or `State.table_pending_finalizers`.
     finalizer_registered: bool = false,
-    finalizer_next: ?*Table = null,
-    finalizer_prev: ?*Table = null,
-    finalizer_order: u64 = 0,
     /// Bit `e` set: this metatable has no raw value for `MetaEvent` `e`. Hash-part
     /// writes that may turn nil into non-nil clear the whole set.
     metamethod_absent: u32 = 0,
@@ -552,8 +608,6 @@ pub const Table = struct {
     in_weak_list: bool = false,
     /// In `Gc.tables`.
     in_table_list: bool = false,
-    /// Capacity bytes last reported to the collector.
-    storage_bytes: usize = 0,
 
     pub inline fn init(allocator: std.mem.Allocator, array_hint: u32, hash_hint: u32) !Table {
         var table = Table{};
@@ -616,7 +670,7 @@ pub const Table = struct {
 
     pub fn get(self: *const Table, key: Value) Value {
         if (value_mod.arrayIndex(key)) |index| {
-            if (index <= self.array.items.len) return self.array.items[index - 1];
+            if (index <= self.array.len) return self.array.items()[index - 1];
         }
         if (self.findEntry(key)) |index| return self.entries()[index].value;
         return .nil;
@@ -690,21 +744,21 @@ pub const Table = struct {
     pub fn set(self: *Table, allocator: std.mem.Allocator, key: Value, value: Value) !void {
         try @import("rollback.zig").tableWritable(self);
         if (value_mod.arrayIndex(key)) |index| {
-            if (index <= self.array.items.len) {
-                self.array.items[index - 1] = value;
+            if (index <= self.array.len) {
+                self.array.items()[index - 1] = value;
                 return;
             }
-            if (value != .nil and index == self.array.items.len + 1) {
+            if (value != .nil and index == self.array.len + 1) {
                 try self.reserveArray(allocator, index);
                 self.array.appendAssumeCapacity(value);
                 self.removeHashKey(key);
                 return;
             }
             if (value != .nil and index <= self.array.capacity) {
-                const old_len = self.array.items.len;
+                const old_len = self.array.len;
                 try self.array.resize(allocator, index);
-                @memset(self.array.items[old_len..], .nil);
-                self.array.items[index - 1] = value;
+                @memset(self.array.items()[old_len..], .nil);
+                self.array.items()[index - 1] = value;
                 self.removeHashKey(key);
                 return;
             }
@@ -723,8 +777,8 @@ pub const Table = struct {
     pub fn setExistingNonNil(self: *Table, key: Value, value: Value) bool {
         if (self.rollback) |record| if (!record.header.detached) return false;
         if (value_mod.arrayIndex(key)) |index| {
-            if (index <= self.array.items.len and self.array.items[index - 1] != .nil) {
-                self.array.items[index - 1] = value;
+            if (index <= self.array.len and self.array.items()[index - 1] != .nil) {
+                self.array.items()[index - 1] = value;
                 return true;
             }
             return false;
@@ -739,9 +793,9 @@ pub const Table = struct {
     }
 
     pub fn len(self: *Table) i64 {
-        var border = self.array.items.len;
-        while (border > 0 and self.array.items[border - 1] == .nil) border -= 1;
-        if (border != self.array.items.len) self.trimArray(border);
+        var border = self.array.len;
+        while (border > 0 and self.array.items()[border - 1] == .nil) border -= 1;
+        if (border != self.array.len) self.trimArray(border);
         if (self.entries().len == 0) return @intCast(border);
         while (border < std.math.maxInt(i64)) {
             const next_index = border + 1;
@@ -753,14 +807,14 @@ pub const Table = struct {
 
     fn trimArray(self: *Table, border: usize) void {
         if (self.rollback) |record| if (!record.header.detached) return;
-        self.array.items.len = border;
+        self.array.len = @intCast(border);
     }
 
     pub fn next(self: *const Table, key: Value) ![2]Value {
         if (key == .nil) return self.firstEntryAfterArray(0);
         const array_index = value_mod.arrayIndex(key);
         if (array_index) |index| {
-            if (index <= self.array.items.len) return self.firstEntryAfterArray(index);
+            if (index <= self.array.len) return self.firstEntryAfterArray(index);
         }
         if (self.findEntry(key)) |index| {
             return self.firstHashEntryFrom(index + 1);
@@ -773,9 +827,9 @@ pub const Table = struct {
 
     fn firstEntryAfterArray(self: *const Table, index: usize) [2]Value {
         var next_index = index;
-        while (next_index < self.array.items.len) {
+        while (next_index < self.array.len) {
             next_index += 1;
-            const value = self.array.items[next_index - 1];
+            const value = self.array.items()[next_index - 1];
             if (value != .nil) return .{ .{ .integer = @intCast(next_index) }, value };
         }
         return self.firstHashEntryFrom(0);
@@ -834,20 +888,26 @@ pub const Userdata = struct {
     finalizer_next: ?*Userdata = null,
     /// Registered for its metatable's `__gc`, like `Table.finalizer_registered`.
     lua_finalizer_registered: bool = false,
-    /// Registration order on the `Table.finalizer_order` scale, then the
+    /// Registration order on the `TableFinalizer.order` scale, then the
     /// position in the finalizer queue once separated.
     lua_finalizer_order: u64 = 0,
     lua_finalizer_next: ?*Userdata = null,
 };
 
+/// A table registered for a Lua `__gc`, with its order on the finalizer scale.
+pub const TableFinalizer = struct {
+    table: *Table,
+    order: u64,
+};
+
 /// An object separated for a Lua `__gc` call.
 pub const FinalizerObject = union(enum) {
-    table: *Table,
+    table: TableFinalizer,
     userdata: *Userdata,
 
     pub fn order(self: FinalizerObject) u64 {
         return switch (self) {
-            .table => |table| table.finalizer_order,
+            .table => |entry| entry.order,
             .userdata => |userdata| userdata.lua_finalizer_order,
         };
     }

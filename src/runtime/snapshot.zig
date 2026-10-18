@@ -127,6 +127,22 @@ const Copier = struct {
         };
     }
 
+    fn tableFinalizers(self: *Copier, old: std.ArrayList(types.TableFinalizer)) !std.ArrayList(types.TableFinalizer) {
+        var result: std.ArrayList(types.TableFinalizer) = .empty;
+        errdefer result.deinit(self.destination.allocator);
+        try result.ensureTotalCapacityPrecise(self.destination.allocator, old.capacity);
+        for (old.items) |entry| result.appendAssumeCapacity(.{ .table = try self.mapped(entry.table), .order = entry.order });
+        return result;
+    }
+
+    fn tableArray(self: *Copier, old: types.TableArray) !types.TableArray {
+        var result: types.TableArray = .{};
+        errdefer result.deinit(self.destination.allocator);
+        try result.ensureTotalCapacityPrecise(self.destination.allocator, old.len);
+        for (old.items()) |v| result.appendAssumeCapacity(try self.remap(v));
+        return result;
+    }
+
     fn list(self: *Copier, comptime T: type, old: []const T) !std.ArrayList(T) {
         var result: std.ArrayList(T) = .empty;
         errdefer result.deinit(self.destination.allocator);
@@ -206,7 +222,7 @@ const Copier = struct {
         try self.shells(types.Upvalue, source.upvalue_allocations.items, &d.upvalue_allocations, .{ .cell = .{ .closed = .nil } });
         try self.shells(types.Userdata, source.userdata_allocations.items, &d.userdata_allocations, .{ .ptr = undefined, .type_id = 0, .type_name = "", .finalized = true });
         for (source.table_allocations.items, d.table_allocations.items) |old, new| {
-            new.array = try self.list(types.Value, old.array.items);
+            new.array = try self.tableArray(old.array);
             // Tombstone keys may reference swept objects; keep valid ones for next() without dereferencing.
             if (old.hash) |part| {
                 new.hash = try types.TableHashPart.create(a, part.capacity);
@@ -215,7 +231,7 @@ const Copier = struct {
                     if (copied.key != .nil) new.hash.?.appendAssumeCapacity(copied.key, copied.value);
                 }
             }
-            inline for (.{ "metatable", "used_as_metatable", "finalizer_registered", "finalizer_next", "finalizer_prev", "finalizer_order" }) |name| @field(new, name) = try self.remap(@field(old, name));
+            inline for (.{ "metatable", "used_as_metatable", "finalizer_registered" }) |name| @field(new, name) = try self.remap(@field(old, name));
         }
         for (source.closure_allocations.items, d.closure_allocations.items) |old, new| {
             new.proto = try self.mapped(old.proto);
@@ -234,10 +250,12 @@ const Copier = struct {
         }
         for (source.thread_allocations.items, d.thread_allocations.items) |old, new| try self.thread(old, new);
         for (source.userdata_allocations.items, d.userdata_allocations.items) |old, new| try self.userdata(old, new);
-        inline for (.{ "global_table", "table_finalizer_head", "table_pending_finalizer_head", "userdata_pending_finalizer_head", "userdata_lua_pending_head", "table_finalizer_serial", "stdin_pos", "file_generation", "last_error", "error_handled", "warnings_on", "string_metatable", "number_metatable", "boolean_metatable", "nil_metatable", "file_metatable", "fs_file_metatable", "io_input", "io_output", "random_state" }) |name| @field(d, name) = try self.remap(@field(source, name));
+        inline for (.{ "global_table", "userdata_pending_finalizer_head", "userdata_lua_pending_head", "table_finalizer_serial", "stdin_pos", "file_generation", "last_error", "error_handled", "warnings_on", "string_metatable", "number_metatable", "boolean_metatable", "nil_metatable", "file_metatable", "fs_file_metatable", "io_input", "io_output", "random_state" }) |name| @field(d, name) = try self.remap(@field(source, name));
         inline for (.{ "running", "mode", "params" }) |name| @field(d.gc, name) = @field(source.gc, name);
         inline for (.{ "instructions", "base" }) |name| @field(d.budget, name) = @field(source.budget, name);
         for (&d.library_tables.values, source.library_tables.values) |*slot, table| slot.* = try self.remap(table);
+        d.table_finalizers = try self.tableFinalizers(source.table_finalizers);
+        d.table_pending_finalizers = try self.tableFinalizers(source.table_pending_finalizers);
         d.file_generation +%= 1;
         d.stdout = try self.list(u8, source.stdout.items);
         d.stderr = try self.list(u8, source.stderr.items);
@@ -389,7 +407,7 @@ comptime {
     review(State, .{
         .external = "allocator allocator_lifetime options",
         .rebuilt = "object_pool strings api_roots gc budget",
-        .remapped = "global_table table_finalizer_head table_pending_finalizer_head userdata_pending_finalizer_head userdata_lua_pending_head string_metatable number_metatable boolean_metatable nil_metatable file_metatable fs_file_metatable io_input io_output library_tables last_error",
+        .remapped = "global_table table_finalizers table_pending_finalizers userdata_pending_finalizer_head userdata_lua_pending_head string_metatable number_metatable boolean_metatable nil_metatable file_metatable fs_file_metatable io_input io_output library_tables last_error",
         .copied = "string_allocations table_allocations userdata_allocations closure_allocations upvalue_allocations thread_allocations chunk_allocations source_allocations stdout stderr table_finalizer_serial stdin_pos file_generation error_handled warnings_on random_state",
         .transient = "execution_depth userdata_scope value_roots rollback snapshot_busy discarding exit_request local_zone current_thread api_callback_dispatch api_callback_user_data active_api_callback coroutine_close_depth",
     });
@@ -414,9 +432,8 @@ comptime {
         .rebuilt = "has_extra",
     });
     review(types.Table, .{
-        .copied = "array hash used_as_metatable finalizer_registered finalizer_order",
-        .remapped = "metatable finalizer_next finalizer_prev",
-        .rebuilt = "storage_bytes",
+        .copied = "array hash used_as_metatable finalizer_registered",
+        .remapped = "metatable",
         .transient = "rollback gc metamethod_absent in_weak_list in_table_list",
     });
     review(types.Closure, .{

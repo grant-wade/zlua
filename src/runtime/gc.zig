@@ -99,7 +99,6 @@ pub const Gc = struct {
         const state = gc.parentState();
         inline for (managed_lists) |name| if (comptime std.mem.eql(u8, field, name)) {
             item.gc.generation = state.gc.generation;
-            if (comptime std.mem.eql(u8, field, "table_allocations")) item.storage_bytes = tableCapacityBytes(item);
             if (comptime std.mem.eql(u8, field, "thread_allocations")) {
                 item.storage_bytes = threadCapacityBytes(item);
                 gc.noteAllocation(item.storage_bytes);
@@ -248,7 +247,6 @@ pub const Gc = struct {
 
     pub fn refreshAllocationTotal(gc: *Gc) usize {
         const state = gc.parentState();
-        for (state.table_allocations.items) |table| table.storage_bytes = tableCapacityBytes(table);
         for (state.thread_allocations.items) |thread| thread.storage_bytes = threadCapacityBytes(thread);
         const total = state.gc.allocationStats().total();
         state.gc.known_total = total;
@@ -260,9 +258,10 @@ pub const Gc = struct {
         return state.gc.known_total;
     }
 
+    /// `old_capacity_bytes` is `tableCapacityBytes(table)` before the change.
     pub fn noteTableCapacityDelta(gc: *Gc, table: *Table, old_capacity_bytes: usize) void {
-        _ = old_capacity_bytes;
-        gc.syncStorage(&table.storage_bytes, tableCapacityBytes(table));
+        const bytes = tableCapacityBytes(table);
+        if (bytes >= old_capacity_bytes) gc.noteAllocation(bytes - old_capacity_bytes) else gc.noteAllocationFreed(old_capacity_bytes - bytes);
     }
 
     fn syncStorage(gc: *Gc, reported: *usize, bytes: usize) void {
@@ -748,8 +747,7 @@ pub const Gc = struct {
         const state = gc.parentState();
         var pending_userdata = state.userdata_pending_finalizer_head;
         while (pending_userdata) |userdata| : (pending_userdata = userdata.finalizer_next) gc.markUserdata(userdata);
-        var pending = state.table_pending_finalizer_head;
-        while (pending) |table| : (pending = table.finalizer_next) gc.markTable(table);
+        for (state.table_pending_finalizers.items) |entry| gc.markTable(entry.table);
         var lua_pending = state.userdata_lua_pending_head;
         while (lua_pending) |userdata| : (lua_pending = userdata.lua_finalizer_next) gc.markUserdata(userdata);
         var scope = state.userdata_scope;
@@ -821,7 +819,7 @@ pub const Gc = struct {
     fn traceTable(gc: *Gc, table: *Table) void {
         const state = gc.parentState();
         gc.tableCandidate(table);
-        for (table.array.items) |value| gc.noteYoung(value);
+        for (table.array.items()) |value| gc.noteYoung(value);
         for (table.entries()) |entry| {
             gc.noteYoung(entry.key);
             gc.noteYoung(entry.value);
@@ -843,11 +841,11 @@ pub const Gc = struct {
             return;
         }
         if (weak.keys) {
-            for (table.array.items) |value| gc.markValue(value);
+            for (table.array.items()) |value| gc.markValue(value);
             _ = gc.markEphemeronValues(table);
             return;
         }
-        for (table.array.items) |value| gc.markValue(value);
+        for (table.array.items()) |value| gc.markValue(value);
         for (table.entries()) |entry| {
             if (entry.value == .nil) continue;
             gc.markValue(entry.key);
@@ -867,7 +865,7 @@ pub const Gc = struct {
 
     fn markWeakTableStrings(gc: *Gc, table: *Table, keys: bool, values: bool) void {
         if (values) {
-            for (table.array.items) |value| gc.markWeakString(value);
+            for (table.array.items()) |value| gc.markWeakString(value);
         }
         for (table.entries()) |entry| {
             if (entry.value == .nil) continue;
@@ -1069,7 +1067,7 @@ pub const Gc = struct {
             if (table.rollback == null) continue;
             const weak = gc.weakMode(table);
             var changed = false;
-            if (weak.values) for (table.array.items) |value| {
+            if (weak.values) for (table.array.items()) |value| {
                 if (gc.valueIsWeaklyCleared(value)) {
                     changed = true;
                     break;
@@ -1084,10 +1082,7 @@ pub const Gc = struct {
                     break;
                 }
             };
-            if (changed) {
-                try rollback.tableWritable(table);
-                gc.noteTableCapacityDelta(table, 0);
-            }
+            if (changed) try rollback.tableWritable(table);
         }
     }
 
@@ -1125,7 +1120,7 @@ pub const Gc = struct {
     }
 
     fn clearWeakTableValues(gc: *Gc, table: *Table) void {
-        for (table.array.items) |*value| {
+        for (table.array.items()) |*value| {
             if (gc.valueIsWeaklyCleared(value.*)) value.* = .nil;
         }
         gc.removeEntriesWhere(table, "value");
@@ -1204,11 +1199,15 @@ pub const Gc = struct {
     fn prepareLuaFinalizers(gc: *Gc) void {
         const state = gc.parentState();
         state.gc.finalizers.clearRetainingCapacity();
-        // A minor collection sees only young and remembered tables here. Selection precedes resurrection.
-        for (state.gc.tables.items) |table| {
-            if (!table.finalizer_registered or gc.isMarked(table)) continue;
-            state.gc.finalizers.appendAssumeCapacity(.{ .table = table });
+        // Selection precedes resurrection.
+        var kept: usize = 0;
+        for (state.table_finalizers.items) |entry| {
+            if (gc.isMarked(entry.table)) {
+                state.table_finalizers.items[kept] = entry;
+                kept += 1;
+            } else state.gc.finalizers.appendAssumeCapacity(.{ .table = entry });
         }
+        state.table_finalizers.items.len = kept;
         for (state.userdata_allocations.items[if (state.gc.cycle == .minor) state.gc.old.userdata_allocations else 0..]) |userdata| {
             if (!userdata.lua_finalizer_registered or userdata.finalized or gc.isMarked(userdata)) continue;
             state.gc.finalizers.appendAssumeCapacity(.{ .userdata = userdata });
@@ -1218,12 +1217,15 @@ pub const Gc = struct {
                 return a.order() > b.order();
             }
         }.newer);
-        var tail = &state.table_pending_finalizer_head;
-        var tail_owner: ?*Table = null;
-        while (tail.*) |table| {
-            tail = &table.finalizer_next;
-            tail_owner = table;
+        var separated: usize = 0;
+        for (state.gc.finalizers.items) |object| {
+            if (object == .table) separated += 1;
         }
+        const pending = &state.table_pending_finalizers;
+        const queued = pending.items.len;
+        pending.items.len += separated;
+        std.mem.copyBackwards(types.TableFinalizer, pending.items[separated..], pending.items[0..queued]);
+        var slot = separated;
         var userdata_tail = &state.userdata_lua_pending_head;
         var userdata_tail_owner: ?*Userdata = null;
         while (userdata_tail.*) |userdata| {
@@ -1231,22 +1233,9 @@ pub const Gc = struct {
             userdata_tail_owner = userdata;
         }
         for (state.gc.finalizers.items) |object| switch (object) {
-            .table => |table| {
-                rollback.touch(table);
-                if (table.finalizer_prev) |prev| {
-                    rollback.touch(prev);
-                    prev.finalizer_next = table.finalizer_next;
-                } else state.table_finalizer_head = table.finalizer_next;
-                if (table.finalizer_next) |next| {
-                    rollback.touch(next);
-                    next.finalizer_prev = table.finalizer_prev;
-                }
-                if (tail_owner) |owner| rollback.touch(owner);
-                table.finalizer_prev = null;
-                table.finalizer_order = metatable_mod.nextFinalizerOrder(state);
-                tail.* = table;
-                tail_owner = table;
-                tail = &table.finalizer_next;
+            .table => |entry| {
+                slot -= 1;
+                pending.items[slot] = .{ .table = entry.table, .order = metatable_mod.nextFinalizerOrder(state) };
             },
             .userdata => |userdata| {
                 rollback.touch(userdata);
@@ -1257,10 +1246,8 @@ pub const Gc = struct {
                 userdata_tail = &userdata.lua_finalizer_next;
             },
         };
-        tail.* = null;
         userdata_tail.* = null;
-        var pending = state.table_pending_finalizer_head;
-        while (pending) |table| : (pending = table.finalizer_next) gc.markTable(table);
+        for (pending.items) |entry| gc.markTable(entry.table);
         var lua_pending = state.userdata_lua_pending_head;
         while (lua_pending) |userdata| : (lua_pending = userdata.lua_finalizer_next) gc.markUserdata(userdata);
         state.gc.finalizers.clearRetainingCapacity();
@@ -1270,10 +1257,10 @@ pub const Gc = struct {
 
     fn nextPendingFinalizer(gc: *Gc) ?types.FinalizerObject {
         const state = gc.parentState();
-        const table = state.table_pending_finalizer_head;
+        const table = state.table_pending_finalizers.getLastOrNull();
         const userdata = state.userdata_lua_pending_head;
         if (table) |t| {
-            if (userdata) |u| if (u.lua_finalizer_order < t.finalizer_order) return .{ .userdata = u };
+            if (userdata) |u| if (u.lua_finalizer_order < t.order) return .{ .userdata = u };
             return .{ .table = t };
         }
         if (userdata) |u| return .{ .userdata = u };
@@ -1292,10 +1279,10 @@ pub const Gc = struct {
             try active_thread.ensureStack(state.allocator, frame.base + @as(usize, active_thread.scratchRegister()) + 2, call_mod.callStackValueLimit(state, active_thread));
             count += 1;
             switch (object) {
-                .table => |table| {
+                .table => |entry| {
+                    const table = entry.table;
                     rollback.touch(table);
-                    state.table_pending_finalizer_head = table.finalizer_next;
-                    table.finalizer_next = null;
+                    state.table_pending_finalizers.items.len -= 1;
                     table.finalizer_registered = false;
                     try gc.callLuaFinalizer(active_thread, .{ .table = table }, table.metatable);
                 },
@@ -1365,17 +1352,10 @@ pub const Gc = struct {
         defer finalizers.deinit(state.allocator);
         gc.collectCloseFinalizers(&finalizers) catch return;
 
-        var pending = state.table_pending_finalizer_head;
-        while (pending) |table| : (pending = table.finalizer_next) table.finalizer_registered = false;
-        var registered = state.table_finalizer_head;
-        while (registered) |table| {
-            registered = table.finalizer_next;
-            table.finalizer_registered = false;
-            table.finalizer_next = null;
-            table.finalizer_prev = null;
-        }
-        state.table_pending_finalizer_head = null;
-        state.table_finalizer_head = null;
+        for (state.table_pending_finalizers.items) |entry| entry.table.finalizer_registered = false;
+        for (state.table_finalizers.items) |entry| entry.table.finalizer_registered = false;
+        state.table_pending_finalizers.clearRetainingCapacity();
+        state.table_finalizers.clearRetainingCapacity();
         while (state.userdata_lua_pending_head) |userdata| {
             state.userdata_lua_pending_head = userdata.lua_finalizer_next;
             userdata.lua_finalizer_next = null;
@@ -1399,14 +1379,15 @@ pub const Gc = struct {
     fn collectCloseFinalizers(gc: *Gc, finalizers: *std.ArrayList(CloseFinalizer)) !void {
         const state = gc.parentState();
         const a = state.allocator;
-        var pending_table = state.table_pending_finalizer_head;
+        var pending_table_count = state.table_pending_finalizers.items.len;
         var pending_lua = state.userdata_lua_pending_head;
         var pending_lua_tail: ?*Userdata = null;
-        while (pending_table != null or pending_lua != null) {
-            const take_table = if (pending_table) |table| if (pending_lua) |userdata| table.finalizer_order <= userdata.lua_finalizer_order else true else false;
+        while (pending_table_count != 0 or pending_lua != null) {
+            const next_table: ?types.TableFinalizer = if (pending_table_count != 0) state.table_pending_finalizers.items[pending_table_count - 1] else null;
+            const take_table = if (next_table) |entry| if (pending_lua) |userdata| entry.order <= userdata.lua_finalizer_order else true else false;
             if (take_table) {
-                try finalizers.append(a, .{ .object = .{ .table = pending_table.? }, .order = 0 });
-                pending_table = pending_table.?.finalizer_next;
+                try finalizers.append(a, .{ .object = .{ .table = next_table.?.table }, .order = 0 });
+                pending_table_count -= 1;
             } else {
                 try finalizers.append(a, .{ .object = .{ .userdata = pending_lua.? }, .order = 0 });
                 pending_lua_tail = pending_lua;
@@ -1418,8 +1399,7 @@ pub const Gc = struct {
             if (State.closeFinalizerOrder(userdata) != null) try finalizers.append(a, .{ .object = .{ .file = userdata }, .order = 0 });
         }
         const separated = finalizers.items.len;
-        var registered = state.table_finalizer_head;
-        while (registered) |table| : (registered = table.finalizer_next) try finalizers.append(a, .{ .object = .{ .table = table }, .order = table.finalizer_order });
+        for (state.table_finalizers.items) |entry| try finalizers.append(a, .{ .object = .{ .table = entry.table }, .order = entry.order });
         for (state.userdata_allocations.items) |userdata| {
             if (userdata.lua_finalizer_registered and userdata.lua_finalizer_next == null and userdata != pending_lua_tail) {
                 try finalizers.append(a, .{ .object = .{ .userdata = userdata }, .order = userdata.lua_finalizer_order });
@@ -1687,6 +1667,14 @@ pub const Gc = struct {
         }
     }
 
+    /// Reserves the lists a new `__gc` registration appends to.
+    pub fn reserveTableFinalizer(gc: *Gc) !void {
+        const state = gc.parentState();
+        if (state.rollback) |journal| try journal.finalizersWritable(state);
+        try state.table_finalizers.ensureUnusedCapacity(state.allocator, 1);
+        try state.table_pending_finalizers.ensureTotalCapacity(state.allocator, state.table_pending_finalizers.items.len + state.table_finalizers.items.len + 1);
+    }
+
     pub fn noteTableMetatableChanged(gc: *Gc, table: *Table) void {
         const state = gc.parentState();
         rollback.touch(table);
@@ -1700,14 +1688,7 @@ pub const Gc = struct {
             if (table.metatable) |metatable| {
                 if (metatable.getLiteral("__gc") != .nil) {
                     table.finalizer_registered = true;
-                    table.finalizer_order = metatable_mod.nextFinalizerOrder(state);
-                    table.finalizer_prev = null;
-                    if (state.table_finalizer_head) |head| {
-                        rollback.touch(head);
-                        head.finalizer_prev = table;
-                    }
-                    table.finalizer_next = state.table_finalizer_head;
-                    state.table_finalizer_head = table;
+                    state.table_finalizers.appendAssumeCapacity(.{ .table = table, .order = metatable_mod.nextFinalizerOrder(state) });
                 }
             }
         }
@@ -1748,7 +1729,7 @@ pub const Gc = struct {
     pub fn runCloseFinalizers(gc: *Gc) void {
         const state = gc.parentState();
         if (state.execution_depth != 0 or state.current_thread != null) return;
-        if (state.table_pending_finalizer_head == null and state.table_finalizer_head == null and !gc.hasUserdataLuaFinalizers() and !stdlib.io.hasOpenFiles(state)) return;
+        if (state.table_pending_finalizers.items.len == 0 and state.table_finalizers.items.len == 0 and !gc.hasUserdataLuaFinalizers() and !stdlib.io.hasOpenFiles(state)) return;
         var proto = proto_mod.Proto.init(state.allocator);
         defer proto.deinit();
         proto.source_name = "=[C]";

@@ -84,7 +84,7 @@ pub fn setMetatableValue(self: *State, table_value: Value, metatable_value: Valu
         .table => |metatable| metatable,
         else => return self.fail("nil or table expected"),
     };
-    setTableMetatableRaw(self, table, metatable);
+    try setTableMetatableRaw(self, table, metatable);
     if (table.metatable) |active_metatable| self.gc.writeBarrier(table, .{ .table = active_metatable });
 }
 
@@ -96,7 +96,7 @@ pub fn setDebugMetatableValue(self: *State, value: Value, metatable_value: Value
     };
     switch (value) {
         .table => |table| {
-            setTableMetatableRaw(self, table, metatable);
+            try setTableMetatableRaw(self, table, metatable);
             if (metatable) |mt| self.gc.writeBarrier(table, .{ .table = mt });
         },
         .userdata => |userdata| {
@@ -143,7 +143,8 @@ pub fn getMetaEvent(self: *State, value: Value, event: types.MetaEvent) !?Value 
     return if (metamethod == .nil) null else metamethod;
 }
 
-pub fn setTableMetatableRaw(self: *State, table: *Table, metatable: ?*Table) void {
+pub fn setTableMetatableRaw(self: *State, table: *Table, metatable: ?*Table) !void {
+    if (metatable) |mt| if (!table.finalizer_registered and mt.getLiteral("__gc") != .nil) try self.gc.reserveTableFinalizer();
     rollback_mod.touch(table);
     table.metatable = metatable;
     self.gc.noteTableMetatableChanged(table);

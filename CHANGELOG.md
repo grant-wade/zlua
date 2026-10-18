@@ -12,6 +12,7 @@
 - Upvalues are 56 bytes instead of 72.
 - Call frames are 40 bytes instead of 136.
 - Tables, upvalues, closures, and strings of up to 128 bytes come from per-state size-class slabs.
+- Tables are 64 bytes instead of 104.
 
 ### Fixes
 

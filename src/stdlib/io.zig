@@ -41,7 +41,7 @@ pub const File = struct {
     /// `State.file_generation` when the handle last matched the filesystem.
     generation: u64 = 0,
     popen_result: ?host.ProcessResult = null,
-    /// Creation order on the scale of `Table.finalizer_order`.
+    /// Creation order on the scale of `TableFinalizer.order`.
     finalizer_order: u64 = 0,
 
     pub const Kind = enum {
@@ -524,8 +524,8 @@ pub fn linesNext(state: *State, iterator: Value) ![]const Value {
     const specs = table.getLiteral("specs");
     var values = std.ArrayList(Value).empty;
     errdefer values.deinit(state.allocator);
-    if (specs == .table and specs.table.array.items.len != 0) {
-        for (specs.table.array.items) |spec| if (!try readInto(state, handle, &values, spec)) break;
+    if (specs == .table and specs.table.array.len != 0) {
+        for (specs.table.array.items()) |spec| if (!try readInto(state, handle, &values, spec)) break;
     } else {
         _ = try readInto(state, handle, &values, .{ .string = try state.strings.intern("l") });
     }

@@ -262,7 +262,7 @@ pub fn openDir(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const metatable = try state.newTableWithHints(0, 3);
     try set(metatable, state, "__close", .{ .native = .fs_dir_close });
     try set(metatable, state, "__metatable", .{ .string = try state.strings.intern("fs.Directory") });
-    metatable_mod.setTableMetatableRaw(state, dir.table, metatable.table);
+    try metatable_mod.setTableMetatableRaw(state, dir.table, metatable.table);
     try state.returnValues(thread, op.base, op.return_count, &.{dir});
 }
 
@@ -485,7 +485,7 @@ fn newIterator(state: *State, kind: []const u8) !Value {
     try set(metatable, state, "__call", .{ .native = .fs_iterator_next });
     try set(metatable, state, "__close", .{ .native = .fs_iterator_close });
     try set(metatable, state, "__metatable", .{ .string = try state.strings.intern("fs.Iterator") });
-    metatable_mod.setTableMetatableRaw(state, iterator.table, metatable.table);
+    try metatable_mod.setTableMetatableRaw(state, iterator.table, metatable.table);
     return iterator;
 }
 
@@ -583,7 +583,7 @@ fn failureValue(state: *State, operation: []const u8, path: []const u8, destinat
     const metatable = try state.newTableWithHints(0, 2);
     try set(metatable, state, "__tostring", .{ .native = .fs_error_tostring });
     try set(metatable, state, "__metatable", .{ .string = try state.strings.intern("fs.Error") });
-    metatable_mod.setTableMetatableRaw(state, value.table, metatable.table);
+    try metatable_mod.setTableMetatableRaw(state, value.table, metatable.table);
     return value;
 }
 

@@ -483,7 +483,7 @@ test "deinit finalizers run collected tables first and respect limits and interr
             \\setmetatable({}, {__gc = function() log('separated') end})
         , .{});
         while (lua.raw_state.gc.phase != .finalize) _ = try lua.stepGc(.{});
-        try std.testing.expect(lua.raw_state.table_pending_finalizer_head != null);
+        try std.testing.expect(lua.raw_state.table_pending_finalizers.items.len != 0);
         try lua.doString("late = setmetatable({}, {__gc = function() log('late') end})", .{});
     }
     try std.testing.expectEqualStrings("separatedlatekept", FinalizerLog.text());

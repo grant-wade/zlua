@@ -372,10 +372,7 @@ fn assignTable(state: *State, start: *runtime.Table, key: runtime.Value, value: 
 }
 
 fn storeRaw(state: *State, table: *runtime.Table, key: runtime.Value, value: runtime.Value) !void {
-    if (table.rollback != null and table.get(key) != .nil) {
-        try rollback_runtime.tableWritable(table);
-        state.raw_state.gc.noteTableCapacityDelta(table, 0);
-    }
+    if (table.rollback != null and table.get(key) != .nil) try rollback_runtime.tableWritable(table);
     if (!table.setExistingNonNil(key, value)) try state.raw_state.setTableRaw(table, key, value);
     state.raw_state.gc.writeTableBarrier(table, key, value);
 }

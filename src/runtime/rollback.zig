@@ -34,6 +34,13 @@ pub fn touch(object: anytype) void {
     }
 }
 
+fn duplicateCapacity(a: std.mem.Allocator, old: anytype) !@TypeOf(old) {
+    var result: @TypeOf(old) = .empty;
+    try result.ensureTotalCapacityPrecise(a, old.capacity);
+    result.appendSliceAssumeCapacity(old.items);
+    return result;
+}
+
 fn duplicateList(a: std.mem.Allocator, old: anytype) !@TypeOf(old) {
     var result: @TypeOf(old) = .empty;
     try result.appendSlice(a, old.items);
@@ -44,7 +51,7 @@ pub fn tableWritable(table: *types.Table) !void {
     const record = table.rollback orelse return;
     if (record.header.detached) return;
     const a = record.header.journal.allocator;
-    var array = try duplicateList(a, table.array);
+    var array = try table.array.clone(a);
     errdefer array.deinit(a);
     const hash = if (table.hash) |part| try part.clone(a) else null;
     touch(table);
@@ -160,6 +167,7 @@ pub const Journal = struct {
     baseline: RegistryLengths = .{},
     registries_detached: bool = false,
     output_detached: bool = false,
+    finalizers_detached: bool = false,
     /// Logical restored records, independent of heap size.
     last_restored_objects: usize = 0,
 
@@ -237,8 +245,19 @@ pub const Journal = struct {
         self.output_detached = true;
     }
 
+    pub fn finalizersWritable(self: *Journal, state: *State) !void {
+        if (self.finalizers_detached) return;
+        var registered = try duplicateCapacity(self.allocator, state.table_finalizers);
+        errdefer registered.deinit(self.allocator);
+        const pending = try duplicateCapacity(self.allocator, state.table_pending_finalizers);
+        state.table_finalizers = registered;
+        state.table_pending_finalizers = pending;
+        self.finalizers_detached = true;
+    }
+
     /// Called before GC enters its infallible destructive phases.
     pub fn prepareCollection(self: *Journal, state: *State) !void {
+        if (state.table_finalizers.items.len != 0) try self.finalizersWritable(state);
         if (state.gc.cycle == .major) return self.detachRegistries(state);
         inline for (reflection.fieldsOf(types.GcGenerations)) |f| {
             if (@field(state, f).items.len != @field(state.gc.old, f)) return self.detachRegistries(state);
@@ -291,6 +310,10 @@ pub const Journal = struct {
             state.stdout.deinit(self.allocator);
             state.stderr.deinit(self.allocator);
         }
+        if (self.finalizers_detached) {
+            state.table_finalizers.deinit(self.allocator);
+            state.table_pending_finalizers.deinit(self.allocator);
+        }
         const roots = state.api_roots;
         const callback_dispatch = state.api_callback_dispatch;
         const callback_data = state.api_callback_user_data;
@@ -326,6 +349,7 @@ pub const Journal = struct {
         self.baseline = self.attached;
         self.registries_detached = false;
         self.output_detached = false;
+        self.finalizers_detached = false;
     }
 
     /// Frees every object allocated since `attach` and still registered, returning how many.
@@ -374,6 +398,10 @@ pub const Journal = struct {
         if (self.output_detached) {
             self.saved.stdout.deinit(self.allocator);
             self.saved.stderr.deinit(self.allocator);
+        }
+        if (self.finalizers_detached) {
+            self.saved.table_finalizers.deinit(self.allocator);
+            self.saved.table_pending_finalizers.deinit(self.allocator);
         }
         self.freeRecords();
     }

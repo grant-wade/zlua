@@ -16,7 +16,7 @@ pub fn ensureSupportTables(state: *State) !void {
     if (tables.get(.zerde_null) == null) {
         const null_value = try state.newTableWithHints(0, 0);
         const null_metatable = try zerdeMetatable(state, "zerde null");
-        metatable_mod.setTableMetatableRaw(state, null_value.table, null_metatable);
+        try metatable_mod.setTableMetatableRaw(state, null_value.table, null_metatable);
         tables.set(.zerde_null, null_value.table);
     }
     if (tables.get(.zerde_array_metatable) == null) tables.set(.zerde_array_metatable, try zerdeMetatable(state, "zerde array"));
@@ -102,7 +102,7 @@ pub const LuaSink = struct {
         try ensureSupportTables(self.state);
         const hint = if (len) |count| std.math.cast(u32, count) orelse std.math.maxInt(u32) else 0;
         const value = try self.state.newTableWithHints(hint, 0);
-        metatable_mod.setTableMetatableRaw(self.state, value.table, self.state.library_tables.get(.zerde_array_metatable).?);
+        try metatable_mod.setTableMetatableRaw(self.state, value.table, self.state.library_tables.get(.zerde_array_metatable).?);
         try self.stack.append(self.state.allocator, .{ .kind = .seq, .table = value.table });
     }
 
@@ -116,7 +116,7 @@ pub const LuaSink = struct {
         try ensureSupportTables(self.state);
         const hint = if (len) |count| std.math.cast(u32, count) orelse std.math.maxInt(u32) else 0;
         const value = try self.state.newTableWithHints(0, hint);
-        metatable_mod.setTableMetatableRaw(self.state, value.table, self.state.library_tables.get(.zerde_object_metatable).?);
+        try metatable_mod.setTableMetatableRaw(self.state, value.table, self.state.library_tables.get(.zerde_object_metatable).?);
         try self.stack.append(self.state.allocator, .{ .kind = .object, .table = value.table });
     }
 
@@ -272,7 +272,7 @@ pub fn LuaSource(comptime Encoder: type) type {
 
 fn tableShape(table: *Table) LuaSourceShape {
     var shape: LuaSourceShape = .{};
-    for (table.array.items, 0..) |value, index| {
+    for (table.array.items(), 0..) |value, index| {
         if (value == .nil) continue;
         shape.integer_count += 1;
         shape.max_index = @max(shape.max_index, index + 1);

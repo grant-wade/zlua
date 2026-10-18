@@ -111,10 +111,7 @@ fn setTableDepthContinuable(self: *State, thread: *Thread, table_value: Value, k
 
     if (table_value == .table) {
         const table = table_value.table;
-        if (table.rollback != null and table.get(key) != .nil) {
-            try rollback_mod.tableWritable(table);
-            self.gc.noteTableCapacityDelta(table, 0);
-        }
+        if (table.rollback != null and table.get(key) != .nil) try rollback_mod.tableWritable(table);
         if (table.setExistingNonNil(key, value)) {
             self.gc.writeExistingKeyBarrier(table, key, value);
             return;
@@ -145,10 +142,7 @@ fn setTableDepth(self: *State, thread: ?*Thread, table_value: Value, key_value: 
 
     if (table_value == .table) {
         const table = table_value.table;
-        if (table.rollback != null and table.get(key) != .nil) {
-            try rollback_mod.tableWritable(table);
-            self.gc.noteTableCapacityDelta(table, 0);
-        }
+        if (table.rollback != null and table.get(key) != .nil) try rollback_mod.tableWritable(table);
         if (table.setExistingNonNil(key, value)) {
             self.gc.writeExistingKeyBarrier(table, key, value);
             return;

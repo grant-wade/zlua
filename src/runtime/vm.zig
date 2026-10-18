@@ -632,14 +632,14 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 if (table.rollback) |record| if (!record.header.detached) break :fast_loop;
                 const index: usize = op.index;
                 const value = stack[op.value];
-                if (index <= table.array.items.len) {
-                    table.array.items[index - 1] = value;
+                if (index <= table.array.len) {
+                    table.array.items()[index - 1] = value;
                 } else if (value != .nil) {
                     if (index > table.array.capacity) break :fast_loop;
-                    const old_len = table.array.items.len;
-                    table.array.items.len = index;
-                    @memset(table.array.items[old_len..], .nil);
-                    table.array.items[index - 1] = value;
+                    const old_len = table.array.len;
+                    table.array.len = @intCast(index);
+                    @memset(table.array.items()[old_len..], .nil);
+                    table.array.items()[index - 1] = value;
                 }
                 self.gc.writeTableBarrier(table, .{ .integer = @intCast(index) }, value);
                 pc += 1;
@@ -1040,8 +1040,8 @@ inline fn arrayValue(table_value: Value, key: Value) ?Value {
     if (table_value != .table or key != .integer) return null;
     const table = table_value.table;
     const index: u64 = @bitCast(key.integer -% 1);
-    if (index >= table.array.items.len) return null;
-    const value = table.array.items[@intCast(index)];
+    if (index >= table.array.len) return null;
+    const value = table.array.items()[@intCast(index)];
     return if (value != .nil) value else null;
 }
 
@@ -1050,9 +1050,9 @@ inline fn arraySlot(table_value: Value, key: Value) ?*Value {
     if (table_value != .table or key != .integer) return null;
     const table = table_value.table;
     const index: u64 = @bitCast(key.integer -% 1);
-    if (index >= table.array.items.len) return null;
+    if (index >= table.array.len) return null;
     if (table.rollback) |record| if (!record.header.detached) return null;
-    const slot = &table.array.items[@intCast(index)];
+    const slot = &table.array.items()[@intCast(index)];
     return if (slot.* != .nil) slot else null;
 }
 
@@ -1086,15 +1086,15 @@ fn fastTableArraySetExistingNoAlloc(self: *State, table_value: Value, key_value:
     const index = arrayIndex(key_value) orelse return false;
     const table = table_value.table;
     if (table.rollback) |record| if (!record.header.detached) return false;
-    if (index <= table.array.items.len) {
-        const slot = &table.array.items[index - 1];
+    if (index <= table.array.len) {
+        const slot = &table.array.items()[index - 1];
         if (slot.* == .nil and !index_mod.noNewindexMetamethod(table)) return false;
         slot.* = value;
         self.gc.writeTableBarrier(table, key_value, value);
         return true;
     }
     if (value == .nil or !index_mod.noNewindexMetamethod(table)) return false;
-    if (index == table.array.items.len + 1 and index <= table.array.capacity) {
+    if (index == table.array.len + 1 and index <= table.array.capacity) {
         table.array.appendAssumeCapacity(value);
         table.removeHashKey(key_value);
         self.gc.writeTableBarrier(table, key_value, value);
@@ -1136,10 +1136,9 @@ fn fastTableArraySetIndex(self: *State, table_value: Value, index_u32: u32, valu
     const index: usize = index_u32;
     const key_value = Value{ .integer = @intCast(index_u32) };
     const table = table_value.table;
-    defer self.gc.noteTableCapacityDelta(table, 0);
     try rollback_mod.tableWritable(table);
-    if (index <= table.array.items.len) {
-        const slot = &table.array.items[index - 1];
+    if (index <= table.array.len) {
+        const slot = &table.array.items()[index - 1];
         if (slot.* != .nil or index_mod.noNewindexMetamethod(table)) {
             slot.* = value;
             self.gc.writeTableBarrier(table, key_value, value);
@@ -1148,7 +1147,7 @@ fn fastTableArraySetIndex(self: *State, table_value: Value, index_u32: u32, valu
         return false;
     }
     if (value == .nil or !index_mod.noNewindexMetamethod(table)) return false;
-    if (index == table.array.items.len + 1) {
+    if (index == table.array.len + 1) {
         const old_capacity_bytes = gc_mod.tableCapacityBytes(table);
         try table.reserveArray(self.allocator, index);
         table.array.appendAssumeCapacity(value);
@@ -1160,10 +1159,10 @@ fn fastTableArraySetIndex(self: *State, table_value: Value, index_u32: u32, valu
     if (index > table.array.capacity) return false;
 
     const old_capacity_bytes = gc_mod.tableCapacityBytes(table);
-    const old_len = table.array.items.len;
+    const old_len = table.array.len;
     try table.array.resize(self.allocator, index);
-    @memset(table.array.items[old_len..], .nil);
-    table.array.items[index - 1] = value;
+    @memset(table.array.items()[old_len..], .nil);
+    table.array.items()[index - 1] = value;
     table.removeHashKey(key_value);
     self.gc.noteTableCapacityDelta(table, old_capacity_bytes);
     self.gc.writeTableBarrier(table, key_value, value);
@@ -1171,17 +1170,16 @@ fn fastTableArraySetIndex(self: *State, table_value: Value, index_u32: u32, valu
 }
 
 fn setTableArrayRawIndex(self: *State, table: *Table, index_u32: u32, value: Value) !void {
-    defer self.gc.noteTableCapacityDelta(table, 0);
     try rollback_mod.tableWritable(table);
     const index: usize = index_u32;
     const key = Value{ .integer = @intCast(index_u32) };
-    if (index <= table.array.items.len) {
-        table.array.items[index - 1] = value;
+    if (index <= table.array.len) {
+        table.array.items()[index - 1] = value;
         self.gc.writeTableBarrier(table, key, value);
         return;
     }
     if (value == .nil) return;
-    if (index == table.array.items.len + 1) {
+    if (index == table.array.len + 1) {
         const old_capacity_bytes = gc_mod.tableCapacityBytes(table);
         try table.reserveArray(self.allocator, index);
         table.array.appendAssumeCapacity(value);
@@ -1191,10 +1189,10 @@ fn setTableArrayRawIndex(self: *State, table: *Table, index_u32: u32, value: Val
     }
     if (index <= table.array.capacity) {
         const old_capacity_bytes = gc_mod.tableCapacityBytes(table);
-        const old_len = table.array.items.len;
+        const old_len = table.array.len;
         try table.array.resize(self.allocator, index);
-        @memset(table.array.items[old_len..], .nil);
-        table.array.items[index - 1] = value;
+        @memset(table.array.items()[old_len..], .nil);
+        table.array.items()[index - 1] = value;
         self.gc.noteTableCapacityDelta(table, old_capacity_bytes);
         self.gc.writeTableBarrier(table, key, value);
         return;
@@ -1205,10 +1203,7 @@ fn setTableArrayRawIndex(self: *State, table: *Table, index_u32: u32, value: Val
 fn fastTableKnownKeySet(self: *State, table_value: Value, key: Value, value: Value) !bool {
     if (table_value != .table) return false;
     const table = table_value.table;
-    if (table.rollback != null and table.get(key) != .nil) {
-        try rollback_mod.tableWritable(table);
-        self.gc.noteTableCapacityDelta(table, 0);
-    }
+    if (table.rollback != null and table.get(key) != .nil) try rollback_mod.tableWritable(table);
     if (table.setExistingNonNil(key, value)) {
         self.gc.writeTableBarrier(table, key, value);
         return true;
@@ -1355,12 +1350,11 @@ fn setList(self: *State, thread: *Thread, op: bytecode.SetList) !void {
 fn fastSetListRaw(self: *State, thread: *Thread, table_value: Value, source_start: usize, count: usize, start_index_u32: u32) !bool {
     if (table_value != .table or start_index_u32 == 0) return false;
     const table = table_value.table;
-    defer self.gc.noteTableCapacityDelta(table, 0);
     try rollback_mod.tableWritable(table);
     if (table.metatable != null) return false;
 
     const start_index: usize = start_index_u32;
-    var grow_to = table.array.items.len;
+    var grow_to: usize = table.array.len;
     for (0..count) |offset| {
         if (offset > std.math.maxInt(usize) - start_index) return self.fail("table overflow");
         const array_index = start_index + offset;
@@ -1368,21 +1362,21 @@ fn fastSetListRaw(self: *State, thread: *Thread, table_value: Value, source_star
         if (thread.stack.items[source_start + offset] != .nil and array_index > grow_to) grow_to = array_index;
     }
 
-    if (grow_to > table.array.items.len and start_index > table.array.items.len + 1 and grow_to > table.array.capacity) return false;
-    if (grow_to > table.array.items.len) {
+    if (grow_to > table.array.len and start_index > table.array.len + 1 and grow_to > table.array.capacity) return false;
+    if (grow_to > table.array.len) {
         const old_capacity_bytes = gc_mod.tableCapacityBytes(table);
-        const old_len = table.array.items.len;
+        const old_len = table.array.len;
         try table.reserveArray(self.allocator, grow_to);
         try table.array.resize(self.allocator, grow_to);
-        @memset(table.array.items[old_len..], .nil);
+        @memset(table.array.items()[old_len..], .nil);
         self.gc.noteTableCapacityDelta(table, old_capacity_bytes);
     }
 
     for (0..count) |offset| {
         const array_index = start_index + offset;
-        if (array_index > table.array.items.len) continue;
+        if (array_index > table.array.len) continue;
         const value = thread.stack.items[source_start + offset];
-        table.array.items[array_index - 1] = value;
+        table.array.items()[array_index - 1] = value;
         const key = Value{ .integer = @intCast(array_index) };
         if (value != .nil) table.removeHashKey(key);
         self.gc.writeTableBarrier(table, key, value);
@@ -1503,8 +1497,8 @@ fn fastTableArrayGet(table_value: Value, key_value: Value) ?Value {
     if (table_value != .table) return null;
     const index = arrayIndex(key_value) orelse return null;
     const table = table_value.table;
-    if (index > table.array.items.len) return null;
-    const value = table.array.items[index - 1];
+    if (index > table.array.len) return null;
+    const value = table.array.items()[index - 1];
     if (value != .nil or index_mod.noIndexMetamethod(table)) return value;
     return null;
 }

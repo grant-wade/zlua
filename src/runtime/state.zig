@@ -150,10 +150,13 @@ pub const State = struct {
     strings: strings_mod.Strings = .{},
     string_allocations: std.ArrayList(*types.String) = .empty,
     table_allocations: std.ArrayList(*Table) = .empty,
-    table_finalizer_head: ?*Table = null,
+    /// Tables registered for a Lua `__gc` and not yet separated, oldest first. Each
+    /// registration reserves a slot in `table_pending_finalizers` too.
+    table_finalizers: std.ArrayList(types.TableFinalizer) = .empty,
     table_finalizer_serial: u64 = 0,
-    table_pending_finalizer_head: ?*Table = null,
-    /// Userdata awaiting Lua `__gc`, ordered together with `table_pending_finalizer_head`.
+    /// Tables separated for a Lua `__gc` call; the last one runs next.
+    table_pending_finalizers: std.ArrayList(types.TableFinalizer) = .empty,
+    /// Userdata awaiting Lua `__gc`, ordered together with `table_pending_finalizers`.
     userdata_lua_pending_head: ?*Userdata = null,
     userdata_pending_finalizer_head: ?*Userdata = null,
     userdata_allocations: std.ArrayList(*Userdata) = .empty,
@@ -390,6 +393,8 @@ pub const State = struct {
         self.userdata_allocations.deinit(self.allocator);
         self.table_allocations.deinit(self.allocator);
         self.string_allocations.deinit(self.allocator);
+        self.table_finalizers.deinit(self.allocator);
+        self.table_pending_finalizers.deinit(self.allocator);
         self.object_pool.destroy();
         self.* = undefined;
     }

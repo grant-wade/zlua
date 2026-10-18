@@ -329,7 +329,7 @@ pub fn getregistry(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const hook_key = try state.newTableWithHints(0, 0);
     const metatable = try state.newTableWithHints(0, 1);
     try state.setTableRaw(metatable.table, .{ .string = try state.strings.intern("__mode") }, .{ .string = try state.strings.intern("k") });
-    metatable_mod.setTableMetatableRaw(state, hook_key.table, metatable.table);
+    try metatable_mod.setTableMetatableRaw(state, hook_key.table, metatable.table);
     try state.setTableRaw(registry.table, .{ .string = try state.strings.intern("_HOOKKEY") }, hook_key);
     try state.returnValues(thread, op.base, op.return_count, &.{registry});
 }

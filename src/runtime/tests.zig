@@ -1156,7 +1156,7 @@ test "weak value tables clear unreachable values" {
     const weak = try state.newTableWithHints(0, 1);
     const metatable = try state.newTableWithHints(0, 1);
     try metatable.table.set(state.allocator, .{ .string = try state.strings.intern("__mode") }, .{ .string = try state.strings.intern("v") });
-    metatable_mod.setTableMetatableRaw(&state, weak.table, metatable.table);
+    try metatable_mod.setTableMetatableRaw(&state, weak.table, metatable.table);
     try state.putGlobal("weak_values", weak);
 
     const dead = try state.newTableWithHints(0, 0);
@@ -1174,7 +1174,7 @@ test "weak key tables clear unreachable keys" {
     const weak = try state.newTableWithHints(0, 1);
     const metatable = try state.newTableWithHints(0, 1);
     try metatable.table.set(state.allocator, .{ .string = try state.strings.intern("__mode") }, .{ .string = try state.strings.intern("k") });
-    metatable_mod.setTableMetatableRaw(&state, weak.table, metatable.table);
+    try metatable_mod.setTableMetatableRaw(&state, weak.table, metatable.table);
     try state.putGlobal("weak_keys", weak);
 
     const dead_key = try state.newTableWithHints(0, 0);
@@ -1192,7 +1192,7 @@ test "ephemeron table marks value when key is reachable" {
     const ephemeron = try state.newTableWithHints(0, 1);
     const metatable = try state.newTableWithHints(0, 1);
     try metatable.table.set(state.allocator, .{ .string = try state.strings.intern("__mode") }, .{ .string = try state.strings.intern("k") });
-    metatable_mod.setTableMetatableRaw(&state, ephemeron.table, metatable.table);
+    try metatable_mod.setTableMetatableRaw(&state, ephemeron.table, metatable.table);
     try state.putGlobal("ephemeron", ephemeron);
 
     const key = try state.newTableWithHints(0, 0);
@@ -1349,7 +1349,7 @@ test "remembered old metatables keep young metadata through promotion" {
     defer state.unrootValue(handle);
     state.gc.normalizeBaseline();
     const metatable = try state.newTableWithHints(0, 0);
-    metatable_mod.setTableMetatableRaw(&state, parent.table, metatable.table);
+    try metatable_mod.setTableMetatableRaw(&state, parent.table, metatable.table);
     for (0..3) |_| {
         try std.testing.expect(!try state.gc.runSteps(1));
         try std.testing.expect(state.gc.isTrackedTable(metatable.table));
@@ -1531,7 +1531,7 @@ test "changing weak modes after propagation retraces newly strong edges" {
     const metatable = try state.newTableWithHints(0, 1);
     try state.setTableRaw(metatable.table, .{ .string = try state.strings.intern("__mode") }, .{ .string = try state.strings.intern("v") });
     const weak = try state.newTableWithHints(0, 1);
-    metatable_mod.setTableMetatableRaw(&state, weak.table, metatable.table);
+    try metatable_mod.setTableMetatableRaw(&state, weak.table, metatable.table);
     const handle = try state.rootValue(weak);
     defer state.unrootValue(handle);
     const child = try state.newTableWithHints(0, 0);

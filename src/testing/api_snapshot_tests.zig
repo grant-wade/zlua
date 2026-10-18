@@ -1046,7 +1046,7 @@ test "first table write allocation failures leave baseline storage and handles i
         var snapshot = try lua.snapshot(a);
         defer snapshot.deinit();
         const raw = lua.raw_state.rootedValue(table.ref.index).table;
-        const original = raw.array.items.ptr;
+        const original = raw.array.ptr;
         failing.fail_index = failing.alloc_index + offset;
         const result = raw.set(lua.allocator(), .{ .integer = 1 }, .{ .integer = 9 });
         failing.fail_index = std.math.maxInt(usize);
@@ -1056,7 +1056,7 @@ test "first table write allocation failures leave baseline storage and handles i
             break;
         } else |err| {
             try std.testing.expectEqual(error.OutOfMemory, err);
-            try std.testing.expectEqual(original, raw.array.items.ptr);
+            try std.testing.expectEqual(original, raw.array.ptr);
             try std.testing.expectEqual(@as(i64, 7), try table.get(1, i64));
             try std.testing.expectEqual(@as(usize, 0), lua.raw_state.rollback.?.dirty.items.len);
         }
@@ -1655,7 +1655,7 @@ test "host GC drains table finalizers protects failures and restores pending reg
         try std.testing.expectEqual(@as(i64, 42), worker.raw_state.getGlobal("saved").table.getLiteral("child").table.getLiteral("answer").integer);
         try worker.reset();
         try std.testing.expectEqualStrings("", worker.raw_state.getGlobal("calls").string.bytes());
-        try std.testing.expect(worker.raw_state.table_pending_finalizer_head != null);
+        try std.testing.expect(worker.raw_state.table_pending_finalizers.items.len != 0);
     }
     // A basic host step executes one pending Lua finalizer, including while stopped.
     while (lua.raw_state.gc.phase != .finalize) _ = try lua.stepGc(.{});
@@ -1740,7 +1740,7 @@ test "host finalizer frame allocation failures leave a resumable pending list" {
             try std.testing.expectEqual(error.OutOfMemory, err);
             try std.testing.expect(!lua.raw_state.gc.collecting);
             try std.testing.expectEqual(.finalize, lua.raw_state.gc.phase);
-            try std.testing.expect(lua.raw_state.table_pending_finalizer_head != null);
+            try std.testing.expect(lua.raw_state.table_pending_finalizers.items.len != 0);
             try lua.collect();
             try std.testing.expectEqual(@as(i64, 1), lua.raw_state.getGlobal("calls").integer);
         }
