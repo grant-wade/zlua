@@ -908,12 +908,6 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 if (frame_index + 1 == return_floor or self.budget.fastLoopInterrupted()) return true;
                 continue :frames;
             },
-            .get_global => {
-                const op = instructions[pc].get_global;
-                stack[op.register] = globalGet(self, proto, op.name);
-                pc += 1;
-                continue :fast_loop std.meta.activeTag(instructions[pc]);
-            },
             .tfor_prep => {
                 const op = instructions[pc].tfor_prep;
                 const pair = fastGenericForStep(stack[op.base], stack[op.base + 1], stack[op.base + 2]) orelse break :fast_loop;
@@ -1389,7 +1383,6 @@ fn plainFastLoopCanStart(instruction: bytecode.Instruction) bool {
         .load_bool,
         .load_const,
         .move,
-        .get_global,
         .get_upvalue,
         .set_upvalue,
         .add,
