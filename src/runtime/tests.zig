@@ -1483,7 +1483,7 @@ test "minor cycles trace old suspended threads changed without barriers" {
     }.check;
     try std.testing.expect(isOld(&state, thread));
     try entry_mod.executeSourceChunk(&state, "set({ 'young' })");
-    const slot = thread.open_upvalues.?.stack_index;
+    const slot = thread.open_upvalues.?.cell.open.stack_index;
     const young = thread.stack.items[slot];
     try std.testing.expect(young == .table and !isOld(&state, young.table));
     for (0..3) |_| {

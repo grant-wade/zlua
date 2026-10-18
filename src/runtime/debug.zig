@@ -129,9 +129,9 @@ fn appendDebugUpvalues(self: *State, out: *std.ArrayList(u8), frame: CallFrame) 
     }
     for (frame.closure.upvalues(), 0..) |upvalue, index| {
         const name = if (index < frame.proto.upvalues.items.len) frame.proto.upvalues.items[index].name else "?";
-        const value = if (upvalue.is_open) upvalue.owner.stack.items[upvalue.stack_index] else upvalue.closed;
-        try appendFmt(self.allocator, out, "    upvalue U{d} {s} {s}", .{ index, name, if (upvalue.is_open) "open" else "closed" });
-        if (upvalue.is_open) try appendFmt(self.allocator, out, " stack={d}", .{upvalue.stack_index});
+        const value = upvalue.get();
+        try appendFmt(self.allocator, out, "    upvalue U{d} {s} {s}", .{ index, name, @tagName(upvalue.cell) });
+        if (upvalue.cell == .open) try appendFmt(self.allocator, out, " stack={d}", .{upvalue.cell.open.stack_index});
         try out.appendSlice(self.allocator, " = ");
         try appendDebugValue(self, out, value);
         try out.append(self.allocator, '\n');

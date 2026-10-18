@@ -9,6 +9,7 @@
 - The collector keeps mark state and registry positions in a 16-byte header shared by every object type, and closures store their upvalue pointers in the same allocation.
 - Snapshot workers find the objects created since capture by registry position, without a per-object hash table.
 - Each loaded chunk interns its string constants once for all of its closures, and field and global lookups compare those strings by pointer.
+- Upvalues are 56 bytes instead of 72.
 
 ### Fixes
 

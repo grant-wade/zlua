@@ -451,11 +451,11 @@ pub const Gc = struct {
         }
         const upvalue_start = if (state.gc.cycle == .minor) state.gc.old.upvalue_allocations else 0;
         for (state.upvalue_allocations.items[upvalue_start..]) |upvalue| {
-            if (upvalue.is_open and gc.isMarked(upvalue)) gc.traceUpvalue(upvalue);
+            if (upvalue.cell == .open and gc.isMarked(upvalue)) gc.traceUpvalue(upvalue);
         }
         if (state.gc.cycle == .minor) for (state.gc.remembered.items) |object| switch (object) {
             .thread => |t| gc.traceThread(t),
-            .upvalue => |u| if (u.is_open) gc.traceUpvalue(u),
+            .upvalue => |u| if (u.cell == .open) gc.traceUpvalue(u),
             else => {},
         };
         if (state.current_thread) |t| gc.traceThread(t);
@@ -914,10 +914,9 @@ pub const Gc = struct {
     }
 
     fn traceUpvalue(gc: *Gc, upvalue: *Upvalue) void {
-        if (upvalue.is_open) {
-            if (upvalue.stack_index < upvalue.owner.stack.items.len) gc.markValue(upvalue.owner.stack.items[upvalue.stack_index]);
-        } else {
-            gc.markValue(upvalue.closed);
+        switch (upvalue.cell) {
+            .open => |slot| if (slot.stack_index < slot.owner.stack.items.len) gc.markValue(slot.owner.stack.items[slot.stack_index]),
+            .closed => |value| gc.markValue(value),
         }
     }
 

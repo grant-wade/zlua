@@ -570,17 +570,20 @@ fn inactiveLocalUsesRegister(frame: anytype, pc: usize, register: bytecode.Regis
 }
 
 fn readUpvalue(upvalue: *runtime.Upvalue) Value {
-    return if (upvalue.is_open) upvalue.owner.stack.items[upvalue.stack_index] else upvalue.closed;
+    return upvalue.get();
 }
 
 fn writeUpvalue(state: *State, upvalue: *runtime.Upvalue, value: Value) !void {
     @import("../runtime/rollback.zig").touch(upvalue);
-    if (upvalue.is_open) {
-        try @import("../runtime/rollback.zig").threadWritable(upvalue.owner);
-        upvalue.owner.stack.items[upvalue.stack_index] = value;
-        state.gc.threadBarrier(upvalue.owner, value);
-    } else {
-        upvalue.closed = value;
-        state.gc.writeBarrier(upvalue, value);
+    switch (upvalue.cell) {
+        .open => |slot| {
+            try @import("../runtime/rollback.zig").threadWritable(slot.owner);
+            slot.owner.stack.items[slot.stack_index] = value;
+            state.gc.threadBarrier(slot.owner, value);
+        },
+        .closed => |*closed| {
+            closed.* = value;
+            state.gc.writeBarrier(upvalue, value);
+        },
     }
 }

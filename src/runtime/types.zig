@@ -451,11 +451,27 @@ pub const Closure = struct {
 pub const Upvalue = struct {
     gc: GcHeader = .{},
     rollback: ?*@import("rollback.zig").Record(Upvalue) = null,
-    owner: *Thread,
-    stack_index: usize,
-    closed: Value = .nil,
-    is_open: bool = true,
+    /// Next open upvalue of the owner thread.
     next: ?*Upvalue = null,
+    cell: Cell,
+
+    pub const Cell = union(enum) {
+        open: Slot,
+        closed: Value,
+    };
+
+    /// The owner thread's stack slot that an open upvalue refers to.
+    pub const Slot = struct {
+        owner: *Thread,
+        stack_index: usize,
+    };
+
+    pub inline fn get(self: *const Upvalue) Value {
+        return switch (self.cell) {
+            .open => |slot| slot.owner.stack.items[slot.stack_index],
+            .closed => |value| value,
+        };
+    }
 };
 
 pub const TableEntry = struct {

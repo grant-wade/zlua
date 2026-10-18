@@ -201,7 +201,7 @@ const Copier = struct {
         try self.shells(types.Table, source.table_allocations.items, &d.table_allocations, .{});
         try self.shells(types.Thread, source.thread_allocations.items, &d.thread_allocations, .{});
         try self.shells(types.Closure, source.closure_allocations.items, &d.closure_allocations, .{ .proto = undefined });
-        try self.shells(types.Upvalue, source.upvalue_allocations.items, &d.upvalue_allocations, .{ .owner = undefined, .stack_index = 0 });
+        try self.shells(types.Upvalue, source.upvalue_allocations.items, &d.upvalue_allocations, .{ .cell = .{ .closed = .nil } });
         try self.shells(types.Userdata, source.userdata_allocations.items, &d.userdata_allocations, .{ .ptr = undefined, .type_id = 0, .type_name = "", .finalized = true });
         for (source.table_allocations.items, d.table_allocations.items) |old, new| {
             new.array = try self.list(types.Value, old.array.items);
@@ -222,12 +222,13 @@ const Copier = struct {
             new.stripped_debug = old.stripped_debug;
         }
         for (source.upvalue_allocations.items, d.upvalue_allocations.items) |old, new| {
-            new.stack_index = old.stack_index;
-            new.is_open = old.is_open;
-            if (old.is_open) {
-                new.owner = try self.mapped(old.owner);
-                new.next = try self.remap(old.next);
-            } else new.closed = try self.value(old.closed);
+            switch (old.cell) {
+                .open => |slot| {
+                    new.cell = .{ .open = .{ .owner = try self.mapped(slot.owner), .stack_index = slot.stack_index } };
+                    new.next = try self.remap(old.next);
+                },
+                .closed => |closed| new.cell = .{ .closed = try self.value(closed) },
+            }
         }
         for (source.thread_allocations.items, d.thread_allocations.items) |old, new| try self.thread(old, new);
         for (source.userdata_allocations.items, d.userdata_allocations.items) |old, new| try self.userdata(old, new);
@@ -277,7 +278,7 @@ const Copier = struct {
         }
         var open = target.open_upvalues;
         while (open) |upvalue| : (open = upvalue.next) {
-            if (upvalue.stack_index == index) return true;
+            if (upvalue.cell.open.stack_index == index) return true;
         }
         return false;
     }
@@ -424,8 +425,7 @@ comptime {
         .transient = "epoch",
     });
     review(types.Upvalue, .{
-        .remapped = "owner closed next",
-        .copied = "stack_index is_open",
+        .remapped = "cell next",
         .transient = "rollback gc",
     });
     review(types.Userdata, .{

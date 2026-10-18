@@ -20,8 +20,8 @@ pub fn captureUpvalue(self: *State, thread: *Thread, stack_index: usize) !*Upval
     var previous: ?*Upvalue = null;
     var current = thread.open_upvalues;
     while (current) |upvalue| : (current = upvalue.next) {
-        if (upvalue.stack_index <= stack_index) {
-            if (upvalue.stack_index == stack_index) return upvalue;
+        if (upvalue.cell.open.stack_index <= stack_index) {
+            if (upvalue.cell.open.stack_index == stack_index) return upvalue;
             break;
         }
         previous = upvalue;
@@ -29,7 +29,7 @@ pub fn captureUpvalue(self: *State, thread: *Thread, stack_index: usize) !*Upval
 
     const upvalue = try self.allocator.create(Upvalue);
     errdefer self.allocator.destroy(upvalue);
-    upvalue.* = .{ .owner = thread, .stack_index = stack_index, .next = current };
+    upvalue.* = .{ .cell = .{ .open = .{ .owner = thread, .stack_index = stack_index } }, .next = current };
     try self.registerAllocation("upvalue_allocations", upvalue);
     self.gc.noteAllocation(@sizeOf(Upvalue));
     if (previous) |prev| {
@@ -44,33 +44,35 @@ pub fn captureUpvalue(self: *State, thread: *Thread, stack_index: usize) !*Upval
 pub fn readUpvalue(self: *State, thread: *Thread, index: bytecode.UpvalueIndex) Value {
     _ = self;
     const frame = thread.frames.items[thread.frames.items.len - 1];
-    const upvalue = frame.closure.upvalues()[index];
-    return if (upvalue.is_open) upvalue.owner.stack.items[upvalue.stack_index] else upvalue.closed;
+    return frame.closure.upvalues()[index].get();
 }
 
 pub fn writeUpvalue(self: *State, thread: *Thread, index: bytecode.UpvalueIndex, value: Value) !void {
     const frame = thread.frames.items[thread.frames.items.len - 1];
     const upvalue = frame.closure.upvalues()[index];
     rollback_mod.touch(upvalue);
-    if (upvalue.is_open) {
-        try rollback_mod.threadWritable(upvalue.owner);
-        upvalue.owner.stack.items[upvalue.stack_index] = value;
-        self.gc.threadBarrier(upvalue.owner, value);
-    } else {
-        upvalue.closed = value;
-        self.gc.writeBarrier(upvalue, value);
+    switch (upvalue.cell) {
+        .open => |slot| {
+            try rollback_mod.threadWritable(slot.owner);
+            slot.owner.stack.items[slot.stack_index] = value;
+            self.gc.threadBarrier(slot.owner, value);
+        },
+        .closed => |*closed| {
+            closed.* = value;
+            self.gc.writeBarrier(upvalue, value);
+        },
     }
 }
 
 pub fn closeUpvalues(self: *State, thread: *Thread, first_stack_index: usize) void {
     while (thread.open_upvalues) |upvalue| {
-        if (upvalue.stack_index < first_stack_index) break;
-        std.debug.assert(upvalue.is_open);
+        const stack_index = upvalue.cell.open.stack_index;
+        if (stack_index < first_stack_index) break;
         rollback_mod.touch(upvalue);
         rollback_mod.touch(thread);
-        upvalue.closed = thread.stack.items[upvalue.stack_index];
-        self.gc.writeBarrier(upvalue, upvalue.closed);
-        upvalue.is_open = false;
+        const value = thread.stack.items[stack_index];
+        upvalue.cell = .{ .closed = value };
+        self.gc.writeBarrier(upvalue, value);
         thread.open_upvalues = upvalue.next;
         upvalue.next = null;
     }

@@ -428,23 +428,25 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             },
             .get_upvalue => {
                 const op = instructions[pc].get_upvalue;
-                const upvalue = frame.closure.upvalues()[op.upvalue];
-                stack[op.register] = if (upvalue.is_open) upvalue.owner.stack.items[upvalue.stack_index] else upvalue.closed;
+                stack[op.register] = frame.closure.upvalues()[op.upvalue].get();
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .set_upvalue => {
                 const op = instructions[pc].set_upvalue;
                 const upvalue = frame.closure.upvalues()[op.upvalue];
-                if (upvalue.is_open) {
-                    if (upvalue.owner.rollback) |record| if (!record.header.detached) break :fast_loop;
-                    rollback_mod.touch(upvalue);
-                    upvalue.owner.stack.items[upvalue.stack_index] = stack[op.register];
-                    if (upvalue.owner != thread) self.gc.rememberObject(.{ .thread = upvalue.owner });
-                } else {
-                    rollback_mod.touch(upvalue);
-                    upvalue.closed = stack[op.register];
-                    self.gc.writeBarrier(upvalue, upvalue.closed);
+                switch (upvalue.cell) {
+                    .open => |slot| {
+                        if (slot.owner.rollback) |record| if (!record.header.detached) break :fast_loop;
+                        rollback_mod.touch(upvalue);
+                        slot.owner.stack.items[slot.stack_index] = stack[op.register];
+                        if (slot.owner != thread) self.gc.rememberObject(.{ .thread = slot.owner });
+                    },
+                    .closed => |*closed| {
+                        rollback_mod.touch(upvalue);
+                        closed.* = stack[op.register];
+                        self.gc.writeBarrier(upvalue, closed.*);
+                    },
                 }
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
@@ -935,7 +937,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 const op = instructions[pc].ret;
                 // Returning onto the floor frame is fine, but the outer loop must take over afterwards.
                 if (frame_index < return_floor or frame_index == 0) break :fast_loop;
-                const open_here = if (thread.open_upvalues) |upvalue| upvalue.stack_index >= base else false;
+                const open_here = if (thread.open_upvalues) |upvalue| upvalue.cell.open.stack_index >= base else false;
                 if (proto.has_to_close_locals or op.count == bytecode.multret_count or frame.return_count == bytecode.multret_count or
                     frame.pending_returns != null or open_here)
                 {
@@ -996,7 +998,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             },
             .close => {
                 const first = base + instructions[pc].close;
-                if (thread.open_upvalues) |upvalue| if (upvalue.stack_index >= first) upvalue_mod.closeUpvalues(self, thread, first);
+                if (thread.open_upvalues) |upvalue| if (upvalue.cell.open.stack_index >= first) upvalue_mod.closeUpvalues(self, thread, first);
                 pc += 1;
                 if (pc >= instructions.len) break :fast_loop;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);

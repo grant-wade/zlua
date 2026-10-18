@@ -297,12 +297,7 @@ fn newLoadedClosure(self: *State, chunk: *types.Chunk, environment: Value, strip
     for (proto.upvalues.items, upvalues) |desc, *slot| {
         const upvalue = try self.allocator.create(Upvalue);
         errdefer self.allocator.destroy(upvalue);
-        upvalue.* = .{
-            .owner = undefined,
-            .stack_index = 0,
-            .closed = if (std.mem.eql(u8, desc.name, "_ENV")) environment else .nil,
-            .is_open = false,
-        };
+        upvalue.* = .{ .cell = .{ .closed = if (std.mem.eql(u8, desc.name, "_ENV")) environment else .nil } };
         try self.registerAllocation("upvalue_allocations", upvalue);
         self.gc.noteAllocation(@sizeOf(Upvalue));
         slot.* = upvalue;
