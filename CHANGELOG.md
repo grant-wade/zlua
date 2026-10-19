@@ -13,6 +13,7 @@
 - `require`, the default searchers, and `package.searchpath` report module-not-found and load errors with Lua 5.5's messages.
 - `package.searchers` includes the C and all-in-one searchers, which report `package.cpath` matches as dynamic libraries not enabled.
 - `require` and the embedding package helpers followed reassignments of the `package` global, `package.loaded`, and `package.preload`.
+- `package.config`, `package.searchpath`, and the default searchers used `/` instead of `\` as the directory separator on Windows.
 - Line-buffered writes to `/dev/full` on Linux, and `setvbuf` with pending output, returned different results than glibc.
 
 ## 0.7.2

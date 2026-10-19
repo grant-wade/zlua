@@ -1271,7 +1271,7 @@ test "number scanning matches read_number consumption" {
 }
 
 test "Linux /dev/full emulation follows glibc stream results" {
-    if (builtin.os.tag == .windows or builtin.os.tag == .freebsd) return error.SkipZigTest;
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
     var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .full });
     defer state.deinit();
     const device = try newFile(&state, .{ .kind = .full_device, .path = "/dev/full", .mode = parseMode("w").? });

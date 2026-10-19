@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const compile = @import("../compile.zig");
 const stdlib = @import("../stdlib.zig");
 const runtime = @import("../runtime.zig");
@@ -14,6 +15,8 @@ const State = runtime.State;
 const Thread = runtime.Thread;
 const Value = runtime.Value;
 const RuntimeError = runtime.RuntimeError;
+
+pub const dir_separator = if (builtin.os.tag == .windows) "\\" else "/";
 
 pub fn loadfile(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const path = try optionalPath(state, thread, op, "loadfile");
@@ -171,7 +174,7 @@ pub fn searchpath(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const sep_value = runtime.argValue(state, thread, op, 2);
     const rep_value = runtime.argValue(state, thread, op, 3);
     const sep = if (sep_value == .nil) "." else try state.expectArgumentString(thread, op, "package.searchpath", 2);
-    const rep = if (rep_value == .nil) "/" else try state.expectArgumentString(thread, op, "package.searchpath", 3);
+    const rep = if (rep_value == .nil) dir_separator else try state.expectArgumentString(thread, op, "package.searchpath", 3);
 
     if (try searchPath(state, name, path, sep, rep)) |found| {
         defer state.allocator.free(found);
@@ -250,8 +253,8 @@ fn findFile(state: *State, thread: *Thread, op: bytecode.Call, name: []const u8,
     defer path.deinit(state.allocator);
     try runtime.appendLuaString(state.allocator, &path, path_value);
 
-    if (try searchPath(state, name, path.items, ".", "/")) |found| return found;
-    const message = try searchPathError(state, name, path.items, ".", "/");
+    if (try searchPath(state, name, path.items, ".", dir_separator)) |found| return found;
+    const message = try searchPathError(state, name, path.items, ".", dir_separator);
     defer state.allocator.free(message);
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(message) }});
     return null;

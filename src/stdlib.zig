@@ -572,7 +572,7 @@ fn createPackageTables(state: *State, libraries: LibrarySet) !void {
     try setStaticField(state, package_lib, "loadlib", .{ .native = .package_loadlib });
     try setStaticField(state, package_lib, "path", .{ .string = static_strings.get("./?.lua;./?/init.lua") });
     try setStaticField(state, package_lib, "cpath", .{ .string = static_strings.get("") });
-    try setStaticField(state, package_lib, "config", .{ .string = static_strings.get("/\n;\n?\n!\n-\n") });
+    try setStaticField(state, package_lib, "config", .{ .string = static_strings.get(package.dir_separator ++ "\n;\n?\n!\n-\n") });
     state.library_tables.set(.package, package_lib.table);
     state.library_tables.set(.package_loaded, loaded.table);
     state.library_tables.set(.package_preload, preload.table);

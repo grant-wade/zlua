@@ -172,6 +172,7 @@ pub const names = [_][]const u8{
     "traceback",
     "upvalueid",
     "/\n;\n?\n!\n-\n",
+    "\\\n;\n?\n!\n-\n",
     "__tostring",
     "getupvalue",
     "maxinteger",
