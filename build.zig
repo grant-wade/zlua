@@ -26,7 +26,8 @@ pub fn build(b: *std.Build) void {
     const zerde_mod = zerde_dep.module("zerde");
 
     const clua_optimize: std.builtin.OptimizeMode = .ReleaseSafe;
-    const bench_optimize: std.builtin.OptimizeMode = .ReleaseFast;
+    const bench_optimize: std.builtin.OptimizeMode = if (@hasField(std.builtin.OptimizeMode, "fast")) .fast else .ReleaseFast;
+    const bench_mode_name = @tagName(bench_optimize);
     const clua_lib = addCluaLib(b, target, clua_optimize, lua_deps_step, "lua5.5-core");
     const clua_exe = addClua(b, target, clua_optimize, clua_lib);
     const clua_bench_lib = addCluaLib(b, target, bench_optimize, lua_deps_step, "lua5.5-bench");
@@ -220,11 +221,11 @@ pub fn build(b: *std.Build) void {
     run_bench.addArtifactArg(bench_zlua_exe);
     run_bench.addArg("--zlua-snapshot");
     run_bench.addArtifactArg(snapshot_bench_exe);
-    run_bench.addArg("--snapshot-build=ReleaseFast");
-    run_bench.addArgs(&.{ "--zlua-build=ReleaseFast", "--clua-build=ReleaseFast" });
+    run_bench.addArg("--snapshot-build=" ++ bench_mode_name);
+    run_bench.addArgs(&.{ "--zlua-build=" ++ bench_mode_name, "--clua-build=" ++ bench_mode_name });
     run_bench.addArg("--clua-c");
     run_bench.addArtifactArg(clua_startup_bench_exe);
-    run_bench.addArg("--c-build=ReleaseFast");
+    run_bench.addArg("--c-build=" ++ bench_mode_name);
     addPassthruArgs(b, run_bench);
     bench_step.dependOn(&run_bench.step);
 

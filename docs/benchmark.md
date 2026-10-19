@@ -1,6 +1,6 @@
 # Benchmarking
 
-Run the whole suite with `zig build bench` (or `just bench`). It runs each group below in turn and produces a single report:
+Run the whole suite with `zig build bench` (or `just bench`). It prints the Zig version, OS, kernel, architecture, CPU, core count, and memory, then runs each group below in turn and produces a single report:
 
 | Group | Measures |
 | --- | --- |
@@ -9,7 +9,7 @@ Run the whole suite with `zig build bench` (or `just bench`). It runs each group
 | Snapshots | Capture, new State creation (`new_state`), first-work mutation, reset-only, no-op reset, full work/reset cycles, and an equivalent rebuild. |
 | GC | Single basic collector steps over several workloads, including transient garbage, stable heaps, weak tables, and finalizers, with setup excluded. |
 
-Every benchmark builds both zlua and C Lua with ReleaseFast, including the process comparisons and the C startup workers, whatever `-Doptimize` you pass. The in-process groups (startup, snapshots, and GC) don't include process launch in their timings. Startup totals are the sum of the measured phases, not a separately timed operation.
+Every benchmark builds both zlua and C Lua with ReleaseFast on Zig 0.16 and `fast` on Zig 0.17, including the process comparisons and the C startup workers, whatever `-Doptimize` you pass. The in-process groups (startup, snapshots, and GC) don't include process launch in their timings. Startup totals are the sum of the measured phases, not a separately timed operation.
 
 ## Running a benchmark
 

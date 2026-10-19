@@ -4,6 +4,7 @@ const runtime = @import("../runtime.zig");
 const call_mod = @import("../runtime/call.zig");
 const index_mod = @import("../runtime/index.zig");
 const operators_mod = @import("../runtime/operators.zig");
+const static_strings = @import("static_strings.zig");
 
 const bytecode = compile.bytecode;
 const State = runtime.State;
@@ -17,20 +18,20 @@ pub fn concat(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const sep = try state.optionalArgumentString(thread, op, "table.concat", 1) orelse "";
     const start = try state.optionalArgumentInteger(thread, op, "table.concat", 2, 1);
     const stop = try state.optionalArgumentInteger(thread, op, "table.concat", 3, len);
-    var out = std.ArrayList(u8).empty;
-    defer out.deinit(state.allocator);
+    var out = state.strings.builder();
+    defer out.deinit();
     var index = start;
     while (index <= stop) : (index += 1) {
         if ((index -% start) & 0xfff == 0) try state.budget.checkInterrupt();
-        if (index != start) try out.appendSlice(state.allocator, sep);
+        if (index != start) try out.appendSlice(sep);
         const value = try index_mod.getTableFromThread(state, thread, table_value, .{ .integer = index });
         switch (value) {
-            .integer, .number, .string => try runtime.appendLuaString(state.allocator, &out, value),
+            .integer, .number, .string => try runtime.appendLuaString(state.allocator, &out.buffer, value),
             else => return state.failLibraryFmt("invalid value ({s}) at index {d} in table for 'concat'", .{ runtime.typeName(value), index }),
         }
         if (index == std.math.maxInt(i64)) break;
     }
-    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(out.items) }});
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try out.finish() }});
 }
 
 /// Unique sequence elements in first-occurrence order, compared by raw key equality.
@@ -118,7 +119,7 @@ pub fn pack(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const table_value = try state.newTableWithHints(op.arg_count, 1);
     const table = table_value.table;
     for (0..op.arg_count) |index| try state.setTableRaw(table, .{ .integer = @intCast(index + 1) }, runtime.argValue(state, thread, op, @intCast(index)));
-    try state.setTableRaw(table, .{ .string = try state.strings.intern("n") }, .{ .integer = op.arg_count });
+    try state.setTableRaw(table, .{ .string = static_strings.get("n") }, .{ .integer = op.arg_count });
     try state.returnValues(thread, op.base, op.return_count, &.{table_value});
 }
 

@@ -1,8 +1,8 @@
 const std = @import("std");
 const compile = @import("../compile.zig");
-const errors = @import("../errors.zig");
 const call_mod = @import("call.zig");
 const metatable_mod = @import("metatable.zig");
+const operators_mod = @import("operators.zig");
 const rollback_mod = @import("rollback.zig");
 const State = @import("state.zig").State;
 const types = @import("types.zig");
@@ -26,10 +26,10 @@ const DebugStackSlot = struct {
 };
 
 pub fn lineForFrame(frame: CallFrame) ?usize {
-    if (frame.proto.line_info.items.len == 0) return null;
+    if (frame.closure.proto.line_info.items.len == 0) return null;
     const pc = if (frame.pc == 0) 0 else frame.pc - 1;
-    if (pc >= frame.proto.line_info.items.len) return null;
-    const line = frame.proto.line_info.items[pc].line;
+    if (pc >= frame.closure.proto.line_info.items.len) return null;
+    const line = frame.closure.proto.line_info.items[pc].line;
     return if (line == 0) null else line;
 }
 
@@ -38,7 +38,7 @@ fn debugStackRegister(thread: *Thread, stack_index: usize) ?DebugStackSlot {
     while (frame_index > 0) {
         frame_index -= 1;
         const frame = thread.frames.items[frame_index];
-        const register_count: usize = @intCast(frame.proto.max_registers);
+        const register_count: usize = @intCast(frame.closure.proto.max_registers);
         if (stack_index >= frame.base and stack_index < frame.base + register_count) {
             return .{ .frame_index = frame_index, .register = stack_index - frame.base };
         }
@@ -60,11 +60,6 @@ pub fn appendUnhandledErrorDebugDump(self: *State, thread: *Thread, err: anyerro
     try out.append(self.allocator, '\n');
     if (self.last_error) |payload| switch (payload) {
         .diagnostic => |message| try appendFmt(self.allocator, out, "last_error={s}\n", .{message}),
-        .argument => |argument| {
-            const rendered = try errors.renderArgumentError(self.allocator, argument);
-            defer self.allocator.free(rendered);
-            try appendFmt(self.allocator, out, "last_error={s}\n", .{rendered});
-        },
         .lua_value => {},
     };
     try appendFmt(self.allocator, out, "allocations strings={d} tables={d} closures={d} upvalues={d} threads={d} bytes={d}\n", .{ stats.strings, stats.tables, stats.closures, stats.upvalues, stats.threads, stats.bytes });
@@ -83,14 +78,14 @@ fn appendDebugFrames(self: *State, out: *std.ArrayList(u8), thread: *Thread) !vo
         const frame = thread.frames.items[index];
         const pc = if (frame.pc == 0) @as(usize, 0) else frame.pc - 1;
         const line = lineForFrame(frame) orelse 0;
-        const name = frame.proto.debug_name orelse "(anonymous)";
-        const instruction = if (pc < frame.proto.instructions.items.len)
-            @tagName(std.meta.activeTag(frame.proto.instructions.items[pc]))
+        const name = frame.closure.proto.debug_name orelse "(anonymous)";
+        const instruction = if (pc < frame.closure.proto.instructions.items.len)
+            @tagName(std.meta.activeTag(frame.closure.proto.instructions.items[pc]))
         else
             "<end>";
-        try appendFmt(self.allocator, out, "  frame {d}: {s}:{d} pc={d} op={s} func={s} base={d} return={d}@{d} registers={d}\n", .{ index, frame.proto.source_name, line, pc, instruction, name, frame.base, frame.return_count, frame.return_start, frame.proto.max_registers });
+        try appendFmt(self.allocator, out, "  frame {d}: {s}:{d} pc={d} op={s} func={s} base={d} return={d}@{d} registers={d}\n", .{ index, frame.closure.proto.source_name, line, pc, instruction, name, frame.base, frame.return_count, frame.return_start, frame.closure.proto.max_registers });
         try appendDebugLocals(self, out, thread, frame);
-        try appendDebugVarargs(self, out, frame);
+        try appendDebugVarargs(self, out, frame, thread.stack.items);
         try appendDebugUpvalues(self, out, frame);
     }
 }
@@ -98,7 +93,7 @@ fn appendDebugFrames(self: *State, out: *std.ArrayList(u8), thread: *Thread) !vo
 fn appendDebugLocals(self: *State, out: *std.ArrayList(u8), thread: *Thread, frame: CallFrame) !void {
     const pc = if (frame.pc == 0) @as(usize, 0) else frame.pc - 1;
     var found = false;
-    for (frame.proto.locals.items) |local| {
+    for (frame.closure.proto.locals.items) |local| {
         if (!localActiveAt(local, pc)) continue;
         found = true;
         try appendFmt(self.allocator, out, "    local {s} r{d}", .{ local.name, local.register });
@@ -115,12 +110,12 @@ fn appendDebugLocals(self: *State, out: *std.ArrayList(u8), thread: *Thread, fra
     if (!found) try out.appendSlice(self.allocator, "    locals: <none>\n");
 }
 
-fn appendDebugVarargs(self: *State, out: *std.ArrayList(u8), frame: CallFrame) !void {
-    if (frame.varargs.len == 0) {
+fn appendDebugVarargs(self: *State, out: *std.ArrayList(u8), frame: CallFrame, stack: []const Value) !void {
+    if (frame.vararg_count == 0) {
         try out.appendSlice(self.allocator, "    varargs: <none>\n");
         return;
     }
-    for (frame.varargs, 0..) |value, index| {
+    for (frame.varargs(stack), 0..) |value, index| {
         try appendFmt(self.allocator, out, "    vararg {d} = ", .{index});
         try appendDebugValue(self, out, value);
         try out.append(self.allocator, '\n');
@@ -128,15 +123,15 @@ fn appendDebugVarargs(self: *State, out: *std.ArrayList(u8), frame: CallFrame) !
 }
 
 fn appendDebugUpvalues(self: *State, out: *std.ArrayList(u8), frame: CallFrame) !void {
-    if (frame.closure.upvalues.len == 0) {
+    if (frame.closure.upvalue_count == 0) {
         try out.appendSlice(self.allocator, "    upvalues: <none>\n");
         return;
     }
-    for (frame.closure.upvalues, 0..) |upvalue, index| {
-        const name = if (index < frame.proto.upvalues.items.len) frame.proto.upvalues.items[index].name else "?";
-        const value = if (upvalue.is_open) upvalue.owner.stack.items[upvalue.stack_index] else upvalue.closed;
-        try appendFmt(self.allocator, out, "    upvalue U{d} {s} {s}", .{ index, name, if (upvalue.is_open) "open" else "closed" });
-        if (upvalue.is_open) try appendFmt(self.allocator, out, " stack={d}", .{upvalue.stack_index});
+    for (frame.closure.upvalues(), 0..) |upvalue, index| {
+        const name = if (index < frame.closure.proto.upvalues.items.len) frame.closure.proto.upvalues.items[index].name else "?";
+        const value = upvalue.get();
+        try appendFmt(self.allocator, out, "    upvalue U{d} {s} {s}", .{ index, name, @tagName(upvalue.cell) });
+        if (upvalue.cell == .open) try appendFmt(self.allocator, out, " stack={d}", .{upvalue.cell.open.stack_index});
         try out.appendSlice(self.allocator, " = ");
         try appendDebugValue(self, out, value);
         try out.append(self.allocator, '\n');
@@ -158,10 +153,6 @@ fn appendDebugStack(self: *State, out: *std.ArrayList(u8), thread: *Thread) !voi
 
 fn appendDebugValue(self: *State, out: *std.ArrayList(u8), value: Value) !void {
     try appendFmt(self.allocator, out, "({s}) ", .{debugValueTypeName(value)});
-    if (value == .table and !self.gc.isTrackedTable(value.table)) {
-        try appendFmt(self.allocator, out, "table: 0x{x}", .{@intFromPtr(value.table)});
-        return;
-    }
     try appendValue(self.allocator, out, value);
 }
 
@@ -252,7 +243,7 @@ fn formatTracebackWith(self: *State, thread: *Thread, options: TracebackOptions)
                 }
             },
             .native_iterator => try out.appendSlice(self.allocator, "\n\t[C]: in for iterator 'for iterator'"),
-            .lua => |frame_index| try appendTracebackFrame(self, &out, frames, frame_index),
+            .lua => |frame_index| try appendTracebackFrame(self, &out, thread, frame_index),
         }
     }
     return out.toOwnedSlice(self.allocator);
@@ -279,8 +270,9 @@ fn appendGlobalName(self: *State, out: *std.ArrayList(u8), callee: Value) !bool 
     return true;
 }
 
-fn appendTracebackFrame(self: *State, out: *std.ArrayList(u8), frames: []const CallFrame, index: usize) !void {
+fn appendTracebackFrame(self: *State, out: *std.ArrayList(u8), thread: *const Thread, index: usize) !void {
     const allocator = self.allocator;
+    const frames = thread.frames.items;
     const frame = frames[index];
     if (isNativeEntryFrame(frame)) {
         try out.appendSlice(allocator, "\n\t[C]: in ?");
@@ -288,20 +280,21 @@ fn appendTracebackFrame(self: *State, out: *std.ArrayList(u8), frames: []const C
     }
     var id_buffer: [chunk_id_size]u8 = undefined;
     const stripped = frame.closure.stripped_debug;
-    const source = if (stripped) "?" else chunkId(&id_buffer, frame.proto.source_name);
+    const source = if (stripped) "?" else chunkId(&id_buffer, frame.closure.proto.source_name);
     if (if (stripped) null else lineForFrame(frame)) |line| {
         try appendFmt(allocator, out, "\n\t{s}:{d}: in ", .{ source, line });
     } else {
         try appendFmt(allocator, out, "\n\t{s}: in ", .{source});
     }
-    if (frame.debug_namewhat_override != null and frame.debug_name_override != null) {
-        try appendFmt(allocator, out, "{s} '{s}'", .{ frame.debug_namewhat_override.?, frame.debug_name_override.? });
+    const extra = thread.frameExtra(index);
+    if (extra.debug_namewhat_override != null and extra.debug_name_override != null) {
+        try appendFmt(allocator, out, "{s} '{s}'", .{ extra.debug_namewhat_override.?, extra.debug_name_override.? });
     } else if (callSiteName(frames, index)) |name| {
         try appendFmt(allocator, out, "{s} '{s}'", .{ name.namewhat, name.name });
-    } else if (frame.proto.defined_line == 0) {
+    } else if (frame.closure.proto.defined_line == 0) {
         try out.appendSlice(allocator, "main chunk");
     } else if (!try appendGlobalName(self, out, .{ .closure = frame.closure })) {
-        try appendFmt(allocator, out, "function <{s}:{d}>", .{ source, frame.proto.defined_line });
+        try appendFmt(allocator, out, "function <{s}:{d}>", .{ source, frame.closure.proto.defined_line });
     }
     if (frame.is_tail_call) try out.appendSlice(allocator, "\n\t(...tail calls...)");
 }
@@ -349,6 +342,12 @@ pub fn messageHandlerCallName(thread: *Thread) ?CallName {
         .set_global, .set_table, .set_array, .set_field => "newindex",
         .concat, .concat_range => "concat",
         .compare_branch => |op| @tagName(op.op),
+        .compare_branch_k => |op| switch (op.op) {
+            .eq => "eq",
+            .lt, .gt => "lt",
+            .le, .ge => "le",
+        },
+        inline .add_k, .sub_k, .mul_k, .div_k, .idiv_k, .mod_k, .band_k, .bor_k, .bxor_k, .shl_k, .shr_k => |_, tag| @tagName(comptime operators_mod.constantBinaryOp(tag)),
         .close, .ret => "close",
         inline .add, .sub, .mul, .div, .idiv, .mod, .pow, .unm, .band, .bor, .bxor, .bnot, .shl, .shr, .eq, .lt, .le, .len => |_, tag| @tagName(tag),
         else => return null,
@@ -370,8 +369,8 @@ fn isDirectCallee(frames: []const CallFrame, index: usize) bool {
     const caller = frames[index - 1];
     const callee = frames[index];
     return switch (currentInstruction(caller) orelse return false) {
-        .call => |op| callee.base == caller.base + op.base + 1,
-        .tfor_call => |op| callee.base > caller.base + op.base and callee.base <= caller.base + caller.proto.max_registers,
+        .call => |op| callee.argumentBase() == caller.base + op.base + 1,
+        .tfor_call => |op| callee.argumentBase() > caller.base + op.base and callee.argumentBase() <= caller.base + caller.closure.proto.max_registers,
         else => false,
     };
 }
@@ -393,26 +392,26 @@ fn nativeCallee(thread: *Thread, index: usize) ?TracebackEntry {
 }
 
 fn currentInstruction(frame: CallFrame) ?compile.bytecode.Instruction {
-    if (frame.pc == 0 or frame.pc > frame.proto.instructions.items.len) return null;
-    return frame.proto.instructions.items[frame.pc - 1];
+    if (frame.pc == 0 or frame.pc > frame.closure.proto.instructions.items.len) return null;
+    return frame.closure.proto.instructions.items[frame.pc - 1];
 }
 
 fn callOrigin(frame: CallFrame) ?proto_mod.OperandOrigin {
-    const site = frame.proto.errorSiteAt(frame.pc - 1) orelse return null;
+    const site = frame.closure.proto.errorSiteAt(frame.pc - 1) orelse return null;
     if (site.call_name) |origin| return origin;
     if (site.operands.len != 0) return site.operands[0];
     return null;
 }
 
 fn isNativeEntryFrame(frame: CallFrame) bool {
-    return frame.proto.instructions.items.len == 0 and std.mem.eql(u8, frame.proto.source_name, "=[C]");
+    return frame.closure.proto.instructions.items.len == 0 and std.mem.eql(u8, frame.closure.proto.source_name, "=[C]");
 }
 
 pub const coroutine_entry_source = "=(coroutine entry)";
 
 /// True for the synthetic frame calling a coroutine's non-Lua body, which C Lua lacks.
 pub fn isCoroutineEntryFrame(frame: CallFrame) bool {
-    return std.mem.eql(u8, frame.proto.source_name, coroutine_entry_source);
+    return std.mem.eql(u8, frame.closure.proto.source_name, coroutine_entry_source);
 }
 
 fn originNamewhat(origin: proto_mod.OperandOrigin) ?[]const u8 {
@@ -477,9 +476,9 @@ pub fn currentLine(self: *State, thread: *Thread, level: i64) ?usize {
     const depth: usize = @intCast(level);
     if (depth > thread.frames.items.len) return null;
     const frame = thread.frames.items[thread.frames.items.len - depth];
-    if (frame.proto.line_info.items.len == 0) return null;
+    if (frame.closure.proto.line_info.items.len == 0) return null;
     const pc = if (frame.pc == 0) @as(usize, 0) else frame.pc - 1;
-    return frame.proto.line_info.items[@min(pc, frame.proto.line_info.items.len - 1)].line;
+    return frame.closure.proto.line_info.items[@min(pc, frame.closure.proto.line_info.items.len - 1)].line;
 }
 
 pub fn currentExtraArgs(self: *State, thread: *Thread, level: i64) ?usize {
@@ -488,7 +487,7 @@ pub fn currentExtraArgs(self: *State, thread: *Thread, level: i64) ?usize {
     const depth: usize = @intCast(level);
     if (depth > thread.frames.items.len) return null;
     const frame = thread.frames.items[thread.frames.items.len - depth];
-    return frame.varargs.len;
+    return frame.vararg_count;
 }
 
 pub fn currentWhat(self: *State, thread: *Thread, level: i64) []const u8 {
@@ -498,7 +497,7 @@ pub fn currentWhat(self: *State, thread: *Thread, level: i64) []const u8 {
         const depth: usize = @intCast(level);
         if (depth <= thread.frames.items.len) {
             const frame = thread.frames.items[thread.frames.items.len - depth];
-            if (frame.proto.defined_line == 0) return "main";
+            if (frame.closure.proto.defined_line == 0) return "main";
         }
     }
     return "Lua";
@@ -511,15 +510,16 @@ pub fn currentFunctionName(self: *State, thread: *Thread, level: i64) ?[]const u
     if (level < 1) return null;
     const depth: usize = @intCast(level);
     if (depth > thread.frames.items.len) return null;
-    const frame = thread.frames.items[thread.frames.items.len - depth];
+    const frame_index = thread.frames.items.len - depth;
+    const frame = thread.frames.items[frame_index];
     const pc = if (frame.pc == 0) 0 else frame.pc - 1;
-    for (frame.proto.locals.items) |local| {
+    for (frame.closure.proto.locals.items) |local| {
         if (!std.mem.eql(u8, local.name, "name")) continue;
         if (pc < local.start_pc or (local.end_pc != 0 and pc > local.end_pc)) continue;
         const value = thread.stack.items[frame.base + local.register];
-        if (value == .string) return value.string;
+        if (value == .string) return value.string.bytes();
     }
-    return frame.debug_name_override orelse frame.proto.debug_name;
+    return thread.frameExtra(frame_index).debug_name_override orelse frame.closure.proto.debug_name;
 }
 
 pub fn currentFunctionNameWhat(self: *State, thread: *Thread, level: i64) ?[]const u8 {
@@ -527,11 +527,10 @@ pub fn currentFunctionNameWhat(self: *State, thread: *Thread, level: i64) ?[]con
     if (level < 1) return null;
     const depth: usize = @intCast(level);
     if (depth > thread.frames.items.len) return null;
-    const frame = thread.frames.items[thread.frames.items.len - depth];
-    return frame.debug_namewhat_override;
+    return thread.frameExtra(thread.frames.items.len - depth).debug_namewhat_override;
 }
 
-pub fn setThreadHook(self: *State, target: *Thread, hook: Value, mask: []const u8, count: u32) void {
+pub fn setThreadHook(self: *State, target: *Thread, hook: Value, mask: []const u8, count: u32) !void {
     rollback_mod.touch(target);
     target.hook = hook;
     self.gc.writeBarrier(target, hook);
@@ -546,14 +545,15 @@ pub fn setThreadHook(self: *State, target: *Thread, hook: Value, mask: []const u
     target.hook_line = std.mem.indexOfScalar(u8, mask, 'l') != null;
     target.hook_return = std.mem.indexOfScalar(u8, mask, 'r') != null;
     target.hook_count = count;
-    target.hook_count_remaining = hookDispatchInterval(count);
+    target.hook_count_remaining = count;
     if (target.hook_line and target.frames.items.len != 0) {
         const frame_index = target.frames.items.len - 1;
-        target.frames.items[frame_index].last_hook_line = lineForFrame(target.frames.items[frame_index]);
+        try rollback_mod.threadWritable(target);
+        (try target.frameExtraMut(self.allocator, frame_index)).last_hook_line = lineForFrame(target.frames.items[frame_index]);
     }
 }
 
-pub fn threadHookMask(self: *State, thread: *Thread) ![]const u8 {
+pub fn threadHookMask(self: *State, thread: *Thread) !*const types.String {
     var bytes: [3]u8 = undefined;
     var len: usize = 0;
     if (thread.hook_call) {
@@ -603,8 +603,8 @@ pub fn callLineHook(self: *State, thread: *Thread) !void {
     if (thread.frames.items.len == 0) return;
     const frame_index = thread.frames.items.len - 1;
     const line = lineForFrame(thread.frames.items[frame_index]) orelse return;
-    if (thread.frames.items[frame_index].last_hook_line == line) return;
-    thread.frames.items[frame_index].last_hook_line = line;
+    if (thread.frameExtra(frame_index).last_hook_line == line) return;
+    (try thread.frameExtraMut(self.allocator, frame_index)).last_hook_line = line;
     const line_value = if (thread.frames.items[frame_index].closure.stripped_debug) Value.nil else Value{ .integer = @intCast(line) };
     const args = [_]Value{ .{ .string = try self.strings.intern("line") }, line_value };
     try callHookWithArgs(self, thread, &args);
@@ -616,12 +616,8 @@ pub fn callCountHook(self: *State, thread: *Thread) !void {
         thread.hook_count_remaining -= 1;
         return;
     }
-    thread.hook_count_remaining = hookDispatchInterval(thread.hook_count);
+    thread.hook_count_remaining = thread.hook_count;
     try callHook(self, thread, "count");
-}
-
-fn hookDispatchInterval(count: u32) u32 {
-    return if (count == 0) 0 else count * 2;
 }
 
 pub fn tracebackValue(self: *State, thread: *Thread, op: bytecode.Call) !void {
@@ -654,7 +650,7 @@ pub fn tracebackValue(self: *State, thread: *Thread, op: bytecode.Call) !void {
         try self.returnValues(thread, op.base, op.return_count, &.{message});
         return;
     }
-    const text: ?[]const u8 = if (message == .nil) null else try metatable_mod.valueToString(self, thread, message);
+    const text: ?[]const u8 = if (message == .nil) null else (try metatable_mod.valueToString(self, thread, message)).bytes();
     const level = if (op.arg_count >= 2) toInteger(argValue(self, thread, op, 1)) orelse 1 else 1;
     if (level < 0) {
         try appendFmt(self.allocator, &out, "{s}{s}stack traceback:", .{ text orelse "", if (text == null) "" else "\n" });
@@ -676,8 +672,8 @@ pub fn tracebackValue(self: *State, thread: *Thread, op: bytecode.Call) !void {
 pub fn tracebackMessageHandler(self: *State, thread: *Thread, op: bytecode.Call) !void {
     const message = argValue(self, thread, op, 0);
     const text = switch (message) {
-        .string => |bytes| bytes,
-        .integer, .number => try metatable_mod.valueToString(self, thread, message),
+        .string => |string| string.bytes(),
+        .integer, .number => (try metatable_mod.valueToString(self, thread, message)).bytes(),
         else => blk: {
             if (try metatable_mod.getMetaEvent(self, message, .__tostring)) |metamethod| {
                 const result = try call_mod.callOneResult(self, thread, metamethod, &.{message});
@@ -686,7 +682,7 @@ pub fn tracebackMessageHandler(self: *State, thread: *Thread, op: bytecode.Call)
             var out = std.ArrayList(u8).empty;
             defer out.deinit(self.allocator);
             try appendFmt(self.allocator, &out, "(error object is a {s} value)", .{luaTypeName(message)});
-            break :blk try self.strings.intern(out.items);
+            break :blk (try self.strings.intern(out.items)).bytes();
         },
     };
     const traceback = try formatTracebackWith(self, thread, .{ .message = text, .host_frame = thread.host_frame });
@@ -698,8 +694,8 @@ fn calledByTopInstruction(thread: *Thread, op: bytecode.Call) bool {
     const frames = thread.frames.items;
     if (frames.len == 0) return false;
     const frame = frames[frames.len - 1];
-    if (frame.pc == 0 or frame.pc > frame.proto.instructions.items.len) return false;
-    return switch (frame.proto.instructions.items[frame.pc - 1]) {
+    if (frame.pc == 0 or frame.pc > frame.closure.proto.instructions.items.len) return false;
+    return switch (frame.closure.proto.instructions.items[frame.pc - 1]) {
         .call, .tail_call => |call| call.base == op.base,
         else => false,
     };
@@ -708,7 +704,7 @@ fn calledByTopInstruction(thread: *Thread, op: bytecode.Call) bool {
 fn appendCoroutineTracebackFrame(self: *State, out: *std.ArrayList(u8), target: *Thread, frame: CallFrame, level: i64) !void {
     try out.append(self.allocator, '\n');
     try out.append(self.allocator, '\t');
-    try out.appendSlice(self.allocator, frame.proto.source_name);
+    try out.appendSlice(self.allocator, frame.closure.proto.source_name);
     if (currentFunctionName(self, target, level)) |name| {
         try appendFmt(self.allocator, out, ": in function '{s}'", .{name});
     } else {
@@ -741,7 +737,7 @@ fn appendCoroutineTracebackFrames(self: *State, out: *std.ArrayList(u8), target:
     }
 }
 
-pub fn snapshotCoroutineErrorTraceback(self: *State, target: *Thread) ![]const u8 {
+pub fn snapshotCoroutineErrorTraceback(self: *State, target: *Thread) !*const types.String {
     var out = std.ArrayList(u8).empty;
     defer out.deinit(self.allocator);
     try out.appendSlice(self.allocator, "stack traceback:\n\t'error'");
@@ -759,7 +755,7 @@ pub fn lineForErrorLevel(self: *State, thread: *Thread, level: usize) ?usize {
 pub fn sourceForErrorLevel(self: *State, thread: *Thread, level: usize) ?[]const u8 {
     _ = self;
     if (level == 0 or level > thread.frames.items.len) return null;
-    const source_name = thread.frames.items[thread.frames.items.len - level].proto.source_name;
+    const source_name = thread.frames.items[thread.frames.items.len - level].closure.proto.source_name;
     if (source_name.len > 0 and (source_name[0] == '@' or source_name[0] == '=')) return source_name[1..];
     return source_name;
 }

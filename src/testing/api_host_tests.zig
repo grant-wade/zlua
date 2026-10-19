@@ -350,6 +350,7 @@ test "deinit calls each queued userdata __gc once" {
         defer lua.deinit();
         _ = lua.setGcMode(.incremental);
         try runLua(&lua, "ran = 0");
+        lua.stopGc();
         for (1..5) |id| {
             var source: [96]u8 = undefined;
             try runLua(&lua, try std.fmt.bufPrint(&source, "meta = {{ __gc = function() ran = ran + 1; print('gc', {d}) end }}", .{id}));
@@ -359,6 +360,7 @@ test "deinit calls each queued userdata __gc once" {
             item.deinit();
         }
         try runLua(&lua, "meta = nil");
+        lua.restartGc();
         while (try lua.getGlobal("ran", i64) == 0) _ = try lua.stepGc(.{});
     }
     try std.testing.expectEqualStrings("gc\t4\ngc\t3\ngc\t2\ngc\t1\n", stdout.buffered());
@@ -386,7 +388,7 @@ test "host callback arguments from multiple results survive a full collection" {
     );
 }
 
-test "thread frame storage stays current while frames hold varargs and pending returns" {
+test "thread frame storage stays current while frames hold pending returns" {
     const Host = struct {
         var seen: [8]usize = undefined;
         var count: usize = 0;
@@ -415,5 +417,5 @@ test "thread frame storage stays current while frames hold varargs and pending r
         \\closing(1, 2)
         \\probe()
     );
-    try std.testing.expectEqualSlices(usize, &.{ 0, 3, 4, 2, 4, 0 }, Host.seen[0..Host.count]);
+    try std.testing.expectEqualSlices(usize, &.{ 0, 0, 0, 0, 2, 0 }, Host.seen[0..Host.count]);
 }

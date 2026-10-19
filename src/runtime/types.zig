@@ -1,7 +1,7 @@
 const std = @import("std");
 const compile = @import("../compile.zig");
-const errors = @import("../errors.zig");
 const runtime = @import("../runtime.zig");
+const static_strings = @import("../stdlib/static_strings.zig");
 const table_index = @import("table_index.zig");
 const value_mod = @import("value.zig");
 
@@ -13,6 +13,7 @@ pub const RuntimeError = error{
     RuntimeError,
     StackOverflow,
     UnsupportedOpcode,
+    OutOfMemory,
 };
 
 // Full-byte tags keep the interpreter's frequent type checks to byte loads.
@@ -21,7 +22,7 @@ pub const Value = union(enum(u8)) {
     boolean: bool,
     integer: i64,
     number: f64,
-    string: []const u8,
+    string: *const String,
     table: *Table,
     userdata: *Userdata,
     closure: *Closure,
@@ -61,6 +62,62 @@ pub const Value = union(enum(u8)) {
 };
 
 pub const NativeFn = @import("native_fn.zig").NativeFn;
+
+/// A Lua string, followed by its bytes in the same allocation. Strings of at most
+/// `short_limit` bytes are always interned.
+pub const String = extern struct {
+    gc: GcHeader = .{},
+    len: usize,
+    /// `table_index.hashStringKey` of the bytes, valid once `hashed` is set.
+    hash: u32 = 0,
+    hashed: bool = false,
+    /// In the state's intern set.
+    interned: bool = false,
+    /// From the static catalog; never collected or written.
+    static: bool = false,
+    /// Hash-part entry index where this key was last found by a field access, or `no_field_hint`.
+    field_hint: u8 = no_field_hint,
+
+    pub const short_limit = 40;
+    pub const no_field_hint = std.math.maxInt(u8);
+
+    pub inline fn bytes(self: *const String) []const u8 {
+        return (@as([*]const u8, @ptrCast(self)) + @sizeOf(String))[0..self.len];
+    }
+
+    pub inline fn bytesMut(self: *String) []u8 {
+        return (@as([*]u8, @ptrCast(self)) + @sizeOf(String))[0..self.len];
+    }
+
+    pub inline fn isShort(self: *const String) bool {
+        return self.len <= short_limit;
+    }
+
+    pub inline fn eql(self: *const String, other: *const String) bool {
+        if (self == other) return true;
+        if (self.len <= short_limit) return false;
+        return self.len == other.len and std.mem.eql(u8, self.bytes(), other.bytes());
+    }
+
+    pub inline fn eqlBytes(self: *const String, other: []const u8) bool {
+        return self.len == other.len and std.mem.eql(u8, self.bytes(), other);
+    }
+
+    pub inline fn tableHash(self: *const String) u32 {
+        if (self.hashed) return self.hash;
+        return hashLong(@constCast(self));
+    }
+
+    noinline fn hashLong(self: *String) u32 {
+        self.hash = table_index.hashStringKey(self.bytes());
+        self.hashed = true;
+        return self.hash;
+    }
+
+    pub inline fn gcBytes(self: *const String) usize {
+        return @sizeOf(String) + self.len;
+    }
+};
 
 pub const UserdataFinalizer = *const fn (*anyopaque, ?*const anyopaque) void;
 pub const UserdataDeinit = *const fn (std.mem.Allocator, *anyopaque) void;
@@ -227,18 +284,13 @@ pub const ApiCallbackContext = struct {
 };
 
 pub const RuntimeErrorPayload = union(enum) {
+    /// Process-lifetime text.
     diagnostic: []const u8,
-    argument: errors.ArgumentError,
     lua_value: Value,
 
     pub fn luaValue(self: RuntimeErrorPayload, state: anytype) Value {
         return switch (self) {
-            .diagnostic => |message| .{ .string = message },
-            .argument => |argument| blk: {
-                const rendered = errors.renderArgumentError(state.allocator, argument) catch break :blk .{ .string = "bad argument" };
-                defer state.allocator.free(rendered);
-                break :blk .{ .string = state.strings.intern(rendered) catch "bad argument" };
-            },
+            .diagnostic => |message| .{ .string = state.strings.intern(message) catch static_strings.get("not enough memory") },
             .lua_value => |value| value,
         };
     }
@@ -324,27 +376,105 @@ pub const CoroutineResumeResult = union(enum) {
     failure: Value,
 };
 
+/// A loaded prototype tree's constants in one State, with its strings interned there.
+pub const Chunk = struct {
+    root: *proto_mod.Proto,
+    root_owner: RootOwner,
+    /// Collector epoch of the last mark.
+    epoch: u32 = 0,
+    /// Each prototype's constants, starting at its `constant_offset`.
+    values: []Value,
+
+    pub const RootOwner = enum {
+        /// Freed with the chunk.
+        state,
+        /// Shared with the snapshot this State was created from.
+        snapshot,
+        /// Owned by the host that executed it.
+        host,
+    };
+
+    pub fn allocationBytes(self: *const Chunk) usize {
+        return @sizeOf(Chunk) + self.values.len * @sizeOf(Value);
+    }
+
+    pub fn destroy(self: *Chunk, allocator: std.mem.Allocator) void {
+        if (self.root_owner == .state) {
+            self.root.deinit();
+            allocator.destroy(self.root);
+        }
+        allocator.free(self.values);
+        allocator.destroy(self);
+    }
+};
+
+/// A Lua function, followed by its `upvalue_count` upvalue pointers in the same allocation.
 pub const Closure = struct {
+    gc: GcHeader = .{},
     rollback: ?*@import("rollback.zig").Record(Closure) = null,
     proto: *const proto_mod.Proto,
-    /// Loaded chunk prototype that owns `proto`; null when `proto` is that root.
-    root: ?*const proto_mod.Proto = null,
-    upvalues: []*Upvalue,
-    constants: ?[]?Value = null,
+    /// Null for host frames.
+    chunk: ?*Chunk = null,
+    upvalue_count: u32 = 0,
     stripped_debug: bool = false,
-    marked: bool = false,
-    gc: GcMeta = .{},
+
+    comptime {
+        std.debug.assert(@sizeOf(Closure) % @alignOf(*Upvalue) == 0);
+    }
+
+    pub inline fn constants(self: *const Closure) [*]const Value {
+        return self.chunk.?.values.ptr + self.proto.constant_offset;
+    }
+
+    pub inline fn upvalues(self: *const Closure) []*Upvalue {
+        const base: [*]*Upvalue = @ptrCast(@alignCast(@as([*]u8, @ptrCast(@constCast(self))) + @sizeOf(Closure)));
+        return base[0..self.upvalue_count];
+    }
+
+    pub fn allocationBytes(upvalue_count: usize) usize {
+        return @sizeOf(Closure) + upvalue_count * @sizeOf(*Upvalue);
+    }
+
+    /// Allocates `initial` with room for `upvalue_count` upvalues, which start undefined.
+    pub fn create(allocator: std.mem.Allocator, upvalue_count: usize, initial: Closure) !*Closure {
+        const count = std.math.cast(u32, upvalue_count) orelse return error.OutOfMemory;
+        const memory = try allocator.alignedAlloc(u8, .of(Closure), allocationBytes(count));
+        const closure: *Closure = @ptrCast(memory.ptr);
+        closure.* = initial;
+        closure.upvalue_count = count;
+        return closure;
+    }
+
+    pub fn destroy(allocator: std.mem.Allocator, closure: *Closure) void {
+        const memory: [*]align(@alignOf(Closure)) u8 = @ptrCast(closure);
+        allocator.free(memory[0..allocationBytes(closure.upvalue_count)]);
+    }
 };
 
 pub const Upvalue = struct {
+    gc: GcHeader = .{},
     rollback: ?*@import("rollback.zig").Record(Upvalue) = null,
-    owner: *Thread,
-    stack_index: usize,
-    closed: Value = .nil,
-    is_open: bool = true,
+    /// Next open upvalue of the owner thread.
     next: ?*Upvalue = null,
-    marked: bool = false,
-    gc: GcMeta = .{},
+    cell: Cell,
+
+    pub const Cell = union(enum) {
+        open: Slot,
+        closed: Value,
+    };
+
+    /// The owner thread's stack slot that an open upvalue refers to.
+    pub const Slot = struct {
+        owner: *Thread,
+        stack_index: usize,
+    };
+
+    pub inline fn get(self: *const Upvalue) Value {
+        return switch (self.cell) {
+            .open => |slot| slot.owner.stack.items[slot.stack_index],
+            .closed => |value| value,
+        };
+    }
 };
 
 pub const TableEntry = struct {
@@ -352,7 +482,7 @@ pub const TableEntry = struct {
     value: Value,
 };
 
-pub const TableEntryIndex = table_index.EntryIndex;
+pub const TableHashPart = table_index.HashPart;
 
 /// Metamethod events whose absence a metatable caches in
 /// `Table.metamethod_absent`. Tag names are the event keys.
@@ -392,65 +522,190 @@ pub const MetaEvent = enum(u5) {
     inline fn bit(event: MetaEvent) u32 {
         return @as(u32, 1) << @intFromEnum(event);
     }
+
+    fn nameHash(event: MetaEvent) u32 {
+        return name_hashes[@intFromEnum(event)];
+    }
+
+    const name_hashes = blk: {
+        @setEvalBranchQuota(100_000);
+        const events = std.enums.values(MetaEvent);
+        var hashes: [events.len]u32 = undefined;
+        for (events, &hashes) |event, *hash| hash.* = table_index.hashStringKey(@tagName(event));
+        break :blk hashes;
+    };
+};
+
+/// A table's array part.
+pub const TableArray = struct {
+    ptr: [*]Value = empty_ptr,
+    len: u32 = 0,
+    capacity: u32 = 0,
+
+    const empty_ptr: [*]Value = @ptrFromInt(@alignOf(Value));
+
+    pub inline fn items(self: TableArray) []Value {
+        return self.ptr[0..self.len];
+    }
+
+    pub inline fn allocatedSlice(self: TableArray) []Value {
+        return self.ptr[0..self.capacity];
+    }
+
+    pub fn ensureTotalCapacityPrecise(self: *TableArray, allocator: std.mem.Allocator, capacity: usize) !void {
+        if (capacity <= self.capacity) return;
+        const new_capacity = std.math.cast(u32, capacity) orelse return error.OutOfMemory;
+        if (self.capacity != 0) {
+            if (allocator.remap(self.allocatedSlice(), new_capacity)) |memory| {
+                self.ptr = memory.ptr;
+                self.capacity = new_capacity;
+                return;
+            }
+        }
+        const memory = try allocator.alloc(Value, new_capacity);
+        @memcpy(memory[0..self.len], self.items());
+        if (self.capacity != 0) allocator.free(self.allocatedSlice());
+        self.ptr = memory.ptr;
+        self.capacity = new_capacity;
+    }
+
+    /// New elements are undefined.
+    pub fn resize(self: *TableArray, allocator: std.mem.Allocator, new_len: usize) !void {
+        try self.ensureTotalCapacityPrecise(allocator, new_len);
+        self.len = @intCast(new_len);
+    }
+
+    pub inline fn appendAssumeCapacity(self: *TableArray, value: Value) void {
+        self.ptr[self.len] = value;
+        self.len += 1;
+    }
+
+    /// A copy with the same capacity.
+    pub fn clone(self: TableArray, allocator: std.mem.Allocator) !TableArray {
+        if (self.capacity == 0) return .{};
+        const memory = try allocator.alloc(Value, self.capacity);
+        @memcpy(memory[0..self.len], self.items());
+        return .{ .ptr = memory.ptr, .len = self.len, .capacity = self.capacity };
+    }
+
+    pub fn deinit(self: *TableArray, allocator: std.mem.Allocator) void {
+        if (self.capacity != 0) allocator.free(self.allocatedSlice());
+        self.* = .{};
+    }
 };
 
 pub const Table = struct {
-    // Up to this many entries, a linear scan beats maintaining a hash index.
-    const linear_entry_limit = 4;
-
+    gc: GcHeader = .{},
     rollback: ?*@import("rollback.zig").Record(Table) = null,
-    array: std.ArrayList(Value) = .empty,
-    entries: std.ArrayList(TableEntry) = .empty,
-    entry_index: TableEntryIndex = .{},
+    array: TableArray = .{},
+    hash: ?*TableHashPart = null,
     metatable: ?*Table = null,
-    metatable_prev: ?*Table = null,
-    metatable_next: ?*Table = null,
-    marked: bool = false,
-    gc: GcMeta = .{},
+    /// Has been some table's metatable.
+    used_as_metatable: bool = false,
+    /// In `State.table_finalizers` or `State.table_pending_finalizers`.
     finalizer_registered: bool = false,
-    finalizer_next: ?*Table = null,
-    finalizer_prev: ?*Table = null,
-    finalizer_order: u64 = 0,
     /// Bit `e` set: this metatable has no raw value for `MetaEvent` `e`. Hash-part
     /// writes that may turn nil into non-nil clear the whole set.
     metamethod_absent: u32 = 0,
+    /// In `Gc.weak`.
+    in_weak_list: bool = false,
+    /// In `Gc.tables`.
+    in_table_list: bool = false,
 
     pub inline fn init(allocator: std.mem.Allocator, array_hint: u32, hash_hint: u32) !Table {
         var table = Table{};
         errdefer table.deinit(allocator);
-        try table.array.ensureTotalCapacity(allocator, array_hint);
-        try table.entries.ensureTotalCapacity(allocator, hash_hint);
-        if (hash_hint > linear_entry_limit) try table.entry_index.ensureTotalCapacity(allocator, hash_hint);
+        try table.array.ensureTotalCapacityPrecise(allocator, array_hint);
+        if (hash_hint != 0) table.hash = try TableHashPart.create(allocator, try TableHashPart.capacityFor(hash_hint));
         return table;
     }
 
     pub fn deinit(self: *Table, allocator: std.mem.Allocator) void {
-        self.entry_index.deinit(allocator);
-        self.entries.deinit(allocator);
+        if (self.hash) |part| part.destroy(allocator);
         self.array.deinit(allocator);
         self.* = undefined;
     }
 
+    pub inline fn reserveArray(self: *Table, allocator: std.mem.Allocator, count: usize) !void {
+        if (count > self.array.capacity) try self.array.ensureTotalCapacityPrecise(allocator, try grownCapacity(Value, count));
+    }
+
+    pub inline fn reserveEntries(self: *Table, allocator: std.mem.Allocator, count: usize) !void {
+        if (count > self.entryCapacity()) try self.growHash(allocator, count);
+    }
+
+    fn growHash(self: *Table, allocator: std.mem.Allocator, count: usize) !void {
+        const part = try TableHashPart.create(allocator, try TableHashPart.capacityFor(count));
+        if (self.hash) |old| {
+            for (old.entries()) |entry| part.appendAssumeCapacity(entry.key, entry.value);
+            old.destroy(allocator);
+        }
+        self.hash = part;
+    }
+
+    pub inline fn entries(self: *const Table) []TableEntry {
+        const part = self.hash orelse return &.{};
+        return part.entries();
+    }
+
+    pub inline fn entryCapacity(self: *const Table) usize {
+        const part = self.hash orelse return 0;
+        return part.capacity;
+    }
+
+    /// `count` must not exceed the current number of entries.
+    pub fn truncateEntries(self: *Table, count: usize) void {
+        const part = self.hash orelse return;
+        if (count == part.len) return;
+        part.len = @intCast(count);
+        part.reindex();
+    }
+
+    /// The keys must be distinct and absent, and capacity reserved.
+    pub fn appendEntriesAssumeCapacity(self: *Table, new_entries: []const TableEntry) void {
+        const part = self.hash.?;
+        for (new_entries) |entry| part.appendAssumeCapacity(entry.key, entry.value);
+    }
+
+    fn grownCapacity(comptime T: type, count: usize) !usize {
+        return std.math.ceilPowerOfTwo(usize, @max(count, 64 / @sizeOf(T))) catch error.OutOfMemory;
+    }
+
     pub fn get(self: *const Table, key: Value) Value {
         if (value_mod.arrayIndex(key)) |index| {
-            if (index <= self.array.items.len) return self.array.items[index - 1];
+            if (index <= self.array.len) return self.array.items()[index - 1];
         }
-        if (self.findEntry(key)) |index| return self.entries.items[index].value;
+        if (self.findEntry(key)) |index| return self.entries()[index].value;
         return .nil;
     }
 
     /// Raw read of a string key whose `table_index.hashStringKey` the caller already knows.
     pub inline fn getStringHashed(self: *const Table, key: []const u8, hash: u32) Value {
-        if (self.findStringEntry(key, hash)) |index| return self.entries.items[index].value;
+        if (self.findStringEntry(key, hash)) |index| return self.entries()[index].value;
         return .nil;
     }
 
+    pub inline fn getString(self: *const Table, key: *const String) Value {
+        if (self.findStringKey(key)) |index| return self.entries()[index].value;
+        return .nil;
+    }
+
+    pub inline fn getLiteral(self: *const Table, comptime key: []const u8) Value {
+        return self.getStringHashed(key, comptime table_index.hashStringKey(key));
+    }
+
+    pub fn getBytes(self: *const Table, key: []const u8) Value {
+        return self.getStringHashed(key, table_index.hashStringKey(key));
+    }
+
     pub inline fn findStringEntry(self: *const Table, key: []const u8, hash: u32) ?usize {
-        if (self.entry_index.capacity() != 0) return self.entry_index.find(self.entries.items, .{ .string = key }, hash);
-        for (self.entries.items, 0..) |entry, index| {
-            if (entry.key == .string and table_index.stringsEqual(entry.key.string, key)) return index;
-        }
-        return null;
+        const part = self.hash orelse return null;
+        return part.findBytes(key, hash);
+    }
+
+    pub inline fn findStringKey(self: *const Table, key: *const String) ?usize {
+        const part = self.hash orelse return null;
+        return part.find(.{ .string = key });
     }
 
     pub inline fn metaEventAbsent(self: *const Table, event: MetaEvent) bool {
@@ -461,7 +716,7 @@ pub const Table = struct {
     pub fn metaEvent(self: *Table, event: MetaEvent) Value {
         if (self.metaEventAbsent(event)) return .nil;
         const value = switch (event) {
-            inline else => |tag| self.getStringHashed(@tagName(tag), comptime table_index.hashStringKey(@tagName(tag))),
+            inline else => |tag| self.getStringHashed(@tagName(tag), comptime tag.nameHash()),
         };
         if (value == .nil) self.metamethod_absent |= event.bit();
         return value;
@@ -473,17 +728,8 @@ pub const Table = struct {
     }
 
     pub fn findEntry(self: *const Table, key: Value) ?usize {
-        if (key == .string) return self.findStringEntry(key.string, table_index.hashStringKey(key.string));
-        if (self.entry_index.capacity() != 0) return self.entry_index.find(self.entries.items, key, table_index.hashKey(key));
-        for (self.entries.items, 0..) |entry, index| {
-            if (value_mod.valuesEqual(entry.key, key)) return index;
-        }
-        return null;
-    }
-
-    pub fn rebuildEntryIndex(self: *Table, allocator: std.mem.Allocator) !void {
-        if (self.entry_index.capacity() == 0 and self.entries.items.len <= linear_entry_limit) return;
-        try self.entry_index.rebuild(allocator, self.entries.items);
+        const part = self.hash orelse return null;
+        return part.find(key);
     }
 
     /// Insert an absent hash key using reserved storage. The caller must check
@@ -491,130 +737,126 @@ pub const Table = struct {
     pub fn insertHashEntryNoAlloc(self: *Table, key: Value, value: Value) bool {
         if (self.rollback) |record| if (!record.header.detached) return false;
         if (value == .nil) return true;
-        if (self.entry_index.capacity() != 0 or self.entries.items.len >= linear_entry_limit or
-            self.entries.items.len == self.entries.capacity) return false;
+        const part = self.hash orelse return false;
+        if (part.slot_count != 0 or part.len == part.capacity) return false;
         self.invalidateMetaEvents();
-        self.entries.appendAssumeCapacity(.{ .key = key, .value = value });
+        part.appendAssumeCapacity(key, value);
         return true;
     }
 
     pub fn set(self: *Table, allocator: std.mem.Allocator, key: Value, value: Value) !void {
         try @import("rollback.zig").tableWritable(self);
         if (value_mod.arrayIndex(key)) |index| {
-            if (index <= self.array.items.len) {
-                self.array.items[index - 1] = value;
+            if (index <= self.array.len) {
+                self.array.items()[index - 1] = value;
                 return;
             }
-            if (value != .nil and index == self.array.items.len + 1) {
-                try self.array.append(allocator, value);
+            if (value != .nil and index == self.array.len + 1) {
+                try self.reserveArray(allocator, index);
+                self.array.appendAssumeCapacity(value);
                 self.removeHashKey(key);
                 return;
             }
             if (value != .nil and index <= self.array.capacity) {
-                const old_len = self.array.items.len;
+                const old_len = self.array.len;
                 try self.array.resize(allocator, index);
-                @memset(self.array.items[old_len..], .nil);
-                self.array.items[index - 1] = value;
+                @memset(self.array.items()[old_len..], .nil);
+                self.array.items()[index - 1] = value;
                 self.removeHashKey(key);
                 return;
             }
         }
         self.invalidateMetaEvents();
         if (self.findEntry(key)) |index| {
-            self.entries.items[index].value = value;
+            self.entries()[index].value = value;
             return;
         }
         if (value != .nil) {
-            // Reserve everything first so allocation failure cannot leave a partial index.
-            try self.entries.ensureUnusedCapacity(allocator, 1);
-            if (self.entry_index.capacity() == 0 and self.entries.items.len == linear_entry_limit) {
-                try self.entry_index.rebuild(allocator, self.entries.items);
-            }
-            if (self.entry_index.capacity() != 0) {
-                try self.entry_index.ensureUnusedCapacity(allocator, 1);
-                self.entry_index.insertAssumeCapacity(table_index.hashKey(key), self.entries.items.len);
-            }
-            self.entries.appendAssumeCapacity(.{ .key = key, .value = value });
+            try self.reserveEntries(allocator, self.entries().len + 1);
+            self.hash.?.appendAssumeCapacity(key, value);
         }
     }
 
     pub fn setExistingNonNil(self: *Table, key: Value, value: Value) bool {
         if (self.rollback) |record| if (!record.header.detached) return false;
         if (value_mod.arrayIndex(key)) |index| {
-            if (index <= self.array.items.len and self.array.items[index - 1] != .nil) {
-                self.array.items[index - 1] = value;
+            if (index <= self.array.len and self.array.items()[index - 1] != .nil) {
+                self.array.items()[index - 1] = value;
                 return true;
             }
             return false;
         }
         if (self.findEntry(key)) |index| {
-            if (self.entries.items[index].value == .nil) return false;
-            self.entries.items[index].value = value;
+            const entry = &self.entries()[index];
+            if (entry.value == .nil) return false;
+            entry.value = value;
             return true;
         }
         return false;
     }
 
-    pub fn len(self: *const Table) i64 {
-        var result = self.array.items.len;
-        while (result > 0 and self.array.items[result - 1] == .nil) result -= 1;
-        if (self.entries.items.len == 0) return @intCast(result);
-        while (result < std.math.maxInt(i64)) {
-            const next_index = result + 1;
+    pub fn len(self: *Table) i64 {
+        var border = self.array.len;
+        while (border > 0 and self.array.items()[border - 1] == .nil) border -= 1;
+        if (border != self.array.len) self.trimArray(border);
+        if (self.entries().len == 0) return @intCast(border);
+        while (border < std.math.maxInt(i64)) {
+            const next_index = border + 1;
             if (self.get(.{ .integer = @intCast(next_index) }) == .nil) break;
-            result = next_index;
+            border = next_index;
         }
-        return @intCast(result);
+        return @intCast(border);
+    }
+
+    fn trimArray(self: *Table, border: usize) void {
+        if (self.rollback) |record| if (!record.header.detached) return;
+        self.array.len = @intCast(border);
     }
 
     pub fn next(self: *const Table, key: Value) ![2]Value {
         if (key == .nil) return self.firstEntryAfterArray(0);
-        if (value_mod.arrayIndex(key)) |index| {
-            if (index <= self.array.items.len) return self.firstEntryAfterArray(index);
+        const array_index = value_mod.arrayIndex(key);
+        if (array_index) |index| {
+            if (index <= self.array.len) return self.firstEntryAfterArray(index);
         }
         if (self.findEntry(key)) |index| {
             return self.firstHashEntryFrom(index + 1);
+        }
+        if (array_index) |index| {
+            if (index <= self.array.capacity) return self.firstHashEntryFrom(0);
         }
         return error.RuntimeError;
     }
 
     fn firstEntryAfterArray(self: *const Table, index: usize) [2]Value {
         var next_index = index;
-        while (next_index < self.array.items.len) {
+        while (next_index < self.array.len) {
             next_index += 1;
-            const value = self.array.items[next_index - 1];
+            const value = self.array.items()[next_index - 1];
             if (value != .nil) return .{ .{ .integer = @intCast(next_index) }, value };
         }
         return self.firstHashEntryFrom(0);
     }
 
     fn firstHashEntryFrom(self: *const Table, start: usize) [2]Value {
-        var index = start;
-        while (index < self.entries.items.len) : (index += 1) {
-            const entry = self.entries.items[index];
+        const hash_entries = self.entries();
+        if (start >= hash_entries.len) return .{ .nil, .nil };
+        for (hash_entries[start..]) |entry| {
             if (entry.value != .nil) return .{ entry.key, entry.value };
         }
         return .{ .nil, .nil };
     }
 
     pub fn removeHashKey(self: *Table, key: Value) void {
-        if (self.entries.items.len == 0) return;
+        if (self.entries().len == 0) return;
         if (self.findEntry(key)) |index| self.removeEntryAt(index);
     }
 
     /// Removes one entry, keeping the order of the rest for `next`.
     pub fn removeEntryAt(self: *Table, index: usize) void {
-        std.mem.copyForwards(TableEntry, self.entries.items[index .. self.entries.items.len - 1], self.entries.items[index + 1 ..]);
-        self.entries.items.len -= 1;
-        self.reindexEntries();
-    }
-
-    /// Restores the index after entries were removed or moved. Never allocates,
-    /// since the index already holds at least as many slots as entries.
-    pub fn reindexEntries(self: *Table) void {
-        if (self.entry_index.capacity() == 0) return;
-        self.entry_index.clearRetainingCapacity();
-        for (self.entries.items, 0..) |entry, position| self.entry_index.insertAssumeCapacity(table_index.hashKey(entry.key), position);
+        const hash_entries = self.entries();
+        std.mem.copyForwards(TableEntry, hash_entries[index .. hash_entries.len - 1], hash_entries[index + 1 ..]);
+        self.truncateEntries(hash_entries.len - 1);
     }
 };
 
@@ -632,6 +874,7 @@ pub const ValueRoots = struct {
 };
 
 pub const Userdata = struct {
+    gc: GcHeader = .{},
     scope_readers: usize = 0,
     scope_writers: usize = 0,
     rollback: ?*@import("rollback.zig").Record(Userdata) = null,
@@ -643,38 +886,45 @@ pub const Userdata = struct {
     finalizer: ?UserdataFinalizer = null,
     finalizer_data: ?*const anyopaque = null,
     deinit_fn: ?UserdataDeinit = null,
-    marked: bool = false,
-    gc: GcMeta = .{},
     finalized: bool = false,
     finalization_pending: bool = false,
     finalizer_next: ?*Userdata = null,
     /// Registered for its metatable's `__gc`, like `Table.finalizer_registered`.
     lua_finalizer_registered: bool = false,
-    /// Registration order on the `Table.finalizer_order` scale, then the
+    /// Registration order on the `TableFinalizer.order` scale, then the
     /// position in the finalizer queue once separated.
     lua_finalizer_order: u64 = 0,
     lua_finalizer_next: ?*Userdata = null,
 };
 
+/// A table registered for a Lua `__gc`, with its order on the finalizer scale.
+pub const TableFinalizer = struct {
+    table: *Table,
+    order: u64,
+};
+
 /// An object separated for a Lua `__gc` call.
 pub const FinalizerObject = union(enum) {
-    table: *Table,
+    table: TableFinalizer,
     userdata: *Userdata,
 
     pub fn order(self: FinalizerObject) u64 {
         return switch (self) {
-            .table => |table| table.finalizer_order,
+            .table => |entry| entry.order,
             .userdata => |userdata| userdata.lua_finalizer_order,
         };
     }
 };
 
 pub const Thread = struct {
+    gc: GcHeader = .{},
     rollback: ?*@import("rollback.zig").Record(Thread) = null,
     /// A Lua value has exposed this thread beyond its current host call.
     exposed: bool = false,
     stack: std.ArrayList(Value) = .empty,
     frames: std.ArrayList(CallFrame) = .empty,
+    /// Extra state of the frames with `has_extra`, at their frame index.
+    frame_extras: std.ArrayList(FrameExtra) = .empty,
     yield_values: std.ArrayList(Value) = .empty,
     protected_continuations: std.ArrayList(ProtectedContinuation) = .empty,
     generic_for_continuations: std.ArrayList(GenericForContinuation) = .empty,
@@ -723,16 +973,16 @@ pub const Thread = struct {
     native_marks: [4]NativeMark = undefined,
     native_mark_count: u8 = 0,
     close_error_value: ?Value = null,
-    error_traceback: ?[]const u8 = null,
+    error_traceback: ?*const String = null,
     pending_unwind_error: ?Value = null,
     pending_unwind_resume_frame_count: usize = 0,
     pending_unwind_target_frame_count: usize = 0,
-    /// Bytes of owned varargs and pending returns held by this thread's frames.
+    /// Bytes of pending returns held by this thread's frames.
     frame_storage_bytes: usize = 0,
+    /// Capacity bytes last reported to the collector.
+    storage_bytes: usize = 0,
     resume_parent: ?*Thread = null,
     entry: Value = .nil,
-    marked: bool = false,
-    gc: GcMeta = .{},
     started: bool = false,
     is_main: bool = false,
     closing: bool = false,
@@ -747,7 +997,7 @@ pub const Thread = struct {
         errdefer thread.deinit(allocator);
         const proto = closure.proto;
         try thread.ensureStack(allocator, @max(proto.max_registers, 1), stack_value_limit);
-        try thread.frames.append(allocator, .{ .closure = closure, .proto = proto, .base = 0, .pc = 0, .return_start = 0, .return_count = 0, .varargs = &.{} });
+        try thread.frames.append(allocator, .{ .closure = closure, .base = 0, .pc = 0, .return_start = 0, .return_count = 0 });
         return thread;
     }
 
@@ -756,7 +1006,8 @@ pub const Thread = struct {
     }
 
     pub fn deinit(self: *Thread, allocator: std.mem.Allocator) void {
-        for (self.frames.items) |*frame| frame.deinit(allocator);
+        for (0..self.frames.items.len) |index| self.releaseFrame(index, allocator);
+        self.frame_extras.deinit(allocator);
         self.yield_values.deinit(allocator);
         self.protected_continuations.deinit(allocator);
         self.generic_for_continuations.deinit(allocator);
@@ -768,9 +1019,37 @@ pub const Thread = struct {
         self.* = undefined;
     }
 
-    pub fn releaseFrame(self: *Thread, frame: *CallFrame, allocator: std.mem.Allocator) void {
-        self.frame_storage_bytes -= frame.storageBytes();
-        frame.deinit(allocator);
+    /// Frees the extra state of frame `index`, which stays on the frame list.
+    pub fn releaseFrame(self: *Thread, index: usize, allocator: std.mem.Allocator) void {
+        const frame = &self.frames.items[index];
+        if (!frame.has_extra) return;
+        frame.has_extra = false;
+        const extra = &self.frame_extras.items[index];
+        if (extra.pending_returns) |returns| {
+            self.frame_storage_bytes -= returns.len * @sizeOf(Value);
+            allocator.free(returns);
+        }
+        extra.* = .{};
+    }
+
+    /// The extra state of frame `index`, or defaults when it has none.
+    pub fn frameExtra(self: *const Thread, index: usize) FrameExtra {
+        return if (self.frames.items[index].has_extra) self.frame_extras.items[index] else .{};
+    }
+
+    /// The extra state of frame `index`, created on first use.
+    pub fn frameExtraMut(self: *Thread, allocator: std.mem.Allocator, index: usize) !*FrameExtra {
+        const frame = &self.frames.items[index];
+        if (!frame.has_extra) {
+            if (self.frame_extras.items.len <= index) try self.frame_extras.appendNTimes(allocator, .{}, index + 1 - self.frame_extras.items.len);
+            self.frame_extras.items[index] = .{};
+            frame.has_extra = true;
+        }
+        return &self.frame_extras.items[index];
+    }
+
+    pub inline fn clearHookLine(self: *Thread, index: usize) void {
+        if (self.frames.items[index].has_extra) self.frame_extras.items[index].last_hook_line = null;
     }
 
     pub fn noteContinuation(self: *Thread, frame_count: usize) void {
@@ -799,7 +1078,7 @@ pub const Thread = struct {
     /// the frame's registers and any running native function's arguments.
     pub fn scratchRegister(self: *const Thread) u32 {
         const frame_count = self.frames.items.len;
-        const registers = self.frames.items[frame_count - 1].proto.max_registers;
+        const registers = self.frames.items[frame_count - 1].closure.proto.max_registers;
         const call = self.native_call orelse return registers;
         if (call.frame_count != frame_count) return registers;
         return @max(registers, call.base + 1 + call.arg_count);
@@ -833,43 +1112,36 @@ pub const NativeCall = struct {
 
 pub const CallFrame = struct {
     closure: *Closure,
-    proto: *const proto_mod.Proto,
-    base: usize,
-    pc: usize,
-    return_start: usize,
+    base: u32,
+    pc: u32,
+    return_start: u32,
+    /// Stack index of the first extra argument, which sits below `base`.
+    vararg_base: u32 = 0,
+    vararg_count: u32 = 0,
     return_count: u16,
-    varargs: []const Value,
-    owns_varargs: bool = false,
-    vararg_table_local: Value = .nil,
     named_vararg_readonly: bool = false,
-    last_hook_line: ?usize = null,
+    is_tail_call: bool = false,
+    /// `Thread.frame_extras` holds this frame's `FrameExtra` at the same index.
+    has_extra: bool = false,
+
+    /// Stack index of the first argument the frame was called with.
+    pub fn argumentBase(self: CallFrame) usize {
+        return if (self.vararg_count != 0) self.vararg_base - self.closure.proto.param_count else self.base;
+    }
+
+    pub fn varargs(self: CallFrame, stack: []const Value) []const Value {
+        return stack[self.vararg_base..][0..self.vararg_count];
+    }
+};
+
+/// Rarely set state of a call frame.
+pub const FrameExtra = struct {
     debug_name_override: ?[]const u8 = null,
     debug_namewhat_override: ?[]const u8 = null,
-    is_tail_call: bool = false,
+    last_hook_line: ?usize = null,
     pending_returns: ?[]Value = null,
-
-    pub fn storageBytes(self: CallFrame) usize {
-        const varargs = if (self.owns_varargs) self.varargs.len else 0;
-        const returns = if (self.pending_returns) |values| values.len else 0;
-        return (varargs + returns) * @sizeOf(Value);
-    }
-
-    pub fn deinit(self: *CallFrame, allocator: std.mem.Allocator) void {
-        if (self.owns_varargs) allocator.free(self.varargs);
-        if (self.pending_returns) |returns| allocator.free(returns);
-        self.varargs = &.{};
-        self.owns_varargs = false;
-        self.pending_returns = null;
-    }
+    vararg_table_local: Value = .nil,
 };
-
-pub const StringAllocation = struct {
-    bytes: []const u8,
-    marked: bool = false,
-    gc: GcMeta = .{},
-};
-pub const PointerAllocationIndex = @import("address_index.zig").AddressIndex;
-pub const ObjectAllocationIndex = @import("address_index.zig").ObjectAddressIndex;
 
 /// Hashes object addresses, which are distinct and aligned, without Wyhash.
 pub const AddressContext = struct {
@@ -883,17 +1155,25 @@ pub const AddressContext = struct {
     }
 };
 
-/// Collector scratch state never participates in logical rollback dirtiness.
-pub const GcMeta = struct {
-    epoch: u64 = 0,
-    generation: u64 = 0,
-    color: enum { white, gray, black } = .white,
-    age: enum { new, survivor, old } = .new,
+pub const GcColor = enum(u8) { white, gray, black };
+pub const GcAge = enum(u8) { new, survivor, old };
+
+/// Collector state embedded in every collectable object.
+pub const GcHeader = extern struct {
+    pub const untracked = std.math.maxInt(u32);
+
+    /// Collector epoch of the last mark; `color` is stale when it differs.
+    epoch: u32 = 0,
+    /// Collector generation at allocation; any older generation means old.
+    generation: u32 = 0,
+    /// Position in this type's registry; `untracked` for strings and objects the collector doesn't own.
+    registry_index: u32 = untracked,
+    color: GcColor = .white,
+    age: GcAge = .new,
+    /// In `Gc.remembered`.
     remembered: bool = false,
-    weak_epoch: u64 = 0,
-    tables_epoch: u64 = 0,
+    /// Referenced a young object when last traced.
     has_young: bool = false,
-    storage_bytes: usize = 0,
 };
 
 /// Queue entries own identities, never pointers into growable registries.

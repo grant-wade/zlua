@@ -20,16 +20,16 @@ pub fn captureUpvalue(self: *State, thread: *Thread, stack_index: usize) !*Upval
     var previous: ?*Upvalue = null;
     var current = thread.open_upvalues;
     while (current) |upvalue| : (current = upvalue.next) {
-        if (upvalue.stack_index <= stack_index) {
-            if (upvalue.stack_index == stack_index) return upvalue;
+        if (upvalue.cell.open.stack_index <= stack_index) {
+            if (upvalue.cell.open.stack_index == stack_index) return upvalue;
             break;
         }
         previous = upvalue;
     }
 
-    const upvalue = try self.allocator.create(Upvalue);
-    errdefer self.allocator.destroy(upvalue);
-    upvalue.* = .{ .owner = thread, .stack_index = stack_index, .next = current };
+    const upvalue = try self.objects().create(Upvalue);
+    errdefer self.objects().destroy(upvalue);
+    upvalue.* = .{ .cell = .{ .open = .{ .owner = thread, .stack_index = stack_index } }, .next = current };
     try self.registerAllocation("upvalue_allocations", upvalue);
     self.gc.noteAllocation(@sizeOf(Upvalue));
     if (previous) |prev| {
@@ -44,33 +44,35 @@ pub fn captureUpvalue(self: *State, thread: *Thread, stack_index: usize) !*Upval
 pub fn readUpvalue(self: *State, thread: *Thread, index: bytecode.UpvalueIndex) Value {
     _ = self;
     const frame = thread.frames.items[thread.frames.items.len - 1];
-    const upvalue = frame.closure.upvalues[index];
-    return if (upvalue.is_open) upvalue.owner.stack.items[upvalue.stack_index] else upvalue.closed;
+    return frame.closure.upvalues()[index].get();
 }
 
 pub fn writeUpvalue(self: *State, thread: *Thread, index: bytecode.UpvalueIndex, value: Value) !void {
     const frame = thread.frames.items[thread.frames.items.len - 1];
-    const upvalue = frame.closure.upvalues[index];
+    const upvalue = frame.closure.upvalues()[index];
     rollback_mod.touch(upvalue);
-    if (upvalue.is_open) {
-        try rollback_mod.threadWritable(upvalue.owner);
-        upvalue.owner.stack.items[upvalue.stack_index] = value;
-        self.gc.threadBarrier(upvalue.owner, value);
-    } else {
-        upvalue.closed = value;
-        self.gc.writeBarrier(upvalue, value);
+    switch (upvalue.cell) {
+        .open => |slot| {
+            try rollback_mod.threadWritable(slot.owner);
+            slot.owner.stack.items[slot.stack_index] = value;
+            self.gc.threadBarrier(slot.owner, value);
+        },
+        .closed => |*closed| {
+            closed.* = value;
+            self.gc.writeBarrier(upvalue, value);
+        },
     }
 }
 
 pub fn closeUpvalues(self: *State, thread: *Thread, first_stack_index: usize) void {
     while (thread.open_upvalues) |upvalue| {
-        if (upvalue.stack_index < first_stack_index) break;
-        std.debug.assert(upvalue.is_open);
+        const stack_index = upvalue.cell.open.stack_index;
+        if (stack_index < first_stack_index) break;
         rollback_mod.touch(upvalue);
         rollback_mod.touch(thread);
-        upvalue.closed = thread.stack.items[upvalue.stack_index];
-        self.gc.writeBarrier(upvalue, upvalue.closed);
-        upvalue.is_open = false;
+        const value = thread.stack.items[stack_index];
+        upvalue.cell = .{ .closed = value };
+        self.gc.writeBarrier(upvalue, value);
         thread.open_upvalues = upvalue.next;
         upvalue.next = null;
     }
@@ -95,7 +97,7 @@ pub fn checkToBeClosedRegister(self: *State, thread: *Thread, register: bytecode
 fn toBeClosedLocalName(self: *State, thread: *Thread, register: bytecode.Register) ?[]const u8 {
     _ = self;
     const frame = thread.frames.items[thread.frames.items.len - 1];
-    for (frame.proto.locals.items) |local| {
+    for (frame.closure.proto.locals.items) |local| {
         if (!local.to_close or local.register != register) continue;
         if (!localActiveAt(local, frame.pc)) continue;
         return local.name;
@@ -146,10 +148,10 @@ pub fn closeToBeClosedExitingPc(self: *State, thread: *Thread, frame_index: usiz
     var pending_error = error_value;
     var close_failed = false;
 
-    var index = frame.proto.locals.items.len;
+    var index = frame.closure.proto.locals.items.len;
     while (index > 0) {
         index -= 1;
-        const local = frame.proto.locals.items[index];
+        const local = frame.closure.proto.locals.items[index];
         if (!local.to_close) continue;
         if (!localActiveAt(local, source_pc) or localActiveAt(local, target_pc)) continue;
         const value = thread.stack.items[frame.base + local.register];
@@ -167,6 +169,15 @@ pub fn closeToBeClosedExitingPc(self: *State, thread: *Thread, frame_index: usiz
     if (close_failed) return self.rethrowValue(pending_error.?);
 }
 
+pub fn hasPendingToBeClosed(thread: *const Thread, frame: *const types.CallFrame, instruction_index: usize) bool {
+    for (frame.closure.proto.locals.items) |local| {
+        if (!local.to_close or !localActiveAt(local, instruction_index)) continue;
+        const value = thread.stack.items[frame.base + local.register];
+        if (value != .nil and !(value == .boolean and !value.boolean)) return true;
+    }
+    return false;
+}
+
 pub fn closeActiveToBeClosedInTopFrame(self: *State, thread: *Thread, error_value: ?Value) !void {
     const frame_index = thread.frames.items.len - 1;
     const frame = thread.frames.items[frame_index];
@@ -175,10 +186,10 @@ pub fn closeActiveToBeClosedInTopFrame(self: *State, thread: *Thread, error_valu
     var pending_error = error_value;
     var close_failed = false;
 
-    var index = frame.proto.locals.items.len;
+    var index = frame.closure.proto.locals.items.len;
     while (index > 0) {
         index -= 1;
-        const local = frame.proto.locals.items[index];
+        const local = frame.closure.proto.locals.items[index];
         if (!local.to_close or !localActiveAt(local, pc)) continue;
 
         closeToBeClosedRegister(self, thread, local.register, pending_error) catch |err| {
@@ -208,7 +219,7 @@ pub fn closeFramesTo(self: *State, thread: *Thread, frame_count: usize, error_va
         };
         const frame = thread.frames.items[thread.frames.items.len - 1];
         closeUpvalues(self, thread, frame.base);
-        thread.releaseFrame(&thread.frames.items[thread.frames.items.len - 1], self.allocator);
+        thread.releaseFrame(thread.frames.items.len - 1, self.allocator);
         thread.frames.items.len -= 1;
     }
     if (close_failed) return self.rethrowValue(pending_error.?);
@@ -219,7 +230,7 @@ fn discardFramesTo(self: *State, thread: *Thread, frame_count: usize) void {
     while (thread.frames.items.len > frame_count) {
         const frame = thread.frames.items[thread.frames.items.len - 1];
         closeUpvalues(self, thread, frame.base);
-        thread.releaseFrame(&thread.frames.items[thread.frames.items.len - 1], self.allocator);
+        thread.releaseFrame(thread.frames.items.len - 1, self.allocator);
         thread.frames.items.len -= 1;
     }
 }

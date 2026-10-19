@@ -519,7 +519,7 @@ pub fn invalidCaptureIndex(state: *State, one_based: u8) !void {
     var message = std.ArrayList(u8).empty;
     defer message.deinit(state.allocator);
     try runtime.appendFmt(state.allocator, &message, "invalid capture index %{d}", .{one_based});
-    return state.failLibrary(try state.strings.intern(message.items));
+    return state.failLibrary(message.items);
 }
 
 pub fn firstMatchValue(state: *State, source: []const u8, matched: Match) !Value {

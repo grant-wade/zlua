@@ -80,12 +80,12 @@ pub const Proto = struct {
     named_vararg_readonly: bool = false,
     /// No to-be-closed locals and a last opcode that stops dispatch, so the fast loop may run it.
     fast_loop_entry: bool = false,
-    /// `fast_loop_entry` with fixed parameters, so calls need not capture varargs.
+    /// `fast_loop_entry` and no vararg table to build at call time.
     fast_loop_call: bool = false,
-    /// Decoded constants indexed like `constants`; `.string` slots are per-State via the closure cache.
+    /// Decoded constants indexed like `constants`; `.string` slots are placeholders.
     constant_values: []const RuntimeValue = &.{},
-    /// `table_index.hashStringKey` of each `.string` constant's bytes, for name operands.
-    constant_hashes: []const u32 = &.{},
+    /// Position of this prototype's first constant in its tree's `Chunk.values`.
+    constant_offset: u32 = 0,
     /// Bit per instruction: a jump that leaves a to-be-closed local's scope. Empty without such locals.
     close_exit_jumps: []const u64 = &.{},
 
@@ -146,6 +146,8 @@ pub const Proto = struct {
                 .add, .sub, .mul, .div, .idiv, .mod, .pow, .band, .bor, .bxor, .shl, .shr, .eq, .lt, .le, .concat => |op| op.dest == register or op.left == register or op.right == register,
                 .concat_range => |op| op.dest == register or (op.first <= register and register - op.first < op.count),
                 .compare_branch => |op| op.left == register or op.right == register,
+                .add_k, .sub_k, .mul_k, .div_k, .idiv_k, .mod_k, .band_k, .bor_k, .bxor_k, .shl_k, .shr_k => |op| op.dest == register or op.left == register,
+                .compare_branch_k => |op| op.register == register,
                 .test_set => |op| op.dest == register or op.source == register,
                 // Conservatively reject ranges that could include the binding.
                 inline .call, .tail_call, .for_prep, .for_loop, .tfor_prep, .tfor_call, .tfor_loop => |op| op.base <= register,
@@ -169,6 +171,7 @@ pub const Proto = struct {
         switch (self.instructions.items[index]) {
             .jmp => self.instructions.items[index].jmp = offset,
             .compare_branch => self.instructions.items[index].compare_branch.offset = offset,
+            .compare_branch_k => self.instructions.items[index].compare_branch_k.offset = offset,
             .test_op => self.instructions.items[index].test_op.offset = offset,
             .test_set => self.instructions.items[index].test_set.offset = offset,
             .for_prep => self.instructions.items[index].for_prep.offset = offset,

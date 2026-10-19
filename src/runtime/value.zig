@@ -2,7 +2,7 @@ const std = @import("std");
 const compile = @import("../compile.zig");
 const types = @import("types.zig");
 const number_format = @import("number_format.zig");
-const table_index = @import("table_index.zig");
+const static_strings = @import("../stdlib/static_strings.zig");
 
 const bytecode = compile.bytecode;
 const proto_mod = compile.proto;
@@ -25,7 +25,7 @@ pub fn valuesEqual(lhs: Value, rhs: Value) bool {
             .number => |other| value == other,
             else => false,
         },
-        .string => |value| rhs == .string and std.mem.eql(u8, value, rhs.string),
+        .string => |value| rhs == .string and value.eql(rhs.string),
         .table => |value| rhs == .table and value == rhs.table,
         .userdata => |value| rhs == .userdata and value == rhs.userdata,
         .closure => |value| rhs == .closure and value == rhs.closure,
@@ -69,7 +69,7 @@ pub fn hashValue(value: Value) u64 {
     return switch (value) {
         .integer => |payload| hashInteger(payload),
         .number => |payload| if (floatToInteger(payload)) |integer| hashInteger(integer) else mix(@as(u64, @bitCast(payload)) ^ 0x3c6ef372fe94f82b),
-        .string => |payload| hashString(payload),
+        .string => |payload| payload.tableHash(),
         .table, .gmatch_iterator => |payload| hashPointer(5, payload),
         .userdata => |payload| hashPointer(6, payload),
         .closure => |payload| hashPointer(7, payload),
@@ -115,7 +115,7 @@ pub fn truthy(value: Value) bool {
 pub fn toInteger(value: Value) ?i64 {
     return switch (value) {
         .integer => |integer| integer,
-        .string => |string| parseIntegerStrict(string),
+        .string => |string| parseIntegerStrict(string.bytes()),
         else => null,
     };
 }
@@ -125,7 +125,7 @@ pub fn coerceToInteger(value: Value) ?i64 {
     return switch (value) {
         .integer => |integer| integer,
         .number => |number| floatToInteger(number),
-        .string => |string| parseIntegerStrict(string) orelse if (parseLuaNumber(string)) |number| floatToInteger(number) else |_| null,
+        .string => |string| parseIntegerStrict(string.bytes()) orelse if (parseLuaNumber(string.bytes())) |number| floatToInteger(number) else |_| null,
         else => null,
     };
 }
@@ -134,7 +134,7 @@ pub fn toNumber(value: Value) !f64 {
     return switch (value) {
         .integer => |integer| @floatFromInt(integer),
         .number => |number| number,
-        .string => |string| parseLuaNumber(string),
+        .string => |string| parseLuaNumber(string.bytes()),
         else => error.RuntimeError,
     };
 }
@@ -273,23 +273,25 @@ pub fn appendLuaString(allocator: std.mem.Allocator, out: *std.ArrayList(u8), va
 /// written again, so snapshot workers may share them.
 pub fn prepareProtoTree(proto: *proto_mod.Proto) !void {
     if (proto.runtime_prepared) return;
-    for (proto.children.items) |child| try prepareProtoTree(child);
+    var constant_count: u32 = 0;
+    try prepareProto(proto, &constant_count);
+}
+
+fn prepareProto(proto: *proto_mod.Proto, constant_count: *u32) !void {
+    proto.constant_offset = constant_count.*;
+    constant_count.* = std.math.add(u32, constant_count.*, std.math.cast(u32, proto.constants.items.len) orelse return error.OutOfMemory) catch return error.OutOfMemory;
+    for (proto.children.items) |child| try prepareProto(child, constant_count);
     const values = try proto.arena.allocator().alloc(Value, proto.constants.items.len);
     for (proto.constants.items, values) |constant, *value| {
         value.* = switch (constant) {
             .nil => .nil,
             .boolean => |boolean| .{ .boolean = boolean },
-            .integer => |lexeme| parseIntegerLiteral(lexeme) catch .{ .string = "" },
-            .number => |lexeme| if (parseLuaNumber(lexeme)) |number| .{ .number = number } else |_| .{ .string = "" },
-            .string => .{ .string = "" },
+            .integer => |lexeme| parseIntegerLiteral(lexeme) catch .{ .string = static_strings.get("") },
+            .number => |lexeme| if (parseLuaNumber(lexeme)) |number| .{ .number = number } else |_| .{ .string = static_strings.get("") },
+            .string => .{ .string = static_strings.get("") },
         };
     }
     proto.constant_values = values;
-    const hashes = try proto.arena.allocator().alloc(u32, proto.constants.items.len);
-    for (proto.constants.items, hashes) |constant, *hash| {
-        hash.* = if (constant == .string) table_index.hashStringKey(constant.string) else 0;
-    }
-    proto.constant_hashes = hashes;
     proto.named_vararg_readonly = proto.hasReadOnlyNamedVararg();
     const instructions = proto.instructions.items;
     const last_stops = instructions.len != 0 and switch (instructions[instructions.len - 1]) {
@@ -297,9 +299,23 @@ pub fn prepareProtoTree(proto: *proto_mod.Proto) !void {
         else => false,
     };
     if (proto.has_to_close_locals) proto.close_exit_jumps = try closeExitJumps(proto);
-    proto.fast_loop_entry = last_stops;
-    proto.fast_loop_call = proto.fast_loop_entry and !proto.is_vararg and !proto.named_vararg;
+    proto.fast_loop_entry = last_stops and jumpTargetsInBounds(instructions);
+    proto.fast_loop_call = proto.fast_loop_entry and (!proto.named_vararg or proto.named_vararg_readonly);
     proto.runtime_prepared = true;
+}
+
+fn jumpTargetsInBounds(instructions: []const bytecode.Instruction) bool {
+    for (instructions, 0..) |instruction, index| {
+        const offset: bytecode.JumpOffset = switch (instruction) {
+            .jmp => |offset| offset,
+            inline .compare_branch, .compare_branch_k, .test_op, .test_set, .for_loop, .for_prep, .tfor_prep, .tfor_loop => |op| op.offset,
+            else => continue,
+        };
+        const source = index + 1;
+        const target = if (offset >= 0) source + @as(usize, @intCast(offset)) else source -% @as(usize, @intCast(-offset));
+        if (target >= instructions.len) return false;
+    }
+    return true;
 }
 
 fn closeExitJumps(proto: *proto_mod.Proto) ![]const u64 {
@@ -309,7 +325,7 @@ fn closeExitJumps(proto: *proto_mod.Proto) ![]const u64 {
     for (instructions, 0..) |instruction, index| {
         const offset: bytecode.JumpOffset = switch (instruction) {
             .jmp => |offset| offset,
-            inline .compare_branch, .test_op, .test_set, .for_loop, .for_prep, .tfor_prep, .tfor_loop => |op| op.offset,
+            inline .compare_branch, .compare_branch_k, .test_op, .test_set, .for_loop, .for_prep, .tfor_prep, .tfor_loop => |op| op.offset,
             else => continue,
         };
         const source = index + 1;
@@ -479,7 +495,7 @@ pub fn appendValue(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value:
             var buffer: [max_number_text_len]u8 = undefined;
             try out.appendSlice(allocator, formatNumber(&buffer, value));
         },
-        .string => |string| try out.appendSlice(allocator, string),
+        .string => |string| try out.appendSlice(allocator, string.bytes()),
         .table => |table| try appendFmt(allocator, out, "table: 0x{x}", .{@intFromPtr(table)}),
         .userdata => |userdata| try appendFmt(allocator, out, "userdata: 0x{x}", .{@intFromPtr(userdata)}),
         .closure => |closure| try appendFmt(allocator, out, "function: 0x{x}", .{@intFromPtr(closure)}),

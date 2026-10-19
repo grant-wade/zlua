@@ -3,6 +3,7 @@ const compile = @import("../compile.zig");
 const call_mod = @import("call.zig");
 const debug_mod = @import("debug.zig");
 const host = @import("host.zig");
+const load_mod = @import("load.zig");
 const State = @import("state.zig").State;
 const types = @import("types.zig");
 const upvalue_mod = @import("upvalue.zig");
@@ -14,7 +15,6 @@ const proto_mod = compile.proto;
 const Value = types.Value;
 const CoroutineResumeResult = types.CoroutineResumeResult;
 const Closure = types.Closure;
-const Upvalue = types.Upvalue;
 const Thread = types.Thread;
 const ThreadStatus = types.ThreadStatus;
 const argValue = value_mod.argValue;
@@ -319,8 +319,7 @@ fn startCoroutine(self: *State, target: *Thread, args: []const Value) !void {
             break :blk .{ trampoline, 1 + args.len };
         },
     };
-    var frame = try call_mod.prepareClosureFrame(self, target, closure, 0, 0, arg_count, 0, bytecode.multret_count);
-    errdefer target.releaseFrame(&frame, self.allocator);
+    const frame = try call_mod.prepareClosureFrame(self, target, closure, 0, 0, arg_count, 0, bytecode.multret_count);
     try target.frames.append(self.allocator, frame);
     target.started = true;
     if (target.hook_call and !target.hook_running) try debug_mod.callHook(self, target, "call");
@@ -338,19 +337,13 @@ fn callableEntryClosure(self: *State) !*Closure {
     _ = try proto.emit(.{ .vararg = .{ .dest = 1, .count = bytecode.multret_count } }, 0);
     _ = try proto.emit(.{ .call = .{ .base = 0, .arg_count = bytecode.multret_arg_count, .return_count = bytecode.multret_count } }, 0);
     _ = try proto.emit(.{ .ret = .{ .first = 0, .count = bytecode.multret_count } }, 0);
-    try self.registerAllocation("proto_allocations", proto);
-    errdefer {
-        _ = self.proto_allocations.pop();
-        if (self.rollback) |journal| journal.freed(@intFromPtr(proto));
-    }
+    const chunk = try load_mod.newChunk(self, proto, .state);
+    errdefer load_mod.discardNewChunk(self, chunk);
 
-    const upvalues = try self.allocator.alloc(*Upvalue, 0);
-    errdefer self.allocator.free(upvalues);
-    const closure = try self.allocator.create(Closure);
-    closure.* = .{ .proto = proto, .upvalues = upvalues };
-    errdefer self.allocator.destroy(closure);
+    const closure = try Closure.create(self.objects(), 0, .{ .proto = proto, .chunk = chunk });
+    errdefer Closure.destroy(self.objects(), closure);
     try self.registerAllocation("closure_allocations", closure);
-    self.gc.noteAllocation(@sizeOf(Closure));
+    self.gc.noteAllocation(Closure.allocationBytes(0));
     return closure;
 }
 

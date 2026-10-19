@@ -9,6 +9,7 @@ const bytecode = compile.bytecode;
 const State = runtime.State;
 const Thread = runtime.Thread;
 const Value = runtime.Value;
+const String = runtime.String;
 
 pub fn load(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const loaded_source = loadSource(state, thread, op) catch |err| switch (err) {
@@ -25,17 +26,17 @@ pub fn load(state: *State, thread: *Thread, op: bytecode.Call) !void {
     }
 
     const source_name = if (op.arg_count >= 2 and runtime.argValue(state, thread, op, 1) == .string)
-        runtime.argValue(state, thread, op, 1).string
+        runtime.argValue(state, thread, op, 1).string.bytes()
     else if (runtime.argValue(state, thread, op, 0) == .string)
-        runtime.argValue(state, thread, op, 0).string
+        runtime.argValue(state, thread, op, 0).string.bytes()
     else
         null;
     if (looksLikeBinaryChunk(source)) {
         const environment = loadEnvironment(state, thread, op);
         const closure = load_mod.loadBinaryDump(state, source, environment) catch {
             const error_value = state.currentErrorValue();
-            const message = if (error_value == .string) error_value.string else "cannot load binary chunk";
-            try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.strings.intern(message) } });
+            const message = if (error_value == .string) error_value else Value{ .string = try state.strings.intern("cannot load binary chunk") };
+            try state.returnValues(thread, op.base, op.return_count, &.{ .nil, message });
             return;
         };
         try state.returnValues(thread, op.base, op.return_count, &.{closure});
@@ -44,8 +45,8 @@ pub fn load(state: *State, thread: *Thread, op: bytecode.Call) !void {
 
     const closure = load_mod.loadSourceAsClosureNamedEnv(state, source, source_name, loadEnvironment(state, thread, op)) catch {
         const error_value = state.currentErrorValue();
-        const message = if (error_value == .string) error_value.string else "cannot load source";
-        try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.strings.intern(message) } });
+        const message = if (error_value == .string) error_value else Value{ .string = try state.strings.intern("cannot load source") };
+        try state.returnValues(thread, op.base, op.return_count, &.{ .nil, message });
         return;
     };
     try state.returnValues(thread, op.base, op.return_count, &.{closure});
@@ -58,7 +59,7 @@ const LoadSource = struct {
 
 fn loadSource(state: *State, thread: *Thread, op: bytecode.Call) !LoadSource {
     const source_value = runtime.argValue(state, thread, op, 0);
-    if (source_value == .string) return .{ .source = source_value.string };
+    if (source_value == .string) return .{ .source = source_value.string.bytes() };
     if (!isReaderFunction(source_value)) return .{ .source = try state.expectArgumentString(thread, op, "load", 0) };
 
     var source = std.ArrayList(u8).empty;
@@ -81,9 +82,9 @@ fn loadSource(state: *State, thread: *Thread, op: bytecode.Call) !LoadSource {
         const chunk = if (values.len == 0) Value.nil else values[0];
         switch (chunk) {
             .nil => return .{ .source = try source.toOwnedSlice(state.allocator), .owned = true },
-            .string => |bytes| {
-                if (bytes.len == 0) return .{ .source = try source.toOwnedSlice(state.allocator), .owned = true };
-                try source.appendSlice(state.allocator, bytes);
+            .string => |string| {
+                if (string.len == 0) return .{ .source = try source.toOwnedSlice(state.allocator), .owned = true };
+                try source.appendSlice(state.allocator, string.bytes());
             },
             else => {
                 try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.strings.intern("reader function must return a string") } });
@@ -93,8 +94,8 @@ fn loadSource(state: *State, thread: *Thread, op: bytecode.Call) !LoadSource {
     }
 }
 
-fn loadModeError(state: *State, thread: *Thread, op: bytecode.Call, source: []const u8) !?[]const u8 {
-    const mode = if (op.arg_count >= 3 and runtime.argValue(state, thread, op, 2) == .string) runtime.argValue(state, thread, op, 2).string else "bt";
+fn loadModeError(state: *State, thread: *Thread, op: bytecode.Call, source: []const u8) !?*const String {
+    const mode = if (op.arg_count >= 3 and runtime.argValue(state, thread, op, 2) == .string) runtime.argValue(state, thread, op, 2).string.bytes() else "bt";
     const binary = looksLikeBinaryChunk(source);
     const kind = if (binary) "binary" else "text";
     if (std.mem.indexOfScalar(u8, mode, kind[0]) != null) return null;
@@ -105,7 +106,7 @@ fn loadModeError(state: *State, thread: *Thread, op: bytecode.Call, source: []co
 }
 
 fn invalidLoadMode(state: *State, thread: *Thread, op: bytecode.Call) bool {
-    const mode = if (op.arg_count >= 3 and runtime.argValue(state, thread, op, 2) == .string) runtime.argValue(state, thread, op, 2).string else "bt";
+    const mode = if (op.arg_count >= 3 and runtime.argValue(state, thread, op, 2) == .string) runtime.argValue(state, thread, op, 2).string.bytes() else "bt";
     return std.mem.indexOfScalar(u8, mode, 'B') != null;
 }
 
@@ -139,7 +140,7 @@ pub fn tonumber(state: *State, thread: *Thread, op: bytecode.Call) !void {
         const base = runtime.toInteger(runtime.argValue(state, thread, op, 1)) orelse return state.failArgumentMessage("tonumber", 2, "base out of range");
         if (base < 2 or base > 36) return state.failArgumentMessage("tonumber", 2, "base out of range");
         const string = switch (value) {
-            .string => |string| string,
+            .string => |string| string.bytes(),
             else => return state.failArgumentType("tonumber", 1, "string", value),
         };
         const parsed = parseIntegerBase(runtime.trimAscii(string), @intCast(base)) orelse Value.nil;
@@ -149,7 +150,8 @@ pub fn tonumber(state: *State, thread: *Thread, op: bytecode.Call) !void {
     if (value == .integer or value == .number) {
         try state.returnValues(thread, op.base, op.return_count, &.{value});
     } else if (value == .string) {
-        const parsed = if (runtime.parseIntegerStrict(value.string)) |integer| Value{ .integer = integer } else if (runtime.parseLuaNumber(value.string)) |number| Value{ .number = number } else |_| Value.nil;
+        const text = value.string.bytes();
+        const parsed = if (runtime.parseIntegerStrict(text)) |integer| Value{ .integer = integer } else if (runtime.parseLuaNumber(text)) |number| Value{ .number = number } else |_| Value.nil;
         try state.returnValues(thread, op.base, op.return_count, &.{parsed});
     } else {
         try state.returnValues(thread, op.base, op.return_count, &.{.nil});

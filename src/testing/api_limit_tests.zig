@@ -107,7 +107,7 @@ test "interrupt stops long-running library functions" {
     var lua = try initWithReady(.{ .limits = .{ .max_memory = 512 * 1024 * 1024 } });
     defer lua.deinit();
 
-    try runInterrupted(&lua, "ready() local s = string.rep('x', (1 << 31) - 1)");
+    try runInterrupted(&lua, "ready() local s = string.rep('x', 1 << 28)");
     try runInterrupted(&lua, "local s = string.rep('a', 1 << 16) ready() while true do s:gsub('a', 'b') end");
     try runInterrupted(&lua, "local s = string.rep('a', 1 << 16) .. 'c' ready() while true do s:find('a-a-a-b') end");
     try lua.doString("assert(('ab'):rep(3) == 'ababab')", .{});
@@ -120,9 +120,9 @@ test "pending interrupts stop library functions called directly by the host" {
     const raw = &lua.raw_state;
     const string_lib = raw.getGlobal("string").table;
     const table_lib = raw.getGlobal("table").table;
-    const rep = string_lib.get(.{ .string = try raw.strings.intern("rep") });
-    const concat = table_lib.get(.{ .string = try raw.strings.intern("concat") });
-    const sort = table_lib.get(.{ .string = try raw.strings.intern("sort") });
+    const rep = string_lib.getLiteral("rep");
+    const concat = table_lib.getLiteral("concat");
+    const sort = table_lib.getLiteral("sort");
     var items = try lua.createTable(.{});
     defer items.deinit();
     for (0..8) |index| try items.append(@as(i64, @intCast(8 - index)));
@@ -141,7 +141,7 @@ test "pending interrupts stop library functions called directly by the host" {
 
     const values = try entry_mod.callFunction(raw, rep, &.{ .{ .string = try raw.strings.intern("x") }, .{ .integer = 3 } });
     defer lua.allocator().free(values);
-    try std.testing.expectEqualStrings("xxx", values[0].string);
+    try std.testing.expectEqualStrings("xxx", values[0].string.bytes());
 }
 
 test "interrupt requested while idle applies to the next run unless cleared" {

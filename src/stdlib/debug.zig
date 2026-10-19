@@ -12,6 +12,7 @@ const bytecode = compile.bytecode;
 const State = runtime.State;
 const Thread = runtime.Thread;
 const Value = runtime.Value;
+const String = runtime.String;
 
 pub fn getinfo(state: *State, thread: *Thread, op: bytecode.Call) !void {
     var info_thread = thread;
@@ -45,7 +46,7 @@ pub fn getinfo(state: *State, thread: *Thread, op: bytecode.Call) !void {
             const frame_index = info_thread.frames.items.len - depth;
             const frame = info_thread.frames.items[frame_index];
             const tail = frame.is_tail_call or (depth == 2 and info_thread.frames.items.len != 0 and info_thread.frames.items[info_thread.frames.items.len - 1].is_tail_call);
-            break :blk .{ frame.closure, .{ .closure = frame.closure }, frame.proto.source_name, debug_mod.currentWhat(state, info_thread, target.integer), if (debug_mod.currentLine(state, info_thread, target.integer)) |line| @as(i64, @intCast(line)) else -1, debug_mod.currentFunctionName(state, info_thread, target.integer), tail };
+            break :blk .{ frame.closure, .{ .closure = frame.closure }, frame.closure.proto.source_name, debug_mod.currentWhat(state, info_thread, target.integer), if (debug_mod.currentLine(state, info_thread, target.integer)) |line| @as(i64, @intCast(line)) else -1, debug_mod.currentFunctionName(state, info_thread, target.integer), tail };
         },
         .closure => .{ target.closure, target, target.closure.proto.source_name, "Lua", @as(i64, -1), null, false },
         .api_callback, .gmatch_iterator, .native, .native_print, .native_tostring, .native_getmetatable, .native_setmetatable, .native_rawequal, .native_rawget, .native_rawset, .native_rawlen, .native_next, .native_pairs, .native_ipairs, .native_ipairs_iter, .native_table_create, .native_select, .native_assert, .native_error, .native_pcall, .native_xpcall, .native_collectgarbage, .native_debug_traceback, .native_coroutine_create, .native_coroutine_resume, .native_coroutine_yield, .native_coroutine_status, .native_coroutine_running, .native_coroutine_isyieldable, .native_coroutine_close, .native_coroutine_wrap => .{ null, target, "[C]", "C", @as(i64, -1), null, false },
@@ -62,7 +63,7 @@ pub fn getinfo(state: *State, thread: *Thread, op: bytecode.Call) !void {
     try state.setTableRaw(table, .{ .string = try state.strings.intern("linedefined") }, .{ .integer = if (line_range) |range| @intCast(range.defined) else 0 });
     try state.setTableRaw(table, .{ .string = try state.strings.intern("lastlinedefined") }, .{ .integer = if (line_range) |range| @intCast(range.last) else 0 });
     const nups: i64 = if (target_closure) |closure| blk: {
-        const count: i64 = @intCast(closure.upvalues.len);
+        const count: i64 = @intCast(closure.upvalue_count);
         break :blk if (target == .integer and count == 1 and !std.mem.eql(u8, what, "main")) 2 else count;
     } else if (nativeUpvalueId(target_func, 0) != null) 1 else 0;
     try state.setTableRaw(table, .{ .string = try state.strings.intern("nups") }, .{ .integer = nups });
@@ -123,7 +124,7 @@ fn validateGetinfoOptions(state: *State, options: []const u8, function_name: []c
     };
 }
 
-fn shortSource(state: *State, source_name: []const u8) ![]const u8 {
+fn shortSource(state: *State, source_name: []const u8) !*const String {
     if (std.mem.eql(u8, source_name, "[C]")) return state.strings.intern(source_name);
     if (std.mem.eql(u8, source_name, "zlua")) return state.strings.intern(source_name);
     if (std.mem.eql(u8, source_name, "?")) return state.strings.intern(source_name);
@@ -211,9 +212,9 @@ pub fn upvaluejoin(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const second = runtime.argValue(state, thread, op, 2);
     const second_index = upvalueIndex(runtime.argValue(state, thread, op, 3)) orelse return state.failArgumentMessage("debug.upvaluejoin", 4, "invalid upvalue index");
     const replacement = getClosureUpvalue(second, second_index) orelse return state.failArgumentMessage("debug.upvaluejoin", 3, "invalid upvalue index");
-    if (first != .closure or first_index >= first.closure.upvalues.len) return state.failArgumentMessage("debug.upvaluejoin", 1, "invalid upvalue index");
+    if (first != .closure or first_index >= first.closure.upvalue_count) return state.failArgumentMessage("debug.upvaluejoin", 1, "invalid upvalue index");
     try @import("../runtime/rollback.zig").closureWritable(first.closure);
-    first.closure.upvalues[first_index] = replacement;
+    first.closure.upvalues()[first_index] = replacement;
     state.gc.upvalueBarrier(first.closure, replacement);
     try state.returnValues(thread, op.base, op.return_count, &.{});
 }
@@ -271,13 +272,13 @@ pub fn getlocal(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const frame = &local_thread.frames.items[frame_index];
     if (index < 0) {
         const vararg_index: usize = @intCast(-index - 1);
-        if (vararg_index >= frame.varargs.len) return state.returnValues(thread, op.base, op.return_count, &.{.nil});
-        try state.returnValues(thread, op.base, op.return_count, &.{ .{ .string = try state.strings.intern("(vararg)") }, frame.varargs[vararg_index] });
+        if (vararg_index >= frame.vararg_count) return state.returnValues(thread, op.base, op.return_count, &.{.nil});
+        try state.returnValues(thread, op.base, op.return_count, &.{ .{ .string = try state.strings.intern("(vararg)") }, local_thread.stack.items[frame.vararg_base + vararg_index] });
         return;
     }
     const local = visibleLocalAtIndex(local_thread, frame_index, index, local_thread == thread) orelse return state.returnValues(thread, op.base, op.return_count, &.{.nil});
     switch (local) {
-        .vararg_table => try state.returnValues(thread, op.base, op.return_count, &.{ .{ .string = try state.strings.intern("(vararg table)") }, frame.vararg_table_local }),
+        .vararg_table => try state.returnValues(thread, op.base, op.return_count, &.{ .{ .string = try state.strings.intern("(vararg table)") }, local_thread.frameExtra(frame_index).vararg_table_local }),
         .local => |debug_local| try state.returnValues(thread, op.base, op.return_count, &.{ .{ .string = try state.strings.intern(debug_local.name) }, local_thread.stack.items[frame.base + debug_local.register] }),
         .temporary => |register| try state.returnValues(thread, op.base, op.return_count, &.{ .{ .string = try state.strings.intern("(temporary)") }, local_thread.stack.items[frame.base + register] }),
     }
@@ -299,15 +300,15 @@ pub fn setlocal(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const frame = &local_thread.frames.items[frame_index];
     if (index < 0) {
         const vararg_index: usize = @intCast(-index - 1);
-        if (vararg_index >= frame.varargs.len) return state.returnValues(thread, op.base, op.return_count, &.{.nil});
-        if (frame.owns_varargs) @constCast(frame.varargs.ptr)[vararg_index] = value;
+        if (vararg_index >= frame.vararg_count) return state.returnValues(thread, op.base, op.return_count, &.{.nil});
+        local_thread.stack.items[frame.vararg_base + vararg_index] = value;
         try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern("(vararg)") }});
         return;
     }
     const local = visibleLocalAtIndex(local_thread, frame_index, index, local_thread == thread) orelse return state.returnValues(thread, op.base, op.return_count, &.{.nil});
     switch (local) {
         .vararg_table => {
-            frame.vararg_table_local = value;
+            (try local_thread.frameExtraMut(state.allocator, frame_index)).vararg_table_local = value;
             try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern("(vararg table)") }});
         },
         .local => |debug_local| {
@@ -328,14 +329,14 @@ pub fn getregistry(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const hook_key = try state.newTableWithHints(0, 0);
     const metatable = try state.newTableWithHints(0, 1);
     try state.setTableRaw(metatable.table, .{ .string = try state.strings.intern("__mode") }, .{ .string = try state.strings.intern("k") });
-    metatable_mod.setTableMetatableRaw(state, hook_key.table, metatable.table);
+    try metatable_mod.setTableMetatableRaw(state, hook_key.table, metatable.table);
     try state.setTableRaw(registry.table, .{ .string = try state.strings.intern("_HOOKKEY") }, hook_key);
     try state.returnValues(thread, op.base, op.return_count, &.{registry});
 }
 
 pub fn sethook(state: *State, thread: *Thread, op: bytecode.Call) !void {
     if (op.arg_count == 0) {
-        debug_mod.setThreadHook(state, thread, .nil, "", 0);
+        try debug_mod.setThreadHook(state, thread, .nil, "", 0);
         try state.returnValues(thread, op.base, op.return_count, &.{});
         return;
     }
@@ -346,7 +347,7 @@ pub fn sethook(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const mask = if (hook == .nil) "" else try state.expectArgumentString(thread, op, "debug.sethook", hook_index + 1);
     const count = if (op.arg_count > hook_index + 2) hookCount(runtime.argValue(state, thread, op, hook_index + 2)) else 0;
 
-    debug_mod.setThreadHook(state, target, hook, mask, if (count > 0) @intCast(count) else 0);
+    try debug_mod.setThreadHook(state, target, hook, mask, if (count > 0) @intCast(count) else 0);
     try state.returnValues(thread, op.base, op.return_count, &.{});
 }
 
@@ -400,7 +401,7 @@ pub fn debugPrompt(state: *State, thread: *Thread, op: bytecode.Call) !void {
 }
 
 fn writeDebugError(state: *State, thread: *Thread, value: Value) !void {
-    const message = metatable_mod.valueToString(state, thread, value) catch |err| switch (err) {
+    const message = if (metatable_mod.valueToString(state, thread, value)) |string| string.bytes() else |err| switch (err) {
         error.OutOfMemory => return err,
         else => "(error object is not a string)",
     };
@@ -427,7 +428,7 @@ fn upvalueIndex(value: Value) ?usize {
 
 fn isLightUserdataPlaceholder(value: Value) bool {
     if (value != .string) return false;
-    return std.mem.startsWith(u8, value.string, "upvalue:") or std.mem.startsWith(u8, value.string, "native:string.gmatch:");
+    return std.mem.startsWith(u8, value.string.bytes(), "upvalue:") or std.mem.startsWith(u8, value.string.bytes(), "native:string.gmatch:");
 }
 
 const ClosureLineRange = struct {
@@ -462,8 +463,8 @@ fn nativeUpvalueId(value: Value, index: usize) ?[]const u8 {
 
 fn getClosureUpvalue(value: Value, index: usize) ?*runtime.Upvalue {
     if (value != .closure) return null;
-    if (index >= value.closure.upvalues.len) return null;
-    return value.closure.upvalues[index];
+    if (index >= value.closure.upvalue_count) return null;
+    return value.closure.upvalues()[index];
 }
 
 fn getFunctionLocal(state: *State, thread: *Thread, op: bytecode.Call, target: Value, index_value: Value) !void {
@@ -511,7 +512,7 @@ fn visibleLocalAtIndex(thread: *Thread, frame_index: usize, index: i64, include_
 }
 
 fn hasSyntheticVarargTableLocal(frame: anytype) bool {
-    return frame.proto.is_vararg and !frame.proto.named_vararg and frame.proto.defined_line != 0;
+    return frame.closure.proto.is_vararg and !frame.closure.proto.named_vararg and frame.closure.proto.defined_line != 0;
 }
 
 fn localOrTemporaryAtIndex(thread: *Thread, frame_index: usize, index: i64, include_temporaries: bool) ?VisibleLocal {
@@ -520,7 +521,7 @@ fn localOrTemporaryAtIndex(thread: *Thread, frame_index: usize, index: i64, incl
     const pc = if (frame.pc == 0) 0 else frame.pc - 1;
     const expose_named_locals = !frame.closure.stripped_debug;
     if (expose_named_locals) {
-        for (frame.proto.locals.items) |local| {
+        for (frame.closure.proto.locals.items) |local| {
             if (std.mem.eql(u8, local.name, "_ENV")) continue;
             if (!runtime.localActiveAt(local, pc)) continue;
             seen += 1;
@@ -531,9 +532,9 @@ fn localOrTemporaryAtIndex(thread: *Thread, frame_index: usize, index: i64, incl
     if (!include_temporaries) return null;
 
     const register_limit = if (frame_index + 1 < thread.frames.items.len)
-        @min(frame.proto.max_registers, thread.frames.items[frame_index + 1].base - 1 - frame.base)
+        @min(frame.closure.proto.max_registers, thread.frames.items[frame_index + 1].argumentBase() - 1 - frame.base)
     else
-        frame.proto.max_registers;
+        frame.closure.proto.max_registers;
     for (0..register_limit) |register_usize| {
         const register: bytecode.Register = @intCast(register_usize);
         if (envLocalUsesRegister(frame, register)) continue;
@@ -546,14 +547,14 @@ fn localOrTemporaryAtIndex(thread: *Thread, frame_index: usize, index: i64, incl
 }
 
 fn envLocalUsesRegister(frame: anytype, register: bytecode.Register) bool {
-    for (frame.proto.locals.items) |local| {
+    for (frame.closure.proto.locals.items) |local| {
         if (local.register == register and std.mem.eql(u8, local.name, "_ENV")) return true;
     }
     return false;
 }
 
 fn activeLocalUsesRegister(frame: anytype, pc: usize, register: bytecode.Register) bool {
-    for (frame.proto.locals.items) |local| {
+    for (frame.closure.proto.locals.items) |local| {
         if (std.mem.eql(u8, local.name, "_ENV")) continue;
         if (local.register == register and runtime.localActiveAt(local, pc)) return true;
     }
@@ -561,7 +562,7 @@ fn activeLocalUsesRegister(frame: anytype, pc: usize, register: bytecode.Registe
 }
 
 fn inactiveLocalUsesRegister(frame: anytype, pc: usize, register: bytecode.Register) bool {
-    for (frame.proto.locals.items) |local| {
+    for (frame.closure.proto.locals.items) |local| {
         if (std.mem.eql(u8, local.name, "_ENV")) continue;
         if (local.register == register and !runtime.localActiveAt(local, pc)) return true;
     }
@@ -569,17 +570,20 @@ fn inactiveLocalUsesRegister(frame: anytype, pc: usize, register: bytecode.Regis
 }
 
 fn readUpvalue(upvalue: *runtime.Upvalue) Value {
-    return if (upvalue.is_open) upvalue.owner.stack.items[upvalue.stack_index] else upvalue.closed;
+    return upvalue.get();
 }
 
 fn writeUpvalue(state: *State, upvalue: *runtime.Upvalue, value: Value) !void {
     @import("../runtime/rollback.zig").touch(upvalue);
-    if (upvalue.is_open) {
-        try @import("../runtime/rollback.zig").threadWritable(upvalue.owner);
-        upvalue.owner.stack.items[upvalue.stack_index] = value;
-        state.gc.threadBarrier(upvalue.owner, value);
-    } else {
-        upvalue.closed = value;
-        state.gc.writeBarrier(upvalue, value);
+    switch (upvalue.cell) {
+        .open => |slot| {
+            try @import("../runtime/rollback.zig").threadWritable(slot.owner);
+            slot.owner.stack.items[slot.stack_index] = value;
+            state.gc.threadBarrier(slot.owner, value);
+        },
+        .closed => |*closed| {
+            closed.* = value;
+            state.gc.writeBarrier(upvalue, value);
+        },
     }
 }

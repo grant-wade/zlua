@@ -24,7 +24,7 @@ pub fn readFileAlloc(self: *State, path: []const u8) ![]const u8 {
         else
             try std.fmt.allocPrint(self.allocator, "cannot {s} {s}: {s}", .{ if (info.read_phase) "read" else "open", path, info.message });
         defer self.allocator.free(message);
-        return self.fail(try self.strings.intern(message));
+        return self.fail(message);
     };
 }
 
@@ -38,7 +38,7 @@ fn failFileOperation(self: *State, path: []const u8, err: anyerror) anyerror {
     if (err == error.OutOfMemory) return error.OutOfMemory;
     const message = try std.fmt.allocPrint(self.allocator, "{s}: {s}", .{ path, host.fileError(err).message });
     defer self.allocator.free(message);
-    return self.fail(try self.strings.intern(message));
+    return self.fail(message);
 }
 
 pub fn writeStdout(self: *State, bytes: []const u8) !void {
@@ -73,7 +73,7 @@ pub fn warn(self: *State, parts: []const []const u8) !void {
 /// Like `luaE_warnerror`: warns `error in <where> (<message>)`.
 pub fn warnError(self: *State, where: []const u8, error_value: Value) void {
     const message = switch (error_value) {
-        .string => |text| text,
+        .string => |text| text.bytes(),
         .nil => "<no error object>",
         else => "error object is not a string",
     };

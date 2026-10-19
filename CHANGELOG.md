@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+### Performance
+
+- Strings store their header and bytes in one allocation, and `Value` is 16 bytes instead of 24. Short strings are always interned and compare by pointer, and string hashes are cached.
+- Concatenation, `string.rep`, `string.format`, `string.gsub`, `string.upper`, `string.lower`, `string.reverse`, `string.char`, `table.concat`, and `utf8.char` build results in place or in a reused buffer.
+- The collector keeps mark state and registry positions in a 16-byte header shared by every object type, and closures store their upvalue pointers in the same allocation.
+- Snapshot workers find the objects created since capture by registry position, without a per-object hash table.
+- Faster `#`, numeric and generic `for` loops, and write barriers.
+- Arithmetic and comparisons with a numeric constant operand use dedicated instructions.
+- Varargs stay on the caller's stack, and vararg calls and `...` run in the VM's fast loop.
+- `pcall` and `xpcall` call their function in place without copying arguments or results.
+- Table constructors reserve their exact size, table storage grows to power-of-two capacities, and each table's hash entries and index share one allocation.
+- Each loaded chunk interns its string constants once for all of its closures, and field and global lookups compare those strings by pointer.
+- Upvalues are 56 bytes instead of 72.
+- Call frames are 40 bytes instead of 136.
+- Tables, upvalues, closures, and strings of up to 128 bytes come from per-state size-class slabs.
+- Tables are 64 bytes instead of 104.
+- Field reads and writes start at the entry position where the key string was last found.
+
+### Fixes
+
+- A collection during a protected call could free the error value that the call restores on failure.
+
+### Testing
+
+- `zig build bench` prints the host system and labels builds with the running Zig version's optimize mode name.
+
 ## 0.7.1
 
 ### Lua compatibility

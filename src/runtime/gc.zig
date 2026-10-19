@@ -13,6 +13,7 @@ const State = @import("state.zig").State;
 const types = @import("types.zig");
 const upvalue_mod = @import("upvalue.zig");
 const value_mod = @import("value.zig");
+const static_strings = @import("../stdlib/static_strings.zig");
 
 const bytecode = compile.bytecode;
 const proto_mod = compile.proto;
@@ -24,7 +25,8 @@ const TableEntry = types.TableEntry;
 const Table = types.Table;
 const Userdata = types.Userdata;
 const Thread = types.Thread;
-const StringAllocation = types.StringAllocation;
+const String = types.String;
+const strings_mod = @import("strings.zig");
 const GcMode = types.GcMode;
 const GcParam = types.GcParam;
 const GcParams = types.GcParams;
@@ -44,8 +46,8 @@ pub const Gc = struct {
     params: GcParams = .{},
     next_total: usize = 0,
     known_total: usize = 0,
-    epoch: u64 = 1,
-    generation: u64 = 1,
+    epoch: u32 = 1,
+    generation: u32 = 1,
     phase: types.GcPhase = .pause,
     cycle: types.GcCycle = .major,
     work: std.ArrayList(types.GcObject) = .empty,
@@ -57,8 +59,8 @@ pub const Gc = struct {
     cycle_start_total: usize = 0,
     found_young: bool = false,
     old: types.GcGenerations = .{},
-    /// Owned prototypes before this index have survived a collection; minor cycles sweep only the rest.
-    old_protos: usize = 0,
+    /// Chunks before this index have survived a collection; minor cycles sweep only the rest.
+    old_chunks: usize = 0,
     sweep_cursor: usize = 0,
     major_base: usize = 0,
     work_done: usize = 0,
@@ -87,11 +89,9 @@ pub const Gc = struct {
 
     pub fn prepareRegistration(gc: *Gc, comptime field: []const u8) !void {
         const state = gc.parentState();
-        if (comptime std.mem.eql(u8, field, "string_allocations")) try state.string_allocation_index.ensureUnusedCapacity(state.allocator, 1);
-        if (comptime std.mem.eql(u8, field, "table_allocations")) try state.table_allocation_index.ensureUnusedCapacity(state.allocator, 1);
         inline for (managed_lists) |name| if (comptime std.mem.eql(u8, field, name)) {
+            if (@field(state, field).items.len >= types.GcHeader.untracked) return error.OutOfMemory;
             try gc.reserveQueues(1);
-            if (comptime !std.mem.eql(u8, field, "table_allocations")) try state.object_allocation_index.ensureUnusedCapacity(state.allocator, 1);
         };
     }
 
@@ -99,31 +99,26 @@ pub const Gc = struct {
         const state = gc.parentState();
         inline for (managed_lists) |name| if (comptime std.mem.eql(u8, field, name)) {
             item.gc.generation = state.gc.generation;
-            if (comptime std.mem.eql(u8, field, "table_allocations")) item.gc.storage_bytes = tableCapacityBytes(item);
             if (comptime std.mem.eql(u8, field, "thread_allocations")) {
-                item.gc.storage_bytes = threadCapacityBytes(item);
-                gc.noteAllocation(item.gc.storage_bytes);
+                item.storage_bytes = threadCapacityBytes(item);
+                gc.noteAllocation(item.storage_bytes);
             }
-            if (comptime std.mem.eql(u8, field, "closure_allocations")) gc.noteAllocation(item.upvalues.len * @sizeOf(*Upvalue));
+            item.gc.registry_index = @intCast(@field(state, field).items.len - 1);
             if (@intFromEnum(state.gc.phase) >= @intFromEnum(types.GcPhase.sweep_threads)) {
                 const tag = comptime name[0 .. name.len - "_allocations".len];
                 gc.enqueue(@unionInit(types.GcObject, tag, item));
             }
-            if (comptime !std.mem.eql(u8, field, "table_allocations")) state.object_allocation_index.putAssumeCapacity(@intFromPtr(item), @field(state, field).items.len - 1);
         };
         if (comptime std.mem.eql(u8, field, "string_allocations")) {
-            const allocation = &state.string_allocations.items[state.string_allocations.items.len - 1];
-            allocation.gc.generation = state.gc.generation;
+            item.gc.generation = state.gc.generation;
             if (@intFromEnum(state.gc.phase) >= @intFromEnum(types.GcPhase.sweep_threads)) {
-                allocation.gc.epoch = state.gc.epoch;
-                allocation.gc.color = .black;
+                item.gc.epoch = state.gc.epoch;
+                item.gc.color = .black;
             }
         }
     }
 
     pub fn forgetThread(gc: *Gc, thread: *Thread) void {
-        const state = gc.parentState();
-        _ = state.object_allocation_index.remove(@intFromPtr(thread));
         inline for (.{ "work", "remembered" }) |field| {
             var i: usize = 0;
             while (i < @field(gc, field).items.len) {
@@ -182,20 +177,19 @@ pub const Gc = struct {
     fn tableCandidate(gc: *Gc, table: *Table) void {
         const state = gc.parentState();
         if (@intFromEnum(state.gc.phase) >= @intFromEnum(types.GcPhase.sweep_threads)) return;
-        if (table.gc.tables_epoch == state.gc.epoch) return;
-        table.gc.tables_epoch = state.gc.epoch;
+        if (table.in_table_list) return;
+        table.in_table_list = true;
         state.gc.tables.appendAssumeCapacity(table);
     }
 
     fn noteYoung(gc: *Gc, value: Value) void {
         const state = gc.parentState();
         switch (value) {
-            .string => |bytes| if (gc.findStringAllocation(bytes)) |i| {
-                if (!gc.isOld(&state.string_allocations.items[i])) state.gc.found_young = true;
+            .string => |string| if (!string.static and !gc.isOld(string)) {
+                state.gc.found_young = true;
             },
             inline .table, .gmatch_iterator, .userdata, .closure, .thread, .coroutine_wrapper => |pointer| {
-                const tracked = if (@TypeOf(pointer) == *Table) state.table_allocation_index.contains(@intFromPtr(pointer)) else state.object_allocation_index.contains(@intFromPtr(pointer));
-                if (tracked and !gc.isOld(pointer)) state.gc.found_young = true;
+                if (pointer.gc.registry_index != types.GcHeader.untracked and !gc.isOld(pointer)) state.gc.found_young = true;
             },
             else => {},
         }
@@ -208,7 +202,6 @@ pub const Gc = struct {
                 if (gc.isMarked(pointer)) return;
                 pointer.gc.epoch = state.gc.epoch;
                 pointer.gc.color = .gray;
-                pointer.marked = true;
                 state.gc.work.appendAssumeCapacity(object);
             },
         }
@@ -254,8 +247,7 @@ pub const Gc = struct {
 
     pub fn refreshAllocationTotal(gc: *Gc) usize {
         const state = gc.parentState();
-        for (state.table_allocations.items) |table| table.gc.storage_bytes = tableCapacityBytes(table);
-        for (state.thread_allocations.items) |thread| thread.gc.storage_bytes = threadCapacityBytes(thread);
+        for (state.thread_allocations.items) |thread| thread.storage_bytes = threadCapacityBytes(thread);
         const total = state.gc.allocationStats().total();
         state.gc.known_total = total;
         return total;
@@ -266,18 +258,19 @@ pub const Gc = struct {
         return state.gc.known_total;
     }
 
+    /// `old_capacity_bytes` is `tableCapacityBytes(table)` before the change.
     pub fn noteTableCapacityDelta(gc: *Gc, table: *Table, old_capacity_bytes: usize) void {
-        _ = old_capacity_bytes;
-        gc.syncStorage(&table.gc, tableCapacityBytes(table));
+        const bytes = tableCapacityBytes(table);
+        if (bytes >= old_capacity_bytes) gc.noteAllocation(bytes - old_capacity_bytes) else gc.noteAllocationFreed(old_capacity_bytes - bytes);
     }
 
-    fn syncStorage(gc: *Gc, meta: *types.GcMeta, bytes: usize) void {
-        if (bytes >= meta.storage_bytes) gc.noteAllocation(bytes - meta.storage_bytes) else gc.noteAllocationFreed(meta.storage_bytes - bytes);
-        meta.storage_bytes = bytes;
+    fn syncStorage(gc: *Gc, reported: *usize, bytes: usize) void {
+        if (bytes >= reported.*) gc.noteAllocation(bytes - reported.*) else gc.noteAllocationFreed(reported.* - bytes);
+        reported.* = bytes;
     }
 
     pub fn syncThreadStorage(gc: *Gc, thread: *Thread) void {
-        gc.syncStorage(&thread.gc, threadCapacityBytes(thread));
+        gc.syncStorage(&thread.storage_bytes, threadCapacityBytes(thread));
     }
 
     pub fn collectGarbageValue(gc: *Gc, thread: *Thread, op: bytecode.Call) !void {
@@ -285,23 +278,23 @@ pub const Gc = struct {
         const option = argValue(state, thread, op, 0);
         if (state.gc.collecting) {
             // Lua rejects collector controls from finalizers, but validates arguments first.
-            if (option == .string and std.mem.eql(u8, option.string, "param")) {
+            if (option == .string and option.string.eqlBytes("param")) {
                 _ = try gc.collectGarbageParam(argValue(state, thread, op, 1));
                 if (op.arg_count >= 3 and argValue(state, thread, op, 2) != .nil) {
                     _ = toInteger(argValue(state, thread, op, 2)) orelse return state.fail("number expected");
                 }
                 return state.returnValues(thread, op.base, op.return_count, &.{.{ .integer = -1 }});
             }
-            if (option == .string and std.mem.eql(u8, option.string, "step") and op.arg_count >= 2 and argValue(state, thread, op, 1) != .nil) {
+            if (option == .string and option.string.eqlBytes("step") and op.arg_count >= 2 and argValue(state, thread, op, 1) != .nil) {
                 _ = toInteger(argValue(state, thread, op, 1)) orelse return state.fail("number expected");
             }
             if (option == .nil) return state.returnValues(thread, op.base, op.return_count, &.{.nil});
             if (option == .string) inline for (.{ "collect", "step", "count", "isrunning", "stop", "restart", "incremental", "generational" }) |name| {
-                if (std.mem.eql(u8, option.string, name)) return state.returnValues(thread, op.base, op.return_count, &.{.nil});
+                if (option.string.eqlBytes(name)) return state.returnValues(thread, op.base, op.return_count, &.{.nil});
             };
             return gc.failInvalidOption(thread, op);
         }
-        if (option == .nil or (option == .string and std.mem.eql(u8, option.string, "collect"))) {
+        if (option == .nil or (option == .string and option.string.eqlBytes("collect"))) {
             if (state.gc.conservative_depth != 0) {
                 try gc.collectConservatively(thread);
             } else {
@@ -310,41 +303,41 @@ pub const Gc = struct {
             try state.returnValues(thread, op.base, op.return_count, &.{.{ .integer = 0 }});
             return;
         }
-        if (option == .string and std.mem.eql(u8, option.string, "step")) {
+        if (option == .string and option.string.eqlBytes("step")) {
             const budget = if (op.arg_count >= 2 and argValue(state, thread, op, 1) != .nil) toInteger(argValue(state, thread, op, 1)) orelse return state.fail("number expected") else 0;
             const complete = try gc.collectStep(thread, budget);
             try state.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = complete }});
             return;
         }
-        if (option == .string and std.mem.eql(u8, option.string, "count")) {
+        if (option == .string and option.string.eqlBytes("count")) {
             try state.returnValues(thread, op.base, op.return_count, &.{.{ .number = @as(f64, @floatFromInt(gc.refreshAllocationTotal())) / 1024.0 }});
             return;
         }
-        if (option == .string and std.mem.eql(u8, option.string, "isrunning")) {
+        if (option == .string and option.string.eqlBytes("isrunning")) {
             try state.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = state.gc.running }});
             return;
         }
-        if (option == .string and std.mem.eql(u8, option.string, "stop")) {
+        if (option == .string and option.string.eqlBytes("stop")) {
             state.gc.running = false;
             try state.returnValues(thread, op.base, op.return_count, &.{.{ .integer = 0 }});
             return;
         }
-        if (option == .string and std.mem.eql(u8, option.string, "restart")) {
+        if (option == .string and option.string.eqlBytes("restart")) {
             state.gc.running = true;
             try state.returnValues(thread, op.base, op.return_count, &.{.{ .integer = 0 }});
             return;
         }
-        if (option == .string and std.mem.eql(u8, option.string, "incremental")) {
+        if (option == .string and option.string.eqlBytes("incremental")) {
             const old = gc.setMode(.incremental);
             try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(old.name()) }});
             return;
         }
-        if (option == .string and std.mem.eql(u8, option.string, "generational")) {
+        if (option == .string and option.string.eqlBytes("generational")) {
             const old = gc.setMode(.generational);
             try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(old.name()) }});
             return;
         }
-        if (option == .string and std.mem.eql(u8, option.string, "param")) {
+        if (option == .string and option.string.eqlBytes("param")) {
             const param_value = argValue(state, thread, op, 1);
             const param = try gc.collectGarbageParam(param_value);
             const old = state.gc.params.get(param);
@@ -368,18 +361,18 @@ pub const Gc = struct {
         const name = try state.expectArgumentString(thread, op, "collectgarbage", 0);
         const message = try std.fmt.allocPrint(state.allocator, "invalid option '{s}'", .{name});
         defer state.allocator.free(message);
-        return state.failArgumentMessage("collectgarbage", 1, try state.strings.intern(message));
+        return state.failArgumentMessage("collectgarbage", 1, message);
     }
 
     fn collectGarbageParam(gc: *Gc, value: Value) !GcParam {
         const state = gc.parentState();
         if (value != .string) return state.fail("bad argument #2 to 'collectgarbage'");
-        if (std.mem.eql(u8, value.string, "minormul")) return .minormul;
-        if (std.mem.eql(u8, value.string, "majorminor")) return .majorminor;
-        if (std.mem.eql(u8, value.string, "minormajor")) return .minormajor;
-        if (std.mem.eql(u8, value.string, "pause")) return .pause;
-        if (std.mem.eql(u8, value.string, "stepmul")) return .stepmul;
-        if (std.mem.eql(u8, value.string, "stepsize")) return .stepsize;
+        if (value.string.eqlBytes("minormul")) return .minormul;
+        if (value.string.eqlBytes("majorminor")) return .majorminor;
+        if (value.string.eqlBytes("minormajor")) return .minormajor;
+        if (value.string.eqlBytes("pause")) return .pause;
+        if (value.string.eqlBytes("stepmul")) return .stepmul;
+        if (value.string.eqlBytes("stepsize")) return .stepsize;
         return state.fail("bad argument #2 to 'collectgarbage'");
     }
 
@@ -457,11 +450,11 @@ pub const Gc = struct {
         }
         const upvalue_start = if (state.gc.cycle == .minor) state.gc.old.upvalue_allocations else 0;
         for (state.upvalue_allocations.items[upvalue_start..]) |upvalue| {
-            if (upvalue.is_open and gc.isMarked(upvalue)) gc.traceUpvalue(upvalue);
+            if (upvalue.cell == .open and gc.isMarked(upvalue)) gc.traceUpvalue(upvalue);
         }
         if (state.gc.cycle == .minor) for (state.gc.remembered.items) |object| switch (object) {
             .thread => |t| gc.traceThread(t),
-            .upvalue => |u| if (u.is_open) gc.traceUpvalue(u),
+            .upvalue => |u| if (u.cell == .open) gc.traceUpvalue(u),
             else => {},
         };
         if (state.current_thread) |t| gc.traceThread(t);
@@ -491,6 +484,7 @@ pub const Gc = struct {
         gc.convergeEphemerons();
         gc.clearWeakTables();
         gc.clearDeadHashKeys();
+        gc.clearTableLists();
         if (!state.gc.mark_all_stack_registers) gc.clearUnmarkedStackSlots();
     }
 
@@ -524,8 +518,8 @@ pub const Gc = struct {
                     gc.drain();
                     state.gc.phase = .atomic;
                     try gc.atomic();
-                    gc.sweepProtos();
-                    state.gc.old_protos = state.proto_allocations.items.len;
+                    gc.sweepChunks();
+                    state.gc.old_chunks = state.chunk_allocations.items.len;
                     state.gc.phase = .sweep_threads;
                     inline for (.{ "thread_allocations", "closure_allocations", "upvalue_allocations", "string_allocations", "userdata_allocations", "table_allocations" }) |field| {
                         state.gc.sweep_cursor = @field(state.gc.old, field);
@@ -550,7 +544,7 @@ pub const Gc = struct {
             .atomic => {
                 try gc.atomic();
                 if (state.gc.cycle == .major) {
-                    gc.sweepProtos();
+                    gc.sweepChunks();
                     gc.ageAllObjects();
                 }
                 state.gc.phase = .sweep_threads;
@@ -670,26 +664,24 @@ pub const Gc = struct {
 
     fn ageAllObjects(gc: *Gc) void {
         const state = gc.parentState();
-        state.gc.generation += 1;
+        gc.advanceGeneration();
         state.gc.remembered.clearRetainingCapacity();
         inline for (reflection.fieldsOf(types.GcGenerations)) |f| @field(state.gc.old, f) = @field(state, f).items.len;
-        state.gc.old_protos = state.proto_allocations.items.len;
+        state.gc.old_chunks = state.chunk_allocations.items.len;
     }
 
     fn makeAllObjectsYoung(gc: *Gc) void {
         const state = gc.parentState();
         state.gc.remembered.clearRetainingCapacity();
         inline for (reflection.fieldsOf(types.GcGenerations)) |field| {
-            const strings = comptime std.mem.eql(u8, field, "string_allocations");
-            for (@field(state, field).items) |*item| {
-                const pointer = if (strings) item else item.*;
+            for (@field(state, field).items) |pointer| {
                 pointer.gc.generation = state.gc.generation;
                 pointer.gc.age = .new;
                 pointer.gc.remembered = false;
             }
-            @field(state.gc.old, field) = 0;
+            @field(state.gc.old, field) = if (state.rollback) |journal| @field(journal.baseline, field) else 0;
         }
-        state.gc.old_protos = 0;
+        state.gc.old_chunks = 0;
     }
 
     fn finishBaseline(gc: *Gc) void {
@@ -702,12 +694,51 @@ pub const Gc = struct {
         gc.resetAutoThreshold();
     }
 
-    fn resetMarks(gc: *Gc) void {
+    pub fn advanceEpoch(gc: *Gc) void {
+        if (gc.epoch < std.math.maxInt(u32)) {
+            gc.epoch += 1;
+            return;
+        }
         const state = gc.parentState();
-        state.gc.epoch += 1;
-        state.gc.work.clearRetainingCapacity();
+        inline for (reflection.fieldsOf(types.GcGenerations)) |field| for (@field(state, field).items) |pointer| clearEpochs(pointer);
+        for (state.chunk_allocations.items) |chunk| chunk.epoch = 0;
+        if (state.rollback) |journal| journal.forEachOriginal(clearEpochs);
+        gc.epoch = 1;
+    }
+
+    pub fn advanceGeneration(gc: *Gc) void {
+        if (gc.generation < std.math.maxInt(u32)) {
+            gc.generation += 1;
+            return;
+        }
+        const state = gc.parentState();
+        inline for (reflection.fieldsOf(types.GcGenerations)) |field| for (@field(state, field).items) |pointer| clearGeneration(pointer);
+        if (state.rollback) |journal| journal.forEachOriginal(clearGeneration);
+        gc.generation = 1;
+    }
+
+    fn clearEpochs(object: anytype) void {
+        object.gc.epoch = 0;
+    }
+
+    fn clearGeneration(object: anytype) void {
+        object.gc.generation = 0;
+    }
+
+    /// Every table in the lists must still be allocated.
+    pub fn clearTableLists(gc: *Gc) void {
+        const state = gc.parentState();
+        for (state.gc.weak.items) |table| table.in_weak_list = false;
+        for (state.gc.tables.items) |table| table.in_table_list = false;
         state.gc.weak.clearRetainingCapacity();
         state.gc.tables.clearRetainingCapacity();
+    }
+
+    fn resetMarks(gc: *Gc) void {
+        const state = gc.parentState();
+        gc.advanceEpoch();
+        state.gc.work.clearRetainingCapacity();
+        gc.clearTableLists();
         state.gc.finalizers.clearRetainingCapacity();
         state.gc.work_done = 0;
     }
@@ -716,8 +747,7 @@ pub const Gc = struct {
         const state = gc.parentState();
         var pending_userdata = state.userdata_pending_finalizer_head;
         while (pending_userdata) |userdata| : (pending_userdata = userdata.finalizer_next) gc.markUserdata(userdata);
-        var pending = state.table_pending_finalizer_head;
-        while (pending) |table| : (pending = table.finalizer_next) gc.markTable(table);
+        for (state.table_pending_finalizers.items) |entry| gc.markTable(entry.table);
         var lua_pending = state.userdata_lua_pending_head;
         while (lua_pending) |userdata| : (lua_pending = userdata.lua_finalizer_next) gc.markUserdata(userdata);
         var scope = state.userdata_scope;
@@ -730,7 +760,6 @@ pub const Gc = struct {
         var callback = state.active_api_callback;
         while (callback) |context| : (callback = context.parent) {
             gc.forceEnqueue(.{ .thread = context.thread });
-            gc.markString(context.function_name);
             gc.markStackRange(context.thread, context.argument_base, context.argCount());
             for (context.returns.items()) |value| gc.markValue(value);
             if (context.error_value) |value| gc.markValue(value);
@@ -767,28 +796,18 @@ pub const Gc = struct {
     fn markRuntimeErrorPayload(gc: *Gc, payload: ?RuntimeErrorPayload) void {
         const active = payload orelse return;
         switch (active) {
-            .diagnostic => |message| gc.markString(message),
-            .argument => |argument| {
-                gc.markString(argument.function_name);
-                switch (argument.detail) {
-                    .message => |message| gc.markString(message),
-                    .expected => |expected| {
-                        gc.markString(expected.expected);
-                        gc.markString(expected.actual);
-                    },
-                }
-            },
+            .diagnostic => {},
             .lua_value => |value| gc.markValue(value),
         }
     }
 
-    pub fn markString(gc: *Gc, bytes: []const u8) void {
+    pub fn markString(gc: *Gc, string: *const String) void {
         const state = gc.parentState();
-        if (gc.findStringAllocation(bytes)) |index| {
-            if (!gc.isOld(&state.string_allocations.items[index])) state.gc.found_young = true;
-            state.string_allocations.items[index].gc.epoch = state.gc.epoch;
-            state.string_allocations.items[index].gc.color = .black;
-        }
+        if (string.static) return;
+        const managed = @constCast(string);
+        if (!gc.isOld(managed)) state.gc.found_young = true;
+        managed.gc.epoch = state.gc.epoch;
+        managed.gc.color = .black;
     }
 
     fn markTable(gc: *Gc, table: *Table) void {
@@ -800,15 +819,14 @@ pub const Gc = struct {
     fn traceTable(gc: *Gc, table: *Table) void {
         const state = gc.parentState();
         gc.tableCandidate(table);
-        for (table.array.items) |value| gc.noteYoung(value);
-        for (table.entries.items) |entry| {
-            if (entry.value == .nil) continue;
+        for (table.array.items()) |value| gc.noteYoung(value);
+        for (table.entries()) |entry| {
             gc.noteYoung(entry.key);
             gc.noteYoung(entry.value);
         }
         const mode = gc.weakMode(table);
-        if (@intFromEnum(state.gc.phase) < @intFromEnum(types.GcPhase.sweep_threads) and (mode.keys or mode.values) and table.gc.weak_epoch != state.gc.epoch) {
-            table.gc.weak_epoch = state.gc.epoch;
+        if (@intFromEnum(state.gc.phase) < @intFromEnum(types.GcPhase.sweep_threads) and (mode.keys or mode.values) and !table.in_weak_list) {
+            table.in_weak_list = true;
             state.gc.weak.appendAssumeCapacity(table);
         }
         if (table.metatable) |metatable| gc.markTable(metatable);
@@ -818,17 +836,17 @@ pub const Gc = struct {
             return;
         }
         if (weak.values) {
-            for (table.entries.items) |entry| if (entry.value != .nil) gc.markValue(entry.key);
+            for (table.entries()) |entry| if (entry.value != .nil) gc.markValue(entry.key);
             gc.markWeakTableStrings(table, false, true);
             return;
         }
         if (weak.keys) {
-            for (table.array.items) |value| gc.markValue(value);
+            for (table.array.items()) |value| gc.markValue(value);
             _ = gc.markEphemeronValues(table);
             return;
         }
-        for (table.array.items) |value| gc.markValue(value);
-        for (table.entries.items) |entry| {
+        for (table.array.items()) |value| gc.markValue(value);
+        for (table.entries()) |entry| {
             if (entry.value == .nil) continue;
             gc.markValue(entry.key);
             gc.markValue(entry.value);
@@ -847,9 +865,9 @@ pub const Gc = struct {
 
     fn markWeakTableStrings(gc: *Gc, table: *Table, keys: bool, values: bool) void {
         if (values) {
-            for (table.array.items) |value| gc.markWeakString(value);
+            for (table.array.items()) |value| gc.markWeakString(value);
         }
-        for (table.entries.items) |entry| {
+        for (table.entries()) |entry| {
             if (entry.value == .nil) continue;
             if (keys) gc.markWeakString(entry.key);
             if (values) gc.markWeakString(entry.value);
@@ -876,10 +894,11 @@ pub const Gc = struct {
 
     fn traceClosure(gc: *Gc, closure: *Closure) void {
         const state = gc.parentState();
-        if (closure.constants) |constants| for (constants) |constant| {
-            if (constant) |value| gc.markValue(value);
+        if (closure.chunk) |chunk| if (chunk.epoch != state.gc.epoch) {
+            chunk.epoch = state.gc.epoch;
+            for (chunk.values) |value| gc.markValue(value);
         };
-        for (closure.upvalues) |upvalue| {
+        for (closure.upvalues()) |upvalue| {
             if (!gc.isOld(upvalue)) state.gc.found_young = true;
             gc.markUpvalue(upvalue);
         }
@@ -893,10 +912,9 @@ pub const Gc = struct {
     }
 
     fn traceUpvalue(gc: *Gc, upvalue: *Upvalue) void {
-        if (upvalue.is_open) {
-            if (upvalue.stack_index < upvalue.owner.stack.items.len) gc.markValue(upvalue.owner.stack.items[upvalue.stack_index]);
-        } else {
-            gc.markValue(upvalue.closed);
+        switch (upvalue.cell) {
+            .open => |slot| if (slot.stack_index < slot.owner.stack.items.len) gc.markValue(slot.owner.stack.items[slot.stack_index]),
+            .closed => |value| gc.markValue(value),
         }
     }
 
@@ -923,21 +941,19 @@ pub const Gc = struct {
         if (thread.close_error_value) |value| gc.markValue(value);
         if (thread.pending_unwind_error) |value| gc.markValue(value);
         gc.markValue(thread.error_handler);
-        inline for (.{ "error_traceback", "hook_return_name", "next_call_name", "next_call_namewhat" }) |field| {
-            if (@field(thread, field)) |name| gc.markString(name);
-        }
+        if (thread.error_traceback) |traceback| gc.markString(traceback);
         for (thread.protected_continuations.items) |continuation| {
             gc.markRuntimeErrorPayload(continuation.context.last_error);
             gc.markValue(continuation.context.error_handler);
             gc.markValue(continuation.context.previous_error_handler);
         }
-        for (thread.frames.items) |frame| {
+        for (thread.frames.items, 0..) |frame, index| {
             gc.markClosure(frame.closure);
-            gc.markValue(frame.vararg_table_local);
-            if (frame.debug_name_override) |name| gc.markString(name);
-            if (frame.debug_namewhat_override) |name| gc.markString(name);
-            for (frame.varargs) |value| gc.markValue(value);
-            if (frame.pending_returns) |returns| for (returns) |value| gc.markValue(value);
+            gc.markStackRange(thread, frame.vararg_base, frame.vararg_count);
+            if (!frame.has_extra) continue;
+            const extra = thread.frame_extras.items[index];
+            gc.markValue(extra.vararg_table_local);
+            if (extra.pending_returns) |returns| for (returns) |value| gc.markValue(value);
         }
         var current = thread.open_upvalues;
         while (current) |upvalue| : (current = upvalue.next) gc.markUpvalue(upvalue);
@@ -953,7 +969,7 @@ pub const Gc = struct {
         for (frames, 0..) |frame, index| {
             const live_end = if (index + 1 < frames.len) frames[index + 1].base else innermostLiveEnd(thread, frame);
             if (live_end > frame.base) gc.markStackRange(thread, frame.base, live_end - frame.base);
-            for (frame.proto.locals.items) |local| {
+            for (frame.closure.proto.locals.items) |local| {
                 if (frame.base + local.register < live_end or !localActiveAt(local, frame.pc)) continue;
                 gc.markStackRange(thread, frame.base + local.register, 1);
             }
@@ -973,17 +989,17 @@ pub const Gc = struct {
         const state = gc.parentState();
         _ = state;
         const metatable = table.metatable orelse return .{};
-        const mode = metatable.get(.{ .string = "__mode" });
+        const mode = metatable.getLiteral("__mode");
         if (mode != .string) return .{};
         return .{
-            .keys = std.mem.indexOfScalar(u8, mode.string, 'k') != null,
-            .values = std.mem.indexOfScalar(u8, mode.string, 'v') != null,
+            .keys = std.mem.indexOfScalar(u8, mode.string.bytes(), 'k') != null,
+            .values = std.mem.indexOfScalar(u8, mode.string.bytes(), 'v') != null,
         };
     }
 
     fn markEphemeronValues(gc: *Gc, table: *Table) bool {
         var changed = false;
-        for (table.entries.items) |entry| {
+        for (table.entries()) |entry| {
             if (entry.value == .nil) continue;
             if (gc.valueIsWeaklyCleared(entry.key)) continue;
             gc.markValue(entry.key);
@@ -1014,9 +1030,8 @@ pub const Gc = struct {
     }
 
     fn valueIsMarked(gc: *Gc, value: Value) bool {
-        const state = gc.parentState();
         return switch (value) {
-            .string => |string| if (gc.findStringAllocation(string)) |index| gc.isMarked(&state.string_allocations.items[index]) else true,
+            .string => |string| string.static or gc.isMarked(string),
             .table, .gmatch_iterator => |table| !gc.isTrackedTable(table) or gc.isMarked(table),
             .userdata => |userdata| !gc.isTrackedUserdata(userdata) or gc.isMarked(userdata),
             .closure => |closure| !gc.isTrackedClosure(closure) or gc.isMarked(closure),
@@ -1036,9 +1051,8 @@ pub const Gc = struct {
     }
 
     fn valueIsCollectableUnmarked(gc: *Gc, value: Value) bool {
-        const state = gc.parentState();
         return switch (value) {
-            .string => |string| if (gc.findStringAllocation(string)) |index| !gc.isMarked(&state.string_allocations.items[index]) else false,
+            .string => |string| !string.static and !gc.isMarked(string),
             .table, .gmatch_iterator => |table| gc.isTrackedTable(table) and !gc.isMarked(table),
             .userdata => |userdata| gc.isTrackedUserdata(userdata) and !gc.isMarked(userdata),
             .closure => |closure| gc.isTrackedClosure(closure) and !gc.isMarked(closure),
@@ -1053,13 +1067,13 @@ pub const Gc = struct {
             if (table.rollback == null) continue;
             const weak = gc.weakMode(table);
             var changed = false;
-            if (weak.values) for (table.array.items) |value| {
+            if (weak.values) for (table.array.items()) |value| {
                 if (gc.valueIsWeaklyCleared(value)) {
                     changed = true;
                     break;
                 }
             };
-            if (!changed) for (table.entries.items) |entry| {
+            if (!changed) for (table.entries()) |entry| {
                 if ((weak.values and gc.valueIsWeaklyCleared(entry.value)) or
                     (weak.keys and gc.valueIsWeaklyCleared(entry.key)) or
                     (entry.value == .nil and gc.valueIsCollectableUnmarked(entry.key)))
@@ -1068,10 +1082,7 @@ pub const Gc = struct {
                     break;
                 }
             };
-            if (changed) {
-                try rollback.tableWritable(table);
-                gc.noteTableCapacityDelta(table, 0);
-            }
+            if (changed) try rollback.tableWritable(table);
         }
     }
 
@@ -1099,19 +1110,17 @@ pub const Gc = struct {
         for (state.gc.tables.items) |table| {
             if (!gc.isMarked(table)) continue;
             var write_index: usize = 0;
-            for (table.entries.items) |entry| {
+            for (table.entries()) |entry| {
                 if (entry.value == .nil and gc.valueIsCollectableUnmarked(entry.key)) continue;
-                table.entries.items[write_index] = entry;
+                table.entries()[write_index] = entry;
                 write_index += 1;
             }
-            if (write_index == table.entries.items.len) continue;
-            table.entries.items.len = write_index;
-            table.reindexEntries();
+            table.truncateEntries(write_index);
         }
     }
 
     fn clearWeakTableValues(gc: *Gc, table: *Table) void {
-        for (table.array.items) |*value| {
+        for (table.array.items()) |*value| {
             if (gc.valueIsWeaklyCleared(value.*)) value.* = .nil;
         }
         gc.removeEntriesWhere(table, "value");
@@ -1119,26 +1128,36 @@ pub const Gc = struct {
 
     fn removeEntriesWhere(gc: *Gc, table: *Table, comptime field: []const u8) void {
         var write_index: usize = 0;
-        for (table.entries.items) |entry| {
+        for (table.entries()) |entry| {
             if (gc.valueIsWeaklyCleared(@field(entry, field))) continue;
-            table.entries.items[write_index] = entry;
+            table.entries()[write_index] = entry;
             write_index += 1;
         }
-        if (write_index == table.entries.items.len) return;
-        table.entries.items.len = write_index;
-        table.reindexEntries();
+        table.truncateEntries(write_index);
     }
 
     fn clearWeakTableKeys(gc: *Gc, table: *Table) void {
         gc.removeEntriesWhere(table, "key");
     }
 
-    pub fn writeTableBarrier(gc: *Gc, table: *Table, key: Value, value: Value) void {
+    pub inline fn writeTableBarrier(gc: *Gc, table: *Table, key: Value, value: Value) void {
+        const mode_key = key == .string and key.string == static_strings.get("__mode");
+        if (!mode_key and !isCollectable(key) and !isCollectable(value)) return;
+        if (!mode_key and gc.phase == .pause and table.gc.generation == gc.generation and (table.gc.age != .old or table.gc.remembered)) return;
+        gc.writeTableBarrierSlow(table, key, value, mode_key);
+    }
+
+    /// `key` must already be in `table`.
+    pub inline fn writeExistingKeyBarrier(gc: *Gc, table: *Table, key: Value, value: Value) void {
+        if (!isCollectable(value) and !(key == .string and key.string == static_strings.get("__mode"))) return;
+        gc.writeTableBarrier(table, key, value);
+    }
+
+    noinline fn writeTableBarrierSlow(gc: *Gc, table: *Table, key: Value, value: Value, mode_key: bool) void {
         const state = gc.parentState();
         gc.rememberObject(.{ .table = table });
-        if (key == .string and std.mem.eql(u8, key.string, "__mode")) {
-            var current = state.table_metatable_head;
-            while (current) |dependent| : (current = dependent.metatable_next) {
+        if (mode_key and table.used_as_metatable) {
+            for (state.table_allocations.items) |dependent| {
                 if (dependent.metatable != table) continue;
                 gc.rememberObject(.{ .table = dependent });
                 if (state.gc.phase != .pause and dependent.gc.color != .gray) {
@@ -1155,7 +1174,12 @@ pub const Gc = struct {
         if (!weak.values and (!weak.keys or !gc.valueIsWeaklyCleared(key))) gc.markValue(value);
     }
 
-    pub fn writeBarrier(gc: *Gc, parent: anytype, child: Value) void {
+    pub inline fn writeBarrier(gc: *Gc, parent: anytype, child: Value) void {
+        if (!isCollectable(child)) return;
+        gc.writeBarrierSlow(parent, child);
+    }
+
+    noinline fn writeBarrierSlow(gc: *Gc, parent: anytype, child: Value) void {
         const state = gc.parentState();
         const T = @typeInfo(@TypeOf(parent)).pointer.child;
         const tag = comptime if (T == Table) "table" else if (T == Userdata) "userdata" else if (T == Closure) "closure" else if (T == Upvalue) "upvalue" else "thread";
@@ -1164,14 +1188,26 @@ pub const Gc = struct {
         gc.markValue(child);
     }
 
+    inline fn isCollectable(value: Value) bool {
+        return switch (value) {
+            .string => |string| !string.static,
+            .table, .userdata, .closure, .thread, .coroutine_wrapper, .gmatch_iterator => true,
+            else => false,
+        };
+    }
+
     fn prepareLuaFinalizers(gc: *Gc) void {
         const state = gc.parentState();
         state.gc.finalizers.clearRetainingCapacity();
-        // A minor collection sees only young and remembered tables here. Selection precedes resurrection.
-        for (state.gc.tables.items) |table| {
-            if (!table.finalizer_registered or gc.isMarked(table)) continue;
-            state.gc.finalizers.appendAssumeCapacity(.{ .table = table });
+        // Selection precedes resurrection.
+        var kept: usize = 0;
+        for (state.table_finalizers.items) |entry| {
+            if (gc.isMarked(entry.table)) {
+                state.table_finalizers.items[kept] = entry;
+                kept += 1;
+            } else state.gc.finalizers.appendAssumeCapacity(.{ .table = entry });
         }
+        state.table_finalizers.items.len = kept;
         for (state.userdata_allocations.items[if (state.gc.cycle == .minor) state.gc.old.userdata_allocations else 0..]) |userdata| {
             if (!userdata.lua_finalizer_registered or userdata.finalized or gc.isMarked(userdata)) continue;
             state.gc.finalizers.appendAssumeCapacity(.{ .userdata = userdata });
@@ -1181,12 +1217,15 @@ pub const Gc = struct {
                 return a.order() > b.order();
             }
         }.newer);
-        var tail = &state.table_pending_finalizer_head;
-        var tail_owner: ?*Table = null;
-        while (tail.*) |table| {
-            tail = &table.finalizer_next;
-            tail_owner = table;
+        var separated: usize = 0;
+        for (state.gc.finalizers.items) |object| {
+            if (object == .table) separated += 1;
         }
+        const pending = &state.table_pending_finalizers;
+        const queued = pending.items.len;
+        pending.items.len += separated;
+        std.mem.copyBackwards(types.TableFinalizer, pending.items[separated..], pending.items[0..queued]);
+        var slot = separated;
         var userdata_tail = &state.userdata_lua_pending_head;
         var userdata_tail_owner: ?*Userdata = null;
         while (userdata_tail.*) |userdata| {
@@ -1194,22 +1233,9 @@ pub const Gc = struct {
             userdata_tail_owner = userdata;
         }
         for (state.gc.finalizers.items) |object| switch (object) {
-            .table => |table| {
-                rollback.touch(table);
-                if (table.finalizer_prev) |prev| {
-                    rollback.touch(prev);
-                    prev.finalizer_next = table.finalizer_next;
-                } else state.table_finalizer_head = table.finalizer_next;
-                if (table.finalizer_next) |next| {
-                    rollback.touch(next);
-                    next.finalizer_prev = table.finalizer_prev;
-                }
-                if (tail_owner) |owner| rollback.touch(owner);
-                table.finalizer_prev = null;
-                table.finalizer_order = metatable_mod.nextFinalizerOrder(state);
-                tail.* = table;
-                tail_owner = table;
-                tail = &table.finalizer_next;
+            .table => |entry| {
+                slot -= 1;
+                pending.items[slot] = .{ .table = entry.table, .order = metatable_mod.nextFinalizerOrder(state) };
             },
             .userdata => |userdata| {
                 rollback.touch(userdata);
@@ -1220,10 +1246,8 @@ pub const Gc = struct {
                 userdata_tail = &userdata.lua_finalizer_next;
             },
         };
-        tail.* = null;
         userdata_tail.* = null;
-        var pending = state.table_pending_finalizer_head;
-        while (pending) |table| : (pending = table.finalizer_next) gc.markTable(table);
+        for (pending.items) |entry| gc.markTable(entry.table);
         var lua_pending = state.userdata_lua_pending_head;
         while (lua_pending) |userdata| : (lua_pending = userdata.lua_finalizer_next) gc.markUserdata(userdata);
         state.gc.finalizers.clearRetainingCapacity();
@@ -1233,10 +1257,10 @@ pub const Gc = struct {
 
     fn nextPendingFinalizer(gc: *Gc) ?types.FinalizerObject {
         const state = gc.parentState();
-        const table = state.table_pending_finalizer_head;
+        const table = state.table_pending_finalizers.getLastOrNull();
         const userdata = state.userdata_lua_pending_head;
         if (table) |t| {
-            if (userdata) |u| if (u.lua_finalizer_order < t.finalizer_order) return .{ .userdata = u };
+            if (userdata) |u| if (u.lua_finalizer_order < t.order) return .{ .userdata = u };
             return .{ .table = t };
         }
         if (userdata) |u| return .{ .userdata = u };
@@ -1255,10 +1279,10 @@ pub const Gc = struct {
             try active_thread.ensureStack(state.allocator, frame.base + @as(usize, active_thread.scratchRegister()) + 2, call_mod.callStackValueLimit(state, active_thread));
             count += 1;
             switch (object) {
-                .table => |table| {
+                .table => |entry| {
+                    const table = entry.table;
                     rollback.touch(table);
-                    state.table_pending_finalizer_head = table.finalizer_next;
-                    table.finalizer_next = null;
+                    state.table_pending_finalizers.items.len -= 1;
                     table.finalizer_registered = false;
                     try gc.callLuaFinalizer(active_thread, .{ .table = table }, table.metatable);
                 },
@@ -1276,7 +1300,7 @@ pub const Gc = struct {
 
     fn callLuaFinalizer(gc: *Gc, thread: *Thread, object: Value, metatable: ?*Table) !void {
         const state = gc.parentState();
-        const finalizer = (metatable orelse return).get(.{ .string = "__gc" });
+        const finalizer = (metatable orelse return).getLiteral("__gc");
         if (finalizer == .nil) return;
         const previous_name = thread.next_call_name;
         const previous_namewhat = thread.next_call_namewhat;
@@ -1305,7 +1329,7 @@ pub const Gc = struct {
         const builtin = State.isBuiltinUserdata(userdata);
         if (builtin) {
             if (metatable == state.file_metatable or metatable == state.fs_file_metatable) return;
-        } else if (metatable.get(.{ .string = "__gc" }) == .nil) return;
+        } else if (metatable.getLiteral("__gc") == .nil) return;
         rollback.touch(userdata);
         userdata.lua_finalizer_registered = true;
         userdata.lua_finalizer_order = if (builtin) State.builtinFinalizerOrder(userdata) else metatable_mod.nextFinalizerOrder(state);
@@ -1328,17 +1352,10 @@ pub const Gc = struct {
         defer finalizers.deinit(state.allocator);
         gc.collectCloseFinalizers(&finalizers) catch return;
 
-        var pending = state.table_pending_finalizer_head;
-        while (pending) |table| : (pending = table.finalizer_next) table.finalizer_registered = false;
-        var registered = state.table_finalizer_head;
-        while (registered) |table| {
-            registered = table.finalizer_next;
-            table.finalizer_registered = false;
-            table.finalizer_next = null;
-            table.finalizer_prev = null;
-        }
-        state.table_pending_finalizer_head = null;
-        state.table_finalizer_head = null;
+        for (state.table_pending_finalizers.items) |entry| entry.table.finalizer_registered = false;
+        for (state.table_finalizers.items) |entry| entry.table.finalizer_registered = false;
+        state.table_pending_finalizers.clearRetainingCapacity();
+        state.table_finalizers.clearRetainingCapacity();
         while (state.userdata_lua_pending_head) |userdata| {
             state.userdata_lua_pending_head = userdata.lua_finalizer_next;
             userdata.lua_finalizer_next = null;
@@ -1362,14 +1379,15 @@ pub const Gc = struct {
     fn collectCloseFinalizers(gc: *Gc, finalizers: *std.ArrayList(CloseFinalizer)) !void {
         const state = gc.parentState();
         const a = state.allocator;
-        var pending_table = state.table_pending_finalizer_head;
+        var pending_table_count = state.table_pending_finalizers.items.len;
         var pending_lua = state.userdata_lua_pending_head;
         var pending_lua_tail: ?*Userdata = null;
-        while (pending_table != null or pending_lua != null) {
-            const take_table = if (pending_table) |table| if (pending_lua) |userdata| table.finalizer_order <= userdata.lua_finalizer_order else true else false;
+        while (pending_table_count != 0 or pending_lua != null) {
+            const next_table: ?types.TableFinalizer = if (pending_table_count != 0) state.table_pending_finalizers.items[pending_table_count - 1] else null;
+            const take_table = if (next_table) |entry| if (pending_lua) |userdata| entry.order <= userdata.lua_finalizer_order else true else false;
             if (take_table) {
-                try finalizers.append(a, .{ .object = .{ .table = pending_table.? }, .order = 0 });
-                pending_table = pending_table.?.finalizer_next;
+                try finalizers.append(a, .{ .object = .{ .table = next_table.?.table }, .order = 0 });
+                pending_table_count -= 1;
             } else {
                 try finalizers.append(a, .{ .object = .{ .userdata = pending_lua.? }, .order = 0 });
                 pending_lua_tail = pending_lua;
@@ -1381,8 +1399,7 @@ pub const Gc = struct {
             if (State.closeFinalizerOrder(userdata) != null) try finalizers.append(a, .{ .object = .{ .file = userdata }, .order = 0 });
         }
         const separated = finalizers.items.len;
-        var registered = state.table_finalizer_head;
-        while (registered) |table| : (registered = table.finalizer_next) try finalizers.append(a, .{ .object = .{ .table = table }, .order = table.finalizer_order });
+        for (state.table_finalizers.items) |entry| try finalizers.append(a, .{ .object = .{ .table = entry.table }, .order = entry.order });
         for (state.userdata_allocations.items) |userdata| {
             if (userdata.lua_finalizer_registered and userdata.lua_finalizer_next == null and userdata != pending_lua_tail) {
                 try finalizers.append(a, .{ .object = .{ .userdata = userdata }, .order = userdata.lua_finalizer_order });
@@ -1429,27 +1446,33 @@ pub const Gc = struct {
     }
 
     fn updateIndex(gc: *Gc, comptime field: []const u8, index: usize) void {
+        if (comptime std.mem.eql(u8, field, "string_allocations")) return;
         const state = gc.parentState();
         const item = @field(state, field).items[index];
-        if (comptime std.mem.eql(u8, field, "string_allocations")) {
-            if (item.bytes.len != 0) state.string_allocation_index.getPtr(@intFromPtr(item.bytes.ptr)).?.* = index;
-        } else if (comptime std.mem.eql(u8, field, "table_allocations")) state.table_allocation_index.getPtr(@intFromPtr(item)).?.* = index else state.object_allocation_index.getPtr(@intFromPtr(item)).?.* = index;
+        rollback.touch(item);
+        item.gc.registry_index = @intCast(index);
     }
 
     pub fn removeRegistryItem(gc: *Gc, comptime field: []const u8, index: usize) void {
         const state = gc.parentState();
-        const boundary = &@field(state.gc.old, field);
         var hole = index;
-        if (hole < boundary.*) {
-            boundary.* -= 1;
-            if (hole != boundary.*) {
-                @field(state, field).items[hole] = @field(state, field).items[boundary.*];
-                gc.updateIndex(field, hole);
-            }
-            hole = boundary.*;
-        }
+        if (state.rollback) |journal| hole = gc.shrinkPrefix(field, hole, &@field(journal.baseline, field));
+        hole = gc.shrinkPrefix(field, hole, &@field(state.gc.old, field));
         _ = @field(state, field).swapRemove(hole);
         if (hole < @field(state, field).items.len) gc.updateIndex(field, hole);
+    }
+
+    /// Fills a hole inside the registry prefix `[0, boundary)` from its last item, shrinking the
+    /// prefix, and returns the new hole.
+    fn shrinkPrefix(gc: *Gc, comptime field: []const u8, hole: usize, boundary: *usize) usize {
+        if (hole >= boundary.*) return hole;
+        const state = gc.parentState();
+        boundary.* -= 1;
+        if (hole != boundary.*) {
+            @field(state, field).items[hole] = @field(state, field).items[boundary.*];
+            gc.updateIndex(field, hole);
+        }
+        return boundary.*;
     }
 
     fn promoteYoung(gc: *Gc) void {
@@ -1460,7 +1483,7 @@ pub const Gc = struct {
             const strings = comptime std.mem.eql(u8, field, "string_allocations");
             var i = @field(state.gc.old, field);
             while (i < @field(state, field).items.len) : (i += 1) {
-                const pointer = if (strings) &@field(state, field).items[i] else @field(state, field).items[i];
+                const pointer = @field(state, field).items[i];
                 if (pointer.gc.age == .new) {
                     pointer.gc.age = .survivor;
                 } else {
@@ -1505,55 +1528,37 @@ pub const Gc = struct {
         while (state.gc.sweep_cursor < end.* and work < budget) : (work += 1) {
             const index = state.gc.sweep_cursor;
             const item = @field(state, field).items[index];
-            if (gc.isMarked(if (strings) &item else item)) {
+            if (gc.isMarked(item)) {
                 state.gc.sweep_cursor += 1;
                 continue;
             }
+            const retained = if (state.rollback) |journal| index < @field(journal.baseline, field) else false;
+            gc.removeRegistryItem(field, index);
             if (strings) {
-                if (state.strings.map.get(item.bytes)) |interned| {
-                    if (interned.ptr == item.bytes.ptr and interned.len == item.bytes.len) _ = state.strings.map.remove(item.bytes);
-                }
-                if (item.bytes.len != 0) _ = state.string_allocation_index.remove(@intFromPtr(item.bytes.ptr));
-                const retained = if (state.rollback) |journal| journal.keepString(item.bytes) else false;
-                gc.noteAllocationFreed(@sizeOf(StringAllocation) + item.bytes.len);
-                if (!retained) state.allocator.free(item.bytes);
+                if (item.interned) state.strings.set.remove(item);
+                gc.noteAllocationFreed(item.gcBytes());
+                if (!retained) strings_mod.destroy(state.objects(), item);
             } else {
-                if (tables) _ = state.table_allocation_index.remove(@intFromPtr(item)) else _ = state.object_allocation_index.remove(@intFromPtr(item));
                 if (tables) {
                     gc.noteAllocationFreed(tableGcBytes(item));
                     gc.destroyTable(item);
                 } else if (comptime std.mem.eql(u8, field, "thread_allocations")) {
-                    gc.noteAllocationFreed(@sizeOf(Thread) + item.gc.storage_bytes);
+                    gc.noteAllocationFreed(@sizeOf(Thread) + item.storage_bytes);
                     upvalue_mod.closeUpvalues(state, item, 0);
                     gc.destroyThread(item);
                 } else if (comptime std.mem.eql(u8, field, "closure_allocations")) {
-                    gc.noteAllocationFreed(closureBytes(item));
+                    gc.noteAllocationFreed(Closure.allocationBytes(item.upvalue_count));
                     gc.destroyClosure(item);
                 } else if (comptime std.mem.eql(u8, field, "userdata_allocations")) {
                     gc.noteAllocationFreed(userdataBytes(item));
                     gc.destroyUserdata(item);
                 } else {
                     gc.noteAllocationFreed(@sizeOf(Upvalue));
-                    if (!rollback.retainCollected(item)) {
-                        if (state.rollback) |journal| journal.freed(@intFromPtr(item));
-                        state.allocator.destroy(item);
-                    }
+                    if (!rollback.retainCollected(item)) state.objects().destroy(item);
                 }
             }
-            gc.removeRegistryItem(field, index);
         }
         return state.gc.sweep_cursor >= end.*;
-    }
-
-    pub fn findStringAllocation(gc: *Gc, bytes: []const u8) ?usize {
-        const state = gc.parentState();
-        if (bytes.len == 0) {
-            for (state.string_allocations.items, 0..) |allocation, index| {
-                if (allocation.bytes.ptr == bytes.ptr and allocation.bytes.len == bytes.len) return index;
-            }
-            return null;
-        }
-        return state.string_allocation_index.get(@intFromPtr(bytes.ptr));
     }
 
     fn isTrackedThread(gc: *Gc, thread: *Thread) bool {
@@ -1561,8 +1566,7 @@ pub const Gc = struct {
     }
 
     pub fn isTrackedTable(gc: *Gc, table: *Table) bool {
-        const state = gc.parentState();
-        return state.table_allocation_index.contains(@intFromPtr(table));
+        return gc.trackedIn("table_allocations", table);
     }
 
     fn isTrackedUserdata(gc: *Gc, userdata: *Userdata) bool {
@@ -1577,30 +1581,23 @@ pub const Gc = struct {
         return gc.trackedIn("upvalue_allocations", upvalue);
     }
 
-    fn trackedIn(gc: *Gc, comptime field: []const u8, pointer: anytype) bool {
-        const state = gc.parentState();
-        const index = state.object_allocation_index.get(@intFromPtr(pointer)) orelse return false;
-        const items = @field(state, field).items;
-        return index < items.len and items[index] == pointer;
+    inline fn trackedIn(gc: *Gc, comptime field: []const u8, pointer: anytype) bool {
+        const index = pointer.gc.registry_index;
+        if (index == types.GcHeader.untracked) return false;
+        if (std.debug.runtime_safety) std.debug.assert(@field(gc.parentState(), field).items[index] == pointer);
+        return true;
     }
 
     pub fn destroyTable(gc: *Gc, table: *Table) void {
         const state = gc.parentState();
-        rollback.touch(table);
-        if (table.metatable != null) {
-            gc.unlinkTableMetatable(table);
-            state.table_metatable_count -= 1;
-        }
         if (rollback.retainCollected(table)) return;
-        if (state.rollback) |journal| journal.freed(@intFromPtr(table));
         table.deinit(state.allocator);
-        state.allocator.destroy(table);
+        state.objects().destroy(table);
     }
 
     pub fn destroyUserdata(gc: *Gc, userdata: *Userdata) void {
         const state = gc.parentState();
         if (rollback.retainCollected(userdata)) return;
-        if (state.rollback) |journal| journal.freed(@intFromPtr(userdata));
         if (userdata.payload) |payload| {
             payload.release(state.discarding);
             state.allocator.destroy(userdata);
@@ -1617,16 +1614,12 @@ pub const Gc = struct {
     pub fn destroyClosure(gc: *Gc, closure: *Closure) void {
         const state = gc.parentState();
         if (rollback.retainCollected(closure)) return;
-        if (state.rollback) |journal| journal.freed(@intFromPtr(closure));
-        if (closure.constants) |constants| state.allocator.free(constants);
-        if (closure.upvalues.len != 0) state.allocator.free(closure.upvalues);
-        state.allocator.destroy(closure);
+        Closure.destroy(state.objects(), closure);
     }
 
     pub fn destroyThread(gc: *Gc, thread: *Thread) void {
         const state = gc.parentState();
         if (rollback.retainCollected(thread)) return;
-        if (state.rollback) |journal| journal.freed(@intFromPtr(thread));
         thread.deinit(state.allocator);
         state.allocator.destroy(thread);
     }
@@ -1634,12 +1627,13 @@ pub const Gc = struct {
     pub fn allocationStats(gc: *const Gc) RuntimeAllocationStats {
         const state = gc.constParentState();
         var bytes: usize = 0;
-        for (state.string_allocations.items) |allocation| bytes += @sizeOf(StringAllocation) + allocation.bytes.len;
+        for (state.string_allocations.items) |string| bytes += string.gcBytes();
         for (state.table_allocations.items) |table| {
             bytes += tableGcBytes(table);
         }
         for (state.userdata_allocations.items) |userdata| bytes += userdataBytes(userdata);
-        for (state.closure_allocations.items) |closure| bytes += closureBytes(closure);
+        for (state.closure_allocations.items) |closure| bytes += Closure.allocationBytes(closure.upvalue_count);
+        for (state.chunk_allocations.items) |chunk| bytes += chunk.allocationBytes();
         bytes += state.upvalue_allocations.items.len * @sizeOf(Upvalue);
         for (state.thread_allocations.items) |thread| bytes += @sizeOf(Thread) + threadCapacityBytes(thread);
 
@@ -1653,40 +1647,35 @@ pub const Gc = struct {
         };
     }
 
-    /// Frees owned prototypes no marked closure uses; minor cycles only consider those loaded since
-    /// the previous collection, whose closures are all young.
-    fn sweepProtos(gc: *Gc) void {
+    /// Frees chunks no closure marked this cycle; minor cycles skip chunks from before the previous collection.
+    fn sweepChunks(gc: *Gc) void {
         const state = gc.parentState();
-        const minor = state.gc.cycle == .minor;
-        const start = if (minor) @max(state.gc.old_protos, state.borrowed_proto_count) else state.borrowed_proto_count;
-        if (state.proto_allocations.items.len <= start) return;
-        var live = std.AutoHashMap(*const proto_mod.Proto, void).init(state.allocator);
-        defer live.deinit();
-        const closures = state.closure_allocations.items[if (minor) state.gc.old.closure_allocations else 0..];
-        for (closures) |closure| {
-            if (gc.isMarked(closure)) live.put(closure.root orelse closure.proto, {}) catch return;
-        }
-        var index = start;
-        while (index < state.proto_allocations.items.len) {
-            const proto = state.proto_allocations.items[index];
-            if (live.contains(proto)) {
+        var index = if (state.gc.cycle == .minor) state.gc.old_chunks else 0;
+        while (index < state.chunk_allocations.items.len) {
+            const chunk = state.chunk_allocations.items[index];
+            if (chunk.epoch == state.gc.epoch) {
                 index += 1;
                 continue;
             }
-            if (state.rollback) |journal| {
-                if (!journal.isNew(@intFromPtr(proto))) {
-                    index += 1;
-                    continue;
-                }
-                journal.freed(@intFromPtr(proto));
-            }
-            _ = state.proto_allocations.swapRemove(index);
-            proto.deinit();
-            state.allocator.destroy(proto);
+            if (state.rollback) |journal| if (index < journal.baseline.chunk_allocations) {
+                index += 1;
+                continue;
+            };
+            _ = state.chunk_allocations.swapRemove(index);
+            gc.noteAllocationFreed(chunk.allocationBytes());
+            chunk.destroy(state.allocator);
         }
     }
 
-    pub fn noteTableMetatableChanged(gc: *Gc, table: *Table, old_has_metatable: bool) void {
+    /// Reserves the lists a new `__gc` registration appends to.
+    pub fn reserveTableFinalizer(gc: *Gc) !void {
+        const state = gc.parentState();
+        if (state.rollback) |journal| try journal.finalizersWritable(state);
+        try state.table_finalizers.ensureUnusedCapacity(state.allocator, 1);
+        try state.table_pending_finalizers.ensureTotalCapacity(state.allocator, state.table_pending_finalizers.items.len + state.table_finalizers.items.len + 1);
+    }
+
+    pub fn noteTableMetatableChanged(gc: *Gc, table: *Table) void {
         const state = gc.parentState();
         rollback.touch(table);
         if (!gc.isTrackedTable(table)) return;
@@ -1697,51 +1686,13 @@ pub const Gc = struct {
         }
         if (!table.finalizer_registered) {
             if (table.metatable) |metatable| {
-                if (metatable.get(.{ .string = "__gc" }) != .nil) {
+                if (metatable.getLiteral("__gc") != .nil) {
                     table.finalizer_registered = true;
-                    table.finalizer_order = metatable_mod.nextFinalizerOrder(state);
-                    table.finalizer_prev = null;
-                    if (state.table_finalizer_head) |head| {
-                        rollback.touch(head);
-                        head.finalizer_prev = table;
-                    }
-                    table.finalizer_next = state.table_finalizer_head;
-                    state.table_finalizer_head = table;
+                    state.table_finalizers.appendAssumeCapacity(.{ .table = table, .order = metatable_mod.nextFinalizerOrder(state) });
                 }
             }
         }
-        const new_has_metatable = table.metatable != null;
-        if (old_has_metatable == new_has_metatable) return;
-        if (new_has_metatable) {
-            table.metatable_prev = null;
-            table.metatable_next = state.table_metatable_head;
-            if (state.table_metatable_head) |head| {
-                rollback.touch(head);
-                head.metatable_prev = table;
-            }
-            state.table_metatable_head = table;
-            state.table_metatable_count += 1;
-        } else {
-            gc.unlinkTableMetatable(table);
-            state.table_metatable_count -= 1;
-        }
-    }
-
-    fn unlinkTableMetatable(gc: *Gc, table: *Table) void {
-        const state = gc.parentState();
-        rollback.touch(table);
-        if (table.metatable_prev) |prev| {
-            rollback.touch(prev);
-            prev.metatable_next = table.metatable_next;
-        } else if (state.table_metatable_head == table) {
-            state.table_metatable_head = table.metatable_next;
-        }
-        if (table.metatable_next) |next| {
-            rollback.touch(next);
-            next.metatable_prev = table.metatable_prev;
-        }
-        table.metatable_prev = null;
-        table.metatable_next = null;
+        if (table.metatable) |metatable| metatable.used_as_metatable = true;
     }
 
     pub fn setMode(gc: *Gc, mode: GcMode) GcMode {
@@ -1778,11 +1729,11 @@ pub const Gc = struct {
     pub fn runCloseFinalizers(gc: *Gc) void {
         const state = gc.parentState();
         if (state.execution_depth != 0 or state.current_thread != null) return;
-        if (state.table_pending_finalizer_head == null and state.table_finalizer_head == null and !gc.hasUserdataLuaFinalizers() and !stdlib.io.hasOpenFiles(state)) return;
+        if (state.table_pending_finalizers.items.len == 0 and state.table_finalizers.items.len == 0 and !gc.hasUserdataLuaFinalizers() and !stdlib.io.hasOpenFiles(state)) return;
         var proto = proto_mod.Proto.init(state.allocator);
         defer proto.deinit();
         proto.source_name = "=[C]";
-        var closure = Closure{ .proto = &proto, .upvalues = &.{} };
+        var closure = Closure{ .proto = &proto };
         const thread = entry_mod.newHostThread(state, &closure) catch return;
         defer entry_mod.retireHostThread(state, thread);
         state.current_thread = thread;
@@ -1795,7 +1746,7 @@ pub const Gc = struct {
         var proto = proto_mod.Proto.init(state.allocator);
         defer proto.deinit();
         proto.source_name = "=[C]";
-        var closure = Closure{ .proto = &proto, .upvalues = &.{} };
+        var closure = Closure{ .proto = &proto };
         const thread = try entry_mod.newHostThread(state, &closure);
         defer entry_mod.retireHostThread(state, thread);
         const previous_thread = state.current_thread;
@@ -1808,7 +1759,8 @@ pub const Gc = struct {
 const managed_lists = .{ "table_allocations", "userdata_allocations", "closure_allocations", "upvalue_allocations", "thread_allocations" };
 
 pub fn tableCapacityBytes(table: *const Table) usize {
-    return table.array.capacity * @sizeOf(Value) + table.entries.capacity * @sizeOf(TableEntry) + table.entry_index.capacity() * @sizeOf(types.TableEntryIndex.Slot);
+    const hash_bytes = if (table.hash) |part| types.TableHashPart.allocationBytes(part.capacity) else 0;
+    return table.array.capacity * @sizeOf(Value) + hash_bytes;
 }
 
 fn protoBytes(proto: *const proto_mod.Proto) usize {
@@ -1835,13 +1787,16 @@ fn threadCapacityBytes(thread: *const Thread) usize {
 
 fn frameStorageBytes(thread: *const Thread) usize {
     var bytes: usize = 0;
-    for (thread.frames.items) |frame| bytes += frame.storageBytes();
+    for (thread.frames.items, 0..) |frame, index| {
+        if (!frame.has_extra) continue;
+        if (thread.frame_extras.items[index].pending_returns) |returns| bytes += returns.len * @sizeOf(Value);
+    }
     return bytes;
 }
 
 fn threadListBytes(thread: *const Thread) usize {
     var bytes: usize = 0;
-    inline for (.{ "stack", "frames", "yield_values", "protected_continuations", "generic_for_continuations", "pairs_continuations", "tail_call_continuations", "call_one_continuations" }) |name| {
+    inline for (.{ "stack", "frames", "frame_extras", "yield_values", "protected_continuations", "generic_for_continuations", "pairs_continuations", "tail_call_continuations", "call_one_continuations" }) |name| {
         const list = @field(thread, name);
         const T = @typeInfo(@TypeOf(list.items)).pointer.child;
         bytes += list.capacity * @sizeOf(T);
@@ -1851,10 +1806,6 @@ fn threadListBytes(thread: *const Thread) usize {
 
 pub fn userdataBytes(userdata: *const Userdata) usize {
     return @sizeOf(Userdata) + if (userdata.payload) |payload| @sizeOf(types.UserdataPayload) + payload.managed_bytes else @as(usize, 0);
-}
-
-fn closureBytes(closure: *const Closure) usize {
-    return @sizeOf(Closure) + closure.upvalues.len * @sizeOf(*Upvalue) + if (closure.constants) |c| c.len * @sizeOf(?Value) else @as(usize, 0);
 }
 
 // Lua's floating-byte parameter encoding, decoded back to a percentage.
@@ -1874,9 +1825,9 @@ fn innermostLiveEnd(thread: *const Thread, frame: types.CallFrame) usize {
 }
 
 fn callerLiveEnd(frame: types.CallFrame) usize {
-    const whole = frame.base + frame.proto.max_registers;
-    if (frame.pc == 0 or frame.pc > frame.proto.instructions.items.len) return whole;
-    const op = switch (frame.proto.instructions.items[frame.pc - 1]) {
+    const whole = frame.base + frame.closure.proto.max_registers;
+    if (frame.pc == 0 or frame.pc > frame.closure.proto.instructions.items.len) return whole;
+    const op = switch (frame.closure.proto.instructions.items[frame.pc - 1]) {
         .call, .tail_call => |op| op,
         else => return whole,
     };

@@ -29,25 +29,27 @@
 - [stdlib](../stdlib.md)
 - [stdlib.base](../stdlib/base.md)
 - [runtime.call](../runtime/call.md)
+- [stdlib.static_strings](../stdlib/static_strings.md)
+- [runtime.table_index](../runtime/table_index.md)
+- [runtime.value](../runtime/value.md)
+- [runtime.number_format](../runtime/number_format.md)
 - [runtime.coroutine](../runtime/coroutine.md)
 - [runtime.debug](../runtime/debug.md)
 - [runtime.metatable](../runtime/metatable.md)
 - [runtime.rollback](../runtime/rollback.md)
-- [runtime.value](../runtime/value.md)
-- [runtime.number_format](../runtime/number_format.md)
-- [runtime.table_index](../runtime/table_index.md)
-- [runtime.host](../runtime/host.md)
-- [runtime.upvalue](../runtime/upvalue.md)
+- [runtime.strings](../runtime/strings.md)
+- [runtime.operators](../runtime/operators.md)
 - [runtime.failure](../runtime/failure.md)
 - [runtime.io](../runtime/io.md)
+- [runtime.host](../runtime/host.md)
 - [runtime.load](../runtime/load.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.gc](../runtime/gc.md)
 - [runtime.entry](../runtime/entry.md)
 - [runtime.system](../runtime/system.md)
 - [runtime.timezone](../runtime/timezone.md)
+- [runtime.upvalue](../runtime/upvalue.md)
 - [runtime.index](../runtime/index.md)
-- [runtime.operators](../runtime/operators.md)
 - [stdlib.table](../stdlib/table.md)
 - [stdlib.string](../stdlib/string.md)
 - [stdlib.string.format](../stdlib/string/format.md)
@@ -58,7 +60,6 @@
 - [stdlib.coroutine](../stdlib/coroutine.md)
 - [stdlib.debug](../stdlib/debug.md)
 - [stdlib.io](../stdlib/io.md)
-- [stdlib.static_strings](../stdlib/static_strings.md)
 - [stdlib.os](../stdlib/os.md)
 - [stdlib.package](../stdlib/package.md)
 - [stdlib.json](../stdlib/json.md)
@@ -68,13 +69,12 @@
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
 - [runtime.budget](../runtime/budget.md)
-- [runtime.strings](../runtime/strings.md)
+- [runtime.object_pool](../runtime/object_pool.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
 - [runtime.native_fn](../runtime/native_fn.md)
-- [runtime.address_index](../runtime/address_index.md)
 - [compile.compiler](../compile/compiler.md)
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
@@ -110,6 +110,7 @@
 - [testing.bench.c_startup](../testing/bench/c_startup.md)
 - [testing.bench.snapshots](../testing/bench/snapshots.md)
 - [testing.bench.gc](../testing/bench/gc.md)
+- [testing.bench.system](../testing/bench/system.md)
 - [testing.diff_runner](../testing/diff_runner.md)
 - [testing.fixtures](../testing/fixtures.md)
 - [testing.expected_failures](../testing/expected_failures.md)
@@ -138,6 +139,7 @@ Worker-local rollback. Retained storage is deliberately absent from GC roots.
 
 ## Types
 
+- [RegistryLengths](#type-registrylengths)
 - [Journal](#type-journal)
 
 <a id="fn-record"></a>
@@ -188,6 +190,25 @@ pub fn threadWritable(thread: *types.Thread) !void
 pub fn userdataWritable(userdata: *types.Userdata) !void
 ```
 
+<a id="type-registrylengths"></a>
+
+## RegistryLengths
+
+One length per name in `registries`.
+
+```zig
+pub const RegistryLengths = struct {
+    string_allocations: usize = 0,
+    table_allocations: usize = 0,
+    userdata_allocations: usize = 0,
+    closure_allocations: usize = 0,
+    upvalue_allocations: usize = 0,
+    thread_allocations: usize = 0,
+    chunk_allocations: usize = 0,
+    source_allocations: usize = 0,
+};
+```
+
 <a id="fn-copypayload"></a>
 
 ## copyPayload
@@ -213,9 +234,13 @@ pub const Journal = struct {
     userdata: []Record(types.Userdata) = &.{},
     dirty: std.ArrayList(*Header) = .empty,
     eager: std.ArrayList(*Record(types.Userdata)) = .empty,
-    new_objects: std.HashMap(usize, Allocation, types.AddressContext, std.hash_map.default_max_load_percentage),
+    /// Registry lengths at `attach`.
+    attached: RegistryLengths = .{},
+    /// Baseline objects still in each registry; they precede every object allocated since `attach`.
+    baseline: RegistryLengths = .{},
     registries_detached: bool = false,
     output_detached: bool = false,
+    finalizers_detached: bool = false,
     /// Logical restored records, independent of heap size.
     last_restored_objects: usize = 0,
 };
@@ -226,15 +251,13 @@ pub const Journal = struct {
 | Name | Parameters | Return Type | Description |
 | --- | --- | --- | --- |
 | [create](#fn-journal-create) | `state: *State, pristine: *const State` | `!*Journal` |  |
+| [forEachOriginal](#fn-journal-foreachoriginal) | `self: *Journal, comptime f: anytype` | `void` |  |
 | [attach](#fn-journal-attach) | `self: *Journal, state: *State` | `void` |  |
 | [prepareAllocation](#fn-journal-prepareallocation) | `self: *Journal, state: *State` | `!void` |  |
-| [allocated](#fn-journal-allocated) | `self: *Journal, comptime field: []const u8, item: anytype` | `void` |  |
-| [isNew](#fn-journal-isnew) | `self: *const Journal, address: usize` | `bool` |  |
-| [freed](#fn-journal-freed) | `self: *Journal, address: usize` | `void` |  |
 | [detachRegistries](#fn-journal-detachregistries) | `self: *Journal, state: *State` | `!void` |  |
 | [outputWritable](#fn-journal-outputwritable) | `self: *Journal, state: *State` | `!void` |  |
+| [finalizersWritable](#fn-journal-finalizerswritable) | `self: *Journal, state: *State` | `!void` |  |
 | [prepareCollection](#fn-journal-preparecollection) | `self: *Journal, state: *State` | `!void` | Called before GC enters its infallible destructive phases. |
-| [keepString](#fn-journal-keepstring) | `self: *Journal, bytes: []const u8` | `bool` |  |
 | [prepareReset](#fn-journal-preparereset) | `self: *Journal` | `![]*types.UserdataPayload` |  |
 | [reset](#fn-journal-reset) | `self: *Journal, state: *State, prepared: []*types.UserdataPayload` | `void` |  |
 | [abandon](#fn-journal-abandon) | `self: *Journal, state: *State` | `void` | End tracking while preserving the current logical state. Capture and destruction may traverse the baseline; reset only walks dirty records. |
@@ -245,6 +268,16 @@ pub const Journal = struct {
 
 ```zig
 pub fn create(state: *State, pristine: *const State) !*Journal
+```
+
+References: [`Journal`](#type-journal)
+
+<a id="fn-journal-foreachoriginal"></a>
+
+### Journal.forEachOriginal
+
+```zig
+pub fn forEachOriginal(self: *Journal, comptime f: anytype) void
 ```
 
 References: [`Journal`](#type-journal)
@@ -269,36 +302,6 @@ pub fn prepareAllocation(self: *Journal, state: *State) !void
 
 References: [`Journal`](#type-journal)
 
-<a id="fn-journal-allocated"></a>
-
-### Journal.allocated
-
-```zig
-pub fn allocated(self: *Journal, comptime field: []const u8, item: anytype) void
-```
-
-References: [`Journal`](#type-journal)
-
-<a id="fn-journal-isnew"></a>
-
-### Journal.isNew
-
-```zig
-pub fn isNew(self: *const Journal, address: usize) bool
-```
-
-References: [`Journal`](#type-journal)
-
-<a id="fn-journal-freed"></a>
-
-### Journal.freed
-
-```zig
-pub fn freed(self: *Journal, address: usize) void
-```
-
-References: [`Journal`](#type-journal)
-
 <a id="fn-journal-detachregistries"></a>
 
 ### Journal.detachRegistries
@@ -319,6 +322,16 @@ pub fn outputWritable(self: *Journal, state: *State) !void
 
 References: [`Journal`](#type-journal)
 
+<a id="fn-journal-finalizerswritable"></a>
+
+### Journal.finalizersWritable
+
+```zig
+pub fn finalizersWritable(self: *Journal, state: *State) !void
+```
+
+References: [`Journal`](#type-journal)
+
 <a id="fn-journal-preparecollection"></a>
 
 ### Journal.prepareCollection
@@ -327,16 +340,6 @@ Called before GC enters its infallible destructive phases.
 
 ```zig
 pub fn prepareCollection(self: *Journal, state: *State) !void
-```
-
-References: [`Journal`](#type-journal)
-
-<a id="fn-journal-keepstring"></a>
-
-### Journal.keepString
-
-```zig
-pub fn keepString(self: *Journal, bytes: []const u8) bool
 ```
 
 References: [`Journal`](#type-journal)

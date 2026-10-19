@@ -29,25 +29,27 @@
 - [stdlib](../stdlib.md)
 - [stdlib.base](../stdlib/base.md)
 - [runtime.call](../runtime/call.md)
+- [stdlib.static_strings](../stdlib/static_strings.md)
+- [runtime.table_index](../runtime/table_index.md)
+- [runtime.value](../runtime/value.md)
+- [runtime.number_format](../runtime/number_format.md)
 - [runtime.coroutine](../runtime/coroutine.md)
 - [runtime.debug](../runtime/debug.md)
 - [runtime.metatable](../runtime/metatable.md)
 - [runtime.rollback](../runtime/rollback.md)
-- [runtime.value](../runtime/value.md)
-- [runtime.number_format](../runtime/number_format.md)
-- [runtime.table_index](../runtime/table_index.md)
-- [runtime.host](../runtime/host.md)
-- [runtime.upvalue](../runtime/upvalue.md)
+- [runtime.strings](../runtime/strings.md)
+- [runtime.operators](../runtime/operators.md)
 - [runtime.failure](../runtime/failure.md)
 - [runtime.io](../runtime/io.md)
+- [runtime.host](../runtime/host.md)
 - [runtime.load](../runtime/load.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.gc](../runtime/gc.md)
 - [runtime.entry](../runtime/entry.md)
 - [runtime.system](../runtime/system.md)
 - [runtime.timezone](../runtime/timezone.md)
+- [runtime.upvalue](../runtime/upvalue.md)
 - [runtime.index](../runtime/index.md)
-- [runtime.operators](../runtime/operators.md)
 - [stdlib.table](../stdlib/table.md)
 - [stdlib.string](../stdlib/string.md)
 - [stdlib.string.format](../stdlib/string/format.md)
@@ -58,7 +60,6 @@
 - [stdlib.coroutine](../stdlib/coroutine.md)
 - [stdlib.debug](../stdlib/debug.md)
 - [stdlib.io](../stdlib/io.md)
-- [stdlib.static_strings](../stdlib/static_strings.md)
 - [stdlib.os](../stdlib/os.md)
 - [stdlib.package](../stdlib/package.md)
 - [stdlib.json](../stdlib/json.md)
@@ -68,13 +69,12 @@
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
 - [runtime.budget](../runtime/budget.md)
-- [runtime.strings](../runtime/strings.md)
+- [runtime.object_pool](../runtime/object_pool.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
 - [runtime.native_fn](../runtime/native_fn.md)
-- [runtime.address_index](../runtime/address_index.md)
 - [compile.compiler](../compile/compiler.md)
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
@@ -110,6 +110,7 @@
 - [testing.bench.c_startup](../testing/bench/c_startup.md)
 - [testing.bench.snapshots](../testing/bench/snapshots.md)
 - [testing.bench.gc](../testing/bench/gc.md)
+- [testing.bench.system](../testing/bench/system.md)
 - [testing.diff_runner](../testing/diff_runner.md)
 - [testing.fixtures](../testing/fixtures.md)
 - [testing.expected_failures](../testing/expected_failures.md)
@@ -529,28 +530,26 @@ pub const State = struct {
     snapshot_busy: bool = false,
     discarding: bool = false,
     allocator: std.mem.Allocator,
+    /// Holds the tables, upvalues, closures and strings, over `allocator`.
+    object_pool: *ObjectPool,
     global_table: ?*Table = null,
-    strings: strings_mod.Strings,
-    string_allocations: std.ArrayList(StringAllocation) = .empty,
-    string_allocation_index: PointerAllocationIndex = .empty,
+    strings: strings_mod.Strings = .{},
+    string_allocations: std.ArrayList(*types.String) = .empty,
     table_allocations: std.ArrayList(*Table) = .empty,
-    table_allocation_index: types.ObjectAllocationIndex = .empty,
-    object_allocation_index: types.ObjectAllocationIndex = .empty,
-    table_metatable_head: ?*Table = null,
-    table_finalizer_head: ?*Table = null,
+    /// Tables registered for a Lua `__gc` and not yet separated, oldest first. Each
+    /// registration reserves a slot in `table_pending_finalizers` too.
+    table_finalizers: std.ArrayList(types.TableFinalizer) = .empty,
     table_finalizer_serial: u64 = 0,
-    table_pending_finalizer_head: ?*Table = null,
-    /// Userdata awaiting Lua `__gc`, ordered together with `table_pending_finalizer_head`.
+    /// Tables separated for a Lua `__gc` call; the last one runs next.
+    table_pending_finalizers: std.ArrayList(types.TableFinalizer) = .empty,
+    /// Userdata awaiting Lua `__gc`, ordered together with `table_pending_finalizers`.
     userdata_lua_pending_head: ?*Userdata = null,
     userdata_pending_finalizer_head: ?*Userdata = null,
-    table_metatable_count: usize = 0,
     userdata_allocations: std.ArrayList(*Userdata) = .empty,
     closure_allocations: std.ArrayList(*Closure) = .empty,
     upvalue_allocations: std.ArrayList(*Upvalue) = .empty,
     thread_allocations: std.ArrayList(*Thread) = .empty,
-    proto_allocations: std.ArrayList(*proto_mod.Proto) = .empty,
-    /// Prefix owned by the API state's retained immutable snapshot.
-    borrowed_proto_count: usize = 0,
+    chunk_allocations: std.ArrayList(*types.Chunk) = .empty,
     source_allocations: std.ArrayList([]const u8) = .empty,
     api_roots: std.ArrayList(Value) = .empty,
     stdout: std.ArrayList(u8) = .empty,
@@ -594,6 +593,8 @@ pub const State = struct {
 | [max_c_calls](#alias-state-max_c_calls) |  |  |  |
 | [registerAllocation](#fn-state-registerallocation) | `self: *State, comptime field: []const u8, item: anytype` | `!void` |  |
 | [init](#fn-state-init) | `allocator: std.mem.Allocator` | `!State` |  |
+| [objects](#fn-state-objects) | `self: *const State` | `std.mem.Allocator` |  |
+| [allocatorFor](#fn-state-allocatorfor) | `self: *const State, comptime T: type` | `std.mem.Allocator` |  |
 | [initWithOptions](#fn-state-initwithoptions) | `allocator: std.mem.Allocator, options: StateOptions` | `!State` |  |
 | [initWithOptionsObserved](#fn-state-initwithoptionsobserved) | `allocator: std.mem.Allocator,         options: StateOptions,         observer_context: anytype,         comptime observe: anytype,` | `!State` |  |
 | [stackValueLimit](#fn-state-stackvaluelimit) | `self: *const State` | `usize` |  |
@@ -611,6 +612,7 @@ pub const State = struct {
 | [setTableRaw](#fn-state-settableraw) | `self: *State, table: *Table, key: Value, value: Value` | `!void` |  |
 | [declareGlobal](#fn-state-declareglobal) | `self: *State, thread: *Thread, name: []const u8, table_register: bytecode.Register, value_register: bytecode.Register` | `!void` |  |
 | [setGlobal](#fn-state-setglobal) | `self: *State, name: []const u8, value: Value` | `!void` |  |
+| [setGlobalString](#fn-state-setglobalstring) | `self: *State, key: *const types.String, value: Value` | `!void` |  |
 | [getGlobalValue](#fn-state-getglobalvalue) | `self: *State, name: []const u8` | `Value` |  |
 | [getGlobal](#fn-state-getglobal) | `self: *State, name: []const u8` | `Value` |  |
 | [putGlobal](#fn-state-putglobal) | `self: *State, name: []const u8, value: Value` | `!void` |  |
@@ -630,6 +632,7 @@ pub const State = struct {
 | [expectString](#fn-state-expectstring) | `self: *State, value: Value` | `![]const u8` |  |
 | [expectArgumentThread](#fn-state-expectargumentthread) | `self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32` | `!*Thread` | Like &#96;getco&#96; in lcorolib. |
 | [fail](#fn-state-fail) | `self: *State, message: []const u8` | `RuntimeError` |  |
+| [failString](#fn-state-failstring) | `self: *State, message: *const types.String` | `RuntimeError` |  |
 | [failArgumentMessage](#fn-state-failargumentmessage) | `self: *State, function_name: []const u8, index: u32, message: []const u8` | `RuntimeError` |  |
 | [failArgumentType](#fn-state-failargumenttype) | `self: *State, function_name: []const u8, index: u32, expected: []const u8, actual: Value` | `RuntimeError` |  |
 | [failLibrary](#fn-state-faillibrary) | `self: *State, message: []const u8` | `RuntimeError` | Like &#96;luaL_error&#96;: prefixes the calling Lua code's position. |
@@ -638,6 +641,7 @@ pub const State = struct {
 | [activeNativeCall](#fn-state-activenativecall) | `thread: *Thread` | `?types.NativeCall` |  |
 | [appendGlobalFunctionName](#fn-state-appendglobalfunctionname) | `self: *State, out: *std.ArrayList(u8), callee: Value` | `!bool` | Like &#96;pushglobalfuncname&#96;. |
 | [expectArgumentString](#fn-state-expectargumentstring) | `self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32` | `![]const u8` | Like &#96;luaL_checklstring&#96;; numbers are converted in place, keeping the string reachable. |
+| [expectArgumentStringObject](#fn-state-expectargumentstringobject) | `self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32` | `!*const types.String` |  |
 | [optionalArgumentString](#fn-state-optionalargumentstring) | `self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32` | `!?[]const u8` |  |
 | [expectArgumentTable](#fn-state-expectargumenttable) | `self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32` | `!*Table` |  |
 | [argumentNumber](#fn-state-argumentnumber) | `self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32` | `!f64` |  |
@@ -672,6 +676,26 @@ References: [`State`](#type-state)
 
 ```zig
 pub fn init(allocator: std.mem.Allocator) !State
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-objects"></a>
+
+### State.objects
+
+```zig
+pub inline fn objects(self: *const State) std.mem.Allocator
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-allocatorfor"></a>
+
+### State.allocatorFor
+
+```zig
+pub inline fn allocatorFor(self: *const State, comptime T: type) std.mem.Allocator
 ```
 
 References: [`State`](#type-state)
@@ -856,6 +880,16 @@ References: [`State`](#type-state), [`Thread`](#alias-thread)
 
 ```zig
 pub fn setGlobal(self: *State, name: []const u8, value: Value) !void
+```
+
+References: [`State`](#type-state), [`Value`](#alias-value)
+
+<a id="fn-state-setglobalstring"></a>
+
+### State.setGlobalString
+
+```zig
+pub fn setGlobalString(self: *State, key: *const types.String, value: Value) !void
 ```
 
 References: [`State`](#type-state), [`Value`](#alias-value)
@@ -1052,6 +1086,16 @@ pub fn fail(self: *State, message: []const u8) RuntimeError
 
 References: [`State`](#type-state), [`RuntimeError`](#alias-runtimeerror)
 
+<a id="fn-state-failstring"></a>
+
+### State.failString
+
+```zig
+pub fn failString(self: *State, message: *const types.String) RuntimeError
+```
+
+References: [`State`](#type-state), [`RuntimeError`](#alias-runtimeerror)
+
 <a id="fn-state-failargumentmessage"></a>
 
 ### State.failArgumentMessage
@@ -1136,6 +1180,16 @@ Like `luaL_checklstring`; numbers are converted in place, keeping the string rea
 
 ```zig
 pub fn expectArgumentString(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) ![]const u8
+```
+
+References: [`State`](#type-state), [`Thread`](#alias-thread)
+
+<a id="fn-state-expectargumentstringobject"></a>
+
+### State.expectArgumentStringObject
+
+```zig
+pub fn expectArgumentStringObject(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) !*const types.String
 ```
 
 References: [`State`](#type-state), [`Thread`](#alias-thread)

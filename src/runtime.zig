@@ -20,6 +20,7 @@ pub const HostErrorHandler = state_mod.HostErrorHandler;
 pub const InterruptControl = @import("runtime/budget.zig").InterruptControl;
 
 pub const Value = types.Value;
+pub const String = types.String;
 pub const NativeFn = types.NativeFn;
 pub const UserdataFinalizer = types.UserdataFinalizer;
 pub const UserdataDeinit = types.UserdataDeinit;
@@ -97,6 +98,5 @@ pub const executeSourceWithOptions = execute_mod.executeSourceWithOptions;
 
 test {
     _ = tests;
-    _ = @import("runtime/address_index.zig");
     _ = @import("runtime/number_format.zig");
 }

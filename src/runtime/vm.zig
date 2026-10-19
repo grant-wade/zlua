@@ -6,7 +6,6 @@ const debug_mod = @import("debug.zig");
 const failure_mod = @import("failure.zig");
 const gc_mod = @import("gc.zig");
 const index_mod = @import("index.zig");
-const load_mod = @import("load.zig");
 const metatable_mod = @import("metatable.zig");
 const operators_mod = @import("operators.zig");
 const rollback_mod = @import("rollback.zig");
@@ -27,12 +26,13 @@ const truthy = value_mod.truthy;
 const toInteger = value_mod.toInteger;
 const toNumber = value_mod.toNumber;
 const toNumberMaybe = value_mod.toNumberMaybe;
-const parseIntegerLiteral = value_mod.parseIntegerLiteral;
-const parseLuaNumber = value_mod.parseLuaNumber;
 const arrayIndex = value_mod.arrayIndex;
 const appendFmt = value_mod.appendFmt;
 const Closure = types.Closure;
+const String = types.String;
 const Table = types.Table;
+const TableEntry = types.TableEntry;
+const HashPart = table_index.HashPart;
 const CallFrame = types.CallFrame;
 
 pub fn runThreadUntil(self: *State, thread: *Thread, target_frame_count: usize) anyerror!void {
@@ -72,7 +72,7 @@ fn runThreadLoop(self: *State, thread: *Thread, target_frame_count: usize) anyer
             }
         }
         var frame = &thread.frames.items[thread.frames.items.len - 1];
-        const proto = frame.proto;
+        const proto = frame.closure.proto;
         if (frame.pc >= proto.instructions.items.len) {
             try call_mod.returnFromFrame(self, thread, 0, 0);
             continue;
@@ -106,10 +106,10 @@ fn executeInstruction(self: *State, thread: *Thread, proto: *const proto_mod.Pro
     switch (instruction) {
         .load_nil => |dest| stack[base + dest] = .nil,
         .load_bool => |op| stack[base + op.dest] = .{ .boolean = op.value },
-        .load_const => |op| stack[base + op.dest] = try protoConstant(self, frame.closure, proto, op.constant),
+        .load_const => |op| stack[base + op.dest] = frame.closure.constants()[op.constant],
         .move => |op| stack[base + op.dest] = stack[base + op.source],
-        .get_global => |op| stack[base + op.register] = globalGet(self, proto, op.name),
-        .set_global => |op| if (!fastGlobalSetExisting(self, proto, op.name, stack[base + op.register])) {
+        .get_global => |op| stack[base + op.register] = globalGet(self, frame.closure.constants()[op.name].string),
+        .set_global => |op| if (!fastGlobalSetExisting(self, frame.closure.constants()[op.name].string, stack[base + op.register])) {
             try self.setGlobal(constantString(proto, op.name), stack[base + op.register]);
         },
         .declare_global => |op| try self.declareGlobal(thread, constantString(proto, op.name), op.table, op.value),
@@ -255,7 +255,7 @@ fn executeInstruction(self: *State, thread: *Thread, proto: *const proto_mod.Pro
             const table_value = stack[base + op.table];
             const key_value = stack[base + op.key];
             if (frame.named_vararg_readonly and op.table == proto.param_count) {
-                stack[base + op.dest] = call_mod.namedVarargRead(frame.varargs, key_value);
+                stack[base + op.dest] = call_mod.namedVarargRead(frame.varargs(thread.stack.items), key_value);
             } else if (fastTableRawGet(table_value, key_value)) |value| {
                 stack[base + op.dest] = value;
             } else {
@@ -283,21 +283,20 @@ fn executeInstruction(self: *State, thread: *Thread, proto: *const proto_mod.Pro
         },
         .get_field => |op| {
             const table_value = stack[base + op.table];
-            const key = Value{ .string = constantString(proto, op.name) };
+            const key = frame.closure.constants()[op.name];
             if (frame.named_vararg_readonly and op.table == proto.param_count) {
-                stack[base + op.dest] = call_mod.namedVarargRead(frame.varargs, key);
-            } else if (fastTableFieldGet(table_value, key.string, proto.constant_hashes[op.name])) |value| {
+                stack[base + op.dest] = call_mod.namedVarargField(frame.varargs(thread.stack.items), key.string.bytes());
+            } else if (fastTableFieldGet(table_value, key.string)) |value| {
                 stack[base + op.dest] = value;
             } else {
-                try index_mod.getTableToRegister(self, thread, op.dest, table_value, try closureConstant(self, frame.closure, op.name));
+                try index_mod.getTableToRegister(self, thread, op.dest, table_value, key);
             }
         },
         .set_field => |op| {
             const table_value = stack[base + op.table];
-            // Stored keys must be collectable strings; prototype bytes are only safe for lookups.
-            const key = try closureConstant(self, frame.closure, op.name);
+            const key = frame.closure.constants()[op.name];
             const value = stack[base + op.value];
-            if (!fastTableKnownKeySetExistingNoAlloc(self, table_value, key, proto.constant_hashes[op.name], value) and
+            if (!fastTableKnownKeySetExistingNoAlloc(self, table_value, key, value) and
                 !try fastTableKnownKeySet(self, table_value, key, value))
             {
                 try index_mod.setTableFromThreadContinuable(self, thread, table_value, key, value);
@@ -338,6 +337,24 @@ fn executeInstruction(self: *State, thread: *Thread, proto: *const proto_mod.Pro
         .close => |register| if (thread.open_upvalues != null) upvalue_mod.closeUpvalues(self, thread, base + register),
         .check_close => |register| try upvalue_mod.checkToBeClosedRegister(self, thread, register),
         .close_tbc => |register| try upvalue_mod.closeToBeClosedRegister(self, thread, register, null),
+        inline .add_k, .sub_k, .mul_k, .div_k, .idiv_k, .mod_k, .band_k, .bor_k, .bxor_k, .shl_k, .shr_k => |op, tag| {
+            const kind = comptime operators_mod.constantBinaryOp(tag);
+            const lhs = stack[base + op.left];
+            const rhs = proto.constant_values[op.constant];
+            if (operators_mod.rawBinaryOpFast(lhs, rhs, kind)) |value| {
+                stack[base + op.dest] = value;
+            } else {
+                try operators_mod.binaryValuesToRegister(self, thread, op.dest, lhs, rhs, kind);
+            }
+        },
+        .compare_branch_k => |op| {
+            const constant = proto.constant_values[op.constant];
+            if (operators_mod.rawCompareConstantResult(stack[base + op.register], constant, op.op)) |result| {
+                if (result == op.jump_if_truthy) try jumpThreadMaybeFast(self, thread, op.offset, true);
+            } else {
+                try operators_mod.compareBranchConstant(self, thread, op, constant);
+            }
+        },
     }
 }
 
@@ -355,9 +372,9 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
 
     var frame_index = thread.frames.items.len - 1;
     var frame = &thread.frames.items[frame_index];
-    var proto = frame.proto;
-    var pc = frame.pc;
-    var base = frame.base;
+    var proto = frame.closure.proto;
+    var pc: usize = frame.pc;
+    var base: usize = frame.base;
     // Widen before wrapping subtraction: program counters may be only 32 bits.
     var count_bias: u64 = 0 -% @as(u64, pc);
     defer self.budget.instructions = self.budget.instructions +| (pc +% count_bias);
@@ -371,7 +388,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             if (!try fastLoopCanResume(self, thread, target_frame_count)) return true;
             frame_index = thread.frames.items.len - 1;
             frame = &thread.frames.items[frame_index];
-            proto = frame.proto;
+            proto = frame.closure.proto;
             pc = frame.pc;
             count_bias = executed -% pc;
             base = frame.base;
@@ -400,15 +417,8 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             },
             .load_const => {
                 const op = instructions[pc].load_const;
-                const decoded = &proto.constant_values[op.constant];
-                if (decoded.* != .string) {
-                    stack[op.dest] = decoded.*;
-                } else {
-                    const constants = frame.closure.constants orelse break :fast_loop;
-                    const cached = &constants[op.constant];
-                    if (cached.* == null) break :fast_loop;
-                    stack[op.dest] = cached.*.?;
-                }
+                const decoded = proto.constant_values[op.constant];
+                stack[op.dest] = if (decoded != .string) decoded else frame.closure.constants()[op.constant];
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
@@ -420,23 +430,25 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             },
             .get_upvalue => {
                 const op = instructions[pc].get_upvalue;
-                const upvalue = frame.closure.upvalues[op.upvalue];
-                stack[op.register] = if (upvalue.is_open) upvalue.owner.stack.items[upvalue.stack_index] else upvalue.closed;
+                stack[op.register] = frame.closure.upvalues()[op.upvalue].get();
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .set_upvalue => {
                 const op = instructions[pc].set_upvalue;
-                const upvalue = frame.closure.upvalues[op.upvalue];
-                if (upvalue.is_open) {
-                    if (upvalue.owner.rollback) |record| if (!record.header.detached) break :fast_loop;
-                    rollback_mod.touch(upvalue);
-                    upvalue.owner.stack.items[upvalue.stack_index] = stack[op.register];
-                    if (upvalue.owner != thread) self.gc.rememberObject(.{ .thread = upvalue.owner });
-                } else {
-                    rollback_mod.touch(upvalue);
-                    upvalue.closed = stack[op.register];
-                    self.gc.writeBarrier(upvalue, upvalue.closed);
+                const upvalue = frame.closure.upvalues()[op.upvalue];
+                switch (upvalue.cell) {
+                    .open => |slot| {
+                        if (slot.owner.rollback) |record| if (!record.header.detached) break :fast_loop;
+                        rollback_mod.touch(upvalue);
+                        slot.owner.stack.items[slot.stack_index] = stack[op.register];
+                        if (slot.owner != thread) self.gc.rememberObject(.{ .thread = slot.owner });
+                    },
+                    .closed => |*closed| {
+                        rollback_mod.touch(upvalue);
+                        closed.* = stack[op.register];
+                        self.gc.writeBarrier(upvalue, closed.*);
+                    },
                 }
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
@@ -578,7 +590,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 const table_value = stack[op.table];
                 const key = stack[op.key];
                 const value = if (frame.named_vararg_readonly and op.table == proto.param_count)
-                    call_mod.namedVarargRead(frame.varargs, key)
+                    call_mod.namedVarargRead(frame.varargs(thread.stack.items), key)
                 else if (arrayValue(table_value, key)) |hit|
                     hit
                 else
@@ -589,13 +601,19 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             },
             .get_field => {
                 const op = instructions[pc].get_field;
-                const key = Value{ .string = constantString(proto, op.name) };
-                const value = if (frame.named_vararg_readonly and op.table == proto.param_count)
-                    call_mod.namedVarargRead(frame.varargs, key)
+                const key = frame.closure.constants()[op.name].string;
+                const named_vararg = frame.named_vararg_readonly and op.table == proto.param_count;
+                if (!named_vararg) if (fieldValue(stack[op.table], key)) |hit| {
+                    stack[op.dest] = hit.*;
+                    pc += 1;
+                    continue :fast_loop std.meta.activeTag(instructions[pc]);
+                };
+                const value = if (named_vararg)
+                    call_mod.namedVarargField(frame.varargs(thread.stack.items), key.bytes())
                 else if (stack[op.table] == .string)
-                    stringMethod(self, key.string, proto.constant_hashes[op.name]) orelse break :fast_loop
+                    stringMethod(self, key) orelse break :fast_loop
                 else
-                    fastTableFieldGet(stack[op.table], key.string, proto.constant_hashes[op.name]) orelse break :fast_loop;
+                    fastTableFieldGet(stack[op.table], key) orelse break :fast_loop;
                 stack[op.dest] = value;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
@@ -605,7 +623,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 if (arraySlot(stack[op.table], stack[op.key])) |slot| {
                     const table = stack[op.table].table;
                     slot.* = stack[op.value];
-                    writeTableBarrierFast(self, table, stack[op.key], stack[op.value]);
+                    self.gc.writeTableBarrier(table, stack[op.key], stack[op.value]);
                     pc += 1;
                     continue :fast_loop std.meta.activeTag(instructions[pc]);
                 }
@@ -622,14 +640,14 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 if (table.rollback) |record| if (!record.header.detached) break :fast_loop;
                 const index: usize = op.index;
                 const value = stack[op.value];
-                if (index <= table.array.items.len) {
-                    table.array.items[index - 1] = value;
+                if (index <= table.array.len) {
+                    table.array.items()[index - 1] = value;
                 } else if (value != .nil) {
                     if (index > table.array.capacity) break :fast_loop;
-                    const old_len = table.array.items.len;
-                    table.array.items.len = index;
-                    @memset(table.array.items[old_len..], .nil);
-                    table.array.items[index - 1] = value;
+                    const old_len = table.array.len;
+                    table.array.len = @intCast(index);
+                    @memset(table.array.items()[old_len..], .nil);
+                    table.array.items()[index - 1] = value;
                 }
                 self.gc.writeTableBarrier(table, .{ .integer = @intCast(index) }, value);
                 pc += 1;
@@ -637,10 +655,44 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             },
             .set_field => {
                 const op = instructions[pc].set_field;
-                const cache = frame.closure.constants orelse break :fast_loop;
-                const key = cache[op.name] orelse break :fast_loop;
-                if (!fastTableKnownKeySetExistingNoAlloc(self, stack[op.table], key, proto.constant_hashes[op.name], stack[op.value])) break :fast_loop;
+                const key = frame.closure.constants()[op.name];
+                if (fieldSlot(stack[op.table], key.string)) |slot| {
+                    slot.* = stack[op.value];
+                    self.gc.writeExistingKeyBarrier(stack[op.table].table, key, slot.*);
+                } else if (!fastTableKnownKeySetExistingNoAlloc(self, stack[op.table], key, stack[op.value])) break :fast_loop;
                 pc += 1;
+                continue :fast_loop std.meta.activeTag(instructions[pc]);
+            },
+            inline .add_k, .sub_k, .mul_k, .div_k, .idiv_k, .mod_k, .band_k, .bor_k, .bxor_k, .shl_k, .shr_k => |tag| {
+                const op = @field(instructions[pc], @tagName(tag));
+                const kind = comptime operators_mod.constantBinaryOp(tag);
+                const value = operators_mod.rawBinaryOpFast(stack[op.left], proto.constant_values[op.constant], kind) orelse break :fast_loop;
+                stack[op.dest] = value;
+                pc += 1;
+                continue :fast_loop std.meta.activeTag(instructions[pc]);
+            },
+            .compare_branch_k => {
+                if (proto.jumpExitsToBeClosed(pc)) break :fast_loop;
+                const op = instructions[pc].compare_branch_k;
+                const value = stack[op.register];
+                const constant = proto.constant_values[op.constant];
+                const result = if (value == .integer and constant == .integer) switch (op.op) {
+                    .eq => value.integer == constant.integer,
+                    .lt => value.integer < constant.integer,
+                    .le => value.integer <= constant.integer,
+                    .gt => value.integer > constant.integer,
+                    .ge => value.integer >= constant.integer,
+                } else operators_mod.rawCompareConstantResult(value, constant, op.op) orelse break :fast_loop;
+                pc += 1;
+                if (result == op.jump_if_truthy) {
+                    const source_pc = pc;
+                    pc = jumpTarget(source_pc, op.offset);
+                    count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
+                    if (pc < source_pc) {
+                        if (frame.has_extra) thread.frame_extras.items[frame_index].last_hook_line = null;
+                        if (self.budget.fastLoopInterrupted()) break :fast_loop;
+                    }
+                }
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .compare_branch => {
@@ -659,11 +711,10 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     pc = jumpTarget(source_pc, op.offset);
                     count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                     if (pc < source_pc) {
-                        frame.last_hook_line = null;
+                        if (frame.has_extra) thread.frame_extras.items[frame_index].last_hook_line = null;
                         if (self.budget.fastLoopInterrupted()) break :fast_loop;
                     }
                 }
-                if (pc >= instructions.len) break :fast_loop;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .jmp => {
@@ -674,10 +725,9 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 pc = jumpTarget(source_pc, offset);
                 count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                 if (pc < source_pc) {
-                    frame.last_hook_line = null;
+                    if (frame.has_extra) thread.frame_extras.items[frame_index].last_hook_line = null;
                     if (self.budget.fastLoopInterrupted()) break :fast_loop;
                 }
-                if (pc >= instructions.len) break :fast_loop;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .test_op => {
@@ -689,11 +739,10 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     pc = jumpTarget(source_pc, op.offset);
                     count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                     if (pc < source_pc) {
-                        frame.last_hook_line = null;
+                        if (frame.has_extra) thread.frame_extras.items[frame_index].last_hook_line = null;
                         if (self.budget.fastLoopInterrupted()) break :fast_loop;
                     }
                 }
-                if (pc >= instructions.len) break :fast_loop;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .test_set => {
@@ -707,11 +756,10 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     pc = jumpTarget(source_pc, op.offset);
                     count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                     if (pc < source_pc) {
-                        frame.last_hook_line = null;
+                        if (frame.has_extra) thread.frame_extras.items[frame_index].last_hook_line = null;
                         if (self.budget.fastLoopInterrupted()) break :fast_loop;
                     }
                 }
-                if (pc >= instructions.len) break :fast_loop;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .for_loop => {
@@ -737,11 +785,10 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     pc = jumpTarget(source_pc, op.offset);
                     count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                     if (pc < source_pc) {
-                        frame.last_hook_line = null;
+                        if (frame.has_extra) thread.frame_extras.items[frame_index].last_hook_line = null;
                         if (self.budget.fastLoopInterrupted()) break :fast_loop;
                     }
                 }
-                if (pc >= instructions.len) break :fast_loop;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .call => {
@@ -771,11 +818,11 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     thread.next_call_name = null;
                     thread.next_call_namewhat = null;
                     pc += 1;
-                    frame.pc = pc;
+                    frame.pc = @intCast(pc);
                     segment_start = pc +% count_bias;
                     continue :frames;
                 }
-                if (callee != .closure or !callee.closure.proto.fast_loop_call) {
+                if (callee != .closure or !callee.closure.proto.fast_loop_call or thread.next_call_name != null or thread.next_call_namewhat != null) {
                     // Natives and frames needing setup run through the general call path in place.
                     @branchHint(.unlikely);
                     if (thread.hook != .nil) break :fast_loop;
@@ -784,7 +831,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                         thread.last_transfer_count = 0;
                     }
                     pc += 1;
-                    frame.pc = pc;
+                    frame.pc = @intCast(pc);
                     segment_start = pc +% count_bias;
                     try call_mod.callValue(self, thread, op);
                     resync = segment_start;
@@ -795,30 +842,37 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 const callee_index = frame_index + 1;
                 if (callee_index >= frame_limit) break :fast_loop;
                 const function_slot = base + op.base;
-                const callee_base = function_slot + 1;
+                const argument_base = function_slot + 1;
+                const param_count = callee_proto.param_count;
+                var callee_base = argument_base;
+                var vararg_count: u32 = 0;
+                if (callee_proto.is_vararg and op.arg_count > param_count) {
+                    @branchHint(.unlikely);
+                    vararg_count = op.arg_count - param_count;
+                    callee_base += op.arg_count;
+                    if (callee_base + callee_proto.max_registers > stack_limit) break :fast_loop;
+                    shiftParameters(thread.stack.items, argument_base, callee_base, param_count);
+                }
                 const register_count = @max(callee_proto.max_registers, 1);
                 const stack_end = callee_base + register_count;
                 if (stack_end > stack_limit) break :fast_loop;
 
                 const executed_count = pc +% count_bias -% segment_start;
-                const copied = @min(op.arg_count, callee_proto.param_count);
+                const copied = @min(op.arg_count, param_count);
                 clearRegisters(thread.stack.items[callee_base + copied .. stack_end]);
-                frame.pc = pc + 1;
+                frame.pc = @intCast(pc + 1);
                 frame = &@as([*]CallFrame, @ptrCast(frame))[1];
                 frame.* = .{
                     .closure = closure,
-                    .proto = callee_proto,
-                    .base = callee_base,
+                    .base = @intCast(callee_base),
                     .pc = 0,
-                    .return_start = function_slot,
+                    .return_start = @intCast(function_slot),
                     .return_count = op.return_count,
-                    .varargs = &.{},
-                    .debug_name_override = thread.next_call_name,
-                    .debug_namewhat_override = thread.next_call_namewhat,
+                    .vararg_base = @intCast(argument_base + param_count),
+                    .vararg_count = vararg_count,
+                    .named_vararg_readonly = callee_proto.named_vararg_readonly,
                 };
                 thread.frames.items.len = callee_index + 1;
-                thread.next_call_name = null;
-                thread.next_call_namewhat = null;
                 if (executed_count != 0) {
                     thread.last_result_count = 0;
                     thread.last_transfer_count = 0;
@@ -832,10 +886,28 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 if (self.budget.fastLoopInterrupted()) return true;
                 continue :frames;
             },
+            .vararg => {
+                const op = instructions[pc].vararg;
+                if (proto.named_vararg and !frame.named_vararg_readonly) break :fast_loop;
+                const available = frame.vararg_count;
+                const count: usize = if (op.count == bytecode.multret_count) available else op.count;
+                if (base + op.dest + count > stack_limit) break :fast_loop;
+                const copied = @min(count, available);
+                for (0..copied) |index| stack[op.dest + index] = thread.stack.items[frame.vararg_base + index];
+                clearRegisters(stack[op.dest + copied .. op.dest + count]);
+                pc += 1;
+                if (op.count == bytecode.multret_count) {
+                    thread.last_result_base = base + op.dest;
+                    thread.last_result_count = count;
+                    frame.pc = @intCast(pc);
+                    segment_start = pc +% count_bias;
+                }
+                continue :fast_loop std.meta.activeTag(instructions[pc]);
+            },
             .new_table => {
                 const op = instructions[pc].new_table;
                 pc += 1;
-                frame.pc = pc;
+                frame.pc = @intCast(pc);
                 stack[op.dest] = try self.newTableWithHints(op.array_hint, op.hash_hint);
                 if (self.gc.running and self.gc.shouldRunAuto()) {
                     resync = pc +% count_bias;
@@ -847,20 +919,21 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 const op = instructions[pc].set_list;
                 if (op.count == bytecode.multret_count and pc +% count_bias != segment_start) break :fast_loop;
                 pc += 1;
-                frame.pc = pc;
+                frame.pc = @intCast(pc);
                 try setList(self, thread, op);
                 resync = pc +% count_bias;
                 continue :frames;
             },
             .tail_call => {
                 const op = instructions[pc].tail_call;
-                if (thread.hook != .nil or op.arg_count == bytecode.multret_arg_count) break :fast_loop;
+                if (thread.hook != .nil) break :fast_loop;
                 if (pc +% count_bias != segment_start) {
+                    if (op.arg_count == bytecode.multret_arg_count) break :fast_loop;
                     thread.last_result_count = 0;
                     thread.last_transfer_count = 0;
                 }
                 pc += 1;
-                frame.pc = pc;
+                frame.pc = @intCast(pc);
                 segment_start = pc +% count_bias;
                 try call_mod.tailCallValue(self, thread, op);
                 resync = segment_start;
@@ -870,9 +943,9 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 const op = instructions[pc].ret;
                 // Returning onto the floor frame is fine, but the outer loop must take over afterwards.
                 if (frame_index < return_floor or frame_index == 0) break :fast_loop;
-                const open_here = if (thread.open_upvalues) |upvalue| upvalue.stack_index >= base else false;
+                const open_here = if (thread.open_upvalues) |upvalue| upvalue.cell.open.stack_index >= base else false;
                 if (proto.has_to_close_locals or op.count == bytecode.multret_count or frame.return_count == bytecode.multret_count or
-                    frame.owns_varargs or frame.pending_returns != null or open_here)
+                    (frame.has_extra and thread.frame_extras.items[frame_index].pending_returns != null) or open_here)
                 {
                     @branchHint(.unlikely);
                     if (thread.hook != .nil) break :fast_loop;
@@ -881,7 +954,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                         thread.last_transfer_count = 0;
                     }
                     pc += 1;
-                    frame.pc = pc;
+                    frame.pc = @intCast(pc);
                     segment_start = pc +% count_bias;
                     try call_mod.returnFromFrame(self, thread, op.first, op.count);
                     resync = segment_start;
@@ -901,16 +974,37 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 segment_start = pc +% count_bias +% 1;
                 frame_index -= 1;
                 frame = &(@as([*]CallFrame, @ptrCast(frame)) - 1)[0];
-                proto = frame.proto;
+                proto = frame.closure.proto;
                 pc = frame.pc;
                 count_bias = segment_start -% pc;
                 base = frame.base;
                 if (frame_index + 1 == return_floor or self.budget.fastLoopInterrupted()) return true;
                 continue :frames;
             },
+            .tfor_prep => {
+                const op = instructions[pc].tfor_prep;
+                const pair = fastGenericForStep(stack[op.base], stack[op.base + 1], stack[op.base + 2]) orelse break :fast_loop;
+                stack[op.base + 2] = pair[0];
+                for (0..op.variable_count) |index| stack[op.base + 4 + index] = if (index < pair.len) pair[index] else .nil;
+                pc += 1;
+                continue :fast_loop std.meta.activeTag(instructions[pc]);
+            },
+            .tfor_loop => {
+                if (proto.jumpExitsToBeClosed(pc)) break :fast_loop;
+                const op = instructions[pc].tfor_loop;
+                pc += 1;
+                const source_pc = pc;
+                pc = jumpTarget(source_pc, op.offset);
+                count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
+                if (pc < source_pc) {
+                    if (frame.has_extra) thread.frame_extras.items[frame_index].last_hook_line = null;
+                    if (self.budget.fastLoopInterrupted()) break :fast_loop;
+                }
+                continue :fast_loop std.meta.activeTag(instructions[pc]);
+            },
             .close => {
                 const first = base + instructions[pc].close;
-                if (thread.open_upvalues) |upvalue| if (upvalue.stack_index >= first) upvalue_mod.closeUpvalues(self, thread, first);
+                if (thread.open_upvalues) |upvalue| if (upvalue.cell.open.stack_index >= first) upvalue_mod.closeUpvalues(self, thread, first);
                 pc += 1;
                 if (pc >= instructions.len) break :fast_loop;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
@@ -919,14 +1013,35 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
         }
 
         if (pc +% count_bias == segment_start) return segment_start != 0;
-        frame.pc = pc;
+        frame.pc = @intCast(pc);
         thread.last_result_count = 0;
         thread.last_transfer_count = 0;
         return true;
     }
 }
 
+/// Null when the loop ends or needs the general path.
+inline fn fastGenericForStep(iterator: Value, state: Value, control: Value) ?[2]Value {
+    if (state != .table) return null;
+    const table = state.table;
+    const pair: [2]Value = switch (iterator) {
+        .native_next => if (control == .number) return null else table.next(control) catch return null,
+        .native_ipairs_iter => pair: {
+            if (control != .integer) return null;
+            const next_index = control.integer +% 1;
+            break :pair .{ .{ .integer = next_index }, table.get(.{ .integer = next_index }) };
+        },
+        else => return null,
+    };
+    if (pair[0] == .nil or pair[1] == .nil) return null;
+    return pair;
+}
+
 /// Small frames clear their registers inline; a `memset` call costs more than the stores.
+noinline fn shiftParameters(stack: []Value, source: usize, dest: usize, count: usize) void {
+    for (0..count) |index| stack[dest + index] = stack[source + index];
+}
+
 inline fn clearRegisters(registers: []Value) void {
     if (registers.len > 16) return @memset(registers, .nil);
     for (registers) |*register| register.* = .nil;
@@ -936,8 +1051,8 @@ inline fn arrayValue(table_value: Value, key: Value) ?Value {
     if (table_value != .table or key != .integer) return null;
     const table = table_value.table;
     const index: u64 = @bitCast(key.integer -% 1);
-    if (index >= table.array.items.len) return null;
-    const value = table.array.items[@intCast(index)];
+    if (index >= table.array.len) return null;
+    const value = table.array.items()[@intCast(index)];
     return if (value != .nil) value else null;
 }
 
@@ -946,17 +1061,39 @@ inline fn arraySlot(table_value: Value, key: Value) ?*Value {
     if (table_value != .table or key != .integer) return null;
     const table = table_value.table;
     const index: u64 = @bitCast(key.integer -% 1);
-    if (index >= table.array.items.len) return null;
+    if (index >= table.array.len) return null;
     if (table.rollback) |record| if (!record.header.detached) return null;
-    const slot = &table.array.items[@intCast(index)];
+    const slot = &table.array.items()[@intCast(index)];
     return if (slot.* != .nil) slot else null;
 }
 
-/// `Gc.writeTableBarrier` for non-string keys, skipping the call when it would do nothing.
-inline fn writeTableBarrierFast(self: *State, table: *Table, key: Value, value: Value) void {
-    const meta = &table.gc;
-    if (self.gc.phase == .pause and meta.generation == self.gc.generation and (meta.age != .old or meta.remembered)) return;
-    self.gc.writeTableBarrier(table, key, value);
+inline fn fieldEntry(part: *const HashPart, key: *const String) ?*TableEntry {
+    const entries = part.entries();
+    if (key.field_hint < entries.len) {
+        const entry = &entries[key.field_hint];
+        if (entry.key == .string and entry.key.string == key) return entry;
+    }
+    const index = part.find(.{ .string = key }) orelse return null;
+    if (index < String.no_field_hint and !key.static) @constCast(key).field_hint = @intCast(index);
+    return &entries[index];
+}
+
+/// Non-nil value of `key` in the table's own hash part.
+inline fn fieldValue(table_value: Value, key: *const String) ?*const Value {
+    if (table_value != .table) return null;
+    const part = table_value.table.hash orelse return null;
+    const slot = &(fieldEntry(part, key) orelse return null).value;
+    return if (slot.* != .nil) slot else null;
+}
+
+/// Slot of an existing non-nil string-keyed hash entry that a raw write may replace.
+inline fn fieldSlot(table_value: Value, key: *const String) ?*Value {
+    if (table_value != .table) return null;
+    const table = table_value.table;
+    if (table.rollback) |record| if (!record.header.detached) return null;
+    const part = table.hash orelse return null;
+    const slot = &(fieldEntry(part, key) orelse return null).value;
+    return if (slot.* != .nil) slot else null;
 }
 
 fn fastReturnFloor(thread: *const Thread, target_frame_count: usize) usize {
@@ -974,7 +1111,7 @@ noinline fn fastLoopCanResume(self: *State, thread: *Thread, target_frame_count:
     if (thread.pending_unwind_error != null or thread.pending_yield_hook_return) return false;
     if (call_mod.hasPendingContinuations(thread) and frame_count <= thread.continuation_frame_count) return false;
     if (thread.hook != .nil or self.budget.active() or self.options.trace_vm or self.budget.fastLoopInterrupted() or self.stressPending()) return false;
-    return thread.frames.items[frame_count - 1].pc < thread.frames.items[frame_count - 1].proto.instructions.items.len;
+    return thread.frames.items[frame_count - 1].pc < thread.frames.items[frame_count - 1].closure.proto.instructions.items.len;
 }
 
 fn fastTableArraySet(self: *State, table_value: Value, key_value: Value, value: Value) !bool {
@@ -989,15 +1126,15 @@ fn fastTableArraySetExistingNoAlloc(self: *State, table_value: Value, key_value:
     const index = arrayIndex(key_value) orelse return false;
     const table = table_value.table;
     if (table.rollback) |record| if (!record.header.detached) return false;
-    if (index <= table.array.items.len) {
-        const slot = &table.array.items[index - 1];
+    if (index <= table.array.len) {
+        const slot = &table.array.items()[index - 1];
         if (slot.* == .nil and !index_mod.noNewindexMetamethod(table)) return false;
         slot.* = value;
         self.gc.writeTableBarrier(table, key_value, value);
         return true;
     }
     if (value == .nil or !index_mod.noNewindexMetamethod(table)) return false;
-    if (index == table.array.items.len + 1 and index <= table.array.capacity) {
+    if (index == table.array.len + 1 and index <= table.array.capacity) {
         table.array.appendAssumeCapacity(value);
         table.removeHashKey(key_value);
         self.gc.writeTableBarrier(table, key_value, value);
@@ -1008,22 +1145,25 @@ fn fastTableArraySetExistingNoAlloc(self: *State, table_value: Value, key_value:
 
 noinline fn fastTableDynamicKeySetNoAlloc(self: *State, table_value: Value, key: Value, value: Value) bool {
     if (key != .string) return false;
-    return fastTableKnownKeySetExistingNoAlloc(self, table_value, key, table_index.hashStringKey(key.string), value);
+    return fastTableKnownKeySetExistingNoAlloc(self, table_value, key, value);
 }
 
-/// `key` must be a string and `hash` its `table_index.hashStringKey`.
-fn fastTableKnownKeySetExistingNoAlloc(self: *State, table_value: Value, key: Value, hash: u32, value: Value) bool {
+/// `key` must be a string.
+fn fastTableKnownKeySetExistingNoAlloc(self: *State, table_value: Value, key: Value, value: Value) bool {
     if (table_value != .table) return false;
     const table = table_value.table;
     if (table.rollback) |record| if (!record.header.detached) return false;
-    if (table.findStringEntry(key.string, hash)) |index| {
-        const slot = &table.entries.items[index].value;
+    if (table.findStringKey(key.string)) |index| {
+        const slot = &table.entries()[index].value;
         if (slot.* == .nil) {
             if (!index_mod.noNewindexMetamethod(table)) return false;
             table.invalidateMetaEvents();
+            slot.* = value;
+            self.gc.writeTableBarrier(table, key, value);
+            return true;
         }
         slot.* = value;
-        self.gc.writeTableBarrier(table, key, value);
+        self.gc.writeExistingKeyBarrier(table, key, value);
         return true;
     }
     if (!index_mod.noNewindexMetamethod(table) or !table.insertHashEntryNoAlloc(key, value)) return false;
@@ -1036,10 +1176,9 @@ fn fastTableArraySetIndex(self: *State, table_value: Value, index_u32: u32, valu
     const index: usize = index_u32;
     const key_value = Value{ .integer = @intCast(index_u32) };
     const table = table_value.table;
-    defer self.gc.noteTableCapacityDelta(table, 0);
     try rollback_mod.tableWritable(table);
-    if (index <= table.array.items.len) {
-        const slot = &table.array.items[index - 1];
+    if (index <= table.array.len) {
+        const slot = &table.array.items()[index - 1];
         if (slot.* != .nil or index_mod.noNewindexMetamethod(table)) {
             slot.* = value;
             self.gc.writeTableBarrier(table, key_value, value);
@@ -1048,9 +1187,10 @@ fn fastTableArraySetIndex(self: *State, table_value: Value, index_u32: u32, valu
         return false;
     }
     if (value == .nil or !index_mod.noNewindexMetamethod(table)) return false;
-    if (index == table.array.items.len + 1) {
+    if (index == table.array.len + 1) {
         const old_capacity_bytes = gc_mod.tableCapacityBytes(table);
-        try table.array.append(self.allocator, value);
+        try table.reserveArray(self.allocator, index);
+        table.array.appendAssumeCapacity(value);
         table.removeHashKey(key_value);
         self.gc.noteTableCapacityDelta(table, old_capacity_bytes);
         self.gc.writeTableBarrier(table, key_value, value);
@@ -1059,10 +1199,10 @@ fn fastTableArraySetIndex(self: *State, table_value: Value, index_u32: u32, valu
     if (index > table.array.capacity) return false;
 
     const old_capacity_bytes = gc_mod.tableCapacityBytes(table);
-    const old_len = table.array.items.len;
+    const old_len = table.array.len;
     try table.array.resize(self.allocator, index);
-    @memset(table.array.items[old_len..], .nil);
-    table.array.items[index - 1] = value;
+    @memset(table.array.items()[old_len..], .nil);
+    table.array.items()[index - 1] = value;
     table.removeHashKey(key_value);
     self.gc.noteTableCapacityDelta(table, old_capacity_bytes);
     self.gc.writeTableBarrier(table, key_value, value);
@@ -1070,44 +1210,40 @@ fn fastTableArraySetIndex(self: *State, table_value: Value, index_u32: u32, valu
 }
 
 fn setTableArrayRawIndex(self: *State, table: *Table, index_u32: u32, value: Value) !void {
-    defer self.gc.noteTableCapacityDelta(table, 0);
     try rollback_mod.tableWritable(table);
     const index: usize = index_u32;
     const key = Value{ .integer = @intCast(index_u32) };
-    if (index <= table.array.items.len) {
-        table.array.items[index - 1] = value;
+    if (index <= table.array.len) {
+        table.array.items()[index - 1] = value;
         self.gc.writeTableBarrier(table, key, value);
         return;
     }
     if (value == .nil) return;
-    if (index == table.array.items.len + 1) {
+    if (index == table.array.len + 1) {
         const old_capacity_bytes = gc_mod.tableCapacityBytes(table);
-        try table.array.append(self.allocator, value);
+        try table.reserveArray(self.allocator, index);
+        table.array.appendAssumeCapacity(value);
         self.gc.noteTableCapacityDelta(table, old_capacity_bytes);
         self.gc.writeTableBarrier(table, key, value);
         return;
     }
     if (index <= table.array.capacity) {
         const old_capacity_bytes = gc_mod.tableCapacityBytes(table);
-        const old_len = table.array.items.len;
+        const old_len = table.array.len;
         try table.array.resize(self.allocator, index);
-        @memset(table.array.items[old_len..], .nil);
-        table.array.items[index - 1] = value;
+        @memset(table.array.items()[old_len..], .nil);
+        table.array.items()[index - 1] = value;
         self.gc.noteTableCapacityDelta(table, old_capacity_bytes);
         self.gc.writeTableBarrier(table, key, value);
         return;
     }
     try self.setTableRaw(table, key, value);
-    self.gc.writeTableBarrier(table, key, value);
 }
 
 fn fastTableKnownKeySet(self: *State, table_value: Value, key: Value, value: Value) !bool {
     if (table_value != .table) return false;
     const table = table_value.table;
-    if (table.rollback != null and table.get(key) != .nil) {
-        try rollback_mod.tableWritable(table);
-        self.gc.noteTableCapacityDelta(table, 0);
-    }
+    if (table.rollback != null and table.get(key) != .nil) try rollback_mod.tableWritable(table);
     if (table.setExistingNonNil(key, value)) {
         self.gc.writeTableBarrier(table, key, value);
         return true;
@@ -1115,13 +1251,12 @@ fn fastTableKnownKeySet(self: *State, table_value: Value, key: Value, value: Val
     if (!index_mod.noNewindexMetamethod(table)) return false;
     if (value == .nil) return true;
     try self.setTableRaw(table, key, value);
-    self.gc.writeTableBarrier(table, key, value);
     return true;
 }
 
 fn traceInstruction(self: *State, frame: CallFrame, pc: usize, instruction: bytecode.Instruction) !void {
-    const line = if (pc < frame.proto.line_info.items.len) frame.proto.line_info.items[pc].line else 0;
-    try appendFmt(self.allocator, &self.stderr, "[trace-vm] {s}:{d} pc={d} op={s}\n", .{ frame.proto.source_name, line, pc, @tagName(instruction) });
+    const line = if (pc < frame.closure.proto.line_info.items.len) frame.closure.proto.line_info.items[pc].line else 0;
+    try appendFmt(self.allocator, &self.stderr, "[trace-vm] {s}:{d} pc={d} op={s}\n", .{ frame.closure.proto.source_name, line, pc, @tagName(instruction) });
 }
 
 pub fn get(_: *State, thread: *Thread, register: usize) Value {
@@ -1139,64 +1274,29 @@ pub fn absoluteRegister(_: *State, thread: *Thread, register: usize) usize {
     return frame.base + @as(usize, register);
 }
 
-fn loadConstant(self: *State, constant: bytecode.Constant) !Value {
-    return switch (constant) {
-        .nil => .nil,
-        .boolean => |value| .{ .boolean = value },
-        .integer => |lexeme| try parseIntegerLiteral(lexeme),
-        .number => |lexeme| .{ .number = try parseLuaNumber(lexeme) },
-        .string => |lexeme| .{ .string = try load_mod.decodeStringLiteral(self, lexeme) },
-    };
-}
-
-inline fn protoConstant(self: *State, closure: *Closure, proto: *const proto_mod.Proto, index: bytecode.ConstantIndex) !Value {
-    if (index < proto.constant_values.len) {
-        const decoded = proto.constant_values[index];
-        if (decoded != .string) return decoded;
-    }
-    return closureConstant(self, closure, index);
-}
-
-fn closureConstant(self: *State, closure: *Closure, index: bytecode.ConstantIndex) !Value {
-    if (closure.constants) |cache| if (cache[index]) |value| return value;
-    try rollback_mod.closureWritable(closure);
-    if (closure.constants == null) closure.constants = try allocateConstantCache(self, closure.proto);
-    const constants = closure.constants.?;
-    if (constants[index] == null) constants[index] = try loadConstant(self, closure.proto.constants.items[index]);
-    self.gc.writeBarrier(closure, constants[index].?);
-    return constants[index].?;
-}
-
-fn allocateConstantCache(self: *State, proto: *const proto_mod.Proto) ![]?Value {
-    const constants = try self.allocator.alloc(?Value, proto.constants.items.len);
-    errdefer self.allocator.free(constants);
-    @memset(constants, null);
-    self.gc.noteAllocation(constants.len * @sizeOf(?Value));
-    return constants;
-}
-
 pub fn jumpThread(self: *State, thread: *Thread, offset: bytecode.JumpOffset, auto_gc: bool) !void {
     const frame_index = thread.frames.items.len - 1;
     const frame = &thread.frames.items[frame_index];
     const source_pc = frame.pc;
     const target_pc = jumpTarget(source_pc, offset);
-    if (frame.proto.has_to_close_locals) try upvalue_mod.closeToBeClosedExitingPc(self, thread, frame_index, source_pc, target_pc, null);
-    thread.frames.items[frame_index].pc = target_pc;
+    if (source_pc != 0 and frame.closure.proto.jumpExitsToBeClosed(source_pc - 1)) try upvalue_mod.closeToBeClosedExitingPc(self, thread, frame_index, source_pc, target_pc, null);
+    thread.frames.items[frame_index].pc = @intCast(target_pc);
     if (target_pc < source_pc) {
-        thread.frames.items[frame_index].last_hook_line = null;
+        thread.clearHookLine(frame_index);
         if (auto_gc and self.gc.running and self.gc.shouldRunAuto()) try self.gc.autoStep(thread);
     }
 }
 
 pub fn jumpThreadMaybeFast(self: *State, thread: *Thread, offset: bytecode.JumpOffset, auto_gc: bool) !void {
-    const frame = &thread.frames.items[thread.frames.items.len - 1];
-    if (frame.proto.has_to_close_locals) return jumpThread(self, thread, offset, auto_gc);
+    const frame_index = thread.frames.items.len - 1;
+    const frame = &thread.frames.items[frame_index];
+    if (frame.closure.proto.has_to_close_locals) return jumpThread(self, thread, offset, auto_gc);
 
     const source_pc = frame.pc;
     const target_pc = jumpTarget(source_pc, offset);
-    frame.pc = target_pc;
+    frame.pc = @intCast(target_pc);
     if (target_pc < source_pc) {
-        frame.last_hook_line = null;
+        thread.clearHookLine(frame_index);
         if (auto_gc and self.gc.running and self.gc.shouldRunAuto()) try self.gc.autoStep(thread);
     }
 }
@@ -1237,7 +1337,8 @@ fn forPrep(self: *State, thread: *Thread, op: bytecode.ForLoop) !void {
 }
 
 fn forLoop(self: *State, thread: *Thread, op: bytecode.ForLoop) !void {
-    const frame = &thread.frames.items[thread.frames.items.len - 1];
+    const frame_index = thread.frames.items.len - 1;
+    const frame = &thread.frames.items[frame_index];
     const absolute_base = frame.base + op.base;
     const stack = thread.stack.items;
     const current = stack[absolute_base];
@@ -1248,13 +1349,13 @@ fn forLoop(self: *State, thread: *Thread, op: bytecode.ForLoop) !void {
         stack[absolute_base] = .{ .integer = next };
         const wrapped = (step.integer > 0 and next < current.integer) or (step.integer < 0 and next > current.integer);
         if (!wrapped and forLoopContinuesInteger(next, limit.integer, step.integer)) {
-            if (frame.proto.has_to_close_locals) {
+            if (frame.closure.proto.has_to_close_locals) {
                 try jumpThread(self, thread, op.offset, false);
             } else {
                 const source_pc = frame.pc;
                 const target_pc = jumpTarget(source_pc, op.offset);
-                frame.pc = target_pc;
-                if (target_pc < source_pc) frame.last_hook_line = null;
+                frame.pc = @intCast(target_pc);
+                if (target_pc < source_pc) thread.clearHookLine(frame_index);
             }
         }
         return;
@@ -1263,13 +1364,13 @@ fn forLoop(self: *State, thread: *Thread, op: bytecode.ForLoop) !void {
     const next = (try toNumber(current)) + (try toNumber(step));
     stack[absolute_base] = .{ .number = next };
     if (forLoopContinuesNumber(next, try toNumber(limit), try toNumber(step))) {
-        if (frame.proto.has_to_close_locals) {
+        if (frame.closure.proto.has_to_close_locals) {
             try jumpThread(self, thread, op.offset, false);
         } else {
             const source_pc = frame.pc;
             const target_pc = jumpTarget(source_pc, op.offset);
-            frame.pc = target_pc;
-            if (target_pc < source_pc) frame.last_hook_line = null;
+            frame.pc = @intCast(target_pc);
+            if (target_pc < source_pc) thread.clearHookLine(frame_index);
         }
     }
 }
@@ -1289,12 +1390,11 @@ fn setList(self: *State, thread: *Thread, op: bytecode.SetList) !void {
 fn fastSetListRaw(self: *State, thread: *Thread, table_value: Value, source_start: usize, count: usize, start_index_u32: u32) !bool {
     if (table_value != .table or start_index_u32 == 0) return false;
     const table = table_value.table;
-    defer self.gc.noteTableCapacityDelta(table, 0);
     try rollback_mod.tableWritable(table);
     if (table.metatable != null) return false;
 
     const start_index: usize = start_index_u32;
-    var grow_to = table.array.items.len;
+    var grow_to: usize = table.array.len;
     for (0..count) |offset| {
         if (offset > std.math.maxInt(usize) - start_index) return self.fail("table overflow");
         const array_index = start_index + offset;
@@ -1302,20 +1402,21 @@ fn fastSetListRaw(self: *State, thread: *Thread, table_value: Value, source_star
         if (thread.stack.items[source_start + offset] != .nil and array_index > grow_to) grow_to = array_index;
     }
 
-    if (grow_to > table.array.items.len and start_index > table.array.items.len + 1 and grow_to > table.array.capacity) return false;
-    if (grow_to > table.array.items.len) {
+    if (grow_to > table.array.len and start_index > table.array.len + 1 and grow_to > table.array.capacity) return false;
+    if (grow_to > table.array.len) {
         const old_capacity_bytes = gc_mod.tableCapacityBytes(table);
-        const old_len = table.array.items.len;
+        const old_len = table.array.len;
+        try table.reserveArray(self.allocator, grow_to);
         try table.array.resize(self.allocator, grow_to);
-        @memset(table.array.items[old_len..], .nil);
+        @memset(table.array.items()[old_len..], .nil);
         self.gc.noteTableCapacityDelta(table, old_capacity_bytes);
     }
 
     for (0..count) |offset| {
         const array_index = start_index + offset;
-        if (array_index > table.array.items.len) continue;
+        if (array_index > table.array.len) continue;
         const value = thread.stack.items[source_start + offset];
-        table.array.items[array_index - 1] = value;
+        table.array.items()[array_index - 1] = value;
         const key = Value{ .integer = @intCast(array_index) };
         if (value != .nil) table.removeHashKey(key);
         self.gc.writeTableBarrier(table, key, value);
@@ -1376,12 +1477,27 @@ fn plainFastLoopCanStart(instruction: bytecode.Instruction) bool {
         .set_array,
         .set_field,
         .compare_branch,
+        .compare_branch_k,
+        .add_k,
+        .sub_k,
+        .mul_k,
+        .div_k,
+        .idiv_k,
+        .mod_k,
+        .band_k,
+        .bor_k,
+        .bxor_k,
+        .shl_k,
+        .shr_k,
         .jmp,
         .test_op,
         .test_set,
         .for_loop,
+        .tfor_prep,
+        .tfor_loop,
         .new_table,
         .set_list,
+        .vararg,
         .call,
         .tail_call,
         .ret,
@@ -1421,8 +1537,8 @@ fn fastTableArrayGet(table_value: Value, key_value: Value) ?Value {
     if (table_value != .table) return null;
     const index = arrayIndex(key_value) orelse return null;
     const table = table_value.table;
-    if (index > table.array.items.len) return null;
-    const value = table.array.items[index - 1];
+    if (index > table.array.len) return null;
+    const value = table.array.items()[index - 1];
     if (value != .nil or index_mod.noIndexMetamethod(table)) return value;
     return null;
 }
@@ -1431,46 +1547,46 @@ pub fn assertProtoPrepared(proto: *const proto_mod.Proto) void {
     std.debug.assert(proto.runtime_prepared or proto.constants.items.len == 0);
 }
 
-inline fn globalGet(self: *State, proto: *const proto_mod.Proto, name: bytecode.ConstantIndex) Value {
+inline fn globalGet(self: *State, key: *const String) Value {
     const table = self.global_table orelse return .nil;
-    return table.getStringHashed(constantString(proto, name), proto.constant_hashes[name]);
+    return table.getString(key);
 }
 
 /// Overwrites an existing non-nil global in place, like `State.setGlobal` without interning.
-fn fastGlobalSetExisting(self: *State, proto: *const proto_mod.Proto, name: bytecode.ConstantIndex, value: Value) bool {
+fn fastGlobalSetExisting(self: *State, key: *const String, value: Value) bool {
     if (value == .nil) return false;
     const table = self.global_table orelse return false;
     if (table.rollback) |record| if (!record.header.detached) return false;
-    const index = table.findStringEntry(constantString(proto, name), proto.constant_hashes[name]) orelse return false;
-    const entry = &table.entries.items[index];
+    const index = table.findStringKey(key) orelse return false;
+    const entry = &table.entries()[index];
     if (entry.value == .nil) return false;
     entry.value = value;
-    self.gc.writeTableBarrier(table, entry.key, value);
+    self.gc.writeExistingKeyBarrier(table, entry.key, value);
     self.gc.markValue(value);
     return true;
 }
 
 /// A string's method through its metatable's `__index` table, when that needs no metamethod call.
-fn stringMethod(self: *State, name: []const u8, hash: u32) ?Value {
+fn stringMethod(self: *State, key: *const String) ?Value {
     const metatable = self.string_metatable orelse return null;
     const handler = metatable.metaEvent(.__index);
     if (handler != .table) return null;
-    const value = handler.table.getStringHashed(name, hash);
+    const value = handler.table.getString(key);
     if (value != .nil or index_mod.noIndexMetamethod(handler.table)) return value;
     return null;
 }
 
-fn fastTableFieldGet(table_value: Value, name: []const u8, hash: u32) ?Value {
+fn fastTableFieldGet(table_value: Value, key: *const String) ?Value {
     if (table_value != .table) return null;
     const table = table_value.table;
-    const value = table.getStringHashed(name, hash);
+    const value = table.getString(key);
     if (value != .nil) return value;
     const metatable = table.metatable orelse return value;
     if (metatable.metaEventAbsent(.__index)) return value;
     const handler = metatable.metaEvent(.__index);
     if (handler == .nil) return value;
     if (handler != .table) return null;
-    const inherited = handler.table.getStringHashed(name, hash);
+    const inherited = handler.table.getString(key);
     if (inherited != .nil or index_mod.noIndexMetamethod(handler.table)) return inherited;
     return null;
 }

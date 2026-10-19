@@ -29,25 +29,27 @@
 - [stdlib](../stdlib.md)
 - [stdlib.base](../stdlib/base.md)
 - [runtime.call](../runtime/call.md)
+- [stdlib.static_strings](../stdlib/static_strings.md)
+- [runtime.table_index](../runtime/table_index.md)
+- [runtime.value](../runtime/value.md)
+- [runtime.number_format](../runtime/number_format.md)
 - [runtime.coroutine](../runtime/coroutine.md)
 - [runtime.debug](../runtime/debug.md)
 - [runtime.metatable](../runtime/metatable.md)
 - [runtime.rollback](../runtime/rollback.md)
-- [runtime.value](../runtime/value.md)
-- [runtime.number_format](../runtime/number_format.md)
-- [runtime.table_index](../runtime/table_index.md)
-- [runtime.host](../runtime/host.md)
-- [runtime.upvalue](../runtime/upvalue.md)
+- [runtime.strings](../runtime/strings.md)
+- [runtime.operators](../runtime/operators.md)
 - [runtime.failure](../runtime/failure.md)
 - [runtime.io](../runtime/io.md)
+- [runtime.host](../runtime/host.md)
 - [runtime.load](../runtime/load.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.gc](../runtime/gc.md)
 - [runtime.entry](../runtime/entry.md)
 - [runtime.system](../runtime/system.md)
 - [runtime.timezone](../runtime/timezone.md)
+- [runtime.upvalue](../runtime/upvalue.md)
 - [runtime.index](../runtime/index.md)
-- [runtime.operators](../runtime/operators.md)
 - [stdlib.table](../stdlib/table.md)
 - [stdlib.string](../stdlib/string.md)
 - [stdlib.string.format](../stdlib/string/format.md)
@@ -58,7 +60,6 @@
 - [stdlib.coroutine](../stdlib/coroutine.md)
 - [stdlib.debug](../stdlib/debug.md)
 - [stdlib.io](../stdlib/io.md)
-- [stdlib.static_strings](../stdlib/static_strings.md)
 - [stdlib.os](../stdlib/os.md)
 - [stdlib.package](../stdlib/package.md)
 - [stdlib.json](../stdlib/json.md)
@@ -68,13 +69,12 @@
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
 - [runtime.budget](../runtime/budget.md)
-- [runtime.strings](../runtime/strings.md)
+- [runtime.object_pool](../runtime/object_pool.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
 - [runtime.native_fn](../runtime/native_fn.md)
-- [runtime.address_index](../runtime/address_index.md)
 - [compile.compiler](../compile/compiler.md)
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
@@ -110,6 +110,7 @@
 - [testing.bench.c_startup](../testing/bench/c_startup.md)
 - [testing.bench.snapshots](../testing/bench/snapshots.md)
 - [testing.bench.gc](../testing/bench/gc.md)
+- [testing.bench.system](../testing/bench/system.md)
 - [testing.diff_runner](../testing/diff_runner.md)
 - [testing.fixtures](../testing/fixtures.md)
 - [testing.expected_failures](../testing/expected_failures.md)
@@ -127,23 +128,22 @@
 - [foldHash](#fn-foldhash)
 - [hashStringKey](#fn-hashstringkey)
 - [keysEqual](#fn-keysequal)
-- [stringsEqual](#fn-stringsequal)
 
 ## Types
 
-- [EntryIndex](#type-entryindex)
+- [HashPart](#type-hashpart)
 
-<a id="type-entryindex"></a>
+<a id="type-hashpart"></a>
 
-## EntryIndex
+## HashPart
 
-Open-addressed index from hash-part keys to positions in `Table.entries`.
-Slots keep 32 hash bits so most probes never touch the entry they name.
+A table's hash part: this header, then `capacity` entries in insertion order, then `slot_count` index slots.
 
 ```zig
-pub const EntryIndex = struct {
-    slots: []Slot = &.{},
-    count: usize = 0,
+pub const HashPart = struct {
+    len: u32 align(@alignOf(TableEntry)) = 0,
+    capacity: u32,
+    slot_count: u32,
 };
 ```
 
@@ -151,20 +151,23 @@ pub const EntryIndex = struct {
 
 | Name | Parameters | Return Type | Description |
 | --- | --- | --- | --- |
-| [Slot](#type-entryindex-slot) |  |  |  |
-| [deinit](#fn-entryindex-deinit) | `self: *EntryIndex, allocator: std.mem.Allocator` | `void` |  |
-| [capacity](#fn-entryindex-capacity) | `self: *const EntryIndex` | `usize` |  |
-| [clone](#fn-entryindex-clone) | `self: *const EntryIndex, allocator: std.mem.Allocator` | `!EntryIndex` |  |
-| [clearRetainingCapacity](#fn-entryindex-clearretainingcapacity) | `self: *EntryIndex` | `void` |  |
-| [find](#fn-entryindex-find) | `self: *const EntryIndex, entries: []const TableEntry, key: Value, hash: u32` | `?usize` |  |
-| [ensureTotalCapacity](#fn-entryindex-ensuretotalcapacity) | `self: *EntryIndex, allocator: std.mem.Allocator, count: usize` | `!void` |  |
-| [ensureUnusedCapacity](#fn-entryindex-ensureunusedcapacity) | `self: *EntryIndex, allocator: std.mem.Allocator, extra: usize` | `!void` |  |
-| [insertAssumeCapacity](#fn-entryindex-insertassumecapacity) | `self: *EntryIndex, hash: u32, entry_index: usize` | `void` | The key must be absent and capacity reserved. |
-| [rebuild](#fn-entryindex-rebuild) | `self: *EntryIndex, allocator: std.mem.Allocator, entries: []const TableEntry` | `!void` | Reindexes &#96;entries&#96; from scratch, keeping capacity when it suffices. |
+| [Slot](#type-hashpart-slot) |  |  |  |
+| [linear_limit](#const-hashpart-linear_limit) |  |  |  |
+| [create](#fn-hashpart-create) | `allocator: std.mem.Allocator, capacity: u32` | `!*HashPart` |  |
+| [destroy](#fn-hashpart-destroy) | `self: *HashPart, allocator: std.mem.Allocator` | `void` |  |
+| [clone](#fn-hashpart-clone) | `self: *const HashPart, allocator: std.mem.Allocator` | `!*HashPart` |  |
+| [allocationBytes](#fn-hashpart-allocationbytes) | `capacity: u32` | `usize` |  |
+| [capacityFor](#fn-hashpart-capacityfor) | `count: usize` | `!u32` | The largest capacity of at least &#96;count&#96; that fits the same power-of-two size and keeps small parts unindexed. |
+| [entries](#fn-hashpart-entries) | `self: *const HashPart` | `[]TableEntry` |  |
+| [slots](#fn-hashpart-slots) | `self: *const HashPart` | `[]Slot` |  |
+| [find](#fn-hashpart-find) | `self: *const HashPart, key: Value` | `?usize` |  |
+| [findBytes](#fn-hashpart-findbytes) | `self: *const HashPart, key: []const u8, hash: u32` | `?usize` |  |
+| [appendAssumeCapacity](#fn-hashpart-appendassumecapacity) | `self: *HashPart, key: Value, value: Value` | `void` | &#96;key&#96; must be absent and &#96;len&#96; below &#96;capacity&#96;. |
+| [reindex](#fn-hashpart-reindex) | `self: *HashPart` | `void` | Restores the index after entries were removed, moved, or copied in. |
 
-<a id="type-entryindex-slot"></a>
+<a id="type-hashpart-slot"></a>
 
-### EntryIndex.Slot
+### HashPart.Slot
 
 ```zig
 pub const Slot = struct {
@@ -174,99 +177,125 @@ pub const Slot = struct {
 };
 ```
 
-<a id="fn-entryindex-deinit"></a>
+<a id="const-hashpart-linear_limit"></a>
 
-### EntryIndex.deinit
-
-```zig
-pub fn deinit(self: *EntryIndex, allocator: std.mem.Allocator) void
-```
-
-References: [`EntryIndex`](#type-entryindex)
-
-<a id="fn-entryindex-capacity"></a>
-
-### EntryIndex.capacity
+### HashPart.linear_limit
 
 ```zig
-pub inline fn capacity(self: *const EntryIndex) usize
+pub const linear_limit = 4;
 ```
 
-References: [`EntryIndex`](#type-entryindex)
+<a id="fn-hashpart-create"></a>
 
-<a id="fn-entryindex-clone"></a>
-
-### EntryIndex.clone
+### HashPart.create
 
 ```zig
-pub fn clone(self: *const EntryIndex, allocator: std.mem.Allocator) !EntryIndex
+pub fn create(allocator: std.mem.Allocator, capacity: u32) !*HashPart
 ```
 
-References: [`EntryIndex`](#type-entryindex)
+References: [`HashPart`](#type-hashpart)
 
-<a id="fn-entryindex-clearretainingcapacity"></a>
+<a id="fn-hashpart-destroy"></a>
 
-### EntryIndex.clearRetainingCapacity
+### HashPart.destroy
 
 ```zig
-pub fn clearRetainingCapacity(self: *EntryIndex) void
+pub fn destroy(self: *HashPart, allocator: std.mem.Allocator) void
 ```
 
-References: [`EntryIndex`](#type-entryindex)
+References: [`HashPart`](#type-hashpart)
 
-<a id="fn-entryindex-find"></a>
+<a id="fn-hashpart-clone"></a>
 
-### EntryIndex.find
+### HashPart.clone
 
 ```zig
-pub inline fn find(self: *const EntryIndex, entries: []const TableEntry, key: Value, hash: u32) ?usize
+pub fn clone(self: *const HashPart, allocator: std.mem.Allocator) !*HashPart
 ```
 
-References: [`EntryIndex`](#type-entryindex)
+References: [`HashPart`](#type-hashpart)
 
-<a id="fn-entryindex-ensuretotalcapacity"></a>
+<a id="fn-hashpart-allocationbytes"></a>
 
-### EntryIndex.ensureTotalCapacity
+### HashPart.allocationBytes
 
 ```zig
-pub fn ensureTotalCapacity(self: *EntryIndex, allocator: std.mem.Allocator, count: usize) !void
+pub fn allocationBytes(capacity: u32) usize
 ```
 
-References: [`EntryIndex`](#type-entryindex)
+<a id="fn-hashpart-capacityfor"></a>
 
-<a id="fn-entryindex-ensureunusedcapacity"></a>
+### HashPart.capacityFor
 
-### EntryIndex.ensureUnusedCapacity
+The largest capacity of at least `count` that fits the same power-of-two size and keeps small parts unindexed.
 
 ```zig
-pub inline fn ensureUnusedCapacity(self: *EntryIndex, allocator: std.mem.Allocator, extra: usize) !void
+pub fn capacityFor(count: usize) !u32
 ```
 
-References: [`EntryIndex`](#type-entryindex)
+<a id="fn-hashpart-entries"></a>
 
-<a id="fn-entryindex-insertassumecapacity"></a>
-
-### EntryIndex.insertAssumeCapacity
-
-The key must be absent and capacity reserved.
+### HashPart.entries
 
 ```zig
-pub inline fn insertAssumeCapacity(self: *EntryIndex, hash: u32, entry_index: usize) void
+pub inline fn entries(self: *const HashPart) []TableEntry
 ```
 
-References: [`EntryIndex`](#type-entryindex)
+References: [`HashPart`](#type-hashpart)
 
-<a id="fn-entryindex-rebuild"></a>
+<a id="fn-hashpart-slots"></a>
 
-### EntryIndex.rebuild
-
-Reindexes `entries` from scratch, keeping capacity when it suffices.
+### HashPart.slots
 
 ```zig
-pub fn rebuild(self: *EntryIndex, allocator: std.mem.Allocator, entries: []const TableEntry) !void
+pub inline fn slots(self: *const HashPart) []Slot
 ```
 
-References: [`EntryIndex`](#type-entryindex)
+References: [`HashPart`](#type-hashpart)
+
+<a id="fn-hashpart-find"></a>
+
+### HashPart.find
+
+```zig
+pub inline fn find(self: *const HashPart, key: Value) ?usize
+```
+
+References: [`HashPart`](#type-hashpart)
+
+<a id="fn-hashpart-findbytes"></a>
+
+### HashPart.findBytes
+
+```zig
+pub inline fn findBytes(self: *const HashPart, key: []const u8, hash: u32) ?usize
+```
+
+References: [`HashPart`](#type-hashpart)
+
+<a id="fn-hashpart-appendassumecapacity"></a>
+
+### HashPart.appendAssumeCapacity
+
+`key` must be absent and `len` below `capacity`.
+
+```zig
+pub inline fn appendAssumeCapacity(self: *HashPart, key: Value, value: Value) void
+```
+
+References: [`HashPart`](#type-hashpart)
+
+<a id="fn-hashpart-reindex"></a>
+
+### HashPart.reindex
+
+Restores the index after entries were removed, moved, or copied in.
+
+```zig
+pub fn reindex(self: *HashPart) void
+```
+
+References: [`HashPart`](#type-hashpart)
 
 <a id="fn-hashkey"></a>
 
@@ -298,13 +327,5 @@ pub inline fn hashStringKey(bytes: []const u8) u32
 
 ```zig
 pub inline fn keysEqual(stored: Value, key: Value) bool
-```
-
-<a id="fn-stringsequal"></a>
-
-## stringsEqual
-
-```zig
-pub inline fn stringsEqual(lhs: []const u8, rhs: []const u8) bool
 ```
 

@@ -254,7 +254,7 @@ pub const State = struct {
     pub fn setGlobal(self: *State, name: []const u8, value: anytype) !void {
         const raw_name = try self.raw_state.strings.intern(name);
         const raw_value = try convert.toRuntimeValue(self, value);
-        self.raw_state.putGlobal(raw_name, raw_value) catch |err| return errors.captureLuaError(self, err);
+        self.raw_state.setGlobalString(raw_name, raw_value) catch |err| return errors.captureLuaError(self, err);
         try gcBoundary(self);
     }
 

@@ -77,7 +77,7 @@ fn prepare(lua: *zlua.State, workload: Workload) !void {
         },
         .old_container => {
             const leaf = lua.raw_state.getGlobal("data").table.get(.{ .integer = 5000 });
-            try index_mod.setTableValue(&lua.raw_state, leaf, .{ .string = "new" }, try lua.raw_state.newTableWithHints(0, 0));
+            try index_mod.setTableValue(&lua.raw_state, leaf, .{ .string = try lua.raw_state.strings.intern("new") }, try lua.raw_state.newTableWithHints(0, 0));
         },
         .weak_tables => {
             const weak = lua.raw_state.getGlobal("weak");

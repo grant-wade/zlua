@@ -13,6 +13,7 @@ const host = @import("host.zig");
 const index_mod = @import("index.zig");
 const load_mod = @import("load.zig");
 const metatable_mod = @import("metatable.zig");
+const ObjectPool = @import("object_pool.zig").ObjectPool;
 const rollback_mod = @import("rollback.zig");
 const strings_mod = @import("strings.zig");
 const timezone = @import("timezone.zig");
@@ -66,8 +67,6 @@ pub const Upvalue = types.Upvalue;
 pub const Table = types.Table;
 pub const Userdata = types.Userdata;
 pub const Thread = types.Thread;
-const StringAllocation = types.StringAllocation;
-const PointerAllocationIndex = types.PointerAllocationIndex;
 pub const GcMode = types.GcMode;
 pub const GcParam = types.GcParam;
 
@@ -145,28 +144,26 @@ pub const State = struct {
     snapshot_busy: bool = false,
     discarding: bool = false,
     allocator: std.mem.Allocator,
+    /// Holds the tables, upvalues, closures and strings, over `allocator`.
+    object_pool: *ObjectPool,
     global_table: ?*Table = null,
-    strings: strings_mod.Strings,
-    string_allocations: std.ArrayList(StringAllocation) = .empty,
-    string_allocation_index: PointerAllocationIndex = .empty,
+    strings: strings_mod.Strings = .{},
+    string_allocations: std.ArrayList(*types.String) = .empty,
     table_allocations: std.ArrayList(*Table) = .empty,
-    table_allocation_index: types.ObjectAllocationIndex = .empty,
-    object_allocation_index: types.ObjectAllocationIndex = .empty,
-    table_metatable_head: ?*Table = null,
-    table_finalizer_head: ?*Table = null,
+    /// Tables registered for a Lua `__gc` and not yet separated, oldest first. Each
+    /// registration reserves a slot in `table_pending_finalizers` too.
+    table_finalizers: std.ArrayList(types.TableFinalizer) = .empty,
     table_finalizer_serial: u64 = 0,
-    table_pending_finalizer_head: ?*Table = null,
-    /// Userdata awaiting Lua `__gc`, ordered together with `table_pending_finalizer_head`.
+    /// Tables separated for a Lua `__gc` call; the last one runs next.
+    table_pending_finalizers: std.ArrayList(types.TableFinalizer) = .empty,
+    /// Userdata awaiting Lua `__gc`, ordered together with `table_pending_finalizers`.
     userdata_lua_pending_head: ?*Userdata = null,
     userdata_pending_finalizer_head: ?*Userdata = null,
-    table_metatable_count: usize = 0,
     userdata_allocations: std.ArrayList(*Userdata) = .empty,
     closure_allocations: std.ArrayList(*Closure) = .empty,
     upvalue_allocations: std.ArrayList(*Upvalue) = .empty,
     thread_allocations: std.ArrayList(*Thread) = .empty,
-    proto_allocations: std.ArrayList(*proto_mod.Proto) = .empty,
-    /// Prefix owned by the API state's retained immutable snapshot.
-    borrowed_proto_count: usize = 0,
+    chunk_allocations: std.ArrayList(*types.Chunk) = .empty,
     source_allocations: std.ArrayList([]const u8) = .empty,
     api_roots: std.ArrayList(Value) = .empty,
     stdout: std.ArrayList(u8) = .empty,
@@ -207,11 +204,18 @@ pub const State = struct {
         try self.gc.prepareRegistration(field);
         try @field(self, field).append(self.allocator, item);
         self.gc.registeredAllocation(field, item);
-        if (self.rollback) |journal| journal.allocated(field, item);
     }
 
     pub fn init(allocator: std.mem.Allocator) !State {
         return initWithOptions(allocator, .{});
+    }
+
+    pub inline fn objects(self: *const State) std.mem.Allocator {
+        return self.object_pool.allocator();
+    }
+
+    pub inline fn allocatorFor(self: *const State, comptime T: type) std.mem.Allocator {
+        return if (T == Table or T == types.Upvalue or T == Closure or T == types.String) self.objects() else self.allocator;
     }
 
     pub fn initWithOptions(allocator: std.mem.Allocator, options: StateOptions) !State {
@@ -229,18 +233,16 @@ pub const State = struct {
     ) !State {
         var state = State{
             .allocator = allocator,
-            .strings = .{ .map = strings_mod.InternMap.init(allocator) },
+            .object_pool = try ObjectPool.create(allocator),
             .options = options,
             .warnings_on = options.warnings,
         };
         errdefer state.deinit();
 
         const hints = stdlib.initHints(options.stdlib);
-        try state.strings.map.ensureTotalCapacity(@intCast(hints.strings));
+        state.strings.set = try strings_mod.InternSet.initStatic(allocator, hints.strings);
         try state.string_allocations.ensureTotalCapacity(allocator, hints.strings);
-        try state.string_allocation_index.ensureTotalCapacity(allocator, hints.strings);
         try state.table_allocations.ensureTotalCapacity(allocator, hints.tables);
-        try state.table_allocation_index.ensureTotalCapacity(allocator, hints.tables);
         observe(observer_context, .state, &state);
 
         try stdlib.installGlobalTableWithHint(&state, hints.globals);
@@ -290,7 +292,7 @@ pub const State = struct {
         const metatable = (try state.newTableWithHints(0, 5)).table;
         state.fs_file_metatable = metatable;
         errdefer state.fs_file_metatable = null;
-        for (file_metatable.entries.items) |entry| {
+        for (file_metatable.entries()) |entry| {
             if (entry.value != .nil) try state.setTableRaw(metatable, entry.key, entry.value);
         }
         const methods = try state.newTableWithHints(0, 12);
@@ -363,10 +365,7 @@ pub const State = struct {
         if (self.budget.interrupt) |control| self.allocator.destroy(control);
         self.stdout.deinit(self.allocator);
         self.stderr.deinit(self.allocator);
-        self.strings.map.deinit();
-        self.string_allocation_index.deinit(self.allocator);
-        self.table_allocation_index.deinit(self.allocator);
-        self.object_allocation_index.deinit(self.allocator);
+        self.strings.deinit(self.allocator);
         self.gc.work.deinit(self.allocator);
         self.gc.remembered.deinit(self.allocator);
         self.gc.weak.deinit(self.allocator);
@@ -374,29 +373,29 @@ pub const State = struct {
         self.gc.finalizers.deinit(self.allocator);
         for (self.thread_allocations.items) |thread| self.gc.destroyThread(thread);
         for (self.closure_allocations.items) |closure| self.gc.destroyClosure(closure);
-        for (self.upvalue_allocations.items) |upvalue| self.allocator.destroy(upvalue);
+        for (self.upvalue_allocations.items) |upvalue| self.objects().destroy(upvalue);
         for (self.userdata_allocations.items) |userdata| self.gc.destroyUserdata(userdata);
         for (self.table_allocations.items) |table| {
             if (self.discarding) {
                 table.deinit(self.allocator);
-                self.allocator.destroy(table);
+                self.objects().destroy(table);
             } else self.gc.destroyTable(table);
         }
-        for (self.proto_allocations.items[self.borrowed_proto_count..]) |proto| {
-            proto.deinit();
-            self.allocator.destroy(proto);
-        }
+        for (self.chunk_allocations.items) |chunk| chunk.destroy(self.allocator);
         for (self.source_allocations.items) |source| self.allocator.free(source);
-        for (self.string_allocations.items) |allocation| self.allocator.free(allocation.bytes);
+        for (self.string_allocations.items) |string| strings_mod.destroy(self.objects(), string);
         self.api_roots.deinit(self.allocator);
         self.source_allocations.deinit(self.allocator);
-        self.proto_allocations.deinit(self.allocator);
+        self.chunk_allocations.deinit(self.allocator);
         self.thread_allocations.deinit(self.allocator);
         self.upvalue_allocations.deinit(self.allocator);
         self.closure_allocations.deinit(self.allocator);
         self.userdata_allocations.deinit(self.allocator);
         self.table_allocations.deinit(self.allocator);
         self.string_allocations.deinit(self.allocator);
+        self.table_finalizers.deinit(self.allocator);
+        self.table_pending_finalizers.deinit(self.allocator);
+        self.object_pool.destroy();
         self.* = undefined;
     }
 
@@ -414,22 +413,24 @@ pub const State = struct {
         if (table_value.table.get(key) != .nil) {
             const message = try std.fmt.allocPrint(self.allocator, "global '{s}' already defined", .{name});
             defer self.allocator.free(message);
-            return self.fail(try self.strings.intern(message));
+            return self.failString(try self.strings.intern(message));
         }
         try index_mod.setTable(self, table_value, key, vm_mod.get(self, thread, value_register));
     }
 
     pub fn setGlobal(self: *State, name: []const u8, value: Value) !void {
+        return self.setGlobalString(try self.strings.intern(name), value);
+    }
+
+    pub fn setGlobalString(self: *State, key: *const types.String, value: Value) !void {
         const table = self.global_table orelse return error.RuntimeError;
-        const key = try self.strings.intern(name);
         try self.setTableRaw(table, .{ .string = key }, value);
-        self.gc.writeTableBarrier(table, .{ .string = key }, value);
         self.gc.markValue(value);
     }
 
     pub fn getGlobalValue(self: *State, name: []const u8) Value {
         const table = self.global_table orelse return .nil;
-        return table.get(.{ .string = name });
+        return table.getBytes(name);
     }
 
     pub fn getGlobal(self: *State, name: []const u8) Value {
@@ -512,16 +513,11 @@ pub const State = struct {
     }
 
     pub fn newTableWithHints(self: *State, array_hint: u32, hash_hint: u32) !Value {
-        const table = try self.allocator.create(Table);
-        errdefer self.allocator.destroy(table);
+        const table = try self.objects().create(Table);
+        errdefer self.objects().destroy(table);
         table.* = try Table.init(self.allocator, array_hint, hash_hint);
         errdefer table.deinit(self.allocator);
         try self.registerAllocation("table_allocations", table);
-        errdefer {
-            const removed = self.table_allocations.pop().?;
-            if (self.rollback) |journal| journal.freed(@intFromPtr(removed));
-        }
-        try self.table_allocation_index.put(self.allocator, @intFromPtr(table), self.table_allocations.items.len - 1);
         self.gc.noteAllocation(gc_mod.tableGcBytes(table));
         return .{ .table = table };
     }
@@ -549,21 +545,18 @@ pub const State = struct {
 
     pub fn newClosure(self: *State, thread: *Thread, proto: *const proto_mod.Proto) !Value {
         const parent = thread.frames.items[thread.frames.items.len - 1];
-        const upvalues = try self.allocator.alloc(*Upvalue, proto.upvalues.items.len);
-        errdefer self.allocator.free(upvalues);
-        for (proto.upvalues.items, 0..) |desc, index| {
-            upvalues[index] = if (desc.in_stack)
+        vm_mod.assertProtoPrepared(proto);
+        const closure = try Closure.create(self.objects(), proto.upvalues.items.len, .{ .proto = proto, .chunk = parent.closure.chunk, .stripped_debug = parent.closure.stripped_debug });
+        errdefer Closure.destroy(self.objects(), closure);
+        const upvalues = closure.upvalues();
+        for (proto.upvalues.items, upvalues) |desc, *upvalue| {
+            upvalue.* = if (desc.in_stack)
                 try upvalue_mod.captureUpvalue(self, thread, parent.base + desc.index)
             else
-                parent.closure.upvalues[desc.index];
+                parent.closure.upvalues()[desc.index];
         }
-
-        const closure = try self.allocator.create(Closure);
-        vm_mod.assertProtoPrepared(proto);
-        closure.* = .{ .proto = proto, .root = parent.closure.root orelse parent.closure.proto, .upvalues = upvalues, .stripped_debug = parent.closure.stripped_debug };
-        errdefer self.allocator.destroy(closure);
         try self.registerAllocation("closure_allocations", closure);
-        self.gc.noteAllocation(@sizeOf(Closure));
+        self.gc.noteAllocation(Closure.allocationBytes(upvalues.len));
         return .{ .closure = closure };
     }
 
@@ -591,7 +584,7 @@ pub const State = struct {
 
     pub fn expectString(self: *State, value: Value) ![]const u8 {
         return switch (value) {
-            .string => |string| string,
+            .string => |string| string.bytes(),
             else => self.fail("string expected"),
         };
     }
@@ -606,20 +599,19 @@ pub const State = struct {
     }
 
     pub fn fail(self: *State, message: []const u8) RuntimeError {
-        self.last_error = .{ .diagnostic = message };
+        return self.failString(try self.strings.intern(message));
+    }
+
+    pub fn failString(self: *State, message: *const types.String) RuntimeError {
+        self.last_error = .{ .lua_value = .{ .string = message } };
         self.error_handled = false;
         return error.RuntimeError;
     }
 
     /// Like `luaL_argerror`; `index` is 1-based and `function_name` is the fallback name.
     fn failArgument(self: *State, function_name: []const u8, index: u32, detail: errors.ArgumentErrorDetail) RuntimeError {
-        self.error_handled = false;
-        const rendered = self.renderArgumentError(function_name, index, detail) catch {
-            self.last_error = .{ .argument = .{ .function_name = function_name, .index = index, .detail = detail } };
-            return error.RuntimeError;
-        };
-        self.last_error = .{ .diagnostic = rendered };
-        return error.RuntimeError;
+        const rendered = self.renderArgumentError(function_name, index, detail) catch return error.OutOfMemory;
+        return self.failString(rendered);
     }
 
     pub fn failArgumentMessage(self: *State, function_name: []const u8, index: u32, message: []const u8) RuntimeError {
@@ -640,7 +632,7 @@ pub const State = struct {
         self.appendLibraryWhere(&out) catch return self.fail(message);
         if (out.items.len == 0) return self.fail(message);
         out.appendSlice(self.allocator, message) catch return self.fail(message);
-        return self.fail(self.strings.intern(out.items) catch return self.fail(message));
+        return self.failString(self.strings.intern(out.items) catch return self.fail(message));
     }
 
     /// Prefixes a string error with `luaL_where(L, 1)`, as `coroutine.wrap` does.
@@ -650,16 +642,15 @@ pub const State = struct {
         defer out.deinit(self.allocator);
         try self.appendLibraryWhere(&out);
         if (out.items.len == 0) return value;
-        try out.appendSlice(self.allocator, value.string);
+        try out.appendSlice(self.allocator, value.string.bytes());
         return .{ .string = try self.strings.intern(out.items) };
     }
 
     pub fn failLibraryFmt(self: *State, comptime fmt: []const u8, args: anytype) RuntimeError {
         var out = std.ArrayList(u8).empty;
         defer out.deinit(self.allocator);
-        appendFmt(self.allocator, &out, fmt, args) catch return self.fail(fmt);
-        const message = self.strings.intern(out.items) catch return self.fail(fmt);
-        return self.failLibrary(message);
+        appendFmt(self.allocator, &out, fmt, args) catch return error.OutOfMemory;
+        return self.failLibrary(out.items);
     }
 
     pub fn activeNativeCall(thread: *Thread) ?types.NativeCall {
@@ -675,7 +666,7 @@ pub const State = struct {
         const frame = thread.frames.items[thread.frames.items.len - 1];
         if (frame.closure.stripped_debug or debug_mod.isCoroutineEntryFrame(frame)) return;
         const site = failure_mod.instructionErrorSite(self, thread) orelse return;
-        try appendFmt(self.allocator, out, "{s}:{d}: ", .{ load_mod.runtimeSourceName(frame.proto.source_name), site.line });
+        try appendFmt(self.allocator, out, "{s}:{d}: ", .{ load_mod.runtimeSourceName(frame.closure.proto.source_name), site.line });
     }
 
     const CallName = struct { name: []const u8, namewhat: []const u8 };
@@ -686,8 +677,8 @@ pub const State = struct {
         const namewhat = call.namewhat orelse return false;
         if (!std.mem.eql(u8, namewhat, "metamethod")) return false;
         const frame = thread.frames.items[thread.frames.items.len - 1];
-        if (frame.pc == 0 or frame.pc > frame.proto.instructions.items.len) return false;
-        return switch (frame.proto.instructions.items[frame.pc - 1]) {
+        if (frame.pc == 0 or frame.pc > frame.closure.proto.instructions.items.len) return false;
+        return switch (frame.closure.proto.instructions.items[frame.pc - 1]) {
             .tfor_prep, .tfor_call => true,
             else => false,
         };
@@ -701,7 +692,7 @@ pub const State = struct {
             return .{ .name = name, .namewhat = "metamethod" };
         }
         const frame = thread.frames.items[thread.frames.items.len - 1];
-        if (call.base >= frame.proto.max_registers) return null;
+        if (call.base >= frame.closure.proto.max_registers) return null;
         const site = failure_mod.instructionErrorSite(self, thread) orelse return null;
         const origin = site.call_name orelse return null;
         return switch (origin) {
@@ -723,13 +714,13 @@ pub const State = struct {
             try out.appendSlice(self.allocator, key);
             return true;
         }
-        const package = globals.get(.{ .string = "package" });
-        const loaded = if (package == .table) package.table.get(.{ .string = "loaded" }) else Value.nil;
+        const package = globals.getLiteral("package");
+        const loaded = if (package == .table) package.table.getLiteral("loaded") else Value.nil;
         const modules = if (loaded == .table) loaded.table else globals;
-        for (modules.entries.items) |entry| {
+        for (modules.entries()) |entry| {
             if (entry.key != .string or entry.value != .table or entry.value.table == globals) continue;
             if (findFunctionField(entry.value.table, callee)) |key| {
-                try appendFmt(self.allocator, out, "{s}.{s}", .{ entry.key.string, key });
+                try appendFmt(self.allocator, out, "{s}.{s}", .{ entry.key.string.bytes(), key });
                 return true;
             }
         }
@@ -737,13 +728,13 @@ pub const State = struct {
     }
 
     fn findFunctionField(table: *Table, callee: Value) ?[]const u8 {
-        for (table.entries.items) |entry| {
-            if (entry.key == .string and valuesEqual(entry.value, callee)) return entry.key.string;
+        for (table.entries()) |entry| {
+            if (entry.key == .string and valuesEqual(entry.value, callee)) return entry.key.string.bytes();
         }
         return null;
     }
 
-    fn renderArgumentError(self: *State, function_name: []const u8, raw_index: u32, detail: errors.ArgumentErrorDetail) ![]const u8 {
+    fn renderArgumentError(self: *State, function_name: []const u8, raw_index: u32, detail: errors.ArgumentErrorDetail) !*const types.String {
         var out = std.ArrayList(u8).empty;
         defer out.deinit(self.allocator);
         const thread = self.current_thread;
@@ -808,16 +799,21 @@ pub const State = struct {
     pub fn expectArgumentString(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) ![]const u8 {
         const value = argValue(self, thread, op, index);
         return switch (value) {
-            .string => |string| string,
+            .string => |string| string.bytes(),
             .integer, .number => {
                 var buffer: [value_mod.max_number_text_len]u8 = undefined;
                 const string = try self.strings.intern(value_mod.formatNumber(&buffer, value));
                 const frame = thread.frames.items[thread.frames.items.len - 1];
                 thread.stack.items[frame.base + op.base + 1 + index] = .{ .string = string };
-                return string;
+                return string.bytes();
             },
             else => self.failArgumentType(function_name, index + 1, "string", value),
         };
+    }
+
+    pub fn expectArgumentStringObject(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) !*const types.String {
+        _ = try self.expectArgumentString(thread, op, function_name, index);
+        return argValue(self, thread, op, index).string;
     }
 
     pub fn optionalArgumentString(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) !?[]const u8 {

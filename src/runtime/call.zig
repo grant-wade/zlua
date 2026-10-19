@@ -2,6 +2,7 @@ const std = @import("std");
 const compile = @import("../compile.zig");
 const errors = @import("../errors.zig");
 const stdlib = @import("../stdlib.zig");
+const static_strings = @import("../stdlib/static_strings.zig");
 const coroutine_mod = @import("coroutine.zig");
 const debug_mod = @import("debug.zig");
 const failure_mod = @import("failure.zig");
@@ -21,12 +22,10 @@ const bytecode = compile.bytecode;
 const Value = types.Value;
 const ProtectedCallResult = types.ProtectedCallResult;
 const ProtectedCallContext = types.ProtectedCallContext;
-const ProtectedContinuation = types.ProtectedContinuation;
 const CallOneContinuationResult = types.CallOneContinuationResult;
 const Closure = types.Closure;
 const Thread = types.Thread;
 const CallFrame = types.CallFrame;
-const freeProtectedResult = value_mod.freeProtectedResult;
 const argValue = value_mod.argValue;
 const truthy = value_mod.truthy;
 const lua_max_c_calls = state_mod.lua_max_c_calls;
@@ -184,27 +183,15 @@ pub fn protectedCallContextWithErrors(self: *State, thread: *Thread) ProtectedCa
 }
 
 pub fn runProtectedCall(self: *State, thread: *Thread, context: ProtectedCallContext, callable: Value, args: []const Value) anyerror!ProtectedCallResult {
+    const saved_error = [_]Value{savedErrorValue(context)};
+    var roots: types.ValueRoots = undefined;
+    self.pushValueRoots(&roots, &saved_error);
+    defer self.popValueRoots(&roots);
     try thread.ensureStack(self.allocator, context.absolute_base + 1 + args.len, callStackValueLimit(self, thread));
     thread.stack.items[context.absolute_base] = callable;
     for (args, 0..) |arg, index| thread.stack.items[context.absolute_base + 1 + index] = arg;
 
-    thread.error_handler = context.error_handler;
-    self.last_error = null;
-    return runProtectedBody(self, thread, context, args.len) catch |err| {
-        if (err != error.CoroutineYield) thread.error_handler = context.previous_error_handler;
-        return err;
-    };
-}
-
-fn runProtectedBody(self: *State, thread: *Thread, context: ProtectedCallContext, arg_count: usize) anyerror!ProtectedCallResult {
-    const callee = thread.stack.items[context.absolute_base];
-    invokeValue(self, thread, .{ .base = context.relative_base, .arg_count = @intCast(arg_count), .return_count = bytecode.multret_count }, 0) catch |err| {
-        return protectedCallFailure(self, thread, context, callee, err);
-    };
-    vm_mod.runThreadUntil(self, thread, context.frame_count) catch |err| {
-        return protectedCallFailure(self, thread, context, callee, err);
-    };
-
+    if (try callProtected(self, thread, context, args.len)) |failure| return .{ .failure = failure };
     const values = try self.allocator.alloc(Value, thread.last_result_count);
     errdefer self.allocator.free(values);
     for (values, 0..) |*value, index| value.* = thread.stack.items[thread.last_result_base + index];
@@ -212,7 +199,62 @@ fn runProtectedBody(self: *State, thread: *Thread, context: ProtectedCallContext
     return .{ .success = values };
 }
 
-fn protectedCallFailure(self: *State, thread: *Thread, context: ProtectedCallContext, callee: Value, err: anyerror) anyerror!ProtectedCallResult {
+fn savedErrorValue(context: ProtectedCallContext) Value {
+    const payload = context.last_error orelse return .nil;
+    return switch (payload) {
+        .lua_value => |value| value,
+        .diagnostic => .nil,
+    };
+}
+
+/// Calls the value at `context.absolute_base` with the `arg_count` values above it. Returns null on
+/// success with the results at `thread.last_result_base`, or the caught error value.
+fn callProtected(self: *State, thread: *Thread, context: ProtectedCallContext, arg_count: usize) anyerror!?Value {
+    thread.error_handler = context.error_handler;
+    self.last_error = null;
+    return callProtectedBody(self, thread, context, arg_count) catch |err| {
+        if (err != error.CoroutineYield) thread.error_handler = context.previous_error_handler;
+        return err;
+    };
+}
+
+fn callProtectedBody(self: *State, thread: *Thread, context: ProtectedCallContext, arg_count: usize) anyerror!?Value {
+    const callee = thread.stack.items[context.absolute_base];
+    invokeValue(self, thread, .{ .base = context.relative_base, .arg_count = @intCast(arg_count), .return_count = bytecode.multret_count }, 0) catch |err| {
+        return try protectedCallFailure(self, thread, context, callee, err);
+    };
+    if (thread.frames.items.len > context.frame_count) vm_mod.runThreadUntil(self, thread, context.frame_count) catch |err| {
+        return try protectedCallFailure(self, thread, context, callee, err);
+    };
+    return null;
+}
+
+/// `base` is the register that receives `true` followed by the results.
+fn finishProtectedSuccess(self: *State, thread: *Thread, context: ProtectedCallContext, base: u32, return_count: u16) !void {
+    thread.error_handler = context.previous_error_handler;
+    self.last_error = context.last_error;
+    if (thread.frames.items.len < self.callFrameLimit() and context.stack_len < self.stackValueLimit()) thread.stack_error_space = false;
+    const dest = thread.frames.items[thread.frames.items.len - 1].base + base;
+    const source = thread.last_result_base;
+    const count = thread.last_result_count;
+    const actual_count = try resolveReturnCount(self, return_count, count + 1);
+    const stored_count = @max(actual_count, count + 1);
+    try thread.ensureStack(self.allocator, dest + stored_count, callStackValueLimit(self, thread));
+    const stack = thread.stack.items;
+    if (source > dest + 1) {
+        std.mem.copyForwards(Value, stack[dest + 1 ..][0..count], stack[source..][0..count]);
+    } else if (source < dest + 1) {
+        std.mem.copyBackwards(Value, stack[dest + 1 ..][0..count], stack[source..][0..count]);
+    }
+    stack[dest] = .{ .boolean = true };
+    @memset(stack[dest + 1 + count .. dest + stored_count], .nil);
+    thread.last_result_base = dest;
+    thread.last_result_count = actual_count;
+    thread.last_transfer_base = dest;
+    thread.last_transfer_count = count + 1;
+}
+
+fn protectedCallFailure(self: *State, thread: *Thread, context: ProtectedCallContext, callee: Value, err: anyerror) anyerror!Value {
     switch (err) {
         error.RuntimeError, error.StackOverflow, error.UnsupportedOpcode, error.OutOfMemory => {
             if (thread.frames.items.len < context.frame_count) return err;
@@ -223,8 +265,7 @@ fn protectedCallFailure(self: *State, thread: *Thread, context: ProtectedCallCon
                 if (callee != .closure) pushNativeMark(thread, context.frame_count, callee);
                 try applyMessageHandler(self, thread);
             }
-            const failure = try restoreProtectedCall(self, thread, context, self.currentErrorValue());
-            return .{ .failure = failure };
+            return restoreProtectedCall(self, thread, context, self.currentErrorValue());
         },
         else => return err,
     }
@@ -264,13 +305,9 @@ fn errorProtectedContinuationIndex(thread: *Thread) ?usize {
 
 pub fn completeReadyProtectedContinuation(self: *State, thread: *Thread) !bool {
     const index = readyProtectedContinuationIndex(thread) orelse return false;
-    const continuation = thread.protected_continuations.items[index];
-    const values = try coroutine_mod.copyStackSlice(self, thread, thread.last_result_base, thread.last_result_count);
-    defer self.allocator.free(values);
-    _ = try restoreProtectedCall(self, thread, continuation.context, .nil);
-    _ = thread.protected_continuations.orderedRemove(index);
+    const continuation = thread.protected_continuations.orderedRemove(index);
     thread.refreshContinuationFrameCount();
-    try returnProtectedContinuationSuccess(self, thread, continuation, values);
+    try finishProtectedSuccess(self, thread, continuation.context, continuation.base, continuation.return_count);
     return true;
 }
 
@@ -294,25 +331,12 @@ pub fn completeProtectedContinuationError(self: *State, thread: *Thread) !bool {
         break;
     }
     thread.refreshContinuationFrameCount();
-    try returnProtectedResult(self, thread, continuation.base, continuation.return_count, .{ .failure = failure });
+    try returnProtectedFailure(self, thread, continuation.base, continuation.return_count, failure);
     return true;
 }
 
-fn returnProtectedContinuationSuccess(self: *State, thread: *Thread, continuation: ProtectedContinuation, values: []Value) !void {
-    try returnProtectedResult(self, thread, continuation.base, continuation.return_count, .{ .success = values });
-}
-
-fn returnProtectedResult(self: *State, thread: *Thread, base: u32, return_count: u16, result: ProtectedCallResult) !void {
-    switch (result) {
-        .success => |values| {
-            var returns = std.ArrayList(Value).empty;
-            defer returns.deinit(self.allocator);
-            try returns.append(self.allocator, .{ .boolean = true });
-            try returns.appendSlice(self.allocator, values);
-            try self.returnValues(thread, base, return_count, returns.items);
-        },
-        .failure => |error_value| try self.returnValues(thread, base, return_count, &.{ .{ .boolean = false }, try caughtErrorValue(self, error_value) }),
-    }
+fn returnProtectedFailure(self: *State, thread: *Thread, base: u32, return_count: u16, error_value: Value) !void {
+    try self.returnValues(thread, base, return_count, &.{ .{ .boolean = false }, try caughtErrorValue(self, error_value) });
 }
 
 pub fn collectArgs(self: *State, thread: *Thread, op: bytecode.Call, first: u32) ![]Value {
@@ -328,33 +352,37 @@ pub fn resolveReturnCount(self: *State, count: u16, available: usize) !usize {
 }
 
 pub fn prepareClosureFrame(self: *State, thread: *Thread, closure: *Closure, source_base: usize, frame_base: usize, arg_count: usize, return_start: usize, return_count: u16) !CallFrame {
-    const register_count = @max(closure.proto.max_registers, 1);
-    const param_count = @as(usize, closure.proto.param_count);
+    const proto = closure.proto;
+    const register_count = @max(proto.max_registers, 1);
+    const param_count = @as(usize, proto.param_count);
     const copied = @min(arg_count, param_count);
-    const varargs = try captureVarargs(self, thread, source_base + 1 + param_count, if (closure.proto.is_vararg and arg_count > param_count) arg_count - param_count else 0);
-    errdefer if (varargs.len != 0) self.allocator.free(varargs);
-    try thread.ensureStack(self.allocator, frame_base + register_count, callStackValueLimit(self, thread));
+    const vararg_count = if (proto.is_vararg and arg_count > param_count) arg_count - param_count else 0;
+    const base = if (vararg_count != 0) frame_base + arg_count else frame_base;
+    try thread.ensureStack(self.allocator, base + register_count, callStackValueLimit(self, thread));
 
+    const stack = thread.stack.items;
     if (frame_base != source_base + 1) {
-        for (0..copied) |index| thread.stack.items[frame_base + index] = thread.stack.items[source_base + 1 + index];
+        const moved = if (vararg_count != 0) arg_count else copied;
+        for (0..moved) |index| stack[frame_base + index] = stack[source_base + 1 + index];
     }
-    for (copied..register_count) |index| thread.stack.items[frame_base + index] = .nil;
+    if (vararg_count != 0) {
+        for (0..param_count) |index| stack[base + index] = stack[frame_base + index];
+    }
+    for (copied..register_count) |index| stack[base + index] = .nil;
 
-    const readonly_vararg = closure.proto.named_vararg_readonly;
-    if (closure.proto.named_vararg and !readonly_vararg) {
-        thread.stack.items[frame_base + param_count] = try namedVarargTable(self, varargs);
+    const readonly_vararg = proto.named_vararg_readonly;
+    if (proto.named_vararg and !readonly_vararg) {
+        stack[base + param_count] = try namedVarargTable(self, stack[frame_base + param_count ..][0..vararg_count]);
     }
-    thread.frame_storage_bytes += varargs.len * @sizeOf(Value);
 
     return .{
         .closure = closure,
-        .proto = closure.proto,
-        .base = frame_base,
+        .base = @intCast(base),
         .pc = 0,
-        .return_start = return_start,
+        .return_start = @intCast(return_start),
         .return_count = return_count,
-        .varargs = varargs,
-        .owns_varargs = varargs.len != 0,
+        .vararg_base = @intCast(frame_base + param_count),
+        .vararg_count = @intCast(vararg_count),
         .named_vararg_readonly = readonly_vararg,
     };
 }
@@ -447,7 +475,7 @@ fn cStackOverflowValue(self: *State, thread: *Thread) !Value {
     const site = failure_mod.instructionErrorSite(self, thread) orelse return .{ .string = try self.strings.intern(message) };
     var out = std.ArrayList(u8).empty;
     defer out.deinit(self.allocator);
-    try appendFmt(self.allocator, &out, "{s}:{d}: {s}", .{ load_mod.runtimeSourceName(frame.proto.source_name), site.line, message });
+    try appendFmt(self.allocator, &out, "{s}:{d}: {s}", .{ load_mod.runtimeSourceName(frame.closure.proto.source_name), site.line, message });
     return .{ .string = try self.strings.intern(out.items) };
 }
 
@@ -586,7 +614,7 @@ pub fn invokeValue(self: *State, thread: *Thread, resolved: bytecode.Call, depth
             for (0..resolved.arg_count) |index| {
                 if (index != 0) try io_mod.writeStdout(self, "\t");
                 const text = try metatable_mod.valueToString(self, thread, argValue(self, thread, resolved, @intCast(index)));
-                try io_mod.writeStdout(self, text);
+                try io_mod.writeStdout(self, text.bytes());
             }
             try io_mod.writeStdout(self, "\n");
             try io_mod.flushStdoutAfterPrint(self);
@@ -677,11 +705,11 @@ pub fn invokeValue(self: *State, thread: *Thread, resolved: bytecode.Call, depth
         .native_coroutine_close => try coroutine_mod.coroutineClose(self, thread, resolved),
         .native_coroutine_wrap => try coroutine_mod.coroutineWrap(self, thread, resolved),
         .gmatch_iterator => |state_table| {
-            if (state_table.get(.{ .string = "__zlua_lines_iterator" }) != .nil) {
+            if (state_table.getLiteral("__zlua_lines_iterator") != .nil) {
                 const values = try stdlib.io.linesNext(self, .{ .table = state_table });
                 defer if (values.len != 0) self.allocator.free(values);
                 try self.returnValues(thread, resolved.base, resolved.return_count, values);
-            } else if (state_table.get(.{ .string = "__zlua_fs_iterator" }) != .nil) {
+            } else if (state_table.getLiteral("__zlua_fs_iterator") != .nil) {
                 const values = try stdlib.fs.iteratorNext(self, .{ .table = state_table });
                 defer if (values.len != 0) self.allocator.free(values);
                 try self.returnValues(thread, resolved.base, resolved.return_count, values);
@@ -792,12 +820,20 @@ fn callClosure(self: *State, thread: *Thread, op: bytecode.Call, closure: *Closu
 
     const caller = thread.frames.items[thread.frames.items.len - 1];
     const base = caller.base + op.base;
-    if (base + 1 + @max(closure.proto.max_registers, 1) > self.stackValueLimit()) try checkStackValueOverflow(self, thread, base + 1 + @max(closure.proto.max_registers, 1));
-    var frame = try prepareClosureFrame(self, thread, closure, base, base + 1, @intCast(op.arg_count), base, op.return_count);
-    frame.debug_name_override = debug_name_override;
-    frame.debug_namewhat_override = debug_namewhat_override;
-    errdefer thread.releaseFrame(&frame, self.allocator);
+    const shifted: usize = if (closure.proto.is_vararg and op.arg_count > closure.proto.param_count) op.arg_count else 0;
+    const frame_end = base + 1 + shifted + @max(closure.proto.max_registers, 1);
+    if (frame_end > self.stackValueLimit()) try checkStackValueOverflow(self, thread, frame_end);
+    const frame = try prepareClosureFrame(self, thread, closure, base, base + 1, @intCast(op.arg_count), base, op.return_count);
     try thread.frames.append(self.allocator, frame);
+    if (debug_name_override != null or debug_namewhat_override != null) {
+        const frame_index = thread.frames.items.len - 1;
+        const extra = thread.frameExtraMut(self.allocator, frame_index) catch |err| {
+            thread.frames.items.len = frame_index;
+            return err;
+        };
+        extra.debug_name_override = debug_name_override;
+        extra.debug_namewhat_override = debug_namewhat_override;
+    }
     if (thread.hook_call and !thread.hook_running) try debug_mod.callHook(self, thread, "call");
 }
 
@@ -822,13 +858,13 @@ pub fn tailCallValue(self: *State, thread: *Thread, op: bytecode.Call) anyerror!
     const callee = vm_mod.get(self, thread, resolved.base);
     switch (callee) {
         .closure => |closure| {
-            try upvalue_mod.closeActiveToBeClosedInTopFrame(self, thread, null);
+            if (thread.frames.items[thread.frames.items.len - 1].closure.proto.has_to_close_locals) try upvalue_mod.closeActiveToBeClosedInTopFrame(self, thread, null);
             const frame = thread.frames.items[thread.frames.items.len - 1];
             upvalue_mod.closeUpvalues(self, thread, frame.base);
-            const new_frame = try prepareClosureFrame(self, thread, closure, frame.base + resolved.base, frame.base, @intCast(resolved.arg_count), frame.return_start, frame.return_count);
+            const new_frame = try prepareClosureFrame(self, thread, closure, frame.base + resolved.base, frame.argumentBase(), @intCast(resolved.arg_count), frame.return_start, frame.return_count);
             var tail_frame = new_frame;
             tail_frame.is_tail_call = true;
-            thread.releaseFrame(&thread.frames.items[thread.frames.items.len - 1], self.allocator);
+            thread.releaseFrame(thread.frames.items.len - 1, self.allocator);
             thread.frames.items[thread.frames.items.len - 1] = tail_frame;
             if (thread.hook_call and !thread.hook_running) {
                 const previous_transfer_index_base = thread.hook_transfer_index_base;
@@ -867,21 +903,22 @@ pub fn tailCallValue(self: *State, thread: *Thread, op: bytecode.Call) anyerror!
 pub fn returnFromFrame(self: *State, thread: *Thread, first: u32, count: u16) !void {
     const frame_index = thread.frames.items.len - 1;
     var frame = &thread.frames.items[frame_index];
-    if (frame.pending_returns == null and !frame.proto.has_to_close_locals and (!thread.hook_return or thread.hook_running)) {
+    const pending_close = frame.closure.proto.has_to_close_locals and frame.pc != 0 and upvalue_mod.hasPendingToBeClosed(thread, frame, frame.pc - 1);
+    if (thread.frameExtra(frame_index).pending_returns == null and !pending_close and (!thread.hook_return or thread.hook_running)) {
         const source_start = frame.base + first;
         const source_count = try resolveResultCount(self, thread, source_start, count);
         upvalue_mod.closeUpvalues(self, thread, frame.base);
         if (thread.frames.items.len == 1) {
             thread.last_result_base = source_start;
             thread.last_result_count = source_count;
-            thread.releaseFrame(frame, self.allocator);
+            thread.releaseFrame(frame_index, self.allocator);
             thread.frames.items.len = 0;
             return;
         }
 
         const return_start = frame.return_start;
         const return_count = try resolveReturnCount(self, frame.return_count, source_count);
-        thread.releaseFrame(frame, self.allocator);
+        thread.releaseFrame(frame_index, self.allocator);
         thread.frames.items.len -= 1;
 
         try thread.ensureStack(self.allocator, return_start + return_count, callStackValueLimit(self, thread));
@@ -893,12 +930,13 @@ pub fn returnFromFrame(self: *State, thread: *Thread, first: u32, count: u16) !v
         return;
     }
 
-    const preserved = frame.pending_returns orelse blk: {
+    const preserved = thread.frameExtra(frame_index).pending_returns orelse blk: {
         const source_start = frame.base + first;
         const source_count = try resolveResultCount(self, thread, source_start, count);
+        const extra = try thread.frameExtraMut(self.allocator, frame_index);
         const values = try self.allocator.alloc(Value, source_count);
         for (values, 0..) |*value, index| value.* = thread.stack.items[source_start + index];
-        frame.pending_returns = values;
+        extra.pending_returns = values;
         thread.frame_storage_bytes += values.len * @sizeOf(Value);
         break :blk values;
     };
@@ -919,10 +957,10 @@ pub fn returnFromFrame(self: *State, thread: *Thread, first: u32, count: u16) !v
             thread.hook_transfer_count = previous_transfer_count;
             thread.hook_transfer_values = previous_transfer_values;
         }
-        try debug_mod.callReturnHook(self, thread, frame.debug_name_override orelse frame.proto.debug_name);
+        try debug_mod.callReturnHook(self, thread, thread.frameExtra(frame_index).debug_name_override orelse frame.closure.proto.debug_name);
     }
     frame = &thread.frames.items[frame_index];
-    frame.pending_returns = null;
+    thread.frame_extras.items[frame_index].pending_returns = null;
     thread.frame_storage_bytes -= preserved.len * @sizeOf(Value);
     defer self.allocator.free(preserved);
     upvalue_mod.closeUpvalues(self, thread, frame.base);
@@ -932,14 +970,14 @@ pub fn returnFromFrame(self: *State, thread: *Thread, first: u32, count: u16) !v
         for (preserved, 0..) |value, index| thread.stack.items[result_start + index] = value;
         thread.last_result_base = result_start;
         thread.last_result_count = preserved.len;
-        thread.releaseFrame(frame, self.allocator);
+        thread.releaseFrame(frame_index, self.allocator);
         thread.frames.items.len = 0;
         return;
     }
 
     const return_start = frame.return_start;
     const return_count = try resolveReturnCount(self, frame.return_count, preserved.len);
-    thread.releaseFrame(frame, self.allocator);
+    thread.releaseFrame(frame_index, self.allocator);
     thread.frames.items.len -= 1;
 
     try thread.ensureStack(self.allocator, return_start + return_count, callStackValueLimit(self, thread));
@@ -950,25 +988,22 @@ pub fn returnFromFrame(self: *State, thread: *Thread, first: u32, count: u16) !v
     thread.last_result_count = return_count;
 }
 
-fn captureVarargs(self: *State, thread: *Thread, source_start: usize, count: usize) ![]const Value {
-    if (count == 0) return &.{};
-    const values = try self.allocator.alloc(Value, count);
-    for (0..count) |index| values[index] = thread.stack.items[source_start + index];
-    return values;
-}
-
 fn namedVarargTable(self: *State, varargs: []const Value) !Value {
     const table_value = try self.newTableWithHints(@intCast(varargs.len), 1);
     const table = table_value.table;
-    try self.setTableRaw(table, .{ .string = try self.strings.intern("n") }, .{ .integer = @intCast(varargs.len) });
+    try self.setTableRaw(table, .{ .string = static_strings.get("n") }, .{ .integer = @intCast(varargs.len) });
     for (varargs, 0..) |value, index| {
         try self.setTableRaw(table, .{ .integer = @intCast(index + 1) }, value);
     }
     return table_value;
 }
 
+pub fn namedVarargField(varargs: []const Value, name: []const u8) Value {
+    return if (std.mem.eql(u8, name, "n")) .{ .integer = @intCast(varargs.len) } else .nil;
+}
+
 pub fn namedVarargRead(varargs: []const Value, key: Value) Value {
-    if (key == .string and std.mem.eql(u8, key.string, "n")) return .{ .integer = @intCast(varargs.len) };
+    if (key == .string and key.string == static_strings.get("n")) return .{ .integer = @intCast(varargs.len) };
     const normalized: Value = if (key == .number) .{ .integer = floatToInteger(key.number) orelse return .nil } else key;
     if (arrayIndex(normalized)) |index| {
         if (index <= varargs.len) return varargs[index - 1];
@@ -995,19 +1030,19 @@ pub fn resolveResultCount(self: *State, thread: *Thread, source_start: usize, co
 
 pub fn loadVarargs(self: *State, thread: *Thread, op: bytecode.Vararg) !void {
     const frame = thread.frames.items[thread.frames.items.len - 1];
-    if (frame.proto.named_vararg and !frame.named_vararg_readonly) return loadNamedVarargs(self, thread, frame, op);
-    const actual_count = try resolveReturnCount(self, op.count, frame.varargs.len);
+    if (frame.closure.proto.named_vararg and !frame.named_vararg_readonly) return loadNamedVarargs(self, thread, frame, op);
+    const actual_count = try resolveReturnCount(self, op.count, frame.vararg_count);
     const dest = frame.base + op.dest;
     try thread.ensureStack(self.allocator, dest + actual_count, callStackValueLimit(self, thread));
-    const copied = @min(actual_count, frame.varargs.len);
-    for (0..copied) |index| thread.stack.items[dest + index] = frame.varargs[index];
+    const copied = @min(actual_count, frame.vararg_count);
+    for (0..copied) |index| thread.stack.items[dest + index] = thread.stack.items[frame.vararg_base + index];
     for (copied..actual_count) |index| thread.stack.items[dest + index] = .nil;
     thread.last_result_base = dest;
     thread.last_result_count = actual_count;
 }
 
 fn loadNamedVarargs(self: *State, thread: *Thread, frame: CallFrame, op: bytecode.Vararg) !void {
-    const table_value = thread.stack.items[frame.base + frame.proto.param_count];
+    const table_value = thread.stack.items[frame.base + frame.closure.proto.param_count];
     const table = try self.expectTable(table_value);
     const count = try namedVarargCount(self, table);
     const actual_count = try resolveReturnCount(self, op.count, count);
@@ -1021,7 +1056,7 @@ fn loadNamedVarargs(self: *State, thread: *Thread, frame: CallFrame, op: bytecod
 }
 
 fn namedVarargCount(self: *State, table: *Table) !usize {
-    const n_value = table.get(.{ .string = try self.strings.intern("n") });
+    const n_value = table.get(.{ .string = static_strings.get("n") });
     if (n_value != .integer or n_value.integer < 0 or n_value.integer >= bytecode.multret_count) {
         return self.fail("vararg table has no proper 'n'");
     }
@@ -1030,7 +1065,7 @@ fn namedVarargCount(self: *State, table: *Table) !usize {
 
 fn selectValues(self: *State, thread: *Thread, op: bytecode.Call) !void {
     const first = argValue(self, thread, op, 0);
-    if (first == .string and std.mem.eql(u8, first.string, "#")) {
+    if (first == .string and first.string.eqlBytes("#")) {
         try self.returnValues(thread, op.base, op.return_count, &.{.{ .integer = @intCast(op.arg_count - 1) }});
         return;
     }
@@ -1055,7 +1090,7 @@ fn assertValues(self: *State, thread: *Thread, op: bytecode.Call) !void {
 
     const condition = argValue(self, thread, op, 0);
     if (!truthy(condition)) {
-        const message = if (op.arg_count >= 2) argValue(self, thread, op, 1) else Value{ .string = "assertion failed!" };
+        const message = if (op.arg_count >= 2) argValue(self, thread, op, 1) else Value{ .string = static_strings.get("assertion failed!") };
         if (message == .string) return failure_mod.throwStringWithLocation(self, thread, message.string, 1);
         return self.throwValue(message);
     }
@@ -1083,31 +1118,37 @@ pub fn caughtErrorValue(self: *State, value: Value) !Value {
 
 fn pcallValues(self: *State, thread: *Thread, op: bytecode.Call) !void {
     if (op.arg_count == 0) return self.failArgumentMessage("pcall", 1, "value expected");
-    const args = try collectArgs(self, thread, op, 1);
-    defer self.allocator.free(args);
-    try protectedCallValues(self, thread, op, argValue(self, thread, op, 0), args, .nil);
+    try protectedCallValues(self, thread, op, op.arg_count - 1, .nil);
 }
 
 fn xpcallValues(self: *State, thread: *Thread, op: bytecode.Call) !void {
     const handler = argValue(self, thread, op, 1);
     if (!functionLike(handler)) return self.failArgumentType("xpcall", 2, "function", handler);
-    const args = try collectArgs(self, thread, op, 2);
-    defer self.allocator.free(args);
-    try protectedCallValues(self, thread, op, argValue(self, thread, op, 0), args, handler);
+    const callee = thread.frames.items[thread.frames.items.len - 1].base + op.base + 1;
+    const arg_count = op.arg_count - 2;
+    std.mem.copyForwards(Value, thread.stack.items[callee + 1 ..][0..arg_count], thread.stack.items[callee + 2 ..][0..arg_count]);
+    try protectedCallValues(self, thread, op, arg_count, handler);
 }
 
-fn protectedCallValues(self: *State, thread: *Thread, op: bytecode.Call, callable: Value, args: []const Value, handler: Value) !void {
+/// Calls register `op.base + 1` in place with the `arg_count` values above it.
+fn protectedCallValues(self: *State, thread: *Thread, op: bytecode.Call, arg_count: u32, handler: Value) !void {
     var context = protectedCallContextWithErrors(self, thread);
+    context.relative_base = op.base + 1;
+    context.absolute_base = thread.frames.items[thread.frames.items.len - 1].base + op.base + 1;
     context.error_handler = handler;
-    const result = runProtectedCall(self, thread, context, callable, args) catch |err| switch (err) {
+    const saved_error = [_]Value{savedErrorValue(context)};
+    var roots: types.ValueRoots = undefined;
+    self.pushValueRoots(&roots, &saved_error);
+    defer self.popValueRoots(&roots);
+    const failure = callProtected(self, thread, context, arg_count) catch |err| switch (err) {
         error.CoroutineYield => {
             try pushProtectedContinuation(self, thread, context, op.base, op.return_count);
             return err;
         },
         else => return err,
     };
-    defer freeProtectedResult(self.allocator, result);
-    try returnProtectedResult(self, thread, op.base, op.return_count, result);
+    if (failure) |error_value| return returnProtectedFailure(self, thread, op.base, op.return_count, error_value);
+    try finishProtectedSuccess(self, thread, context, op.base, op.return_count);
 }
 
 fn pushTailCallContinuation(self: *State, thread: *Thread, frame_count: usize, base: u32, return_count: u16) !void {

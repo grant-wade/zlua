@@ -106,7 +106,23 @@ fn writeInstruction(allocator: std.mem.Allocator, out: *std.ArrayList(u8), instr
         .tfor_prep => |op| try appendFmt(allocator, out, "TFOR_PREP r{d} vars={d} {d}", .{ op.base, op.variable_count, op.offset }),
         .tfor_call => |op| try appendFmt(allocator, out, "TFOR_CALL r{d} vars={d} {d}", .{ op.base, op.variable_count, op.offset }),
         .tfor_loop => |op| try appendFmt(allocator, out, "TFOR_LOOP r{d} vars={d} {d}", .{ op.base, op.variable_count, op.offset }),
+        .add_k => |op| try writeBinaryConstant(allocator, out, "ADD_K", op),
+        .sub_k => |op| try writeBinaryConstant(allocator, out, "SUB_K", op),
+        .mul_k => |op| try writeBinaryConstant(allocator, out, "MUL_K", op),
+        .div_k => |op| try writeBinaryConstant(allocator, out, "DIV_K", op),
+        .idiv_k => |op| try writeBinaryConstant(allocator, out, "IDIV_K", op),
+        .mod_k => |op| try writeBinaryConstant(allocator, out, "MOD_K", op),
+        .band_k => |op| try writeBinaryConstant(allocator, out, "BAND_K", op),
+        .bor_k => |op| try writeBinaryConstant(allocator, out, "BOR_K", op),
+        .bxor_k => |op| try writeBinaryConstant(allocator, out, "BXOR_K", op),
+        .shl_k => |op| try writeBinaryConstant(allocator, out, "SHL_K", op),
+        .shr_k => |op| try writeBinaryConstant(allocator, out, "SHR_K", op),
+        .compare_branch_k => |op| try appendFmt(allocator, out, "COMPARE_BRANCH_K {s} r{d} K{d} truthy={} {d}", .{ @tagName(op.op), op.register, op.constant, op.jump_if_truthy, op.offset }),
     }
+}
+
+fn writeBinaryConstant(allocator: std.mem.Allocator, out: *std.ArrayList(u8), name: []const u8, op: bytecode.BinaryConstant) !void {
+    try appendFmt(allocator, out, "{s} r{d} r{d} K{d}", .{ name, op.dest, op.left, op.constant });
 }
 
 fn writeUnary(allocator: std.mem.Allocator, out: *std.ArrayList(u8), name: []const u8, op: bytecode.Unary) !void {

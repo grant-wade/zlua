@@ -111,12 +111,9 @@ fn setTableDepthContinuable(self: *State, thread: *Thread, table_value: Value, k
 
     if (table_value == .table) {
         const table = table_value.table;
-        if (table.rollback != null and table.get(key) != .nil) {
-            try rollback_mod.tableWritable(table);
-            self.gc.noteTableCapacityDelta(table, 0);
-        }
+        if (table.rollback != null and table.get(key) != .nil) try rollback_mod.tableWritable(table);
         if (table.setExistingNonNil(key, value)) {
-            self.gc.writeTableBarrier(table, key, value);
+            self.gc.writeExistingKeyBarrier(table, key, value);
             return;
         }
     }
@@ -124,7 +121,6 @@ fn setTableDepthContinuable(self: *State, thread: *Thread, table_value: Value, k
     const metamethod = try metatable_mod.getMetaEvent(self, table_value, .__newindex) orelse {
         if (table_value == .table) {
             try self.setTableRaw(table_value.table, key, value);
-            self.gc.writeTableBarrier(table_value.table, key, value);
             return;
         }
         return failure_mod.failNewIndexTypeError(self, thread, table_value);
@@ -146,12 +142,9 @@ fn setTableDepth(self: *State, thread: ?*Thread, table_value: Value, key_value: 
 
     if (table_value == .table) {
         const table = table_value.table;
-        if (table.rollback != null and table.get(key) != .nil) {
-            try rollback_mod.tableWritable(table);
-            self.gc.noteTableCapacityDelta(table, 0);
-        }
+        if (table.rollback != null and table.get(key) != .nil) try rollback_mod.tableWritable(table);
         if (table.setExistingNonNil(key, value)) {
-            self.gc.writeTableBarrier(table, key, value);
+            self.gc.writeExistingKeyBarrier(table, key, value);
             return;
         }
     }
@@ -159,7 +152,6 @@ fn setTableDepth(self: *State, thread: ?*Thread, table_value: Value, key_value: 
     const metamethod = try metatable_mod.getMetaEvent(self, table_value, .__newindex) orelse {
         if (table_value == .table) {
             try self.setTableRaw(table_value.table, key, value);
-            self.gc.writeTableBarrier(table_value.table, key, value);
             return;
         }
         return failure_mod.failNewIndexTypeError(self, thread, table_value);
@@ -206,7 +198,6 @@ pub fn rawSet(self: *State, table_value: Value, key_value: Value, value: Value) 
     const table = try self.expectTable(table_value);
     const key = try writableTableKey(self, key_value);
     try self.setTableRaw(table, key, value);
-    self.gc.writeTableBarrier(table, key, value);
 }
 
 pub fn nextValues(self: *State, table_value: Value, key_value: Value) ![2]Value {

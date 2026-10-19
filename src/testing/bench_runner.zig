@@ -7,6 +7,7 @@ const startup = @import("bench/startup.zig");
 const c_startup = @import("bench/c_startup.zig");
 const snapshots = @import("bench/snapshots.zig");
 const gc = @import("bench/gc.zig");
+const system = @import("bench/system.zig");
 
 pub fn runCli(allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map, zlua_exe: []const u8, args: []const []const u8) !u8 {
     return run(allocator, io, environ_map, zlua_exe, args) catch |err| {
@@ -39,6 +40,14 @@ fn run(allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process
             return error.UnknownSelector;
         }
     }
+    if (!options.list) {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        var system_buffer: [1024]u8 = undefined;
+        var system_writer = std.Io.File.stdout().writer(io, &system_buffer);
+        try system.write(&system_writer.interface, system.detect(arena.allocator(), io, environ_map));
+        try system_writer.interface.flush();
+    }
     try collectFamilies(allocator, io, environ_map, zlua_exe, options, &suite);
     if (suite.results.items.len == 0 and suite.cases.items.len == 0) return error.NoMatchingBenchmarks;
     var buffer: [8192]u8 = undefined;
@@ -59,6 +68,7 @@ test {
     _ = @import("bench/fixtures.zig");
     _ = @import("bench/legacy_process.zig");
     _ = c_startup;
+    _ = system;
 }
 
 fn collectFamilies(allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map, zlua_exe: []const u8, options: options_module.Options, suite: *results.Suite) !void {

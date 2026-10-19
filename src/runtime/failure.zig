@@ -22,20 +22,20 @@ const appendFmt = value_mod.appendFmt;
 const luaTypeName = value_mod.luaTypeName;
 const Thread = types.Thread;
 
-pub fn throwStringWithLocation(self: *State, thread: *Thread, message_text: []const u8, requested_level: usize) !void {
+pub fn throwStringWithLocation(self: *State, thread: *Thread, message_text: *const types.String, requested_level: usize) !void {
     var level = requested_level;
     if (State.activeNativeCall(thread)) |call| {
         if (call.from_native) {
-            if (level == 1) return self.throwValue(.{ .string = try self.strings.intern(message_text) });
+            if (level == 1) return self.throwValue(.{ .string = message_text });
             level -= 1;
         } else if (level >= 2 and call.outer_frame_count != null and call.outer_frame_count.? + 1 == call.frame_count) {
-            if (level == 2) return self.throwValue(.{ .string = try self.strings.intern(message_text) });
+            if (level == 2) return self.throwValue(.{ .string = message_text });
             level -= 1;
         }
     }
-    const line = debug_mod.lineForErrorLevel(self, thread, level) orelse return self.throwValue(.{ .string = try self.strings.intern(message_text) });
+    const line = debug_mod.lineForErrorLevel(self, thread, level) orelse return self.throwValue(.{ .string = message_text });
     const source = debug_mod.sourceForErrorLevel(self, thread, level) orelse "zlua";
-    const message = try std.fmt.allocPrint(self.allocator, "{s}:{d}: {s}", .{ source, line, message_text });
+    const message = try std.fmt.allocPrint(self.allocator, "{s}:{d}: {s}", .{ source, line, message_text.bytes() });
     defer self.allocator.free(message);
     return self.throwValue(.{ .string = try self.strings.intern(message) });
 }
@@ -45,7 +45,7 @@ pub fn failRuntimeDetail(self: *State, thread: ?*Thread, detail: []const u8) Run
     defer out.deinit(self.allocator);
     appendRuntimeErrorPrefix(self, &out, thread) catch return self.fail(detail);
     out.appendSlice(self.allocator, detail) catch return self.fail(detail);
-    return self.fail(self.strings.intern(out.items) catch return self.fail(detail));
+    return self.failString(self.strings.intern(out.items) catch return self.fail(detail));
 }
 
 pub fn failDivisionByZero(self: *State, thread: *Thread, lhs: Value, rhs: Value, op: operators_mod.BinaryOp) RuntimeError {
@@ -187,7 +187,7 @@ fn appendRuntimeErrorPrefix(self: *State, out: *std.ArrayList(u8), thread: ?*Thr
     }
     const site = currentErrorSite(self, active) orelse return;
     const frame = active.frames.items[active.frames.items.len - 1];
-    try appendFmt(self.allocator, out, "{s}:{d}: ", .{ load_mod.runtimeSourceName(frame.proto.source_name), site.line });
+    try appendFmt(self.allocator, out, "{s}:{d}: ", .{ load_mod.runtimeSourceName(frame.closure.proto.source_name), site.line });
 }
 
 fn currentErrorSite(self: *State, thread: *Thread) ?proto_mod.ErrorSite {
@@ -201,10 +201,10 @@ pub fn instructionErrorSite(self: *State, thread: *Thread) ?proto_mod.ErrorSite 
     const frame = thread.frames.items[thread.frames.items.len - 1];
     if (frame.closure.stripped_debug) return null;
     if (frame.pc == 0) return null;
-    return frame.proto.errorSiteAt(frame.pc - 1) orelse blk: {
-        if (frame.proto.line_info.items.len == 0) return null;
-        const pc = @min(frame.pc - 1, frame.proto.line_info.items.len - 1);
-        break :blk proto_mod.ErrorSite{ .line = frame.proto.line_info.items[pc].line, .op = .call };
+    return frame.closure.proto.errorSiteAt(frame.pc - 1) orelse blk: {
+        if (frame.closure.proto.line_info.items.len == 0) return null;
+        const pc = @min(frame.pc - 1, frame.closure.proto.line_info.items.len - 1);
+        break :blk proto_mod.ErrorSite{ .line = frame.closure.proto.line_info.items[pc].line, .op = .call };
     };
 }
 

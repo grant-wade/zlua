@@ -106,5 +106,5 @@ fn failMsgpackError(state: *State, operation: []const u8, err: anyerror) !void {
     var message: std.ArrayList(u8) = .empty;
     defer message.deinit(state.allocator);
     try runtime.appendFmt(state.allocator, &message, "{s}: {s}", .{ operation, @errorName(err) });
-    return state.fail(try state.strings.intern(message.items));
+    return state.fail(message.items);
 }

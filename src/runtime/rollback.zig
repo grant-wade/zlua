@@ -3,10 +3,9 @@ const std = @import("std");
 const reflection = @import("../reflection.zig");
 const types = @import("types.zig");
 const State = @import("state.zig").State;
-const Proto = @import("../compile/proto.zig").Proto;
+const strings_mod = @import("strings.zig");
 
-const Kind = enum { table, closure, upvalue, thread, userdata, string, source, proto };
-const Allocation = struct { kind: Kind, len: usize = 0 };
+const Kind = enum { table, closure, upvalue, thread, userdata };
 const Header = struct {
     journal: *Journal,
     kind: Kind,
@@ -20,6 +19,8 @@ pub fn Record(comptime T: type) type {
         object: *T,
         original: T,
         pristine: ?*types.UserdataPayload = null,
+        /// The baseline upvalues of a detached closure.
+        upvalues: if (T == types.Closure) []*types.Upvalue else void = if (T == types.Closure) &.{} else {},
     };
 }
 
@@ -33,6 +34,13 @@ pub fn touch(object: anytype) void {
     }
 }
 
+fn duplicateCapacity(a: std.mem.Allocator, old: anytype) !@TypeOf(old) {
+    var result: @TypeOf(old) = .empty;
+    try result.ensureTotalCapacityPrecise(a, old.capacity);
+    result.appendSliceAssumeCapacity(old.items);
+    return result;
+}
+
 fn duplicateList(a: std.mem.Allocator, old: anytype) !@TypeOf(old) {
     var result: @TypeOf(old) = .empty;
     try result.appendSlice(a, old.items);
@@ -43,15 +51,12 @@ pub fn tableWritable(table: *types.Table) !void {
     const record = table.rollback orelse return;
     if (record.header.detached) return;
     const a = record.header.journal.allocator;
-    var array = try duplicateList(a, table.array);
+    var array = try table.array.clone(a);
     errdefer array.deinit(a);
-    var entries = try duplicateList(a, table.entries);
-    errdefer entries.deinit(a);
-    const index = try table.entry_index.clone(a);
+    const hash = if (table.hash) |part| try part.clone(a) else null;
     touch(table);
     table.array = array;
-    table.entries = entries;
-    table.entry_index = index;
+    table.hash = hash;
     record.header.detached = true;
 }
 
@@ -59,12 +64,10 @@ pub fn closureWritable(closure: *types.Closure) !void {
     const record = closure.rollback orelse return;
     if (record.header.detached) return;
     const a = record.header.journal.allocator;
-    const upvalues = try a.dupe(*types.Upvalue, closure.upvalues);
+    const upvalues = try a.dupe(*types.Upvalue, closure.upvalues());
     errdefer a.free(upvalues);
-    const constants = if (closure.constants) |c| try a.dupe(?types.Value, c) else null;
     touch(closure);
-    closure.upvalues = upvalues;
-    closure.constants = constants;
+    record.upvalues = upvalues;
     record.header.detached = true;
 }
 
@@ -77,16 +80,17 @@ pub fn threadWritable(thread: *types.Thread) !void {
     errdefer replacement.deinit(a);
     inline for (thread_lists) |name| {
         if (comptime std.mem.eql(u8, name, "frames")) {
-            try replacement.frames.ensureTotalCapacity(a, thread.frames.items.len);
-            for (thread.frames.items) |frame| {
-                var copy = frame;
-                copy.varargs = try a.dupe(types.Value, frame.varargs);
-                errdefer a.free(copy.varargs);
-                copy.owns_varargs = true;
-                copy.pending_returns = if (frame.pending_returns) |values| try a.dupe(types.Value, values) else null;
-                replacement.frames.appendAssumeCapacity(copy);
+            try replacement.frames.appendSlice(a, thread.frames.items);
+            for (replacement.frames.items) |*frame| frame.has_extra = false;
+            try replacement.frame_extras.appendNTimes(a, .{}, thread.frame_extras.items.len);
+            for (thread.frames.items, 0..) |frame, index| {
+                if (!frame.has_extra) continue;
+                var extra = thread.frame_extras.items[index];
+                if (extra.pending_returns) |values| extra.pending_returns = try a.dupe(types.Value, values);
+                replacement.frame_extras.items[index] = extra;
+                replacement.frames.items[index].has_extra = true;
             }
-        } else @field(replacement, name) = try duplicateList(a, @field(thread, name));
+        } else if (comptime !std.mem.eql(u8, name, "frame_extras")) @field(replacement, name) = try duplicateList(a, @field(thread, name));
     }
     touch(thread);
     thread.* = replacement;
@@ -106,11 +110,23 @@ pub fn userdataWritable(userdata: *types.Userdata) !void {
     record.header.detached = true;
 }
 
-const thread_lists = .{ "stack", "frames", "yield_values", "protected_continuations", "generic_for_continuations", "pairs_continuations", "tail_call_continuations", "call_one_continuations" };
-const registries = .{ "string_allocations", "table_allocations", "userdata_allocations", "closure_allocations", "upvalue_allocations", "thread_allocations", "proto_allocations", "source_allocations" };
+const thread_lists = .{ "stack", "frames", "frame_extras", "yield_values", "protected_continuations", "generic_for_continuations", "pairs_continuations", "tail_call_continuations", "call_one_continuations" };
+const registries = .{ "string_allocations", "table_allocations", "userdata_allocations", "closure_allocations", "upvalue_allocations", "thread_allocations", "chunk_allocations", "source_allocations" };
 const object_lists = .{ "table_allocations", "closure_allocations", "upvalue_allocations", "thread_allocations", "userdata_allocations" };
 const object_types = .{ types.Table, types.Closure, types.Upvalue, types.Thread, types.Userdata };
 const record_lists = .{ "tables", "closures", "upvalues", "threads", "userdata" };
+
+/// One length per name in `registries`.
+pub const RegistryLengths = struct {
+    string_allocations: usize = 0,
+    table_allocations: usize = 0,
+    userdata_allocations: usize = 0,
+    closure_allocations: usize = 0,
+    upvalue_allocations: usize = 0,
+    thread_allocations: usize = 0,
+    chunk_allocations: usize = 0,
+    source_allocations: usize = 0,
+};
 
 pub fn copyPayload(a: std.mem.Allocator, lifetime: ?*types.AllocatorLifetime, p: *types.UserdataPayload) !*types.UserdataPayload {
     const result = try a.create(types.UserdataPayload);
@@ -145,16 +161,20 @@ pub const Journal = struct {
     userdata: []Record(types.Userdata) = &.{},
     dirty: std.ArrayList(*Header) = .empty,
     eager: std.ArrayList(*Record(types.Userdata)) = .empty,
-    new_objects: std.HashMap(usize, Allocation, types.AddressContext, std.hash_map.default_max_load_percentage),
+    /// Registry lengths at `attach`.
+    attached: RegistryLengths = .{},
+    /// Baseline objects still in each registry; they precede every object allocated since `attach`.
+    baseline: RegistryLengths = .{},
     registries_detached: bool = false,
     output_detached: bool = false,
+    finalizers_detached: bool = false,
     /// Logical restored records, independent of heap size.
     last_restored_objects: usize = 0,
 
     pub fn create(state: *State, pristine: *const State) !*Journal {
         const a = state.allocator;
         const self = try a.create(Journal);
-        self.* = .{ .allocator = a, .saved = state.*, .new_objects = std.HashMap(usize, Allocation, types.AddressContext, std.hash_map.default_max_load_percentage).init(a) };
+        self.* = .{ .allocator = a, .saved = state.* };
         errdefer self.freeRecords();
         var count: usize = 0;
         inline for (object_types, object_lists, record_lists) |T, list, records| {
@@ -162,6 +182,10 @@ pub const Journal = struct {
             @field(self, records) = try a.alloc(Record(T), objects.len);
             for (objects, @field(self, records)) |object, *record| {
                 record.* = .{ .header = .{ .journal = self, .kind = kindOf(T) }, .object = object, .original = object.* };
+                if (T == types.Table) {
+                    record.original.in_weak_list = false;
+                    record.original.in_table_list = false;
+                }
             }
             count += objects.len;
         }
@@ -177,6 +201,10 @@ pub const Journal = struct {
         return self;
     }
 
+    pub fn forEachOriginal(self: *Journal, comptime f: anytype) void {
+        inline for (record_lists) |records| for (@field(self, records)) |*record| f(&record.original);
+    }
+
     pub fn attach(self: *Journal, state: *State) void {
         state.rollback = self;
         inline for (record_lists) |records| for (@field(self, records)) |*record| {
@@ -184,58 +212,26 @@ pub const Journal = struct {
             record.original.rollback = record;
         };
         state.gc.normalizeBaseline();
+        inline for (registries) |name| @field(self.attached, name) = @field(state, name).items.len;
+        self.baseline = self.attached;
         self.saved = state.*;
         self.saved.rollback = self;
     }
 
     pub fn prepareAllocation(self: *Journal, state: *State) !void {
         try self.detachRegistries(state);
-        try self.new_objects.ensureUnusedCapacity(1);
-    }
-
-    pub fn allocated(self: *Journal, comptime field: []const u8, item: anytype) void {
-        const kind: Kind = comptime if (std.mem.eql(u8, field, "string_allocations")) .string else if (std.mem.eql(u8, field, "source_allocations")) .source else if (std.mem.eql(u8, field, "proto_allocations")) .proto else kindOf(@typeInfo(@TypeOf(item)).pointer.child);
-        const address = switch (kind) {
-            .string => @intFromPtr(item.bytes.ptr),
-            .source => @intFromPtr(item.ptr),
-            else => @intFromPtr(item),
-        };
-        const len = switch (kind) {
-            .string => item.bytes.len,
-            .source => item.len,
-            else => 0,
-        };
-        if ((kind == .string or kind == .source) and len == 0) return;
-        self.new_objects.putAssumeCapacity(address, .{ .kind = kind, .len = len });
-    }
-
-    pub fn isNew(self: *const Journal, address: usize) bool {
-        return self.new_objects.contains(address);
-    }
-
-    pub fn freed(self: *Journal, address: usize) void {
-        _ = self.new_objects.remove(address);
     }
 
     pub fn detachRegistries(self: *Journal, state: *State) !void {
         if (self.registries_detached) return;
         var replacement = state.*;
         inline for (registries) |name| @field(replacement, name) = .empty;
-        replacement.strings.map = @import("strings.zig").InternMap.init(self.allocator);
-        replacement.string_allocation_index = .empty;
-        replacement.table_allocation_index = .empty;
-        replacement.object_allocation_index = .empty;
+        replacement.strings.set = .{};
         errdefer freeRegistries(&replacement);
         inline for (registries) |name| @field(replacement, name) = try duplicateList(self.allocator, @field(state, name));
-        replacement.strings.map = try state.strings.map.clone();
-        replacement.string_allocation_index = try state.string_allocation_index.clone(self.allocator);
-        replacement.table_allocation_index = try state.table_allocation_index.clone(self.allocator);
-        replacement.object_allocation_index = try state.object_allocation_index.clone(self.allocator);
+        replacement.strings.set = try state.strings.set.clone(self.allocator);
         inline for (registries) |name| @field(state, name) = @field(replacement, name);
-        state.strings.map = replacement.strings.map;
-        state.string_allocation_index = replacement.string_allocation_index;
-        state.table_allocation_index = replacement.table_allocation_index;
-        state.object_allocation_index = replacement.object_allocation_index;
+        state.strings.set = replacement.strings.set;
         self.registries_detached = true;
     }
 
@@ -249,18 +245,23 @@ pub const Journal = struct {
         self.output_detached = true;
     }
 
+    pub fn finalizersWritable(self: *Journal, state: *State) !void {
+        if (self.finalizers_detached) return;
+        var registered = try duplicateCapacity(self.allocator, state.table_finalizers);
+        errdefer registered.deinit(self.allocator);
+        const pending = try duplicateCapacity(self.allocator, state.table_pending_finalizers);
+        state.table_finalizers = registered;
+        state.table_pending_finalizers = pending;
+        self.finalizers_detached = true;
+    }
+
     /// Called before GC enters its infallible destructive phases.
     pub fn prepareCollection(self: *Journal, state: *State) !void {
+        if (state.table_finalizers.items.len != 0) try self.finalizersWritable(state);
         if (state.gc.cycle == .major) return self.detachRegistries(state);
         inline for (reflection.fieldsOf(types.GcGenerations)) |f| {
             if (@field(state, f).items.len != @field(state.gc.old, f)) return self.detachRegistries(state);
         }
-    }
-
-    pub fn keepString(self: *Journal, bytes: []const u8) bool {
-        if (self.saved.string_allocation_index.contains(@intFromPtr(bytes.ptr))) return true;
-        self.freed(@intFromPtr(bytes.ptr));
-        return false;
     }
 
     pub fn prepareReset(self: *Journal) ![]*types.UserdataPayload {
@@ -278,26 +279,23 @@ pub const Journal = struct {
     pub fn reset(self: *Journal, state: *State, prepared: []*types.UserdataPayload) void {
         state.gc.work.clearRetainingCapacity();
         state.gc.remembered.clearRetainingCapacity();
-        state.gc.weak.clearRetainingCapacity();
-        state.gc.tables.clearRetainingCapacity();
+        state.gc.clearTableLists();
         state.gc.finalizers.clearRetainingCapacity();
         state.discarding = true;
-        self.last_restored_objects = self.dirty.items.len + self.new_objects.count();
-        var objects = self.new_objects.iterator();
-        while (objects.next()) |entry| destroyAllocation(self.allocator, entry.key_ptr.*, entry.value_ptr.*);
-        self.new_objects.deinit();
-        self.new_objects = std.HashMap(usize, Allocation, types.AddressContext, std.hash_map.default_max_load_percentage).init(self.allocator);
+        self.last_restored_objects = self.dirty.items.len + self.destroyNewObjects(state);
         for (self.dirty.items) |h| switch (h.kind) {
-            inline .table, .closure, .upvalue, .thread, .userdata => |kind| {
+            inline else => |kind| {
                 const T = typeOf(kind);
                 const record: *Record(T) = @fieldParentPtr("header", h);
-                if (h.detached) freeStorage(T, self.allocator, record.object);
+                if (h.detached) {
+                    freeStorage(T, self.allocator, record.object);
+                    if (T == types.Closure) restoreUpvalues(self.allocator, record);
+                }
                 record.object.* = record.original;
                 h.dirty = false;
                 h.detached = false;
                 h.dead = false;
             },
-            else => unreachable,
         };
         for (self.eager.items, prepared) |record, payload| {
             if (record.object.payload) |old| old.release(true);
@@ -312,6 +310,10 @@ pub const Journal = struct {
             state.stdout.deinit(self.allocator);
             state.stderr.deinit(self.allocator);
         }
+        if (self.finalizers_detached) {
+            state.table_finalizers.deinit(self.allocator);
+            state.table_pending_finalizers.deinit(self.allocator);
+        }
         const roots = state.api_roots;
         const callback_dispatch = state.api_callback_dispatch;
         const callback_data = state.api_callback_user_data;
@@ -322,16 +324,20 @@ pub const Journal = struct {
         const gc_weak = state.gc.weak;
         const gc_tables = state.gc.tables;
         const gc_finalizers = state.gc.finalizers;
-        const epoch = state.gc.epoch + 1;
-        const generation = state.gc.generation + 1;
+        const string_scratch = state.strings.scratch;
+        const epoch = state.gc.epoch;
+        const generation = state.gc.generation;
         state.* = self.saved;
         state.gc.work = gc_work;
         state.gc.remembered = gc_remembered;
         state.gc.weak = gc_weak;
         state.gc.tables = gc_tables;
         state.gc.finalizers = gc_finalizers;
+        state.strings.scratch = string_scratch;
         state.gc.epoch = epoch;
         state.gc.generation = generation;
+        state.gc.advanceEpoch();
+        state.gc.advanceGeneration();
         state.api_roots = roots;
         state.api_roots.clearRetainingCapacity();
         state.api_callback_dispatch = callback_dispatch;
@@ -340,8 +346,34 @@ pub const Journal = struct {
         state.file_generation = file_generation +% 1;
         state.budget.call_deadline = null;
         state.budget.checkpoint = 0;
+        self.baseline = self.attached;
         self.registries_detached = false;
         self.output_detached = false;
+        self.finalizers_detached = false;
+    }
+
+    /// Frees every object allocated since `attach` and still registered, returning how many.
+    fn destroyNewObjects(self: *Journal, state: *State) usize {
+        const a = self.allocator;
+        var count: usize = 0;
+        inline for (registries) |name| {
+            for (@field(state, name).items[@field(self.baseline, name)..]) |item| {
+                if (comptime std.mem.eql(u8, name, "string_allocations")) {
+                    strings_mod.destroy(state.objects(), item);
+                } else if (comptime std.mem.eql(u8, name, "source_allocations")) {
+                    if (item.len == 0) continue;
+                    a.free(item);
+                } else if (comptime std.mem.eql(u8, name, "chunk_allocations")) {
+                    item.destroy(a);
+                } else {
+                    const T = @typeInfo(@TypeOf(item)).pointer.child;
+                    freeStorage(T, a, item);
+                    destroyObject(T, state, item);
+                }
+                count += 1;
+            }
+        }
+        return count;
     }
 
     /// End tracking while preserving the current logical state. Capture and
@@ -350,21 +382,26 @@ pub const Journal = struct {
         state.rollback = null;
         inline for (object_types, record_lists) |T, records| for (@field(self, records)) |*record| {
             record.object.rollback = null;
-            if (record.header.detached) freeStorage(T, self.allocator, &record.original);
+            if (record.header.detached) {
+                freeStorage(T, self.allocator, &record.original);
+                if (T == types.Closure) self.allocator.free(record.upvalues);
+            }
             if (record.header.dead) {
                 freeStorage(T, self.allocator, record.object);
-                self.allocator.destroy(record.object);
+                destroyObject(T, state, record.object);
             }
         };
         if (self.registries_detached) {
-            for (self.saved.string_allocations.items) |allocation| {
-                if (!state.string_allocation_index.contains(@intFromPtr(allocation.bytes.ptr))) self.allocator.free(allocation.bytes);
-            }
+            freeRetainedStrings(self.allocator, &self.saved, state);
             freeRegistries(&self.saved);
         }
         if (self.output_detached) {
             self.saved.stdout.deinit(self.allocator);
             self.saved.stderr.deinit(self.allocator);
+        }
+        if (self.finalizers_detached) {
+            self.saved.table_finalizers.deinit(self.allocator);
+            self.saved.table_pending_finalizers.deinit(self.allocator);
         }
         self.freeRecords();
     }
@@ -375,7 +412,6 @@ pub const Journal = struct {
         self.eager.deinit(a);
         inline for (record_lists) |records| a.free(@field(self, records));
         self.dirty.deinit(a);
-        self.new_objects.deinit();
         a.destroy(self);
     }
 };
@@ -391,39 +427,37 @@ pub fn retainCollected(object: anytype) bool {
 
 fn freeRegistries(state: *State) void {
     inline for (registries) |name| @field(state, name).deinit(state.allocator);
-    state.strings.map.deinit();
-    state.string_allocation_index.deinit(state.allocator);
-    state.table_allocation_index.deinit(state.allocator);
-    state.object_allocation_index.deinit(state.allocator);
+    state.strings.set.deinit(state.allocator);
+}
+
+/// Frees baseline strings that were collected since the snapshot.
+fn freeRetainedStrings(a: std.mem.Allocator, saved: *const State, state: *const State) void {
+    var live = std.AutoHashMap(*const types.String, void).init(a);
+    defer live.deinit();
+    live.ensureTotalCapacity(@intCast(state.string_allocations.items.len)) catch return;
+    for (state.string_allocations.items) |string| live.putAssumeCapacity(string, {});
+    for (saved.string_allocations.items) |string| {
+        if (!live.contains(string)) strings_mod.destroy(state.objects(), string);
+    }
 }
 fn freeStorage(comptime T: type, a: std.mem.Allocator, object: *T) void {
     if (T == types.Table or T == types.Thread) {
         object.deinit(a);
-    } else if (T == types.Closure) {
-        a.free(object.upvalues);
-        if (object.constants) |c| a.free(c);
     } else if (T == types.Userdata) {
         if (object.payload) |p| p.release(true);
     }
 }
-fn destroyAllocation(a: std.mem.Allocator, address: usize, allocation: Allocation) void {
-    switch (allocation.kind) {
-        .string, .source => a.free(@as([*]const u8, @ptrFromInt(address))[0..allocation.len]),
-        .proto => {
-            const p: *Proto = @ptrFromInt(address);
-            p.deinit();
-            a.destroy(p);
-        },
-        inline else => |tag| {
-            const T = typeOf(tag);
-            const object: *T = @ptrFromInt(address);
-            freeStorage(T, a, object);
-            a.destroy(object);
-        },
-    }
+fn restoreUpvalues(a: std.mem.Allocator, record: *Record(types.Closure)) void {
+    @memcpy(record.object.upvalues(), record.upvalues);
+    a.free(record.upvalues);
+    record.upvalues = &.{};
+}
+fn destroyObject(comptime T: type, state: *const State, object: *T) void {
+    const a = state.allocatorFor(T);
+    if (T == types.Closure) types.Closure.destroy(a, object) else a.destroy(object);
 }
 fn kindOf(comptime T: type) Kind {
-    inline for (.{ Kind.table, Kind.closure, Kind.upvalue, Kind.thread, Kind.userdata }) |kind| if (T == typeOf(kind)) return kind;
+    inline for (comptime std.enums.values(Kind)) |kind| if (T == typeOf(kind)) return kind;
     @compileError("unknown rollback allocation " ++ @typeName(T));
 }
 fn typeOf(comptime kind: Kind) type {
@@ -433,6 +467,5 @@ fn typeOf(comptime kind: Kind) type {
         .upvalue => types.Upvalue,
         .thread => types.Thread,
         .userdata => types.Userdata,
-        else => @compileError("not a managed shell"),
     };
 }

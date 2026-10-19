@@ -341,21 +341,21 @@ fn invalidPackOption(state: *State, code: u8) runtime.RuntimeError {
     var message = std.ArrayList(u8).empty;
     defer message.deinit(state.allocator);
     runtime.appendFmt(state.allocator, &message, "invalid format option '{c}'", .{code}) catch return state.fail("invalid format option");
-    return state.fail(state.strings.intern(message.items) catch return state.fail("invalid format option"));
+    return state.fail(message.items);
 }
 
 fn packNextSizeOutOfLimits(state: *State, size: usize) runtime.RuntimeError {
     var message = std.ArrayList(u8).empty;
     defer message.deinit(state.allocator);
     runtime.appendFmt(state.allocator, &message, "({d}) out of limits [1,16]", .{size}) catch return state.fail("out of limits");
-    return state.fail(state.strings.intern(message.items) catch return state.fail("out of limits"));
+    return state.fail(message.items);
 }
 
 fn packIntegerDoesNotFit(state: *State, size: usize) runtime.RuntimeError {
     var message = std.ArrayList(u8).empty;
     defer message.deinit(state.allocator);
     runtime.appendFmt(state.allocator, &message, "{d}-byte integer does not fit", .{size}) catch return state.fail("integer does not fit");
-    return state.fail(state.strings.intern(message.items) catch return state.fail("integer does not fit"));
+    return state.fail(message.items);
 }
 
 fn addPackSize(state: *State, current: usize, add: usize) !usize {

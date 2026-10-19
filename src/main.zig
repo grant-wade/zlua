@@ -617,7 +617,7 @@ fn executeReplChunk(allocator: std.mem.Allocator, cli: *Cli, state: *zlua.runtim
 fn errorReportAlloc(allocator: std.mem.Allocator, state: *zlua.runtime.State, err: anyerror) ![]u8 {
     if (state.last_error != null) {
         const value = state.currentErrorValue();
-        if (value == .string) return std.fmt.allocPrint(allocator, "zlua: {s}\n", .{value.string});
+        if (value == .string) return std.fmt.allocPrint(allocator, "zlua: {s}\n", .{value.string.bytes()});
     }
     const detail = try failure_mod.errorDetailAlloc(state, allocator, err);
     defer allocator.free(detail);
@@ -761,11 +761,11 @@ test "CLI arg table indexing matches Lua script position" {
     const args = [_][]const u8{ "zlua", "-e", "code", "script.lua", "a" };
     try installArgTable(std.testing.allocator, &state, &args, 3);
     const arg = state.getGlobal("arg").table;
-    try std.testing.expectEqualStrings("zlua", arg.get(.{ .integer = -3 }).string);
-    try std.testing.expectEqualStrings("-e", arg.get(.{ .integer = -2 }).string);
-    try std.testing.expectEqualStrings("code", arg.get(.{ .integer = -1 }).string);
-    try std.testing.expectEqualStrings("script.lua", arg.get(.{ .integer = 0 }).string);
-    try std.testing.expectEqualStrings("a", arg.get(.{ .integer = 1 }).string);
+    try std.testing.expectEqualStrings("zlua", arg.get(.{ .integer = -3 }).string.bytes());
+    try std.testing.expectEqualStrings("-e", arg.get(.{ .integer = -2 }).string.bytes());
+    try std.testing.expectEqualStrings("code", arg.get(.{ .integer = -1 }).string.bytes());
+    try std.testing.expectEqualStrings("script.lua", arg.get(.{ .integer = 0 }).string.bytes());
+    try std.testing.expectEqualStrings("a", arg.get(.{ .integer = 1 }).string.bytes());
 }
 
 fn cliErrorReport(source: []const u8) ![]u8 {

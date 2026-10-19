@@ -39,11 +39,12 @@ pub fn copyFrozen(source: *const State, allocator: std.mem.Allocator, lifetime: 
 fn copyGraph(source: *const State, allocator: std.mem.Allocator, lifetime: ?*types.AllocatorLifetime, error_root: ?usize, borrow_protos: bool) !State {
     var destination = State{
         .allocator = allocator,
+        .object_pool = try @import("object_pool.zig").ObjectPool.create(allocator),
         .allocator_lifetime = lifetime,
-        .strings = .{ .map = @import("strings.zig").InternMap.init(allocator) },
         .options = source.options,
     };
     errdefer destination.discard();
+    destination.strings.set = try @import("strings.zig").InternSet.initStatic(allocator, source.strings.set.count);
     var copier = Copier{ .destination = &destination, .borrow_protos = borrow_protos, .map = AddressMap.init(allocator) };
     defer copier.map.deinit();
     try copier.populate(source, error_root);
@@ -63,8 +64,10 @@ const Copier = struct {
         const a = self.destination.allocator;
         try destination.ensureTotalCapacity(a, source.len);
         for (source) |old| {
-            const new = try a.create(T);
-            new.* = initial;
+            const objects = self.destination.allocatorFor(T);
+            const new = if (T == types.Closure) try types.Closure.create(objects, old.upvalue_count, initial) else try objects.create(T);
+            if (T != types.Closure) new.* = initial;
+            new.gc.registry_index = @intCast(destination.items.len);
             destination.appendAssumeCapacity(new);
             try self.map.put(@intFromPtr(old), @intFromPtr(new));
         }
@@ -86,10 +89,10 @@ const Copier = struct {
 
     fn value(self: *Copier, old: types.Value) !types.Value {
         switch (old) {
-            .string => |bytes| {
-                if (bytes.len == 0) return .{ .string = "" };
-                if (self.map.get(@intFromPtr(bytes.ptr))) |address| return .{ .string = @as([*]const u8, @ptrFromInt(address))[0..bytes.len] };
-                return .{ .string = try self.destination.strings.intern(bytes) };
+            .string => |string| {
+                if (string.static) return old;
+                if (self.map.get(@intFromPtr(string))) |address| return .{ .string = @ptrFromInt(address) };
+                return .{ .string = try self.destination.strings.intern(string.bytes()) };
             },
             inline .table, .closure, .userdata, .thread, .coroutine_wrapper, .gmatch_iterator => |pointer, tag| {
                 const address = self.map.get(@intFromPtr(pointer)) orelse return error.SnapshotUnsupported;
@@ -108,6 +111,7 @@ const Copier = struct {
             .value = try self.value(old.value),
         };
         if (T == []const u8) return self.text(old);
+        if (T == *const types.String) return (try self.value(.{ .string = old })).string;
         return switch (@typeInfo(T)) {
             .optional => if (old) |v| try self.remap(v) else null,
             .pointer => |p| if (p.size == .one and (p.child == types.Table or p.child == types.Userdata or p.child == types.Closure or p.child == types.Upvalue or p.child == types.Thread or p.child == Proto)) try self.mapped(old) else @compileError("unclassified snapshot pointer: " ++ @typeName(T)),
@@ -121,6 +125,22 @@ const Copier = struct {
             },
             else => old,
         };
+    }
+
+    fn tableFinalizers(self: *Copier, old: std.ArrayList(types.TableFinalizer)) !std.ArrayList(types.TableFinalizer) {
+        var result: std.ArrayList(types.TableFinalizer) = .empty;
+        errdefer result.deinit(self.destination.allocator);
+        try result.ensureTotalCapacityPrecise(self.destination.allocator, old.capacity);
+        for (old.items) |entry| result.appendAssumeCapacity(.{ .table = try self.mapped(entry.table), .order = entry.order });
+        return result;
+    }
+
+    fn tableArray(self: *Copier, old: types.TableArray) !types.TableArray {
+        var result: types.TableArray = .{};
+        errdefer result.deinit(self.destination.allocator);
+        try result.ensureTotalCapacityPrecise(self.destination.allocator, old.len);
+        for (old.items()) |v| result.appendAssumeCapacity(try self.remap(v));
+        return result;
     }
 
     fn list(self: *Copier, comptime T: type, old: []const T) !std.ArrayList(T) {
@@ -144,6 +164,12 @@ const Copier = struct {
         for (old.children.items) |child| try self.borrowedProto(child);
     }
 
+    fn chunkRoot(self: *Copier, old: *Proto) !*Proto {
+        if (!self.borrow_protos) return self.proto(old);
+        try self.borrowedProto(old);
+        return old;
+    }
+
     fn proto(self: *Copier, old: *const Proto) anyerror!*Proto {
         const a = self.destination.allocator;
         const new = try a.create(Proto);
@@ -153,9 +179,8 @@ const Copier = struct {
             a.destroy(new);
         }
         try self.map.put(@intFromPtr(old), @intFromPtr(new));
-        inline for (.{ "max_registers", "param_count", "is_vararg", "named_vararg", "defined_line", "last_defined_line", "has_to_close_locals", "runtime_prepared", "named_vararg_readonly", "fast_loop_entry", "fast_loop_call" }) |name| @field(new, name) = @field(old, name);
+        inline for (.{ "max_registers", "param_count", "is_vararg", "named_vararg", "defined_line", "last_defined_line", "has_to_close_locals", "runtime_prepared", "named_vararg_readonly", "fast_loop_entry", "fast_loop_call", "constant_offset" }) |name| @field(new, name) = @field(old, name);
         new.constant_values = try new.arena.allocator().dupe(types.Value, old.constant_values);
-        new.constant_hashes = try new.arena.allocator().dupe(u32, old.constant_hashes);
         new.close_exit_jumps = try new.arena.allocator().dupe(u64, old.close_exit_jumps);
         new.source_name = try self.text(old.source_name);
         new.debug_name = try self.remap(old.debug_name);
@@ -174,75 +199,67 @@ const Copier = struct {
         const d = self.destination;
         const a = d.allocator;
         try self.map.ensureTotalCapacity(@intCast(source.table_allocations.items.len + source.closure_allocations.items.len + source.upvalue_allocations.items.len + source.thread_allocations.items.len + source.string_allocations.items.len + 256));
-        for (static_strings.names) |bytes| if (bytes.len != 0) {
-            try self.map.put(@intFromPtr(bytes.ptr), @intFromPtr(bytes.ptr));
-        };
-        for (source.string_allocations.items) |allocation| {
-            const bytes = try d.strings.allocate(allocation.bytes);
-            if (bytes.len != 0) try self.map.put(@intFromPtr(allocation.bytes.ptr), @intFromPtr(bytes.ptr));
-        }
-        var strings = source.strings.map.iterator();
-        while (strings.next()) |entry| {
-            const v = try self.value(.{ .string = entry.value_ptr.* });
-            try d.strings.map.put(v.string, v.string);
+        try d.string_allocations.ensureTotalCapacity(a, source.string_allocations.items.len);
+        for (source.string_allocations.items) |string| {
+            const duplicate = try d.strings.duplicate(string);
+            try self.map.put(@intFromPtr(string), @intFromPtr(duplicate));
         }
         for (source.source_allocations.items) |bytes| _ = try self.text(bytes);
-        try d.proto_allocations.ensureTotalCapacity(a, source.proto_allocations.items.len);
-        for (source.proto_allocations.items) |old| {
-            if (self.borrow_protos) {
-                try self.borrowedProto(old);
-                d.proto_allocations.appendAssumeCapacity(old);
-                d.borrowed_proto_count += 1;
-            } else d.proto_allocations.appendAssumeCapacity(try self.proto(old));
+        try d.chunk_allocations.ensureTotalCapacity(a, source.chunk_allocations.items.len);
+        for (source.chunk_allocations.items) |old| {
+            if (old.root_owner == .host) continue;
+            const chunk = try a.create(types.Chunk);
+            errdefer a.destroy(chunk);
+            try self.map.put(@intFromPtr(old), @intFromPtr(chunk));
+            const constants = try self.values(types.Value, old.values);
+            errdefer a.free(constants);
+            chunk.* = .{ .root = try self.chunkRoot(old.root), .root_owner = if (self.borrow_protos) .snapshot else .state, .values = constants };
+            d.chunk_allocations.appendAssumeCapacity(chunk);
         }
         try self.shells(types.Table, source.table_allocations.items, &d.table_allocations, .{});
         try self.shells(types.Thread, source.thread_allocations.items, &d.thread_allocations, .{});
-        try self.shells(types.Closure, source.closure_allocations.items, &d.closure_allocations, .{ .proto = undefined, .upvalues = &.{} });
-        try self.shells(types.Upvalue, source.upvalue_allocations.items, &d.upvalue_allocations, .{ .owner = undefined, .stack_index = 0 });
+        try self.shells(types.Closure, source.closure_allocations.items, &d.closure_allocations, .{ .proto = undefined });
+        try self.shells(types.Upvalue, source.upvalue_allocations.items, &d.upvalue_allocations, .{ .cell = .{ .closed = .nil } });
         try self.shells(types.Userdata, source.userdata_allocations.items, &d.userdata_allocations, .{ .ptr = undefined, .type_id = 0, .type_name = "", .finalized = true });
-        for (source.table_allocations.items, d.table_allocations.items, 0..) |old, new, index| {
-            new.array = try self.list(types.Value, old.array.items);
+        for (source.table_allocations.items, d.table_allocations.items) |old, new| {
+            new.array = try self.tableArray(old.array);
             // Tombstone keys may reference swept objects; keep valid ones for next() without dereferencing.
-            new.entries = try self.list(types.TableEntry, old.entries.items);
-            var retained: usize = 0;
-            for (new.entries.items) |entry| {
-                if (entry.key == .nil) continue;
-                new.entries.items[retained] = entry;
-                retained += 1;
+            if (old.hash) |part| {
+                new.hash = try types.TableHashPart.create(a, part.capacity);
+                for (part.entries()) |entry| {
+                    const copied = try self.remap(entry);
+                    if (copied.key != .nil) new.hash.?.appendAssumeCapacity(copied.key, copied.value);
+                }
             }
-            new.entries.items.len = retained;
-            try new.rebuildEntryIndex(a);
-            inline for (.{ "metatable", "metatable_prev", "metatable_next", "finalizer_registered", "finalizer_next", "finalizer_prev", "finalizer_order" }) |name| @field(new, name) = try self.remap(@field(old, name));
-            try d.table_allocation_index.put(a, @intFromPtr(new), index);
+            inline for (.{ "metatable", "used_as_metatable", "finalizer_registered" }) |name| @field(new, name) = try self.remap(@field(old, name));
         }
         for (source.closure_allocations.items, d.closure_allocations.items) |old, new| {
             new.proto = try self.mapped(old.proto);
-            new.root = if (old.root) |root| try self.mapped(root) else null;
-            new.upvalues = try self.values(*types.Upvalue, old.upvalues);
-            if (old.constants) |v| new.constants = try self.values(?types.Value, v);
+            new.chunk = if (old.chunk) |chunk| try self.mapped(chunk) else null;
+            for (old.upvalues(), new.upvalues()) |upvalue, *slot| slot.* = try self.mapped(upvalue);
             new.stripped_debug = old.stripped_debug;
         }
         for (source.upvalue_allocations.items, d.upvalue_allocations.items) |old, new| {
-            new.stack_index = old.stack_index;
-            new.is_open = old.is_open;
-            if (old.is_open) {
-                new.owner = try self.mapped(old.owner);
-                new.next = try self.remap(old.next);
-            } else new.closed = try self.value(old.closed);
+            switch (old.cell) {
+                .open => |slot| {
+                    new.cell = .{ .open = .{ .owner = try self.mapped(slot.owner), .stack_index = slot.stack_index } };
+                    new.next = try self.remap(old.next);
+                },
+                .closed => |closed| new.cell = .{ .closed = try self.value(closed) },
+            }
         }
         for (source.thread_allocations.items, d.thread_allocations.items) |old, new| try self.thread(old, new);
         for (source.userdata_allocations.items, d.userdata_allocations.items) |old, new| try self.userdata(old, new);
-        inline for (.{ "global_table", "table_metatable_head", "table_finalizer_head", "table_pending_finalizer_head", "userdata_pending_finalizer_head", "userdata_lua_pending_head", "table_metatable_count", "table_finalizer_serial", "stdin_pos", "file_generation", "last_error", "error_handled", "warnings_on", "string_metatable", "number_metatable", "boolean_metatable", "nil_metatable", "file_metatable", "fs_file_metatable", "io_input", "io_output", "random_state" }) |name| @field(d, name) = try self.remap(@field(source, name));
+        inline for (.{ "global_table", "userdata_pending_finalizer_head", "userdata_lua_pending_head", "table_finalizer_serial", "stdin_pos", "file_generation", "last_error", "error_handled", "warnings_on", "string_metatable", "number_metatable", "boolean_metatable", "nil_metatable", "file_metatable", "fs_file_metatable", "io_input", "io_output", "random_state" }) |name| @field(d, name) = try self.remap(@field(source, name));
         inline for (.{ "running", "mode", "params" }) |name| @field(d.gc, name) = @field(source.gc, name);
         inline for (.{ "instructions", "base" }) |name| @field(d.budget, name) = @field(source.budget, name);
         for (&d.library_tables.values, source.library_tables.values) |*slot, table| slot.* = try self.remap(table);
+        d.table_finalizers = try self.tableFinalizers(source.table_finalizers);
+        d.table_pending_finalizers = try self.tableFinalizers(source.table_pending_finalizers);
         d.file_generation +%= 1;
         d.stdout = try self.list(u8, source.stdout.items);
         d.stderr = try self.list(u8, source.stderr.items);
         d.options.stdin = try self.text(source.options.stdin);
-        inline for (.{ "userdata_allocations", "closure_allocations", "upvalue_allocations", "thread_allocations" }) |field| {
-            for (@field(d, field).items, 0..) |object, index| try d.object_allocation_index.put(a, @intFromPtr(object), index);
-        }
         try d.gc.reserveQueues(0);
         if (error_root) |index| _ = try d.rootValue(try self.value(source.rootedValue(index)));
         _ = d.gc.refreshAllocationTotal();
@@ -252,7 +269,7 @@ const Copier = struct {
     fn storedValue(self: *Copier, v: types.Value) !types.Value {
         // Inspect identities, never memory behind untracked stale pointers.
         switch (v) {
-            .string => |bytes| if (bytes.len != 0 and !self.map.contains(@intFromPtr(bytes.ptr))) {
+            .string => |string| if (!self.map.contains(@intFromPtr(string)) and !isStatic(string)) {
                 return .nil;
             },
             inline .table, .closure, .userdata, .thread, .coroutine_wrapper, .gmatch_iterator => |p| if (!self.map.contains(@intFromPtr(p))) {
@@ -263,19 +280,25 @@ const Copier = struct {
         return self.value(v);
     }
 
+    fn isStatic(string: *const types.String) bool {
+        for (static_strings.strings) |static| if (static == string) return true;
+        return false;
+    }
+
     fn liveSlot(target: *const types.Thread, index: usize) bool {
         inline for (.{ "last_result", "last_transfer", "yield_result" }) |prefix| {
             const base = @field(target, prefix ++ "_base");
             if (index >= base and index - base < @field(target, prefix ++ "_count")) return true;
         }
         for (target.frames.items) |frame| {
-            for (frame.proto.locals.items) |local| {
+            if (index >= frame.vararg_base and index - frame.vararg_base < frame.vararg_count) return true;
+            for (frame.closure.proto.locals.items) |local| {
                 if (index == frame.base + local.register and @import("value.zig").localActiveAt(local, frame.pc)) return true;
             }
         }
         var open = target.open_upvalues;
         while (open) |upvalue| : (open = upvalue.next) {
-            if (upvalue.stack_index == index) return true;
+            if (upvalue.cell.open.stack_index == index) return true;
         }
         return false;
     }
@@ -285,17 +308,16 @@ const Copier = struct {
         // Unused stack slots may dangle after collection; only inspect tags and identities.
         try new.stack.resize(a, old.stack.items.len);
         for (old.stack.items, new.stack.items, 0..) |v, *out, index| {
-            // Native diagnostic strings may be static literals, so copy them only from live registers.
             out.* = if (v == .string and liveSlot(old, index)) try self.value(v) else try self.storedValue(v);
         }
         try new.frames.ensureTotalCapacity(a, old.frames.items.len);
-        for (old.frames.items) |f| {
-            new.frames.appendAssumeCapacity(.{ .closure = try self.mapped(f.closure), .proto = try self.mapped(f.proto), .base = f.base, .pc = f.pc, .return_start = f.return_start, .return_count = f.return_count, .varargs = &.{} });
-            const frame = &new.frames.items[new.frames.items.len - 1];
-            frame.varargs = try self.values(types.Value, f.varargs);
-            frame.owns_varargs = true;
-            if (f.pending_returns) |v| frame.pending_returns = try self.values(types.Value, v);
-            inline for (.{ "vararg_table_local", "named_vararg_readonly", "last_hook_line", "debug_name_override", "debug_namewhat_override", "is_tail_call" }) |name| @field(frame, name) = try self.remap(@field(f, name));
+        for (old.frames.items, 0..) |f, index| {
+            new.frames.appendAssumeCapacity(.{ .closure = try self.mapped(f.closure), .base = f.base, .pc = f.pc, .return_start = f.return_start, .return_count = f.return_count, .vararg_base = f.vararg_base, .vararg_count = f.vararg_count, .named_vararg_readonly = f.named_vararg_readonly, .is_tail_call = f.is_tail_call });
+            if (!f.has_extra) continue;
+            const old_extra = old.frame_extras.items[index];
+            const extra = try new.frameExtraMut(a, index);
+            if (old_extra.pending_returns) |v| extra.pending_returns = try self.values(types.Value, v);
+            inline for (.{ "vararg_table_local", "last_hook_line", "debug_name_override", "debug_namewhat_override" }) |name| @field(extra, name) = try self.remap(@field(old_extra, name));
         }
         inline for (.{ "yield_values", "protected_continuations", "generic_for_continuations", "pairs_continuations", "tail_call_continuations", "call_one_continuations" }) |name| {
             const items = @field(old, name).items;
@@ -384,9 +406,9 @@ comptime {
     @setEvalBranchQuota(1000000);
     review(State, .{
         .external = "allocator allocator_lifetime options",
-        .rebuilt = "borrowed_proto_count strings string_allocation_index table_allocation_index object_allocation_index api_roots gc budget",
-        .remapped = "global_table table_metatable_head table_finalizer_head table_pending_finalizer_head userdata_pending_finalizer_head userdata_lua_pending_head string_metatable number_metatable boolean_metatable nil_metatable file_metatable fs_file_metatable io_input io_output library_tables last_error",
-        .copied = "string_allocations table_allocations userdata_allocations closure_allocations upvalue_allocations thread_allocations proto_allocations source_allocations stdout stderr table_metatable_count table_finalizer_serial stdin_pos file_generation error_handled warnings_on random_state",
+        .rebuilt = "object_pool strings api_roots gc budget",
+        .remapped = "global_table table_finalizers table_pending_finalizers userdata_pending_finalizer_head userdata_lua_pending_head string_metatable number_metatable boolean_metatable nil_metatable file_metatable fs_file_metatable io_input io_output library_tables last_error",
+        .copied = "string_allocations table_allocations userdata_allocations closure_allocations upvalue_allocations thread_allocations chunk_allocations source_allocations stdout stderr table_finalizer_serial stdin_pos file_generation error_handled warnings_on random_state",
         .transient = "execution_depth userdata_scope value_roots rollback snapshot_busy discarding exit_request local_zone current_thread api_callback_dispatch api_callback_user_data active_api_callback coroutine_close_depth",
     });
     review(budget_mod.Budget, .{
@@ -396,49 +418,53 @@ comptime {
     review(gc_mod.Gc, .{
         .rebuilt = "next_total known_total",
         .copied = "running mode params",
-        .transient = "epoch generation phase cycle work remembered weak tables finalizers major_pending cycle_start_total found_young old old_protos sweep_cursor major_base work_done minor_count collecting stress_collect stress_step stress_mark mark_all_stack_registers conservative_depth",
+        .transient = "epoch generation phase cycle work remembered weak tables finalizers major_pending cycle_start_total found_young old old_chunks sweep_cursor major_base work_done minor_count collecting stress_collect stress_step stress_mark mark_all_stack_registers conservative_depth",
     });
     review(types.Thread, .{
-        .copied = "exposed stack frames yield_values protected_continuations generic_for_continuations pairs_continuations tail_call_continuations call_one_continuations hook_call hook_line hook_return hook_count hook_count_remaining pending_yield_hook_return continuation_order continuation_frame_count last_result_base last_result_count last_transfer_base last_transfer_count yield_result_base yield_result_count pending_unwind_resume_frame_count pending_unwind_target_frame_count started is_main closing status stack_error_space host_frame frame_storage_bytes",
+        .copied = "exposed stack frames frame_extras yield_values protected_continuations generic_for_continuations pairs_continuations tail_call_continuations call_one_continuations hook_call hook_line hook_return hook_count hook_count_remaining pending_yield_hook_return continuation_order continuation_frame_count last_result_base last_result_count last_transfer_base last_transfer_count yield_result_base yield_result_count pending_unwind_resume_frame_count pending_unwind_target_frame_count started is_main closing status stack_error_space host_frame frame_storage_bytes",
+        .rebuilt = "storage_bytes",
         .remapped = "open_upvalues hook close_error_value error_traceback pending_unwind_error entry error_handler",
-        .transient = "rollback marked gc hook_running hook_return_name hook_level2_func hook_transfer_index_base hook_transfer_stack_base hook_transfer_count hook_transfer_values next_call_name next_call_namewhat native_call_depth native_call protected_close_depth resume_parent native_marks native_mark_count",
+        .transient = "rollback gc hook_running hook_return_name hook_level2_func hook_transfer_index_base hook_transfer_stack_base hook_transfer_count hook_transfer_values next_call_name next_call_namewhat native_call_depth native_call protected_close_depth resume_parent native_marks native_mark_count",
     });
     review(types.CallFrame, .{
-        .copied = "base pc return_start return_count varargs named_vararg_readonly last_hook_line debug_name_override debug_namewhat_override is_tail_call pending_returns",
-        .remapped = "closure proto vararg_table_local",
-        .rebuilt = "owns_varargs",
+        .copied = "base pc return_start return_count vararg_base vararg_count named_vararg_readonly is_tail_call",
+        .remapped = "closure",
+        .rebuilt = "has_extra",
     });
     review(types.Table, .{
-        .copied = "array entries finalizer_registered finalizer_order",
-        .remapped = "metatable metatable_prev metatable_next finalizer_next finalizer_prev",
-        .rebuilt = "entry_index",
-        .transient = "rollback marked gc metamethod_absent",
+        .copied = "array hash used_as_metatable finalizer_registered",
+        .remapped = "metatable",
+        .transient = "rollback gc metamethod_absent in_weak_list in_table_list",
     });
     review(types.Closure, .{
-        .remapped = "proto root upvalues constants",
-        .copied = "stripped_debug",
-        .transient = "rollback marked gc",
+        .remapped = "proto chunk",
+        .copied = "upvalue_count stripped_debug",
+        .transient = "rollback gc",
+    });
+    review(types.Chunk, .{
+        .remapped = "root values",
+        .rebuilt = "root_owner",
+        .transient = "epoch",
     });
     review(types.Upvalue, .{
-        .remapped = "owner closed next",
-        .copied = "stack_index is_open",
-        .transient = "rollback marked gc",
+        .remapped = "cell next",
+        .transient = "rollback gc",
     });
     review(types.Userdata, .{
         .external = "ptr type_id finalizer finalizer_data deinit_fn",
         .copied = "type_name finalized finalization_pending lua_finalizer_registered lua_finalizer_order",
         .remapped = "metatable payload finalizer_next lua_finalizer_next",
-        .transient = "scope_readers scope_writers rollback marked gc",
+        .transient = "scope_readers scope_writers rollback gc",
     });
     review(Proto, .{
         .rebuilt = "allocator arena",
-        .copied = "constants instructions line_info locals upvalues error_sites max_registers param_count is_vararg named_vararg source_name debug_name defined_line last_defined_line has_to_close_locals runtime_prepared named_vararg_readonly fast_loop_entry fast_loop_call constant_values constant_hashes close_exit_jumps",
+        .copied = "constants instructions line_info locals upvalues error_sites max_registers param_count is_vararg named_vararg source_name debug_name defined_line last_defined_line has_to_close_locals runtime_prepared named_vararg_readonly fast_loop_entry fast_loop_call constant_values constant_offset close_exit_jumps",
         .remapped = "children",
     });
     review(types.Value, .{ .remapped = "string table userdata closure thread coroutine_wrapper gmatch_iterator", .external = "nil boolean integer number native_print native_tostring native_getmetatable native_setmetatable native_rawequal native_rawget native_rawset native_rawlen native_next native_pairs native_ipairs native_ipairs_iter native_table_create native_select native_assert native_error native_pcall native_xpcall native_collectgarbage native_debug_traceback native_coroutine_create native_coroutine_resume native_coroutine_yield native_coroutine_status native_coroutine_running native_coroutine_isyieldable native_coroutine_close native_coroutine_wrap native api_callback" });
-    review(types.StringAllocation, .{
-        .copied = "bytes",
-        .transient = "marked gc",
+    review(types.String, .{
+        .copied = "len hash hashed interned static",
+        .transient = "gc field_hint",
     });
     review(types.UserdataPayload, .{
         .external = "allocator lifetime ptr finalizer finalizer_data dispose snapshot_copy snapshot_dispose",

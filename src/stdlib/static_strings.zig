@@ -1,5 +1,6 @@
 const std = @import("std");
-const value_mod = @import("../runtime/value.zig");
+const table_index = @import("../runtime/table_index.zig");
+const String = @import("../runtime/types.zig").String;
 
 // Canonical static names, so states don't allocate and GC-track their own copies.
 pub const names = [_][]const u8{
@@ -193,6 +194,35 @@ pub const names = [_][]const u8{
     "[\x00-\x7F\xC2-\xFD][\x80-\xBF]*",
     "collectgarbage",
     "./?.lua;./?/init.lua",
+    "not enough memory",
+    "memory limit exceeded",
+    "n",
+    "assertion failed!",
+    "s",
+    "p",
+    "i",
+    "last",
+    "pending_path",
+    "skip_current",
+    "closed",
+    "index",
+    "count",
+    "specs",
+    "file",
+    "auto_close",
+    "__zlua_lines_iterator",
+    "l",
+    "strict",
+    "__mode",
+    "k",
+    "year",
+    "month",
+    "day",
+    "hour",
+    "sec",
+    "yday",
+    "wday",
+    "isdst",
 };
 
 const StaticMap = std.StaticStringMap(usize);
@@ -202,41 +232,50 @@ const canonical_map: StaticMap = blk: {
     break :blk StaticMap.initComptime(entries);
 };
 
-pub fn canonical(bytes: []const u8) ?[]const u8 {
-    const index = canonical_map.get(bytes) orelse return null;
-    return names[index];
+fn padded(comptime name: []const u8) [@max(name.len, 1)]u8 {
+    var result: [@max(name.len, 1)]u8 = @splat(0);
+    @memcpy(result[0..name.len], name);
+    return result;
 }
 
-const hashed_mask = std.math.ceilPowerOfTwoAssert(usize, names.len * 2) - 1;
-/// Open-addressed by `value.hashString`; holds name positions plus one.
-const hashed_slots: [hashed_mask + 1]u16 = blk: {
+fn Static(comptime name: []const u8) type {
+    return struct {
+        const object: extern struct { header: String, bytes: [@max(name.len, 1)]u8 } = .{
+            .header = .{
+                .gc = .{ .age = .old },
+                .len = name.len,
+                .hash = table_index.hashStringKey(name),
+                .hashed = true,
+                .interned = true,
+                .static = true,
+            },
+            .bytes = padded(name),
+        };
+    };
+}
+
+pub const strings: [names.len]*const String = blk: {
     @setEvalBranchQuota(1_000_000);
-    var slots: [hashed_mask + 1]u16 = @splat(0);
-    for (names, 0..) |name, index| {
-        var position: usize = @intCast(value_mod.hashString(name) & hashed_mask);
-        while (slots[position] != 0) position = (position + 1) & hashed_mask;
-        slots[position] = index + 1;
-    }
-    break :blk slots;
+    var result: [names.len]*const String = undefined;
+    for (names, 0..) |name, index| result[index] = &Static(name).object.header;
+    break :blk result;
 };
 
-/// `canonical` for callers that already computed `value.hashString(bytes)`.
-pub fn canonicalHashed(bytes: []const u8, hash: u64) ?[]const u8 {
-    var position: usize = @intCast(hash & hashed_mask);
-    while (hashed_slots[position] != 0) : (position = (position + 1) & hashed_mask) {
-        const name = names[hashed_slots[position] - 1];
-        if (name.len == bytes.len and std.mem.eql(u8, name, bytes)) return name;
-    }
-    return null;
+pub fn canonical(bytes: []const u8) ?*const String {
+    const index = canonical_map.get(bytes) orelse return null;
+    return strings[index];
 }
 
-pub fn get(comptime bytes: []const u8) []const u8 {
-    return comptime canonical(bytes) orelse @compileError("missing standard-library static string: " ++ bytes);
+pub fn get(comptime bytes: []const u8) *const String {
+    const index = comptime canonical_map.get(bytes) orelse @compileError("missing standard-library static string: " ++ bytes);
+    return strings[index];
 }
 
 test "all static strings are canonical" {
-    for (names) |name| {
+    for (names, strings) |name, string| {
         const value = canonical(name) orelse return error.TestUnexpectedResult;
-        try std.testing.expectEqual(name.ptr, value.ptr);
+        try std.testing.expectEqual(string, value);
+        try std.testing.expectEqualStrings(name, value.bytes());
+        try std.testing.expectEqual(table_index.hashStringKey(name), value.hash);
     }
 }

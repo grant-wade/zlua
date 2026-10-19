@@ -10,10 +10,11 @@ const bytecode = compile.bytecode;
 const State = runtime.State;
 const Thread = runtime.Thread;
 const Value = runtime.Value;
+const String = runtime.String;
 
 pub fn loadfile(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const path = try optionalPath(state, thread, op, "loadfile");
-    const mode = if (op.arg_count >= 2 and runtime.argValue(state, thread, op, 1) == .string) runtime.argValue(state, thread, op, 1).string else "bt";
+    const mode = if (op.arg_count >= 2 and runtime.argValue(state, thread, op, 1) == .string) runtime.argValue(state, thread, op, 1).string.bytes() else "bt";
     if (invalidLoadMode(mode)) return state.failArgumentMessage("loadfile", 2, "invalid mode");
     const environment = if (op.arg_count >= 3) runtime.argValue(state, thread, op, 2) else if (state.global_table) |table| Value{ .table = table } else state.getGlobal("_G");
 
@@ -95,15 +96,15 @@ pub fn dofile(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const closure = try loadChunkFile(state, path, "bt", environment);
     const values = try call_mod.callCollect(state, thread, closure, &.{});
     defer state.allocator.free(values);
-    const result_values = if (path != null and values.len >= 2 and values[0] == .native and values[0].native == .dofile and values[1] == .string and std.mem.eql(u8, values[1].string, path.?)) values[2..] else values;
+    const result_values = if (path != null and values.len >= 2 and values[0] == .native and values[0].native == .dofile and values[1] == .string and values[1].string.eqlBytes(path.?)) values[2..] else values;
     try state.returnValues(thread, op.base, op.return_count, result_values);
 }
 
 pub fn require(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const name = try state.expectArgumentString(thread, op, "require", 0);
     const package = try packageTable(state);
-    const loaded = try state.expectTable(package.get(.{ .string = try state.strings.intern("loaded") }));
-    const preload = try state.expectTable(package.get(.{ .string = try state.strings.intern("preload") }));
+    const loaded = try state.expectTable(package.getLiteral("loaded"));
+    const preload = try state.expectTable(package.getLiteral("preload"));
     const name_key = Value{ .string = try state.strings.intern(name) };
 
     const cached = loaded.get(name_key);
@@ -117,12 +118,12 @@ pub fn require(state: *State, thread: *Thread, op: bytecode.Call) !void {
     if (loader != .nil) {
         loader_data = .{ .string = try state.strings.intern(":preload:") };
     } else {
-        const path_value = package.get(.{ .string = try state.strings.intern("path") });
+        const path_value = package.getLiteral("path");
         if (path_value != .string) return state.failArgumentType("require", 1, "package.path string", path_value);
-        const path = path_value.string;
+        const path = path_value.string.bytes();
         const found = try searchPath(state, name, path, ".", "/") orelse {
             const message = try moduleNotFoundMessage(state, name, package, path);
-            return state.fail(message);
+            return state.failString(message);
         };
         defer state.allocator.free(found);
         loader = try load_mod.loadFileAsClosure(state, found);
@@ -170,8 +171,8 @@ pub fn loadlib(state: *State, thread: *Thread, op: bytecode.Call) !void {
 
 pub fn searcherPreload(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const name = try state.expectArgumentString(thread, op, "package.searchers preload", 0);
-    const preload = try state.expectTable((try packageTable(state)).get(.{ .string = try state.strings.intern("preload") }));
-    const loader = preload.get(.{ .string = try state.strings.intern(name) });
+    const preload = try state.expectTable((try packageTable(state)).getLiteral("preload"));
+    const loader = preload.getBytes(name);
     if (loader == .nil) {
         try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern("no field package.preload") }});
     } else {
@@ -182,7 +183,7 @@ pub fn searcherPreload(state: *State, thread: *Thread, op: bytecode.Call) !void 
 pub fn searcherLua(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const name = try state.expectArgumentString(thread, op, "package.searchers Lua", 0);
     const package = try packageTable(state);
-    const path = try state.expectString(package.get(.{ .string = try state.strings.intern("path") }));
+    const path = try state.expectString(package.getLiteral("path"));
     const found = try searchPath(state, name, path, ".", "/") orelse {
         try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern("no matching file") }});
         return;
@@ -218,13 +219,13 @@ fn searchPath(state: *State, name: []const u8, path: []const u8, sep: []const u8
     return null;
 }
 
-fn moduleNotFoundMessage(state: *State, name: []const u8, package: *runtime.Table, path: []const u8) ![]const u8 {
+fn moduleNotFoundMessage(state: *State, name: []const u8, package: *runtime.Table, path: []const u8) !*const String {
     var out = std.ArrayList(u8).empty;
     defer out.deinit(state.allocator);
     try runtime.appendFmt(state.allocator, &out, "module '{s}' not found:\n\tno field package.preload['{s}']", .{ name, name });
     try appendSearchPathError(state, &out, name, path, ".", "/");
-    const cpath_value = package.get(.{ .string = try state.strings.intern("cpath") });
-    if (cpath_value == .string) try appendSearchPathError(state, &out, name, cpath_value.string, ".", "/");
+    const cpath_value = package.getLiteral("cpath");
+    if (cpath_value == .string) try appendSearchPathError(state, &out, name, cpath_value.string.bytes(), ".", "/");
     return state.strings.intern(out.items);
 }
 

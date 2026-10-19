@@ -41,7 +41,7 @@ pub const File = struct {
     /// `State.file_generation` when the handle last matched the filesystem.
     generation: u64 = 0,
     popen_result: ?host.ProcessResult = null,
-    /// Creation order on the scale of `Table.finalizer_order`.
+    /// Creation order on the scale of `TableFinalizer.order`.
     finalizer_order: u64 = 0,
 
     pub const Kind = enum {
@@ -180,7 +180,7 @@ pub fn newFile(state: *State, options: FileOptions) !Value {
         .popen_result = options.popen_result,
         .finalizer_order = metatable_mod.nextFinalizerOrder(state),
     };
-    const value = try state.newUserdata(file, fileTypeId(), static_strings.get("FILE*"), fileFinalizer, null, disposeFile);
+    const value = try state.newUserdata(file, fileTypeId(), static_strings.get("FILE*").bytes(), fileFinalizer, null, disposeFile);
     const userdata = value.userdata;
     const payload = userdata.payload.?;
     payload.snapshot_copy = copyFile;
@@ -518,20 +518,20 @@ pub fn linesIter(state: *State, thread: *Thread, op: bytecode.Call) !void {
 pub fn linesNext(state: *State, iterator: Value) ![]const Value {
     if (iterator != .table) return state.fail("file is already closed");
     const table = iterator.table;
-    const userdata = try expectFile(state, table.get(.{ .string = "file" }));
+    const userdata = try expectFile(state, table.getLiteral("file"));
     if (fileOfUserdata(userdata).?.closed) return state.fail("file is already closed");
     const handle = try writable(userdata);
-    const specs = table.get(.{ .string = "specs" });
+    const specs = table.getLiteral("specs");
     var values = std.ArrayList(Value).empty;
     errdefer values.deinit(state.allocator);
-    if (specs == .table and specs.table.array.items.len != 0) {
-        for (specs.table.array.items) |spec| if (!try readInto(state, handle, &values, spec)) break;
+    if (specs == .table and specs.table.array.len != 0) {
+        for (specs.table.array.items()) |spec| if (!try readInto(state, handle, &values, spec)) break;
     } else {
         _ = try readInto(state, handle, &values, .{ .string = try state.strings.intern("l") });
     }
     if (values.items.len == 0 or values.items[0] == .nil) {
         values.deinit(state.allocator);
-        const auto_close = table.get(.{ .string = "auto_close" });
+        const auto_close = table.getLiteral("auto_close");
         if (auto_close == .boolean and auto_close.boolean) _ = try closeFile(state, handle);
         return &[_]Value{};
     }
@@ -547,7 +547,7 @@ fn setCurrentFile(state: *State, thread: *Thread, op: bytecode.Call, which: Curr
     }
     var value = runtime.argValue(state, thread, op, 0);
     if (value == .string) {
-        value = try openCheckedFile(state, value.string, if (which == .output) "w" else "r");
+        value = try openCheckedFile(state, value.string.bytes(), if (which == .output) "w" else "r");
     } else {
         const userdata = try expectFileArgument(state, value, if (which == .output) "io.output" else "io.input", 1);
         try ensureOpen(state, fileOfUserdata(userdata).?);
@@ -577,7 +577,7 @@ fn failOpenChecked(state: *State, path: []const u8, err: anyerror) anyerror {
     if (err == error.OutOfMemory) return err;
     const message = try std.fmt.allocPrint(state.allocator, "cannot open file '{s}' ({s})", .{ path, host.fileError(err).message });
     defer state.allocator.free(message);
-    return state.fail(try state.strings.intern(message));
+    return state.fail(message);
 }
 
 /// Reads the rest of stdin, sharing the `io.stdin` position. Caller owns the bytes.
@@ -593,7 +593,7 @@ pub fn readAllStdin(state: *State) ![]u8 {
 /// Reads one line from stdin, keeping the newline; null at end of input.
 pub fn readStdinLine(state: *State) !?[]const u8 {
     const value = try readStdinFormat(state, .{ .line = true });
-    return if (value == .string) value.string else null;
+    return if (value == .string) value.string.bytes() else null;
 }
 
 /// Consumes the unread bytes of a file; they stay valid until the handle is next used.
@@ -602,7 +602,7 @@ pub fn readRemaining(state: *State, userdata: *Userdata) ![]const u8 {
     const file = handle.file;
     if (file.kind == .stdin) {
         const value = try readStdinFormat(state, .all);
-        return if (value == .string) value.string else "";
+        return if (value == .string) value.string.bytes() else "";
     }
     if (file.kind == .full_device) return state.fail("File too large");
     try refreshReadable(state, handle);
@@ -941,7 +941,7 @@ fn writeToFile(state: *State, thread: *Thread, op: bytecode.Call, handle: Handle
     while (index < op.arg_count) : (index += 1) {
         const value = runtime.argValue(state, thread, op, index);
         const bytes = switch (value) {
-            .string => |string| string,
+            .string => |string| string.bytes(),
             .integer, .number => blk: {
                 formatted.clearRetainingCapacity();
                 try runtime.appendLuaString(state.allocator, &formatted, value);
@@ -1180,7 +1180,7 @@ test "host stdin reader is consumed only as far as each read needs" {
     var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .full, .stdin_reader = &reader });
     defer state.deinit();
     try entry_mod.executeSourceChunk(&state, "a = io.read()");
-    try std.testing.expectEqualStrings("first", state.getGlobal("a").string);
+    try std.testing.expectEqualStrings("first", state.getGlobal("a").string.bytes());
     try std.testing.expectEqual(@as(usize, 6), reader.seek);
     try entry_mod.executeSourceChunk(&state,
         \\b = io.read('n') c = io.read(5) d = io.stdin:read('L')
@@ -1188,12 +1188,12 @@ test "host stdin reader is consumed only as far as each read needs" {
         \\f = io.read('a') g = io.read() _, h, i = io.stdin:seek()
     );
     try std.testing.expectEqual(@as(i64, 12), state.getGlobal("b").integer);
-    try std.testing.expectEqualStrings(" rest", state.getGlobal("c").string);
-    try std.testing.expectEqualStrings("\n", state.getGlobal("d").string);
-    try std.testing.expectEqualStrings("last", state.getGlobal("e").string);
-    try std.testing.expectEqualStrings("", state.getGlobal("f").string);
+    try std.testing.expectEqualStrings(" rest", state.getGlobal("c").string.bytes());
+    try std.testing.expectEqualStrings("\n", state.getGlobal("d").string.bytes());
+    try std.testing.expectEqualStrings("last", state.getGlobal("e").string.bytes());
+    try std.testing.expectEqualStrings("", state.getGlobal("f").string.bytes());
     try std.testing.expect(state.getGlobal("g") == .nil);
-    try std.testing.expectEqualStrings("Illegal seek", state.getGlobal("h").string);
+    try std.testing.expectEqualStrings("Illegal seek", state.getGlobal("h").string.bytes());
     try std.testing.expectEqual(@as(i64, 29), state.getGlobal("i").integer);
 }
 
