@@ -24,6 +24,10 @@
 
 - A collection during a protected call could free the error value that the call restores on failure.
 
+### Testing
+
+- `zig build bench` prints the host system and labels builds with the running Zig version's optimize mode name.
+
 ## 0.7.1
 
 ### Lua compatibility
