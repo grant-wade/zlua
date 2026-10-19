@@ -134,6 +134,18 @@
 - [searcherC](#fn-searcherc)
 - [searcherCroot](#fn-searchercroot)
 
+## Constants
+
+- [dir_separator](#const-dir_separator)
+
+<a id="const-dir_separator"></a>
+
+## dir_separator
+
+```zig
+pub const dir_separator = if (builtin.os.tag == .windows) "\\" else "/";
+```
+
 <a id="fn-loadfile"></a>
 
 ## loadfile
