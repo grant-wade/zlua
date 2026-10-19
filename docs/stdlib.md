@@ -117,7 +117,7 @@ Opening `package` installs `require`. If base isn't open, it also installs `load
 | --- | --- |
 | `package.path` | `./?.lua;./?/init.lua` |
 | `package.cpath` | Empty; native C modules are not loaded. |
-| `package.searchers` | Preload searcher, then Lua file searcher. |
+| `package.searchers` | Preload, Lua file, C, and all-in-one searchers. A C library found on `package.cpath` fails to load. |
 | `package.loaded` | Opened libraries and already loaded modules. |
 | `package.preload` | Host-preloaded modules. |
 

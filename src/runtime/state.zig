@@ -714,9 +714,7 @@ pub const State = struct {
             try out.appendSlice(self.allocator, key);
             return true;
         }
-        const package = globals.getLiteral("package");
-        const loaded = if (package == .table) package.table.getLiteral("loaded") else Value.nil;
-        const modules = if (loaded == .table) loaded.table else globals;
+        const modules = self.library_tables.get(.package_loaded) orelse globals;
         for (modules.entries()) |entry| {
             if (entry.key != .string or entry.value != .table or entry.value.table == globals) continue;
             if (findFunctionField(entry.value.table, callee)) |key| {

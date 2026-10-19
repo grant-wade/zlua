@@ -553,6 +553,34 @@ test "preloadModuleFn loads lazily once with Lua 5.5 loader arguments" {
     try std.testing.expectEqual(@as(usize, 1), Loader.calls);
 }
 
+test "package helpers keep the original tables after Lua replaces them" {
+    var lua = try api.State.init(a, .{ .stdlib = .base });
+    defer lua.deinit();
+    try lua.setPackagePath("./?.lua");
+    try lua.doString(
+        \\original, loaded, preload = package, package.loaded, package.preload
+        \\package.loaded = {}
+        \\package.preload = {}
+        \\package = nil
+    , .{});
+    var loader = try lua.loadString("return { name = ... }", .{ .name = "=loader" });
+    defer loader.deinit();
+    try lua.preloadModule("hosted", loader);
+    try lua.setLoadedModule("answer", 42);
+    try lua.setPackagePath("?.lua");
+    try std.testing.expectEqual(@as(?i64, null), try lua.getGlobal("package", ?i64));
+
+    var hosted = try lua.require("hosted", api.Table);
+    defer hosted.deinit();
+    try std.testing.expectEqualStrings("hosted", try hosted.get("name", []const u8));
+    try std.testing.expectEqual(@as(i64, 42), try lua.require("answer", i64));
+    try lua.doString(
+        \\assert(loaded.hosted.name == 'hosted' and loaded.answer == 42 and next(original.loaded) == nil)
+        \\assert(preload.hosted and next(original.preload) == nil and original.path == '?.lua')
+        \\assert(require('hosted') == loaded.hosted)
+    , .{});
+}
+
 test "preloadModule installs Lua loaders and host require reports errors" {
     var lua = try api.State.init(a, .{ .stdlib = .base });
     defer lua.deinit();

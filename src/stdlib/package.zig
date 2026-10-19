@@ -1,22 +1,25 @@
 const std = @import("std");
 const compile = @import("../compile.zig");
+const stdlib = @import("../stdlib.zig");
 const runtime = @import("../runtime.zig");
 const io_lib = @import("io.zig");
 const call_mod = @import("../runtime/call.zig");
 const io_mod = @import("../runtime/io.zig");
+const index_mod = @import("../runtime/index.zig");
 const load_mod = @import("../runtime/load.zig");
+const value_mod = @import("../runtime/value.zig");
 
 const bytecode = compile.bytecode;
 const State = runtime.State;
 const Thread = runtime.Thread;
 const Value = runtime.Value;
-const String = runtime.String;
+const RuntimeError = runtime.RuntimeError;
 
 pub fn loadfile(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const path = try optionalPath(state, thread, op, "loadfile");
     const mode = if (op.arg_count >= 2 and runtime.argValue(state, thread, op, 1) == .string) runtime.argValue(state, thread, op, 1).string.bytes() else "bt";
     if (invalidLoadMode(mode)) return state.failArgumentMessage("loadfile", 2, "invalid mode");
-    const environment = if (op.arg_count >= 3) runtime.argValue(state, thread, op, 2) else if (state.global_table) |table| Value{ .table = table } else state.getGlobal("_G");
+    const environment = if (op.arg_count >= 3) runtime.argValue(state, thread, op, 2) else globalEnvironment(state);
 
     const closure = loadChunkFile(state, path, mode, environment) catch |err| switch (err) {
         error.RuntimeError => {
@@ -92,8 +95,7 @@ fn initialBomLen(source: []const u8) usize {
 
 pub fn dofile(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const path = try optionalPath(state, thread, op, "dofile");
-    const environment = if (state.global_table) |table| Value{ .table = table } else state.getGlobal("_G");
-    const closure = try loadChunkFile(state, path, "bt", environment);
+    const closure = try loadChunkFile(state, path, "bt", globalEnvironment(state));
     const values = try call_mod.callCollect(state, thread, closure, &.{});
     defer state.allocator.free(values);
     const result_values = if (path != null and values.len >= 2 and values[0] == .native and values[0].native == .dofile and values[1] == .string and values[1].string.eqlBytes(path.?)) values[2..] else values;
@@ -101,42 +103,66 @@ pub fn dofile(state: *State, thread: *Thread, op: bytecode.Call) !void {
 }
 
 pub fn require(state: *State, thread: *Thread, op: bytecode.Call) !void {
-    const name = try state.expectArgumentString(thread, op, "require", 0);
-    const package = try packageTable(state);
-    const loaded = try state.expectTable(package.getLiteral("loaded"));
-    const preload = try state.expectTable(package.getLiteral("preload"));
-    const name_key = Value{ .string = try state.strings.intern(name) };
+    const name_string = try state.expectArgumentStringObject(thread, op, "require", 0);
+    const name_key = Value{ .string = name_string };
+    const loaded = Value{ .table = try packageTable(state, .package_loaded) };
 
-    const cached = loaded.get(name_key);
-    if (cached != .nil and !(cached == .boolean and !cached.boolean)) {
+    const cached = try index_mod.getTableFromThread(state, thread, loaded, name_key);
+    if (runtime.truthy(cached)) {
         try state.returnValues(thread, op.base, op.return_count, &.{cached});
         return;
     }
 
-    var loader = preload.get(name_key);
-    var loader_data: Value = .nil;
-    if (loader != .nil) {
-        loader_data = .{ .string = try state.strings.intern(":preload:") };
-    } else {
-        const path_value = package.getLiteral("path");
-        if (path_value != .string) return state.failArgumentType("require", 1, "package.path string", path_value);
-        const path = path_value.string.bytes();
-        const found = try searchPath(state, name, path, ".", "/") orelse {
-            const message = try moduleNotFoundMessage(state, name, package, path);
-            return state.failString(message);
-        };
-        defer state.allocator.free(found);
-        loader = try load_mod.loadFileAsClosure(state, found);
-        loader_data = .{ .string = try state.strings.intern(found) };
-    }
+    var rooted = RequireRoots.initFill(.nil);
+    rooted.set(.loaded, loaded);
+    var roots: runtime.ValueRoots = undefined;
+    state.pushValueRoots(&roots, &rooted.values);
+    defer state.popValueRoots(&roots);
 
-    const loader_data_root = try state.rootValue(loader_data);
-    defer state.unrootValue(loader_data_root);
-    const values = try call_mod.callCollect(state, thread, loader, &.{ name_key, loader_data });
-    defer state.allocator.free(values);
-    const module_value = if (values.len == 0 or values[0] == .nil) Value{ .boolean = true } else values[0];
-    try state.setTableRaw(loaded, name_key, module_value);
-    try state.returnValues(thread, op.base, op.return_count, &.{ module_value, loader_data });
+    try findLoader(state, thread, name_string.bytes(), name_key, &rooted);
+    const values = try call_mod.callCollect(state, thread, rooted.get(.loader), &.{ name_key, rooted.get(.loader_data) });
+    rooted.set(.module, if (values.len > 0) values[0] else .nil);
+    state.allocator.free(values);
+    if (rooted.get(.module) != .nil) try index_mod.setTableFromThread(state, thread, loaded, name_key, rooted.get(.module));
+    rooted.set(.module, try index_mod.getTableFromThread(state, thread, loaded, name_key));
+    if (rooted.get(.module) == .nil) {
+        rooted.set(.module, .{ .boolean = true });
+        try index_mod.setTableFromThread(state, thread, loaded, name_key, rooted.get(.module));
+    }
+    try state.returnValues(thread, op.base, op.return_count, &.{ rooted.get(.module), rooted.get(.loader_data) });
+}
+
+/// Values `require` keeps rooted while searchers and the loader run.
+const RequireRoots = std.EnumArray(enum { loaded, searchers, loader, loader_data, module }, Value);
+
+fn findLoader(state: *State, thread: *Thread, name: []const u8, name_key: Value, rooted: *RequireRoots) !void {
+    const searchers = (try packageTable(state, .package)).getLiteral("searchers");
+    if (searchers != .table) return state.fail("'package.searchers' must be a table");
+    rooted.set(.searchers, searchers);
+
+    var message = std.ArrayList(u8).empty;
+    defer message.deinit(state.allocator);
+    var index: i64 = 1;
+    while (true) : (index += 1) {
+        const searcher = searchers.table.get(.{ .integer = index });
+        if (searcher == .nil) {
+            const text = try std.fmt.allocPrint(state.allocator, "module '{s}' not found:{s}", .{ name, message.items });
+            defer state.allocator.free(text);
+            return state.fail(text);
+        }
+        const values = try call_mod.callCollect(state, thread, searcher, &.{name_key});
+        defer state.allocator.free(values);
+        const first = if (values.len > 0) values[0] else .nil;
+        if (value_mod.functionLike(first)) {
+            rooted.set(.loader, first);
+            rooted.set(.loader_data, if (values.len > 1) values[1] else .nil);
+            return;
+        }
+        if (value_mod.luaStringLike(first)) {
+            try message.appendSlice(state.allocator, "\n\t");
+            try runtime.appendLuaString(state.allocator, &message, first);
+        }
+    }
 }
 
 pub fn searchpath(state: *State, thread: *Thread, op: bytecode.Call) !void {
@@ -170,11 +196,13 @@ pub fn loadlib(state: *State, thread: *Thread, op: bytecode.Call) !void {
 }
 
 pub fn searcherPreload(state: *State, thread: *Thread, op: bytecode.Call) !void {
-    const name = try state.expectArgumentString(thread, op, "package.searchers preload", 0);
-    const preload = try state.expectTable((try packageTable(state)).getLiteral("preload"));
-    const loader = preload.getBytes(name);
+    const name = try state.expectArgumentStringObject(thread, op, "package.searchers preload", 0);
+    const preload = Value{ .table = try packageTable(state, .package_preload) };
+    const loader = try index_mod.getTableFromThread(state, thread, preload, .{ .string = name });
     if (loader == .nil) {
-        try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern("no field package.preload") }});
+        const message = try std.fmt.allocPrint(state.allocator, "no field package.preload['{s}']", .{name.bytes()});
+        defer state.allocator.free(message);
+        try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(message) }});
     } else {
         try state.returnValues(thread, op.base, op.return_count, &.{ loader, .{ .string = try state.strings.intern(":preload:") } });
     }
@@ -182,70 +210,103 @@ pub fn searcherPreload(state: *State, thread: *Thread, op: bytecode.Call) !void 
 
 pub fn searcherLua(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const name = try state.expectArgumentString(thread, op, "package.searchers Lua", 0);
-    const package = try packageTable(state);
-    const path = try state.expectString(package.getLiteral("path"));
-    const found = try searchPath(state, name, path, ".", "/") orelse {
-        try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern("no matching file") }});
-        return;
+    const filename = try findFile(state, thread, op, name, "path") orelse return;
+    defer state.allocator.free(filename);
+    const loader = loadChunkFile(state, filename, "bt", globalEnvironment(state)) catch |err| switch (err) {
+        error.RuntimeError => {
+            var detail = std.ArrayList(u8).empty;
+            defer detail.deinit(state.allocator);
+            const error_value = state.currentErrorValue();
+            if (value_mod.luaStringLike(error_value)) try runtime.appendLuaString(state.allocator, &detail, error_value);
+            return failLoadingModule(state, name, filename, detail.items);
+        },
+        else => return err,
     };
-    defer state.allocator.free(found);
-    const loader = load_mod.loadFileAsClosure(state, found) catch {
-        try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern("cannot load file") }});
-        return;
-    };
-    try state.returnValues(thread, op.base, op.return_count, &.{ loader, .{ .string = try state.strings.intern(found) } });
+    try state.returnValues(thread, op.base, op.return_count, &.{ loader, .{ .string = try state.strings.intern(filename) } });
 }
 
-fn packageTable(state: *State) !*runtime.Table {
-    return state.expectTable(state.getGlobal("package"));
+pub fn searcherC(state: *State, thread: *Thread, op: bytecode.Call) !void {
+    const name = try state.expectArgumentString(thread, op, "package.searchers C", 0);
+    const filename = try findFile(state, thread, op, name, "cpath") orelse return;
+    defer state.allocator.free(filename);
+    return failLoadingModule(state, name, filename, dynamic_libraries_message);
+}
+
+pub fn searcherCroot(state: *State, thread: *Thread, op: bytecode.Call) !void {
+    const name = try state.expectArgumentString(thread, op, "package.searchers Croot", 0);
+    const dot = std.mem.indexOfScalar(u8, name, '.') orelse return state.returnValues(thread, op.base, op.return_count, &.{});
+    const filename = try findFile(state, thread, op, name[0..dot], "cpath") orelse return;
+    defer state.allocator.free(filename);
+    return failLoadingModule(state, name, filename, dynamic_libraries_message);
+}
+
+const dynamic_libraries_message = "dynamic libraries not enabled; check your Lua installation";
+
+/// Returns the owned path of the first readable file, or null after returning the not-found message to Lua.
+fn findFile(state: *State, thread: *Thread, op: bytecode.Call, name: []const u8, comptime field: []const u8) !?[]const u8 {
+    const path_value = (try packageTable(state, .package)).getLiteral(field);
+    if (!value_mod.luaStringLike(path_value)) return state.fail("'package." ++ field ++ "' must be a string");
+    var path = std.ArrayList(u8).empty;
+    defer path.deinit(state.allocator);
+    try runtime.appendLuaString(state.allocator, &path, path_value);
+
+    if (try searchPath(state, name, path.items, ".", "/")) |found| return found;
+    const message = try searchPathError(state, name, path.items, ".", "/");
+    defer state.allocator.free(message);
+    try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(message) }});
+    return null;
+}
+
+fn failLoadingModule(state: *State, name: []const u8, filename: []const u8, detail: []const u8) RuntimeError {
+    const message = std.fmt.allocPrint(state.allocator, "error loading module '{s}' from file '{s}':\n\t{s}", .{ name, filename, detail }) catch return error.OutOfMemory;
+    defer state.allocator.free(message);
+    return state.fail(message);
+}
+
+fn globalEnvironment(state: *State) Value {
+    return if (state.global_table) |table| Value{ .table = table } else state.getGlobal("_G");
+}
+
+fn packageTable(state: *State, which: stdlib.LibraryTable) !*runtime.Table {
+    return state.library_tables.get(which) orelse state.fail("package library is not open");
 }
 
 fn searchPath(state: *State, name: []const u8, path: []const u8, sep: []const u8, rep: []const u8) !?[]const u8 {
-    const module_path = try modulePath(state, name, sep, rep);
-    defer state.allocator.free(module_path);
+    const candidates = try pathCandidates(state, name, path, sep, rep);
+    defer state.allocator.free(candidates);
 
-    var iterator = std.mem.splitScalar(u8, path, ';');
-    while (iterator.next()) |template| {
-        var candidate = try applyTemplate(state.allocator, template, module_path);
-        defer candidate.deinit(state.allocator);
-        const contents = io_mod.readFileRaw(state, candidate.items) catch |err| {
+    var iterator = std.mem.splitScalar(u8, candidates, ';');
+    while (iterator.next()) |candidate| {
+        const contents = io_mod.readFileRaw(state, candidate) catch |err| {
             if (err == error.OutOfMemory) return error.OutOfMemory;
             continue;
         };
         state.allocator.free(contents);
-        const found = try state.allocator.dupe(u8, candidate.items);
-        return found;
+        return try state.allocator.dupe(u8, candidate);
     }
     return null;
 }
 
-fn moduleNotFoundMessage(state: *State, name: []const u8, package: *runtime.Table, path: []const u8) !*const String {
-    var out = std.ArrayList(u8).empty;
-    defer out.deinit(state.allocator);
-    try runtime.appendFmt(state.allocator, &out, "module '{s}' not found:\n\tno field package.preload['{s}']", .{ name, name });
-    try appendSearchPathError(state, &out, name, path, ".", "/");
-    const cpath_value = package.getLiteral("cpath");
-    if (cpath_value == .string) try appendSearchPathError(state, &out, name, cpath_value.string.bytes(), ".", "/");
-    return state.strings.intern(out.items);
-}
-
 fn searchPathError(state: *State, name: []const u8, path: []const u8, sep: []const u8, rep: []const u8) ![]u8 {
+    const candidates = try pathCandidates(state, name, path, sep, rep);
+    defer state.allocator.free(candidates);
+
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(state.allocator);
-    try appendSearchPathError(state, &out, name, path, sep, rep);
+    var iterator = std.mem.splitScalar(u8, candidates, ';');
+    var first = true;
+    while (iterator.next()) |candidate| : (first = false) {
+        if (!first) try out.appendSlice(state.allocator, "\n\t");
+        try runtime.appendFmt(state.allocator, &out, "no file '{s}'", .{candidate});
+    }
     return out.toOwnedSlice(state.allocator);
 }
 
-fn appendSearchPathError(state: *State, out: *std.ArrayList(u8), name: []const u8, path: []const u8, sep: []const u8, rep: []const u8) !void {
+/// Returns `path` with every `?` replaced by `name` after its `sep` occurrences become `rep`.
+fn pathCandidates(state: *State, name: []const u8, path: []const u8, sep: []const u8, rep: []const u8) ![]u8 {
     const module_path = try modulePath(state, name, sep, rep);
     defer state.allocator.free(module_path);
-
-    var iterator = std.mem.splitScalar(u8, path, ';');
-    while (iterator.next()) |template| {
-        var candidate = try applyTemplate(state.allocator, template, module_path);
-        defer candidate.deinit(state.allocator);
-        try runtime.appendFmt(state.allocator, out, "\n\tno file '{s}'", .{candidate.items});
-    }
+    return std.mem.replaceOwned(u8, state.allocator, path, "?", module_path);
 }
 
 fn modulePath(state: *State, name: []const u8, sep: []const u8, rep: []const u8) ![]u8 {
@@ -260,17 +321,4 @@ fn modulePath(state: *State, name: []const u8, sep: []const u8, rep: []const u8)
     }
     try out.appendSlice(state.allocator, rest);
     return out.toOwnedSlice(state.allocator);
-}
-
-fn applyTemplate(allocator: std.mem.Allocator, template: []const u8, module_path: []const u8) !std.ArrayList(u8) {
-    var candidate = std.ArrayList(u8).empty;
-    errdefer candidate.deinit(allocator);
-    for (template) |byte| {
-        if (byte == '?') {
-            try candidate.appendSlice(allocator, module_path);
-        } else {
-            try candidate.append(allocator, byte);
-        }
-    }
-    return candidate;
 }

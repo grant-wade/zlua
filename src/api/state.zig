@@ -344,14 +344,14 @@ pub const State = struct {
 
     /// Sets `package.loaded[name]` so `require(name)` returns `module`; opens `package` if needed.
     pub fn setLoadedModule(self: *State, name: []const u8, module: anytype) !void {
-        var loaded = try self.packageField("loaded");
+        var loaded = try self.packageTable(.package_loaded);
         defer loaded.deinit();
         try loaded.set(name, module);
     }
 
     /// Sets `package.preload[name]`, opening `package` if needed. The host keeps its `loader` handle.
     pub fn preloadModule(self: *State, name: []const u8, loader: Function) !void {
-        var preload = try self.packageField("preload");
+        var preload = try self.packageTable(.package_preload);
         defer preload.deinit();
         try preload.set(name, loader);
     }
@@ -374,18 +374,14 @@ pub const State = struct {
         return convert.fromRuntimeResults(self, results, T);
     }
 
-    fn packageField(self: *State, name: []const u8) !Table {
+    fn packageTable(self: *State, which: stdlib.LibraryTable) !Table {
         try self.ensurePackageLibrary();
-        var package = try self.getGlobal("package", Table);
-        defer package.deinit();
-        return package.get(name, Table);
+        return convert.fromRuntimeValue(self, .{ .table = self.raw_state.library_tables.get(which).? }, Table);
     }
 
     /// Sets `package.path`, opening the package library if needed.
     pub fn setPackagePath(self: *State, path: []const u8) !void {
-        try self.ensurePackageLibrary();
-
-        var package = try self.getGlobal("package", Table);
+        var package = try self.packageTable(.package);
         defer package.deinit();
         try package.set("path", path);
     }
@@ -512,7 +508,7 @@ pub const State = struct {
     }
 
     fn ensurePackageLibrary(self: *State) !void {
-        if (self.raw_state.getGlobal("package") == .nil) {
+        if (self.raw_state.library_tables.get(.package) == null) {
             try stdlib.openLibraries(&self.raw_state, .{ .libraries = .{ .package = true } });
         }
     }

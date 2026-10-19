@@ -592,7 +592,7 @@ test "api package loading rejects sandbox escape module paths" {
         \\local found, search_err = package.searchpath('../secret', '?.lua;../?.lua;/tmp/?.lua', '', '')
         \\assert(found == nil and tostring(search_err):find('no file'))
         \\local loader, loader_data = package.searchers[2]('..secret')
-        \\assert(type(loader) == 'string' and loader:find('no matching file'))
+        \\assert(type(loader) == 'string' and loader:find("no file '//secret.lua'", 1, true))
         \\assert(loader_data == nil)
         \\local ok, require_err = pcall(require, '..secret')
         \\assert(ok == false and tostring(require_err):find("module '..secret' not found"))

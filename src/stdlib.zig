@@ -102,6 +102,9 @@ pub const LibraryTable = enum {
     zerde_null,
     zerde_array_metatable,
     zerde_object_metatable,
+    package,
+    package_loaded,
+    package_preload,
 };
 
 pub const InitHints = struct {
@@ -527,17 +530,10 @@ fn openPackage(state: *State, libraries: LibrarySet) !void {
     }
     try putStaticGlobal(state, "require", .{ .native = .require });
 
-    const loaded_count: u32 = 1 + @as(u32, @intFromBool(libraries.coroutine)) + @as(u32, @intFromBool(libraries.debug)) +
-        @as(u32, @intFromBool(libraries.io)) + @as(u32, @intFromBool(libraries.math)) + @as(u32, @intFromBool(libraries.os)) +
-        @as(u32, @intFromBool(libraries.string)) + @as(u32, @intFromBool(libraries.table)) + @as(u32, @intFromBool(libraries.utf8)) +
-        @as(u32, @intFromBool(libraries.json)) + @as(u32, @intFromBool(libraries.toml)) + @as(u32, @intFromBool(libraries.msgpack)) +
-        @as(u32, @intFromBool(libraries.csv)) + @as(u32, @intFromBool(libraries.fs));
-    const package_lib = try state.newTableWithHints(0, 8);
-    const loaded = try state.newTableWithHints(0, loaded_count);
-    const preload = try state.newTableWithHints(0, 4);
-    const searchers = try state.newTableWithHints(2, 0);
-    try state.setTableRaw(searchers.table, .{ .integer = 1 }, .{ .native = .package_searcher_preload });
-    try state.setTableRaw(searchers.table, .{ .integer = 2 }, .{ .native = .package_searcher_lua });
+    const tables = &state.library_tables;
+    if (tables.get(.package) == null) try createPackageTables(state, libraries);
+    const package_lib = Value{ .table = tables.get(.package).? };
+    const loaded = Value{ .table = tables.get(.package_loaded).? };
     if (libraries.coroutine) try setStaticField(state, loaded, "coroutine", state.getGlobal("coroutine"));
     if (libraries.debug) try setStaticField(state, loaded, "debug", state.getGlobal("debug"));
     if (libraries.io) try setStaticField(state, loaded, "io", state.getGlobal("io"));
@@ -552,6 +548,23 @@ fn openPackage(state: *State, libraries: LibrarySet) !void {
     if (libraries.csv) try setStaticField(state, loaded, "csv", state.getGlobal("csv"));
     if (libraries.fs) try setStaticField(state, loaded, "fs", state.getGlobal("fs"));
     try setStaticField(state, loaded, "package", package_lib);
+    try putStaticGlobal(state, "package", package_lib);
+}
+
+fn createPackageTables(state: *State, libraries: LibrarySet) !void {
+    const loaded_count: u32 = 1 + @as(u32, @intFromBool(libraries.coroutine)) + @as(u32, @intFromBool(libraries.debug)) +
+        @as(u32, @intFromBool(libraries.io)) + @as(u32, @intFromBool(libraries.math)) + @as(u32, @intFromBool(libraries.os)) +
+        @as(u32, @intFromBool(libraries.string)) + @as(u32, @intFromBool(libraries.table)) + @as(u32, @intFromBool(libraries.utf8)) +
+        @as(u32, @intFromBool(libraries.json)) + @as(u32, @intFromBool(libraries.toml)) + @as(u32, @intFromBool(libraries.msgpack)) +
+        @as(u32, @intFromBool(libraries.csv)) + @as(u32, @intFromBool(libraries.fs));
+    const package_lib = try state.newTableWithHints(0, 8);
+    const loaded = try state.newTableWithHints(0, loaded_count);
+    const preload = try state.newTableWithHints(0, 4);
+    const searchers = try state.newTableWithHints(4, 0);
+    try state.setTableRaw(searchers.table, .{ .integer = 1 }, .{ .native = .package_searcher_preload });
+    try state.setTableRaw(searchers.table, .{ .integer = 2 }, .{ .native = .package_searcher_lua });
+    try state.setTableRaw(searchers.table, .{ .integer = 3 }, .{ .native = .package_searcher_c });
+    try state.setTableRaw(searchers.table, .{ .integer = 4 }, .{ .native = .package_searcher_croot });
     try setStaticField(state, package_lib, "loaded", loaded);
     try setStaticField(state, package_lib, "preload", preload);
     try setStaticField(state, package_lib, "searchers", searchers);
@@ -560,7 +573,9 @@ fn openPackage(state: *State, libraries: LibrarySet) !void {
     try setStaticField(state, package_lib, "path", .{ .string = static_strings.get("./?.lua;./?/init.lua") });
     try setStaticField(state, package_lib, "cpath", .{ .string = static_strings.get("") });
     try setStaticField(state, package_lib, "config", .{ .string = static_strings.get("/\n;\n?\n!\n-\n") });
-    try putStaticGlobal(state, "package", package_lib);
+    state.library_tables.set(.package, package_lib.table);
+    state.library_tables.set(.package_loaded, loaded.table);
+    state.library_tables.set(.package_preload, preload.table);
 }
 
 pub const NativeFn = runtime.NativeFn;
@@ -637,6 +652,8 @@ pub fn callNative(state: *State, native: NativeFn, thread: *Thread, op: bytecode
         .package_searchpath => try package.searchpath(state, thread, op),
         .package_searcher_preload => try package.searcherPreload(state, thread, op),
         .package_searcher_lua => try package.searcherLua(state, thread, op),
+        .package_searcher_c => try package.searcherC(state, thread, op),
+        .package_searcher_croot => try package.searcherCroot(state, thread, op),
         .package_loadlib => try package.loadlib(state, thread, op),
         .io_read => try io.read(state, thread, op),
         .io_write => try io.write(state, thread, op),

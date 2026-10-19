@@ -34,6 +34,8 @@ pub const File = struct {
     /// C `fopen` succeeds on directories; reads then fail.
     is_directory: bool = false,
     device_pending: bool = false,
+    /// glibc `_IO_CURRENTLY_PUTTING` for a buffered `/dev/full` stream.
+    device_putting: bool = false,
     content: std.ArrayList(u8) = .empty,
     pos: usize = 0,
     /// Prefix of `content` known to match the host file.
@@ -504,7 +506,10 @@ pub fn fileSetvbuf(state: *State, thread: *Thread, op: bytecode.Call) !void {
     try ensureOpen(state, handle.file);
     const mode = try state.expectArgumentString(thread, op, "file:setvbuf", 1);
     const buffer_mode = std.meta.stringToEnum(File.BufferMode, mode) orelse return state.failArgumentMessage("file:setvbuf", 2, "invalid mode");
-    if (try flushReport(state, handle.file)) |failure| return returnResult(state, thread, op, failure, .nil);
+    const syncs = handle.file.kind != .full_device or builtin.os.tag != .linux or buffer_mode == .no;
+    if (syncs) {
+        if (try flushReport(state, handle.file)) |failure| return returnResult(state, thread, op, failure, .nil);
+    }
     handle.file.buffer_mode = buffer_mode;
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = true }});
 }
@@ -956,9 +961,15 @@ fn writeToFile(state: *State, thread: *Thread, op: bytecode.Call, handle: Handle
             .discard => {},
             .full_device => if (bytes.len != 0) {
                 if (file.buffer_mode == .no) return returnWriteFailure(state, thread, op, host.fileError(error.NoSpaceLeft), total);
-                file.device_pending = true;
-                if (builtin.os.tag == .freebsd and line_buffered and std.mem.indexOfScalar(u8, bytes, '\n') != null)
-                    return returnWriteFailure(state, thread, op, host.fileError(error.NoSpaceLeft), total);
+                if (builtin.os.tag == .linux and line_buffered) {
+                    if (fullDeviceLineWrite(file, bytes)) |written|
+                        return returnWriteFailure(state, thread, op, host.fileError(error.NoSpaceLeft), total + written);
+                } else {
+                    file.device_putting = true;
+                    file.device_pending = true;
+                    if (builtin.os.tag == .freebsd and line_buffered and std.mem.indexOfScalar(u8, bytes, '\n') != null)
+                        return returnWriteFailure(state, thread, op, host.fileError(error.NoSpaceLeft), total);
+                }
             },
             .buffer => writeBytes(state, handle, bytes) catch |err| switch (err) {
                 error.FileTooBig => return returnWriteFailure(state, thread, op, host.fileError(err), total),
@@ -971,6 +982,19 @@ fn writeToFile(state: *State, thread: *Thread, op: bytecode.Call, handle: Handle
         if (try flushReport(state, file)) |failure| return returnWriteFailure(state, thread, op, failure, 0);
     } else if (wrote_newline) _ = try flushReport(state, file);
     try state.returnValues(thread, op.base, op.return_count, &.{handle.value()});
+}
+
+/// Buffers a line-buffered glibc write to `/dev/full`; returns the count `fwrite` reports when the newline flush fails.
+fn fullDeviceLineWrite(file: *File, bytes: []const u8) ?usize {
+    const was_putting = file.device_putting;
+    file.device_putting = true;
+    const newline = (if (was_putting) std.mem.lastIndexOfScalar(u8, bytes, '\n') else std.mem.indexOfScalar(u8, bytes, '\n')) orelse {
+        file.device_pending = true;
+        return null;
+    };
+    file.device_pending = false;
+    if (!was_putting) return newline;
+    return if (newline + 1 == bytes.len) 0 else newline + 1;
 }
 
 fn returnWriteFailure(state: *State, thread: *Thread, op: bytecode.Call, info: host.FileError, total: usize) !void {
@@ -1259,6 +1283,35 @@ test "Linux /dev/full emulation follows glibc stream results" {
     const reader = try newFile(&state, .{ .kind = .full_device, .path = "/dev/full", .mode = parseMode("r").? });
     try state.setTableRaw(state.global_table.?, .{ .string = try state.strings.intern("reader") }, reader);
     try entry_mod.executeSourceChunk(&state,
+        \\local function line_stream()
+        \\  local f = assert(io.open('/dev/full', 'w'))
+        \\  assert(f:setvbuf('line'))
+        \\  return f
+        \\end
+        \\local function count(f, ...)
+        \\  local ok, _, code, written = f:write(...)
+        \\  if ok == f then return 'ok' end
+        \\  assert(code == 28)
+        \\  return written
+        \\end
+        \\-- A first write fails at its first newline and reports the bytes before it.
+        \\local f = line_stream()
+        \\assert(count(f, 'ab\ncd\n') == 2 and f:flush() == true and f:close() == true)
+        \\-- Later writes flush through their last newline; glibc 2.41 reports 0 when nothing follows it.
+        \\f = line_stream()
+        \\assert(count(f, 'x') == 'ok' and count(f, 'ab\ncd') == 3 and count(f, 'line\n') == 0)
+        \\assert(count(f, 'prefix', 'z\n', 'after') == 6)
+        \\assert(f:flush() == true and f:close() == true)
+        \\-- Pending output survives a failed newline flush only when written after it.
+        \\f = line_stream()
+        \\assert(count(f, 'x') == 'ok' and count(f, 'line\n') == 0 and count(f, 'y') == 'ok')
+        \\assert(f:flush() == nil and f:close() == true)
+        \\-- Switching to line or full buffering keeps pending output; only unbuffering flushes it.
+        \\f = assert(io.open('/dev/full', 'w'))
+        \\assert(f:write('x') == f and f:setvbuf('line') == true and count(f, 'a\n') == 0 and f:flush() == true)
+        \\assert(f:write('x') == f and f:setvbuf('full') == true and f:setvbuf('no') == nil and f:close() == true)
+    );
+    try entry_mod.executeSourceChunk(&state,
         \\local enospc = 'No space left on device'
         \\-- Full buffering: writes succeed, a flush fails once and discards them.
         \\assert(full:write('abcd') == full)
@@ -1274,9 +1327,6 @@ test "Linux /dev/full emulation follows glibc stream results" {
         \\assert(err == 28 and count == 0)
         \\assert(select(4, other:write('', 'xy', 'z')) == 0)
         \\assert(other:write('') == other)
-        \\-- Line buffering: glibc ignores the failed flush at a newline.
-        \\assert(other:setvbuf('line'))
-        \\assert(other:write('no newline') == other and other:write('line\n') == other)
         \\assert(other:close() == true)
         \\-- The default output reports through io.flush and io.close.
         \\io.output(third)
