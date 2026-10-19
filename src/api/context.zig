@@ -1,3 +1,4 @@
+const std = @import("std");
 const reflection = @import("../reflection.zig");
 const runtime = @import("../runtime.zig");
 const coroutine_runtime = @import("../runtime/coroutine.zig");
@@ -16,6 +17,11 @@ pub const Context = struct {
 
     pub fn state(self: *Context) *State {
         return self.lua;
+    }
+
+    /// The `IoCapability.runtime` the state was created with, or null when none was configured.
+    pub fn io(self: *Context) ?std.Io {
+        return self.raw.state.options.io;
     }
 
     pub fn argCount(self: *Context) usize {

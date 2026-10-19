@@ -144,6 +144,7 @@ pub const Context = struct {
 | Name | Parameters | Return Type | Description |
 | --- | --- | --- | --- |
 | [state](#fn-context-state) | `self: *Context` | `*State` |  |
+| [io](#fn-context-io) | `self: *Context` | `?std.Io` | The &#96;IoCapability.runtime&#96; the state was created with, or null when none was configured. |
 | [argCount](#fn-context-argcount) | `self: *Context` | `usize` |  |
 | [arg](#fn-context-arg) | `self: *Context, index: usize, comptime T: type` | `!T` | A &#96;[]const u8&#96; argument borrows VM memory until the callback returns. |
 | [optionalArg](#fn-context-optionalarg) | `self: *Context, index: usize, comptime T: type` | `!?T` | Returns null when absent or &#96;nil&#96;. |
@@ -162,6 +163,18 @@ pub const Context = struct {
 
 ```zig
 pub fn state(self: *Context) *State
+```
+
+References: [`Context`](#type-context)
+
+<a id="fn-context-io"></a>
+
+### Context.io
+
+The `IoCapability.runtime` the state was created with, or null when none was configured.
+
+```zig
+pub fn io(self: *Context) ?std.Io
 ```
 
 References: [`Context`](#type-context)

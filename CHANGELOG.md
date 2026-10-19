@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Embedding API
+
+- `Context.io` returns the state's configured `std.Io`.
+
 ### Fixes
 
 - `require` ignored `package.searchers`, including custom searchers.

@@ -438,6 +438,22 @@ defer clamp_fn.deinit();
 try lua.setGlobal("clamp", clamp_fn);
 ```
 
+`ctx.io()` returns the `std.Io` passed as `capabilities.io.runtime`, or null when the state has none:
+
+```zig
+fn hostReadFile(ctx: *zlua.Context) !void {
+    const io = ctx.io() orelse return ctx.raise("host I/O is not configured");
+    const path = try ctx.arg(0, []const u8);
+    const allocator = ctx.state().allocator();
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(1 << 20)) catch |err|
+        return ctx.raise(@errorName(err));
+    defer allocator.free(bytes);
+    try ctx.returnValues(.{bytes});
+}
+```
+
+The state stores a copy of the `std.Io` handle, and the implementation behind it, such as a `std.Io.Threaded`, must outlive the state. Snapshots and the states created from them share the same `std.Io`; it must also outlive the last snapshot handle and worker, and be safe to call from every thread a worker runs on. `newState` and `reset` keep the source state's value, including null. A callback must await or cancel any future it starts before it returns or yields. Calls through `ctx.io()` are not checked against the filesystem, clock, or process capabilities.
+
 A callback can call back into Lua with `Context.callNonYielding(function, args, R)`. The call runs on the callback's coroutine, within that coroutine's current instruction budget, and the Lua code is not allowed to yield. Lua errors propagate unchanged once cleanup, including `__close`, has run, and any effects that already completed stay in place. `Context.coroutineIdentity()` returns a token for the current coroutine that is valid only during the callback and is invalidated by reset.
 
 ## Calling and Errors

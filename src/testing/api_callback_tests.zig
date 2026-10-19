@@ -378,3 +378,113 @@ test "native callbacks work as library callbacks and iterators" {
         \\assert(sum == 6)
     , .{});
 }
+
+const IoCallbacks = struct {
+    var dir: std.Io.Dir = undefined;
+
+    fn hasIo(ctx: *Context) !void {
+        try ctx.returnValues(.{ctx.io() != null});
+    }
+
+    fn hasIoTyped(ctx: *Context) bool {
+        return ctx.io() != null;
+    }
+
+    fn matchesTestingIo(ctx: *Context) !void {
+        const io = ctx.io() orelse return ctx.raise("host I/O is not configured");
+        try ctx.returnValues(.{io.vtable == std.testing.io.vtable});
+    }
+
+    fn readFile(ctx: *Context) !void {
+        const io = ctx.io() orelse return ctx.raise("host I/O is not configured");
+        const path = try ctx.arg(0, []const u8);
+        const allocator = ctx.state().allocator();
+        const bytes = dir.readFileAlloc(io, path, allocator, .limited(1024)) catch |err| return ctx.raise(@errorName(err));
+        defer allocator.free(bytes);
+        try ctx.returnValues(.{bytes});
+    }
+};
+
+fn installIoCallbacks(lua: *State) !void {
+    var has_io = try lua.register("has_io", IoCallbacks.hasIo);
+    defer has_io.deinit();
+    try lua.setGlobal("has_io", has_io);
+    var has_io_typed = try lua.registerTyped("has_io_typed", IoCallbacks.hasIoTyped);
+    defer has_io_typed.deinit();
+    try lua.setGlobal("has_io_typed", has_io_typed);
+    var matches_testing_io = try lua.register("matches_testing_io", IoCallbacks.matchesTestingIo);
+    defer matches_testing_io.deinit();
+    try lua.setGlobal("matches_testing_io", matches_testing_io);
+    var read_file = try lua.register("read_file", IoCallbacks.readFile);
+    defer read_file.deinit();
+    try lua.setGlobal("read_file", read_file);
+}
+
+const expect_no_io =
+    \\assert(has_io() == false)
+    \\assert(has_io_typed() == false)
+    \\local ok, err = pcall(read_file, "data.txt")
+    \\assert(not ok and err == "host I/O is not configured")
+;
+
+const expect_testing_io =
+    \\assert(has_io() == true)
+    \\assert(has_io_typed() == true)
+    \\assert(matches_testing_io() == true)
+    \\assert(read_file("data.txt") == "from host")
+;
+
+test "api callback context io is null without configured io" {
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    try installIoCallbacks(&lua);
+    try lua.doString(expect_no_io, .{ .name = "=no-io" });
+}
+
+test "api callback context io returns configured runtime io" {
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    try temporary.dir.writeFile(std.testing.io, .{ .sub_path = "data.txt", .data = "from host" });
+    IoCallbacks.dir = temporary.dir;
+
+    var lua = try State.init(std.testing.allocator, .{ .capabilities = .{ .io = .{ .runtime = std.testing.io } } });
+    defer lua.deinit();
+    try installIoCallbacks(&lua);
+    try lua.doString(expect_testing_io, .{ .name = "=io" });
+}
+
+test "api callback context io carries across snapshot states and reset" {
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    try temporary.dir.writeFile(std.testing.io, .{ .sub_path = "data.txt", .data = "from host" });
+    IoCallbacks.dir = temporary.dir;
+
+    var lua = try State.init(std.testing.allocator, .{ .capabilities = .{ .io = .{ .runtime = std.testing.io } } });
+    defer lua.deinit();
+    try installIoCallbacks(&lua);
+    var snapshot = try lua.snapshot(std.testing.allocator);
+    defer snapshot.deinit();
+
+    var first = try snapshot.newState(std.testing.allocator);
+    defer first.deinit();
+    var second = try snapshot.newState(std.testing.allocator);
+    defer second.deinit();
+    try first.doString(expect_testing_io, .{ .name = "=first" });
+    try second.doString(expect_testing_io, .{ .name = "=second" });
+    try first.reset();
+    try first.doString(expect_testing_io, .{ .name = "=first-reset" });
+}
+
+test "api callback context io stays null across snapshot states and reset" {
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    try installIoCallbacks(&lua);
+    var snapshot = try lua.snapshot(std.testing.allocator);
+    defer snapshot.deinit();
+
+    var worker = try snapshot.newState(std.testing.allocator);
+    defer worker.deinit();
+    try worker.doString(expect_no_io, .{ .name = "=worker" });
+    try worker.reset();
+    try worker.doString(expect_no_io, .{ .name = "=worker-reset" });
+}
