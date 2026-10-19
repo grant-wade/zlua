@@ -403,6 +403,9 @@ pub const LibraryTable = enum {
     zerde_null,
     zerde_array_metatable,
     zerde_object_metatable,
+    package,
+    package_loaded,
+    package_preload,
 };
 ```
 

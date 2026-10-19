@@ -189,6 +189,8 @@ pub const File = struct {
     /// C `fopen` succeeds on directories; reads then fail.
     is_directory: bool = false,
     device_pending: bool = false,
+    /// glibc `_IO_CURRENTLY_PUTTING` for a buffered `/dev/full` stream.
+    device_putting: bool = false,
     content: std.ArrayList(u8) = .empty,
     pos: usize = 0,
     /// Prefix of `content` known to match the host file.

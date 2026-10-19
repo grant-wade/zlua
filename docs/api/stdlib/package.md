@@ -131,6 +131,8 @@
 - [loadlib](#fn-loadlib)
 - [searcherPreload](#fn-searcherpreload)
 - [searcherLua](#fn-searcherlua)
+- [searcherC](#fn-searcherc)
+- [searcherCroot](#fn-searchercroot)
 
 <a id="fn-loadfile"></a>
 
@@ -188,5 +190,21 @@ pub fn searcherPreload(state: *State, thread: *Thread, op: bytecode.Call) !void
 
 ```zig
 pub fn searcherLua(state: *State, thread: *Thread, op: bytecode.Call) !void
+```
+
+<a id="fn-searcherc"></a>
+
+## searcherC
+
+```zig
+pub fn searcherC(state: *State, thread: *Thread, op: bytecode.Call) !void
+```
+
+<a id="fn-searchercroot"></a>
+
+## searcherCroot
+
+```zig
+pub fn searcherCroot(state: *State, thread: *Thread, op: bytecode.Call) !void
 ```
 

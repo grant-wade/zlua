@@ -202,6 +202,8 @@ pub const NativeFn = enum {
     package_searchpath,
     package_searcher_preload,
     package_searcher_lua,
+    package_searcher_c,
+    package_searcher_croot,
     package_loadlib,
     io_read,
     io_write,
