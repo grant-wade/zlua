@@ -127,7 +127,7 @@ For measurement, `State.initWithOptionsObserved` exposes the startup phases (sta
 
 | Object | Key data |
 | --- | --- |
-| `String` | Length, cached hash, interning flags, and GC state, followed by the bytes in the same allocation. |
+| `String` | Length, cached hash, interning flags, the entry position where the string was last found as a field key, and GC state, followed by the bytes in the same allocation. |
 | `Closure` | Proto, lazily loaded constants, and debug-strip state, followed by its upvalue pointers in the same allocation. |
 | `Upvalue` | An open stack slot or a closed stored value. |
 | `Table` | Array part, hash entries and index, metatable, and GC flags. |

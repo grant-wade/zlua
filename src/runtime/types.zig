@@ -75,8 +75,11 @@ pub const String = extern struct {
     interned: bool = false,
     /// From the static catalog; never collected or written.
     static: bool = false,
+    /// Hash-part entry index where this key was last found by a field access, or `no_field_hint`.
+    field_hint: u8 = no_field_hint,
 
     pub const short_limit = 40;
+    pub const no_field_hint = std.math.maxInt(u8);
 
     pub inline fn bytes(self: *const String) []const u8 {
         return (@as([*]const u8, @ptrCast(self)) + @sizeOf(String))[0..self.len];

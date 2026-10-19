@@ -31,6 +31,8 @@ const appendFmt = value_mod.appendFmt;
 const Closure = types.Closure;
 const String = types.String;
 const Table = types.Table;
+const TableEntry = types.TableEntry;
+const HashPart = table_index.HashPart;
 const CallFrame = types.CallFrame;
 
 pub fn runThreadUntil(self: *State, thread: *Thread, target_frame_count: usize) anyerror!void {
@@ -600,7 +602,13 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             .get_field => {
                 const op = instructions[pc].get_field;
                 const key = frame.closure.constants()[op.name].string;
-                const value = if (frame.named_vararg_readonly and op.table == proto.param_count)
+                const named_vararg = frame.named_vararg_readonly and op.table == proto.param_count;
+                if (!named_vararg) if (fieldValue(stack[op.table], key)) |hit| {
+                    stack[op.dest] = hit.*;
+                    pc += 1;
+                    continue :fast_loop std.meta.activeTag(instructions[pc]);
+                };
+                const value = if (named_vararg)
                     call_mod.namedVarargField(frame.varargs(thread.stack.items), key.bytes())
                 else if (stack[op.table] == .string)
                     stringMethod(self, key) orelse break :fast_loop
@@ -648,7 +656,10 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             .set_field => {
                 const op = instructions[pc].set_field;
                 const key = frame.closure.constants()[op.name];
-                if (!fastTableKnownKeySetExistingNoAlloc(self, stack[op.table], key, stack[op.value])) break :fast_loop;
+                if (fieldSlot(stack[op.table], key.string)) |slot| {
+                    slot.* = stack[op.value];
+                    self.gc.writeExistingKeyBarrier(stack[op.table].table, key, slot.*);
+                } else if (!fastTableKnownKeySetExistingNoAlloc(self, stack[op.table], key, stack[op.value])) break :fast_loop;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
@@ -1053,6 +1064,35 @@ inline fn arraySlot(table_value: Value, key: Value) ?*Value {
     if (index >= table.array.len) return null;
     if (table.rollback) |record| if (!record.header.detached) return null;
     const slot = &table.array.items()[@intCast(index)];
+    return if (slot.* != .nil) slot else null;
+}
+
+inline fn fieldEntry(part: *const HashPart, key: *const String) ?*TableEntry {
+    const entries = part.entries();
+    if (key.field_hint < entries.len) {
+        const entry = &entries[key.field_hint];
+        if (entry.key == .string and entry.key.string == key) return entry;
+    }
+    const index = part.find(.{ .string = key }) orelse return null;
+    if (index < String.no_field_hint and !key.static) @constCast(key).field_hint = @intCast(index);
+    return &entries[index];
+}
+
+/// Non-nil value of `key` in the table's own hash part.
+inline fn fieldValue(table_value: Value, key: *const String) ?*const Value {
+    if (table_value != .table) return null;
+    const part = table_value.table.hash orelse return null;
+    const slot = &(fieldEntry(part, key) orelse return null).value;
+    return if (slot.* != .nil) slot else null;
+}
+
+/// Slot of an existing non-nil string-keyed hash entry that a raw write may replace.
+inline fn fieldSlot(table_value: Value, key: *const String) ?*Value {
+    if (table_value != .table) return null;
+    const table = table_value.table;
+    if (table.rollback) |record| if (!record.header.detached) return null;
+    const part = table.hash orelse return null;
+    const slot = &(fieldEntry(part, key) orelse return null).value;
     return if (slot.* != .nil) slot else null;
 }
 
