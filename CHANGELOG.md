@@ -8,6 +8,11 @@
 - Concatenation, `string.rep`, `string.format`, `string.gsub`, `string.upper`, `string.lower`, `string.reverse`, `string.char`, `table.concat`, and `utf8.char` build results in place or in a reused buffer.
 - The collector keeps mark state and registry positions in a 16-byte header shared by every object type, and closures store their upvalue pointers in the same allocation.
 - Snapshot workers find the objects created since capture by registry position, without a per-object hash table.
+- Faster `#`, numeric and generic `for` loops, and write barriers.
+- Arithmetic and comparisons with a numeric constant operand use dedicated instructions.
+- Varargs stay on the caller's stack, and vararg calls and `...` run in the VM's fast loop.
+- `pcall` and `xpcall` call their function in place without copying arguments or results.
+- Table constructors reserve their exact size, table storage grows to power-of-two capacities, and each table's hash entries and index share one allocation.
 - Each loaded chunk interns its string constants once for all of its closures, and field and global lookups compare those strings by pointer.
 - Upvalues are 56 bytes instead of 72.
 - Call frames are 40 bytes instead of 136.
