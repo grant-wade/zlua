@@ -193,7 +193,7 @@
 ## version
 
 ```zig
-pub const version = "0.7.1";
+pub const version = "0.7.2";
 ```
 
 <a id="const-lua_target_version"></a>

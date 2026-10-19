@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.2
 
 ### Performance
 
@@ -23,9 +23,13 @@
 ### Fixes
 
 - A collection during a protected call could free the error value that the call restores on failure.
+- `string.format` signs NaN like the host C library on FreeBSD and Windows, and raises an error for `%a` and `%A` with modifiers on Windows.
+- `/dev/full` streams on FreeBSD report write and flush failures like FreeBSD's C library.
+- Installs and the package include `THIRD_PARTY_NOTICES` with Lua's copyright and license.
 
 ### Testing
 
+- CI runs on FreeBSD, and official-suite child processes have a 512 MiB memory cap on Linux and FreeBSD.
 - `zig build bench` prints the host system and labels builds with the running Zig version's optimize mode name.
 
 ## 0.7.1
