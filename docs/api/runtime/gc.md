@@ -29,25 +29,27 @@
 - [stdlib](../stdlib.md)
 - [stdlib.base](../stdlib/base.md)
 - [runtime.call](../runtime/call.md)
+- [stdlib.static_strings](../stdlib/static_strings.md)
+- [runtime.table_index](../runtime/table_index.md)
+- [runtime.value](../runtime/value.md)
+- [runtime.number_format](../runtime/number_format.md)
 - [runtime.coroutine](../runtime/coroutine.md)
 - [runtime.debug](../runtime/debug.md)
 - [runtime.metatable](../runtime/metatable.md)
 - [runtime.rollback](../runtime/rollback.md)
-- [runtime.value](../runtime/value.md)
-- [runtime.number_format](../runtime/number_format.md)
-- [runtime.table_index](../runtime/table_index.md)
-- [runtime.host](../runtime/host.md)
-- [runtime.upvalue](../runtime/upvalue.md)
+- [runtime.strings](../runtime/strings.md)
+- [runtime.operators](../runtime/operators.md)
 - [runtime.failure](../runtime/failure.md)
 - [runtime.io](../runtime/io.md)
+- [runtime.host](../runtime/host.md)
 - [runtime.load](../runtime/load.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.gc](../runtime/gc.md)
 - [runtime.entry](../runtime/entry.md)
 - [runtime.system](../runtime/system.md)
 - [runtime.timezone](../runtime/timezone.md)
+- [runtime.upvalue](../runtime/upvalue.md)
 - [runtime.index](../runtime/index.md)
-- [runtime.operators](../runtime/operators.md)
 - [stdlib.table](../stdlib/table.md)
 - [stdlib.string](../stdlib/string.md)
 - [stdlib.string.format](../stdlib/string/format.md)
@@ -58,7 +60,6 @@
 - [stdlib.coroutine](../stdlib/coroutine.md)
 - [stdlib.debug](../stdlib/debug.md)
 - [stdlib.io](../stdlib/io.md)
-- [stdlib.static_strings](../stdlib/static_strings.md)
 - [stdlib.os](../stdlib/os.md)
 - [stdlib.package](../stdlib/package.md)
 - [stdlib.json](../stdlib/json.md)
@@ -68,13 +69,12 @@
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
 - [runtime.budget](../runtime/budget.md)
-- [runtime.strings](../runtime/strings.md)
+- [runtime.object_pool](../runtime/object_pool.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
 - [runtime.native_fn](../runtime/native_fn.md)
-- [runtime.address_index](../runtime/address_index.md)
 - [compile.compiler](../compile/compiler.md)
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
@@ -110,6 +110,7 @@
 - [testing.bench.c_startup](../testing/bench/c_startup.md)
 - [testing.bench.snapshots](../testing/bench/snapshots.md)
 - [testing.bench.gc](../testing/bench/gc.md)
+- [testing.bench.system](../testing/bench/system.md)
 - [testing.diff_runner](../testing/diff_runner.md)
 - [testing.fixtures](../testing/fixtures.md)
 - [testing.expected_failures](../testing/expected_failures.md)
@@ -146,8 +147,8 @@ pub const Gc = struct {
     params: GcParams = .{},
     next_total: usize = 0,
     known_total: usize = 0,
-    epoch: u64 = 1,
-    generation: u64 = 1,
+    epoch: u32 = 1,
+    generation: u32 = 1,
     phase: types.GcPhase = .pause,
     cycle: types.GcCycle = .major,
     work: std.ArrayList(types.GcObject) = .empty,
@@ -159,8 +160,8 @@ pub const Gc = struct {
     cycle_start_total: usize = 0,
     found_young: bool = false,
     old: types.GcGenerations = .{},
-    /// Owned prototypes before this index have survived a collection; minor cycles sweep only the rest.
-    old_protos: usize = 0,
+    /// Chunks before this index have survived a collection; minor cycles sweep only the rest.
+    old_chunks: usize = 0,
     sweep_cursor: usize = 0,
     major_base: usize = 0,
     work_done: usize = 0,
@@ -185,7 +186,7 @@ pub const Gc = struct {
 | [noteAllocationFreed](#fn-gc-noteallocationfreed) | `gc: *Gc, bytes: usize` | `void` |  |
 | [refreshAllocationTotal](#fn-gc-refreshallocationtotal) | `gc: *Gc` | `usize` |  |
 | [currentAllocationTotal](#fn-gc-currentallocationtotal) | `gc: *Gc` | `usize` |  |
-| [noteTableCapacityDelta](#fn-gc-notetablecapacitydelta) | `gc: *Gc, table: *Table, old_capacity_bytes: usize` | `void` |  |
+| [noteTableCapacityDelta](#fn-gc-notetablecapacitydelta) | `gc: *Gc, table: *Table, old_capacity_bytes: usize` | `void` | &#96;old_capacity_bytes&#96; is &#96;tableCapacityBytes(table)&#96; before the change. |
 | [syncThreadStorage](#fn-gc-syncthreadstorage) | `gc: *Gc, thread: *Thread` | `void` |  |
 | [collectGarbageValue](#fn-gc-collectgarbagevalue) | `gc: *Gc, thread: *Thread, op: bytecode.Call` | `!void` |  |
 | [autoStep](#fn-gc-autostep) | `gc: *Gc, thread: ?*Thread` | `!void` |  |
@@ -198,20 +199,24 @@ pub const Gc = struct {
 | [notePrototype](#fn-gc-noteprototype) | `gc: *Gc, proto: *const proto_mod.Proto` | `void` | Brings the next automatic step closer by the prototype's size without adding it to the heap total, whose growth decides the switches between minor and major collections. |
 | [resetAutoThreshold](#fn-gc-resetautothreshold) | `gc: *Gc` | `void` |  |
 | [normalizeBaseline](#fn-gc-normalizebaseline) | `gc: *Gc` | `void` |  |
+| [advanceEpoch](#fn-gc-advanceepoch) | `gc: *Gc` | `void` |  |
+| [advanceGeneration](#fn-gc-advancegeneration) | `gc: *Gc` | `void` |  |
+| [clearTableLists](#fn-gc-cleartablelists) | `gc: *Gc` | `void` | Every table in the lists must still be allocated. |
 | [markValue](#fn-gc-markvalue) | `gc: *Gc, value: Value` | `void` |  |
-| [markString](#fn-gc-markstring) | `gc: *Gc, bytes: []const u8` | `void` |  |
+| [markString](#fn-gc-markstring) | `gc: *Gc, string: *const String` | `void` |  |
 | [writeTableBarrier](#fn-gc-writetablebarrier) | `gc: *Gc, table: *Table, key: Value, value: Value` | `void` |  |
+| [writeExistingKeyBarrier](#fn-gc-writeexistingkeybarrier) | `gc: *Gc, table: *Table, key: Value, value: Value` | `void` | &#96;key&#96; must already be in &#96;table&#96;. |
 | [writeBarrier](#fn-gc-writebarrier) | `gc: *Gc, parent: anytype, child: Value` | `void` |  |
 | [checkUserdataFinalizer](#fn-gc-checkuserdatafinalizer) | `gc: *Gc, userdata: *Userdata` | `void` | Registers &#96;userdata&#96; for its metatable's &#96;__gc&#96; if needed, like &#96;luaC_checkfinalizer&#96;. File handles are registered at creation, so they finalize in creation order. |
 | [removeRegistryItem](#fn-gc-removeregistryitem) | `gc: *Gc, comptime field: []const u8, index: usize` | `void` |  |
-| [findStringAllocation](#fn-gc-findstringallocation) | `gc: *Gc, bytes: []const u8` | `?usize` |  |
 | [isTrackedTable](#fn-gc-istrackedtable) | `gc: *Gc, table: *Table` | `bool` |  |
 | [destroyTable](#fn-gc-destroytable) | `gc: *Gc, table: *Table` | `void` |  |
 | [destroyUserdata](#fn-gc-destroyuserdata) | `gc: *Gc, userdata: *Userdata` | `void` |  |
 | [destroyClosure](#fn-gc-destroyclosure) | `gc: *Gc, closure: *Closure` | `void` |  |
 | [destroyThread](#fn-gc-destroythread) | `gc: *Gc, thread: *Thread` | `void` |  |
 | [allocationStats](#fn-gc-allocationstats) | `gc: *const Gc` | `RuntimeAllocationStats` |  |
-| [noteTableMetatableChanged](#fn-gc-notetablemetatablechanged) | `gc: *Gc, table: *Table, old_has_metatable: bool` | `void` |  |
+| [reserveTableFinalizer](#fn-gc-reservetablefinalizer) | `gc: *Gc` | `!void` | Reserves the lists a new &#96;__gc&#96; registration appends to. |
+| [noteTableMetatableChanged](#fn-gc-notetablemetatablechanged) | `gc: *Gc, table: *Table` | `void` |  |
 | [setMode](#fn-gc-setmode) | `gc: *Gc, mode: GcMode` | `GcMode` |  |
 | [runSteps](#fn-gc-runsteps) | `gc: *Gc, steps: usize` | `!bool` |  |
 | [upvalueBarrier](#fn-gc-upvaluebarrier) | `gc: *Gc, closure: *Closure, upvalue: *Upvalue` | `void` |  |
@@ -331,6 +336,8 @@ References: [`Gc`](#type-gc)
 <a id="fn-gc-notetablecapacitydelta"></a>
 
 ### Gc.noteTableCapacityDelta
+
+`old_capacity_bytes` is `tableCapacityBytes(table)` before the change.
 
 ```zig
 pub fn noteTableCapacityDelta(gc: *Gc, table: *Table, old_capacity_bytes: usize) void
@@ -464,6 +471,38 @@ pub fn normalizeBaseline(gc: *Gc) void
 
 References: [`Gc`](#type-gc)
 
+<a id="fn-gc-advanceepoch"></a>
+
+### Gc.advanceEpoch
+
+```zig
+pub fn advanceEpoch(gc: *Gc) void
+```
+
+References: [`Gc`](#type-gc)
+
+<a id="fn-gc-advancegeneration"></a>
+
+### Gc.advanceGeneration
+
+```zig
+pub fn advanceGeneration(gc: *Gc) void
+```
+
+References: [`Gc`](#type-gc)
+
+<a id="fn-gc-cleartablelists"></a>
+
+### Gc.clearTableLists
+
+Every table in the lists must still be allocated.
+
+```zig
+pub fn clearTableLists(gc: *Gc) void
+```
+
+References: [`Gc`](#type-gc)
+
 <a id="fn-gc-markvalue"></a>
 
 ### Gc.markValue
@@ -479,7 +518,7 @@ References: [`Gc`](#type-gc)
 ### Gc.markString
 
 ```zig
-pub fn markString(gc: *Gc, bytes: []const u8) void
+pub fn markString(gc: *Gc, string: *const String) void
 ```
 
 References: [`Gc`](#type-gc)
@@ -489,7 +528,19 @@ References: [`Gc`](#type-gc)
 ### Gc.writeTableBarrier
 
 ```zig
-pub fn writeTableBarrier(gc: *Gc, table: *Table, key: Value, value: Value) void
+pub inline fn writeTableBarrier(gc: *Gc, table: *Table, key: Value, value: Value) void
+```
+
+References: [`Gc`](#type-gc)
+
+<a id="fn-gc-writeexistingkeybarrier"></a>
+
+### Gc.writeExistingKeyBarrier
+
+`key` must already be in `table`.
+
+```zig
+pub inline fn writeExistingKeyBarrier(gc: *Gc, table: *Table, key: Value, value: Value) void
 ```
 
 References: [`Gc`](#type-gc)
@@ -499,7 +550,7 @@ References: [`Gc`](#type-gc)
 ### Gc.writeBarrier
 
 ```zig
-pub fn writeBarrier(gc: *Gc, parent: anytype, child: Value) void
+pub inline fn writeBarrier(gc: *Gc, parent: anytype, child: Value) void
 ```
 
 References: [`Gc`](#type-gc)
@@ -523,16 +574,6 @@ References: [`Gc`](#type-gc)
 
 ```zig
 pub fn removeRegistryItem(gc: *Gc, comptime field: []const u8, index: usize) void
-```
-
-References: [`Gc`](#type-gc)
-
-<a id="fn-gc-findstringallocation"></a>
-
-### Gc.findStringAllocation
-
-```zig
-pub fn findStringAllocation(gc: *Gc, bytes: []const u8) ?usize
 ```
 
 References: [`Gc`](#type-gc)
@@ -597,12 +638,24 @@ pub fn allocationStats(gc: *const Gc) RuntimeAllocationStats
 
 References: [`Gc`](#type-gc)
 
+<a id="fn-gc-reservetablefinalizer"></a>
+
+### Gc.reserveTableFinalizer
+
+Reserves the lists a new `__gc` registration appends to.
+
+```zig
+pub fn reserveTableFinalizer(gc: *Gc) !void
+```
+
+References: [`Gc`](#type-gc)
+
 <a id="fn-gc-notetablemetatablechanged"></a>
 
 ### Gc.noteTableMetatableChanged
 
 ```zig
-pub fn noteTableMetatableChanged(gc: *Gc, table: *Table, old_has_metatable: bool) void
+pub fn noteTableMetatableChanged(gc: *Gc, table: *Table) void
 ```
 
 References: [`Gc`](#type-gc)

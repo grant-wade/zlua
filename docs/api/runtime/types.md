@@ -29,25 +29,27 @@
 - [stdlib](../stdlib.md)
 - [stdlib.base](../stdlib/base.md)
 - [runtime.call](../runtime/call.md)
+- [stdlib.static_strings](../stdlib/static_strings.md)
+- [runtime.table_index](../runtime/table_index.md)
+- [runtime.value](../runtime/value.md)
+- [runtime.number_format](../runtime/number_format.md)
 - [runtime.coroutine](../runtime/coroutine.md)
 - [runtime.debug](../runtime/debug.md)
 - [runtime.metatable](../runtime/metatable.md)
 - [runtime.rollback](../runtime/rollback.md)
-- [runtime.value](../runtime/value.md)
-- [runtime.number_format](../runtime/number_format.md)
-- [runtime.table_index](../runtime/table_index.md)
-- [runtime.host](../runtime/host.md)
-- [runtime.upvalue](../runtime/upvalue.md)
+- [runtime.strings](../runtime/strings.md)
+- [runtime.operators](../runtime/operators.md)
 - [runtime.failure](../runtime/failure.md)
 - [runtime.io](../runtime/io.md)
+- [runtime.host](../runtime/host.md)
 - [runtime.load](../runtime/load.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.gc](../runtime/gc.md)
 - [runtime.entry](../runtime/entry.md)
 - [runtime.system](../runtime/system.md)
 - [runtime.timezone](../runtime/timezone.md)
+- [runtime.upvalue](../runtime/upvalue.md)
 - [runtime.index](../runtime/index.md)
-- [runtime.operators](../runtime/operators.md)
 - [stdlib.table](../stdlib/table.md)
 - [stdlib.string](../stdlib/string.md)
 - [stdlib.string.format](../stdlib/string/format.md)
@@ -58,7 +60,6 @@
 - [stdlib.coroutine](../stdlib/coroutine.md)
 - [stdlib.debug](../stdlib/debug.md)
 - [stdlib.io](../stdlib/io.md)
-- [stdlib.static_strings](../stdlib/static_strings.md)
 - [stdlib.os](../stdlib/os.md)
 - [stdlib.package](../stdlib/package.md)
 - [stdlib.json](../stdlib/json.md)
@@ -68,13 +69,12 @@
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
 - [runtime.budget](../runtime/budget.md)
-- [runtime.strings](../runtime/strings.md)
+- [runtime.object_pool](../runtime/object_pool.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
 - [runtime.native_fn](../runtime/native_fn.md)
-- [runtime.address_index](../runtime/address_index.md)
 - [compile.compiler](../compile/compiler.md)
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
@@ -110,6 +110,7 @@
 - [testing.bench.c_startup](../testing/bench/c_startup.md)
 - [testing.bench.snapshots](../testing/bench/snapshots.md)
 - [testing.bench.gc](../testing/bench/gc.md)
+- [testing.bench.system](../testing/bench/system.md)
 - [testing.diff_runner](../testing/diff_runner.md)
 - [testing.fixtures](../testing/fixtures.md)
 - [testing.expected_failures](../testing/expected_failures.md)
@@ -125,6 +126,7 @@
 
 - [RuntimeError](#type-runtimeerror)
 - [Value](#type-value)
+- [String](#type-string)
 - [AllocatorLifetime](#type-allocatorlifetime)
 - [UserdataPayload](#type-userdatapayload)
 - [ProtectedCallResult](#type-protectedcallresult)
@@ -142,22 +144,27 @@
 - [ConcatContinuation](#type-concatcontinuation)
 - [CallOneContinuation](#type-callonecontinuation)
 - [CoroutineResumeResult](#type-coroutineresumeresult)
+- [Chunk](#type-chunk)
 - [Closure](#type-closure)
 - [Upvalue](#type-upvalue)
 - [TableEntry](#type-tableentry)
 - [MetaEvent](#type-metaevent)
+- [TableArray](#type-tablearray)
 - [Table](#type-table)
 - [UserdataScope](#type-userdatascope)
 - [ValueRoots](#type-valueroots)
 - [Userdata](#type-userdata)
+- [TableFinalizer](#type-tablefinalizer)
 - [FinalizerObject](#type-finalizerobject)
 - [Thread](#type-thread)
 - [ThreadStatus](#type-threadstatus)
 - [NativeCall](#type-nativecall)
 - [CallFrame](#type-callframe)
-- [StringAllocation](#type-stringallocation)
+- [FrameExtra](#type-frameextra)
 - [AddressContext](#type-addresscontext)
-- [GcMeta](#type-gcmeta)
+- [GcColor](#type-gccolor)
+- [GcAge](#type-gcage)
+- [GcHeader](#type-gcheader)
 - [GcObject](#type-gcobject)
 - [GcPhase](#type-gcphase)
 - [GcCycle](#type-gccycle)
@@ -177,13 +184,11 @@
 
 ## Aliases
 
-- [TableEntryIndex](#alias-tableentryindex)
+- [TableHashPart](#alias-tablehashpart)
 
 ## Imports
 
 - [NativeFn](#import-nativefn) `@import("native_fn.zig")`
-- [PointerAllocationIndex](#import-pointerallocationindex) `@import("address_index.zig")`
-- [ObjectAllocationIndex](#import-objectallocationindex) `@import("address_index.zig")`
 
 <a id="type-runtimeerror"></a>
 
@@ -194,6 +199,7 @@ pub const RuntimeError = error{
     RuntimeError,
     StackOverflow,
     UnsupportedOpcode,
+    OutOfMemory,
 };
 ```
 
@@ -207,7 +213,7 @@ pub const Value = union(enum(u8)) {
     boolean: bool,
     integer: i64,
     number: f64,
-    string: []const u8,
+    string: *const String,
     table: *Table,
     userdata: *Userdata,
     closure: *Closure,
@@ -254,6 +260,129 @@ pub const Value = union(enum(u8)) {
 ```zig
 pub const NativeFn = @import("native_fn.zig").NativeFn;
 ```
+
+<a id="type-string"></a>
+
+## String
+
+A Lua string, followed by its bytes in the same allocation. [Strings](../runtime/strings.md#type-strings) of at most
+`short_limit` bytes are always interned.
+
+```zig
+pub const String = extern struct {
+    gc: GcHeader = .{},
+    len: usize,
+    /// `table_index.hashStringKey` of the bytes, valid once `hashed` is set.
+    hash: u32 = 0,
+    hashed: bool = false,
+    /// In the state's intern set.
+    interned: bool = false,
+    /// From the static catalog; never collected or written.
+    static: bool = false,
+    /// Hash-part entry index where this key was last found by a field access, or `no_field_hint`.
+    field_hint: u8 = no_field_hint,
+};
+```
+
+### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [short_limit](#const-string-short_limit) |  |  |  |
+| [no_field_hint](#const-string-no_field_hint) |  |  |  |
+| [bytes](#fn-string-bytes) | `self: *const String` | `[]const u8` |  |
+| [bytesMut](#fn-string-bytesmut) | `self: *String` | `[]u8` |  |
+| [isShort](#fn-string-isshort) | `self: *const String` | `bool` |  |
+| [eql](#fn-string-eql) | `self: *const String, other: *const String` | `bool` |  |
+| [eqlBytes](#fn-string-eqlbytes) | `self: *const String, other: []const u8` | `bool` |  |
+| [tableHash](#fn-string-tablehash) | `self: *const String` | `u32` |  |
+| [gcBytes](#fn-string-gcbytes) | `self: *const String` | `usize` |  |
+
+<a id="const-string-short_limit"></a>
+
+### String.short_limit
+
+```zig
+pub const short_limit = 40;
+```
+
+<a id="const-string-no_field_hint"></a>
+
+### String.no_field_hint
+
+```zig
+pub const no_field_hint = std.math.maxInt(u8);
+```
+
+<a id="fn-string-bytes"></a>
+
+### String.bytes
+
+```zig
+pub inline fn bytes(self: *const String) []const u8
+```
+
+References: [`String`](#type-string)
+
+<a id="fn-string-bytesmut"></a>
+
+### String.bytesMut
+
+```zig
+pub inline fn bytesMut(self: *String) []u8
+```
+
+References: [`String`](#type-string)
+
+<a id="fn-string-isshort"></a>
+
+### String.isShort
+
+```zig
+pub inline fn isShort(self: *const String) bool
+```
+
+References: [`String`](#type-string)
+
+<a id="fn-string-eql"></a>
+
+### String.eql
+
+```zig
+pub inline fn eql(self: *const String, other: *const String) bool
+```
+
+References: [`String`](#type-string)
+
+<a id="fn-string-eqlbytes"></a>
+
+### String.eqlBytes
+
+```zig
+pub inline fn eqlBytes(self: *const String, other: []const u8) bool
+```
+
+References: [`String`](#type-string)
+
+<a id="fn-string-tablehash"></a>
+
+### String.tableHash
+
+```zig
+pub inline fn tableHash(self: *const String) u32
+```
+
+References: [`String`](#type-string)
+
+<a id="fn-string-gcbytes"></a>
+
+### String.gcBytes
+
+```zig
+pub inline fn gcBytes(self: *const String) usize
+```
+
+References: [`String`](#type-string)
 
 <a id="const-userdatafinalizer"></a>
 
@@ -596,8 +725,8 @@ References: [`ApiCallbackContext`](#type-apicallbackcontext), [`Value`](#type-va
 
 ```zig
 pub const RuntimeErrorPayload = union(enum) {
+    /// Process-lifetime text.
     diagnostic: []const u8,
-    argument: errors.ArgumentError,
     lua_value: Value,
 };
 ```
@@ -765,23 +894,143 @@ pub const CoroutineResumeResult = union(enum) {
 };
 ```
 
+<a id="type-chunk"></a>
+
+## Chunk
+
+A loaded prototype tree's constants in one State, with its strings interned there.
+
+```zig
+pub const Chunk = struct {
+    root: *proto_mod.Proto,
+    root_owner: RootOwner,
+    /// Collector epoch of the last mark.
+    epoch: u32 = 0,
+    /// Each prototype's constants, starting at its `constant_offset`.
+    values: []Value,
+};
+```
+
+### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [RootOwner](#type-chunk-rootowner) |  |  |  |
+| [allocationBytes](#fn-chunk-allocationbytes) | `self: *const Chunk` | `usize` |  |
+| [destroy](#fn-chunk-destroy) | `self: *Chunk, allocator: std.mem.Allocator` | `void` |  |
+
+<a id="type-chunk-rootowner"></a>
+
+### Chunk.RootOwner
+
+```zig
+pub const RootOwner = enum {
+    /// Freed with the chunk.
+    state,
+    /// Shared with the snapshot this State was created from.
+    snapshot,
+    /// Owned by the host that executed it.
+    host,
+};
+```
+
+<a id="fn-chunk-allocationbytes"></a>
+
+### Chunk.allocationBytes
+
+```zig
+pub fn allocationBytes(self: *const Chunk) usize
+```
+
+References: [`Chunk`](#type-chunk)
+
+<a id="fn-chunk-destroy"></a>
+
+### Chunk.destroy
+
+```zig
+pub fn destroy(self: *Chunk, allocator: std.mem.Allocator) void
+```
+
+References: [`Chunk`](#type-chunk)
+
 <a id="type-closure"></a>
 
 ## Closure
 
+A Lua function, followed by its `upvalue_count` upvalue pointers in the same allocation.
+
 ```zig
 pub const Closure = struct {
+    gc: GcHeader = .{},
     rollback: ?*@import("rollback.zig").Record(Closure) = null,
     proto: *const proto_mod.Proto,
-    /// Loaded chunk prototype that owns `proto`; null when `proto` is that root.
-    root: ?*const proto_mod.Proto = null,
-    upvalues: []*Upvalue,
-    constants: ?[]?Value = null,
+    /// Null for host frames.
+    chunk: ?*Chunk = null,
+    upvalue_count: u32 = 0,
     stripped_debug: bool = false,
-    marked: bool = false,
-    gc: GcMeta = .{},
 };
 ```
+
+### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [constants](#fn-closure-constants) | `self: *const Closure` | `[*]const Value` |  |
+| [upvalues](#fn-closure-upvalues) | `self: *const Closure` | `[]*Upvalue` |  |
+| [allocationBytes](#fn-closure-allocationbytes) | `upvalue_count: usize` | `usize` |  |
+| [create](#fn-closure-create) | `allocator: std.mem.Allocator, upvalue_count: usize, initial: Closure` | `!*Closure` | Allocates &#96;initial&#96; with room for &#96;upvalue_count&#96; upvalues, which start undefined. |
+| [destroy](#fn-closure-destroy) | `allocator: std.mem.Allocator, closure: *Closure` | `void` |  |
+
+<a id="fn-closure-constants"></a>
+
+### Closure.constants
+
+```zig
+pub inline fn constants(self: *const Closure) [*]const Value
+```
+
+References: [`Closure`](#type-closure), [`Value`](#type-value)
+
+<a id="fn-closure-upvalues"></a>
+
+### Closure.upvalues
+
+```zig
+pub inline fn upvalues(self: *const Closure) []*Upvalue
+```
+
+References: [`Closure`](#type-closure), [`Upvalue`](#type-upvalue)
+
+<a id="fn-closure-allocationbytes"></a>
+
+### Closure.allocationBytes
+
+```zig
+pub fn allocationBytes(upvalue_count: usize) usize
+```
+
+<a id="fn-closure-create"></a>
+
+### Closure.create
+
+Allocates `initial` with room for `upvalue_count` upvalues, which start undefined.
+
+```zig
+pub fn create(allocator: std.mem.Allocator, upvalue_count: usize, initial: Closure) !*Closure
+```
+
+References: [`Closure`](#type-closure)
+
+<a id="fn-closure-destroy"></a>
+
+### Closure.destroy
+
+```zig
+pub fn destroy(allocator: std.mem.Allocator, closure: *Closure) void
+```
+
+References: [`Closure`](#type-closure)
 
 <a id="type-upvalue"></a>
 
@@ -789,16 +1038,55 @@ pub const Closure = struct {
 
 ```zig
 pub const Upvalue = struct {
+    gc: GcHeader = .{},
     rollback: ?*@import("rollback.zig").Record(Upvalue) = null,
-    owner: *Thread,
-    stack_index: usize,
-    closed: Value = .nil,
-    is_open: bool = true,
+    /// Next open upvalue of the owner thread.
     next: ?*Upvalue = null,
-    marked: bool = false,
-    gc: GcMeta = .{},
+    cell: Cell,
 };
 ```
+
+### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [Cell](#type-upvalue-cell) |  |  |  |
+| [Slot](#type-upvalue-slot) |  |  | The owner thread's stack slot that an open upvalue refers to. |
+| [get](#fn-upvalue-get) | `self: *const Upvalue` | `Value` |  |
+
+<a id="type-upvalue-cell"></a>
+
+### Upvalue.Cell
+
+```zig
+pub const Cell = union(enum) {
+    open: Slot,
+    closed: Value,
+};
+```
+
+<a id="type-upvalue-slot"></a>
+
+### Upvalue.Slot
+
+The owner thread's stack slot that an open upvalue refers to.
+
+```zig
+pub const Slot = struct {
+    owner: *Thread,
+    stack_index: usize,
+};
+```
+
+<a id="fn-upvalue-get"></a>
+
+### Upvalue.get
+
+```zig
+pub inline fn get(self: *const Upvalue) Value
+```
+
+References: [`Upvalue`](#type-upvalue), [`Value`](#type-value)
 
 <a id="type-tableentry"></a>
 
@@ -811,12 +1099,12 @@ pub const TableEntry = struct {
 };
 ```
 
-<a id="alias-tableentryindex"></a>
+<a id="alias-tablehashpart"></a>
 
-## TableEntryIndex
+## TableHashPart
 
 ```zig
-pub const TableEntryIndex = table_index.EntryIndex;
+pub const TableHashPart = table_index.HashPart;
 ```
 
 <a id="type-metaevent"></a>
@@ -873,28 +1161,128 @@ pub fn fromName(name: []const u8) ?MetaEvent
 
 References: [`MetaEvent`](#type-metaevent)
 
+<a id="type-tablearray"></a>
+
+## TableArray
+
+A table's array part.
+
+```zig
+pub const TableArray = struct {
+    ptr: [*]Value = empty_ptr,
+    len: u32 = 0,
+    capacity: u32 = 0,
+};
+```
+
+### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [items](#fn-tablearray-items) | `self: TableArray` | `[]Value` |  |
+| [allocatedSlice](#fn-tablearray-allocatedslice) | `self: TableArray` | `[]Value` |  |
+| [ensureTotalCapacityPrecise](#fn-tablearray-ensuretotalcapacityprecise) | `self: *TableArray, allocator: std.mem.Allocator, capacity: usize` | `!void` |  |
+| [resize](#fn-tablearray-resize) | `self: *TableArray, allocator: std.mem.Allocator, new_len: usize` | `!void` | New elements are undefined. |
+| [appendAssumeCapacity](#fn-tablearray-appendassumecapacity) | `self: *TableArray, value: Value` | `void` |  |
+| [clone](#fn-tablearray-clone) | `self: TableArray, allocator: std.mem.Allocator` | `!TableArray` | A copy with the same capacity. |
+| [deinit](#fn-tablearray-deinit) | `self: *TableArray, allocator: std.mem.Allocator` | `void` |  |
+
+<a id="fn-tablearray-items"></a>
+
+### TableArray.items
+
+```zig
+pub inline fn items(self: TableArray) []Value
+```
+
+References: [`TableArray`](#type-tablearray), [`Value`](#type-value)
+
+<a id="fn-tablearray-allocatedslice"></a>
+
+### TableArray.allocatedSlice
+
+```zig
+pub inline fn allocatedSlice(self: TableArray) []Value
+```
+
+References: [`TableArray`](#type-tablearray), [`Value`](#type-value)
+
+<a id="fn-tablearray-ensuretotalcapacityprecise"></a>
+
+### TableArray.ensureTotalCapacityPrecise
+
+```zig
+pub fn ensureTotalCapacityPrecise(self: *TableArray, allocator: std.mem.Allocator, capacity: usize) !void
+```
+
+References: [`TableArray`](#type-tablearray)
+
+<a id="fn-tablearray-resize"></a>
+
+### TableArray.resize
+
+New elements are undefined.
+
+```zig
+pub fn resize(self: *TableArray, allocator: std.mem.Allocator, new_len: usize) !void
+```
+
+References: [`TableArray`](#type-tablearray)
+
+<a id="fn-tablearray-appendassumecapacity"></a>
+
+### TableArray.appendAssumeCapacity
+
+```zig
+pub inline fn appendAssumeCapacity(self: *TableArray, value: Value) void
+```
+
+References: [`TableArray`](#type-tablearray), [`Value`](#type-value)
+
+<a id="fn-tablearray-clone"></a>
+
+### TableArray.clone
+
+A copy with the same capacity.
+
+```zig
+pub fn clone(self: TableArray, allocator: std.mem.Allocator) !TableArray
+```
+
+References: [`TableArray`](#type-tablearray)
+
+<a id="fn-tablearray-deinit"></a>
+
+### TableArray.deinit
+
+```zig
+pub fn deinit(self: *TableArray, allocator: std.mem.Allocator) void
+```
+
+References: [`TableArray`](#type-tablearray)
+
 <a id="type-table"></a>
 
 ## Table
 
 ```zig
 pub const Table = struct {
+    gc: GcHeader = .{},
     rollback: ?*@import("rollback.zig").Record(Table) = null,
-    array: std.ArrayList(Value) = .empty,
-    entries: std.ArrayList(TableEntry) = .empty,
-    entry_index: TableEntryIndex = .{},
+    array: TableArray = .{},
+    hash: ?*TableHashPart = null,
     metatable: ?*Table = null,
-    metatable_prev: ?*Table = null,
-    metatable_next: ?*Table = null,
-    marked: bool = false,
-    gc: GcMeta = .{},
+    /// Has been some table's metatable.
+    used_as_metatable: bool = false,
+    /// In `State.table_finalizers` or `State.table_pending_finalizers`.
     finalizer_registered: bool = false,
-    finalizer_next: ?*Table = null,
-    finalizer_prev: ?*Table = null,
-    finalizer_order: u64 = 0,
     /// Bit `e` set: this metatable has no raw value for `MetaEvent` `e`. Hash-part
     /// writes that may turn nil into non-nil clear the whole set.
     metamethod_absent: u32 = 0,
+    /// In `Gc.weak`.
+    in_weak_list: bool = false,
+    /// In `Gc.tables`.
+    in_table_list: bool = false,
 };
 ```
 
@@ -904,22 +1292,30 @@ pub const Table = struct {
 | --- | --- | --- | --- |
 | [init](#fn-table-init) | `allocator: std.mem.Allocator, array_hint: u32, hash_hint: u32` | `!Table` |  |
 | [deinit](#fn-table-deinit) | `self: *Table, allocator: std.mem.Allocator` | `void` |  |
+| [reserveArray](#fn-table-reservearray) | `self: *Table, allocator: std.mem.Allocator, count: usize` | `!void` |  |
+| [reserveEntries](#fn-table-reserveentries) | `self: *Table, allocator: std.mem.Allocator, count: usize` | `!void` |  |
+| [entries](#fn-table-entries) | `self: *const Table` | `[]TableEntry` |  |
+| [entryCapacity](#fn-table-entrycapacity) | `self: *const Table` | `usize` |  |
+| [truncateEntries](#fn-table-truncateentries) | `self: *Table, count: usize` | `void` | &#96;count&#96; must not exceed the current number of entries. |
+| [appendEntriesAssumeCapacity](#fn-table-appendentriesassumecapacity) | `self: *Table, new_entries: []const TableEntry` | `void` | The keys must be distinct and absent, and capacity reserved. |
 | [get](#fn-table-get) | `self: *const Table, key: Value` | `Value` |  |
 | [getStringHashed](#fn-table-getstringhashed) | `self: *const Table, key: []const u8, hash: u32` | `Value` | Raw read of a string key whose &#96;table_index.hashStringKey&#96; the caller already knows. |
+| [getString](#fn-table-getstring) | `self: *const Table, key: *const String` | `Value` |  |
+| [getLiteral](#fn-table-getliteral) | `self: *const Table, comptime key: []const u8` | `Value` |  |
+| [getBytes](#fn-table-getbytes) | `self: *const Table, key: []const u8` | `Value` |  |
 | [findStringEntry](#fn-table-findstringentry) | `self: *const Table, key: []const u8, hash: u32` | `?usize` |  |
+| [findStringKey](#fn-table-findstringkey) | `self: *const Table, key: *const String` | `?usize` |  |
 | [metaEventAbsent](#fn-table-metaeventabsent) | `self: *const Table, event: MetaEvent` | `bool` |  |
 | [metaEvent](#fn-table-metaevent) | `self: *Table, event: MetaEvent` | `Value` | Raw lookup of a metamethod in this metatable, caching absence. |
 | [invalidateMetaEvents](#fn-table-invalidatemetaevents) | `self: *Table` | `void` | Call before writing a hash slot that may currently hold nil. |
 | [findEntry](#fn-table-findentry) | `self: *const Table, key: Value` | `?usize` |  |
-| [rebuildEntryIndex](#fn-table-rebuildentryindex) | `self: *Table, allocator: std.mem.Allocator` | `!void` |  |
 | [insertHashEntryNoAlloc](#fn-table-inserthashentrynoalloc) | `self: *Table, key: Value, value: Value` | `bool` | Insert an absent hash key using reserved storage. The caller must check that the key is absent; false means growth or snapshot detachment is needed. |
 | [set](#fn-table-set) | `self: *Table, allocator: std.mem.Allocator, key: Value, value: Value` | `!void` |  |
 | [setExistingNonNil](#fn-table-setexistingnonnil) | `self: *Table, key: Value, value: Value` | `bool` |  |
-| [len](#fn-table-len) | `self: *const Table` | `i64` |  |
+| [len](#fn-table-len) | `self: *Table` | `i64` |  |
 | [next](#fn-table-next) | `self: *const Table, key: Value` | `![2]Value` |  |
 | [removeHashKey](#fn-table-removehashkey) | `self: *Table, key: Value` | `void` |  |
 | [removeEntryAt](#fn-table-removeentryat) | `self: *Table, index: usize` | `void` | Removes one entry, keeping the order of the rest for &#96;next&#96;. |
-| [reindexEntries](#fn-table-reindexentries) | `self: *Table` | `void` | Restores the index after entries were removed or moved. Never allocates, since the index already holds at least as many slots as entries. |
 
 <a id="fn-table-init"></a>
 
@@ -940,6 +1336,70 @@ pub fn deinit(self: *Table, allocator: std.mem.Allocator) void
 ```
 
 References: [`Table`](#type-table)
+
+<a id="fn-table-reservearray"></a>
+
+### Table.reserveArray
+
+```zig
+pub inline fn reserveArray(self: *Table, allocator: std.mem.Allocator, count: usize) !void
+```
+
+References: [`Table`](#type-table)
+
+<a id="fn-table-reserveentries"></a>
+
+### Table.reserveEntries
+
+```zig
+pub inline fn reserveEntries(self: *Table, allocator: std.mem.Allocator, count: usize) !void
+```
+
+References: [`Table`](#type-table)
+
+<a id="fn-table-entries"></a>
+
+### Table.entries
+
+```zig
+pub inline fn entries(self: *const Table) []TableEntry
+```
+
+References: [`Table`](#type-table), [`TableEntry`](#type-tableentry)
+
+<a id="fn-table-entrycapacity"></a>
+
+### Table.entryCapacity
+
+```zig
+pub inline fn entryCapacity(self: *const Table) usize
+```
+
+References: [`Table`](#type-table)
+
+<a id="fn-table-truncateentries"></a>
+
+### Table.truncateEntries
+
+`count` must not exceed the current number of entries.
+
+```zig
+pub fn truncateEntries(self: *Table, count: usize) void
+```
+
+References: [`Table`](#type-table)
+
+<a id="fn-table-appendentriesassumecapacity"></a>
+
+### Table.appendEntriesAssumeCapacity
+
+The keys must be distinct and absent, and capacity reserved.
+
+```zig
+pub fn appendEntriesAssumeCapacity(self: *Table, new_entries: []const TableEntry) void
+```
+
+References: [`Table`](#type-table), [`TableEntry`](#type-tableentry)
 
 <a id="fn-table-get"></a>
 
@@ -963,6 +1423,36 @@ pub inline fn getStringHashed(self: *const Table, key: []const u8, hash: u32) Va
 
 References: [`Table`](#type-table), [`Value`](#type-value)
 
+<a id="fn-table-getstring"></a>
+
+### Table.getString
+
+```zig
+pub inline fn getString(self: *const Table, key: *const String) Value
+```
+
+References: [`Table`](#type-table), [`String`](#type-string), [`Value`](#type-value)
+
+<a id="fn-table-getliteral"></a>
+
+### Table.getLiteral
+
+```zig
+pub inline fn getLiteral(self: *const Table, comptime key: []const u8) Value
+```
+
+References: [`Table`](#type-table), [`Value`](#type-value)
+
+<a id="fn-table-getbytes"></a>
+
+### Table.getBytes
+
+```zig
+pub fn getBytes(self: *const Table, key: []const u8) Value
+```
+
+References: [`Table`](#type-table), [`Value`](#type-value)
+
 <a id="fn-table-findstringentry"></a>
 
 ### Table.findStringEntry
@@ -972,6 +1462,16 @@ pub inline fn findStringEntry(self: *const Table, key: []const u8, hash: u32) ?u
 ```
 
 References: [`Table`](#type-table)
+
+<a id="fn-table-findstringkey"></a>
+
+### Table.findStringKey
+
+```zig
+pub inline fn findStringKey(self: *const Table, key: *const String) ?usize
+```
+
+References: [`Table`](#type-table), [`String`](#type-string)
 
 <a id="fn-table-metaeventabsent"></a>
 
@@ -1017,16 +1517,6 @@ pub fn findEntry(self: *const Table, key: Value) ?usize
 
 References: [`Table`](#type-table), [`Value`](#type-value)
 
-<a id="fn-table-rebuildentryindex"></a>
-
-### Table.rebuildEntryIndex
-
-```zig
-pub fn rebuildEntryIndex(self: *Table, allocator: std.mem.Allocator) !void
-```
-
-References: [`Table`](#type-table)
-
 <a id="fn-table-inserthashentrynoalloc"></a>
 
 ### Table.insertHashEntryNoAlloc
@@ -1065,7 +1555,7 @@ References: [`Table`](#type-table), [`Value`](#type-value)
 ### Table.len
 
 ```zig
-pub fn len(self: *const Table) i64
+pub fn len(self: *Table) i64
 ```
 
 References: [`Table`](#type-table)
@@ -1102,19 +1592,6 @@ pub fn removeEntryAt(self: *Table, index: usize) void
 
 References: [`Table`](#type-table)
 
-<a id="fn-table-reindexentries"></a>
-
-### Table.reindexEntries
-
-Restores the index after entries were removed or moved. Never allocates,
-since the index already holds at least as many slots as entries.
-
-```zig
-pub fn reindexEntries(self: *Table) void
-```
-
-References: [`Table`](#type-table)
-
 <a id="type-userdatascope"></a>
 
 ## UserdataScope
@@ -1147,6 +1624,7 @@ pub const ValueRoots = struct {
 
 ```zig
 pub const Userdata = struct {
+    gc: GcHeader = .{},
     scope_readers: usize = 0,
     scope_writers: usize = 0,
     rollback: ?*@import("rollback.zig").Record(Userdata) = null,
@@ -1158,17 +1636,28 @@ pub const Userdata = struct {
     finalizer: ?UserdataFinalizer = null,
     finalizer_data: ?*const anyopaque = null,
     deinit_fn: ?UserdataDeinit = null,
-    marked: bool = false,
-    gc: GcMeta = .{},
     finalized: bool = false,
     finalization_pending: bool = false,
     finalizer_next: ?*Userdata = null,
     /// Registered for its metatable's `__gc`, like `Table.finalizer_registered`.
     lua_finalizer_registered: bool = false,
-    /// Registration order on the `Table.finalizer_order` scale, then the
+    /// Registration order on the `TableFinalizer.order` scale, then the
     /// position in the finalizer queue once separated.
     lua_finalizer_order: u64 = 0,
     lua_finalizer_next: ?*Userdata = null,
+};
+```
+
+<a id="type-tablefinalizer"></a>
+
+## TableFinalizer
+
+A table registered for a Lua `__gc`, with its order on the finalizer scale.
+
+```zig
+pub const TableFinalizer = struct {
+    table: *Table,
+    order: u64,
 };
 ```
 
@@ -1180,7 +1669,7 @@ An object separated for a Lua `__gc` call.
 
 ```zig
 pub const FinalizerObject = union(enum) {
-    table: *Table,
+    table: TableFinalizer,
     userdata: *Userdata,
 };
 ```
@@ -1207,11 +1696,14 @@ References: [`FinalizerObject`](#type-finalizerobject)
 
 ```zig
 pub const Thread = struct {
+    gc: GcHeader = .{},
     rollback: ?*@import("rollback.zig").Record(Thread) = null,
     /// A Lua value has exposed this thread beyond its current host call.
     exposed: bool = false,
     stack: std.ArrayList(Value) = .empty,
     frames: std.ArrayList(CallFrame) = .empty,
+    /// Extra state of the frames with `has_extra`, at their frame index.
+    frame_extras: std.ArrayList(FrameExtra) = .empty,
     yield_values: std.ArrayList(Value) = .empty,
     protected_continuations: std.ArrayList(ProtectedContinuation) = .empty,
     generic_for_continuations: std.ArrayList(GenericForContinuation) = .empty,
@@ -1260,16 +1752,16 @@ pub const Thread = struct {
     native_marks: [4]NativeMark = undefined,
     native_mark_count: u8 = 0,
     close_error_value: ?Value = null,
-    error_traceback: ?[]const u8 = null,
+    error_traceback: ?*const String = null,
     pending_unwind_error: ?Value = null,
     pending_unwind_resume_frame_count: usize = 0,
     pending_unwind_target_frame_count: usize = 0,
-    /// Bytes of owned varargs and pending returns held by this thread's frames.
+    /// Bytes of pending returns held by this thread's frames.
     frame_storage_bytes: usize = 0,
+    /// Capacity bytes last reported to the collector.
+    storage_bytes: usize = 0,
     resume_parent: ?*Thread = null,
     entry: Value = .nil,
-    marked: bool = false,
-    gc: GcMeta = .{},
     started: bool = false,
     is_main: bool = false,
     closing: bool = false,
@@ -1284,7 +1776,10 @@ pub const Thread = struct {
 | [initRoot](#fn-thread-initroot) | `allocator: std.mem.Allocator, closure: *Closure, stack_value_limit: usize` | `!Thread` |  |
 | [initCoroutine](#fn-thread-initcoroutine) | `entry: Value` | `Thread` |  |
 | [deinit](#fn-thread-deinit) | `self: *Thread, allocator: std.mem.Allocator` | `void` |  |
-| [releaseFrame](#fn-thread-releaseframe) | `self: *Thread, frame: *CallFrame, allocator: std.mem.Allocator` | `void` |  |
+| [releaseFrame](#fn-thread-releaseframe) | `self: *Thread, index: usize, allocator: std.mem.Allocator` | `void` | Frees the extra state of frame &#96;index&#96;, which stays on the frame list. |
+| [frameExtra](#fn-thread-frameextra) | `self: *const Thread, index: usize` | `FrameExtra` | The extra state of frame &#96;index&#96;, or defaults when it has none. |
+| [frameExtraMut](#fn-thread-frameextramut) | `self: *Thread, allocator: std.mem.Allocator, index: usize` | `!*FrameExtra` | The extra state of frame &#96;index&#96;, created on first use. |
+| [clearHookLine](#fn-thread-clearhookline) | `self: *Thread, index: usize` | `void` |  |
 | [noteContinuation](#fn-thread-notecontinuation) | `self: *Thread, frame_count: usize` | `void` |  |
 | [refreshContinuationFrameCount](#fn-thread-refreshcontinuationframecount) | `self: *Thread` | `void` |  |
 | [ensureStack](#fn-thread-ensurestack) | `self: *Thread, allocator: std.mem.Allocator, size: usize, limit: usize` | `!void` |  |
@@ -1324,11 +1819,47 @@ References: [`Thread`](#type-thread)
 
 ### Thread.releaseFrame
 
+Frees the extra state of frame `index`, which stays on the frame list.
+
 ```zig
-pub fn releaseFrame(self: *Thread, frame: *CallFrame, allocator: std.mem.Allocator) void
+pub fn releaseFrame(self: *Thread, index: usize, allocator: std.mem.Allocator) void
 ```
 
-References: [`Thread`](#type-thread), [`CallFrame`](#type-callframe)
+References: [`Thread`](#type-thread)
+
+<a id="fn-thread-frameextra"></a>
+
+### Thread.frameExtra
+
+The extra state of frame `index`, or defaults when it has none.
+
+```zig
+pub fn frameExtra(self: *const Thread, index: usize) FrameExtra
+```
+
+References: [`Thread`](#type-thread), [`FrameExtra`](#type-frameextra)
+
+<a id="fn-thread-frameextramut"></a>
+
+### Thread.frameExtraMut
+
+The extra state of frame `index`, created on first use.
+
+```zig
+pub fn frameExtraMut(self: *Thread, allocator: std.mem.Allocator, index: usize) !*FrameExtra
+```
+
+References: [`Thread`](#type-thread), [`FrameExtra`](#type-frameextra)
+
+<a id="fn-thread-clearhookline"></a>
+
+### Thread.clearHookLine
+
+```zig
+pub inline fn clearHookLine(self: *Thread, index: usize) void
+```
+
+References: [`Thread`](#type-thread)
 
 <a id="fn-thread-notecontinuation"></a>
 
@@ -1418,20 +1949,17 @@ pub const NativeCall = struct {
 ```zig
 pub const CallFrame = struct {
     closure: *Closure,
-    proto: *const proto_mod.Proto,
-    base: usize,
-    pc: usize,
-    return_start: usize,
+    base: u32,
+    pc: u32,
+    return_start: u32,
+    /// Stack index of the first extra argument, which sits below `base`.
+    vararg_base: u32 = 0,
+    vararg_count: u32 = 0,
     return_count: u16,
-    varargs: []const Value,
-    owns_varargs: bool = false,
-    vararg_table_local: Value = .nil,
     named_vararg_readonly: bool = false,
-    last_hook_line: ?usize = null,
-    debug_name_override: ?[]const u8 = null,
-    debug_namewhat_override: ?[]const u8 = null,
     is_tail_call: bool = false,
-    pending_returns: ?[]Value = null,
+    /// `Thread.frame_extras` holds this frame's `FrameExtra` at the same index.
+    has_extra: bool = false,
 };
 ```
 
@@ -1439,60 +1967,46 @@ pub const CallFrame = struct {
 
 | Name | Parameters | Return Type | Description |
 | --- | --- | --- | --- |
-| [storageBytes](#fn-callframe-storagebytes) | `self: CallFrame` | `usize` |  |
-| [deinit](#fn-callframe-deinit) | `self: *CallFrame, allocator: std.mem.Allocator` | `void` |  |
+| [argumentBase](#fn-callframe-argumentbase) | `self: CallFrame` | `usize` | Stack index of the first argument the frame was called with. |
+| [varargs](#fn-callframe-varargs) | `self: CallFrame, stack: []const Value` | `[]const Value` |  |
 
-<a id="fn-callframe-storagebytes"></a>
+<a id="fn-callframe-argumentbase"></a>
 
-### CallFrame.storageBytes
+### CallFrame.argumentBase
+
+Stack index of the first argument the frame was called with.
 
 ```zig
-pub fn storageBytes(self: CallFrame) usize
+pub fn argumentBase(self: CallFrame) usize
 ```
 
 References: [`CallFrame`](#type-callframe)
 
-<a id="fn-callframe-deinit"></a>
+<a id="fn-callframe-varargs"></a>
 
-### CallFrame.deinit
+### CallFrame.varargs
 
 ```zig
-pub fn deinit(self: *CallFrame, allocator: std.mem.Allocator) void
+pub fn varargs(self: CallFrame, stack: []const Value) []const Value
 ```
 
-References: [`CallFrame`](#type-callframe)
+References: [`CallFrame`](#type-callframe), [`Value`](#type-value)
 
-<a id="type-stringallocation"></a>
+<a id="type-frameextra"></a>
 
-## StringAllocation
+## FrameExtra
+
+Rarely set state of a call frame.
 
 ```zig
-pub const StringAllocation = struct {
-    bytes: []const u8,
-    marked: bool = false,
-    gc: GcMeta = .{},
+pub const FrameExtra = struct {
+    debug_name_override: ?[]const u8 = null,
+    debug_namewhat_override: ?[]const u8 = null,
+    last_hook_line: ?usize = null,
+    pending_returns: ?[]Value = null,
+    vararg_table_local: Value = .nil,
 };
 ```
-
-<a id="import-pointerallocationindex"></a>
-
-## PointerAllocationIndex
-
-```zig
-pub const PointerAllocationIndex = @import("address_index.zig").AddressIndex;
-```
-
-References: [`AddressIndex`](../runtime/address_index.md#const-addressindex)
-
-<a id="import-objectallocationindex"></a>
-
-## ObjectAllocationIndex
-
-```zig
-pub const ObjectAllocationIndex = @import("address_index.zig").ObjectAddressIndex;
-```
-
-References: [`ObjectAddressIndex`](../runtime/address_index.md#const-objectaddressindex)
 
 <a id="type-addresscontext"></a>
 
@@ -1531,24 +2045,65 @@ pub fn eql(_: AddressContext, lhs: usize, rhs: usize) bool
 
 References: [`AddressContext`](#type-addresscontext)
 
-<a id="type-gcmeta"></a>
+<a id="type-gccolor"></a>
 
-## GcMeta
-
-Collector scratch state never participates in logical rollback dirtiness.
+## GcColor
 
 ```zig
-pub const GcMeta = struct {
-    epoch: u64 = 0,
-    generation: u64 = 0,
-    color: enum { white, gray, black } = .white,
-    age: enum { new, survivor, old } = .new,
-    remembered: bool = false,
-    weak_epoch: u64 = 0,
-    tables_epoch: u64 = 0,
-    has_young: bool = false,
-    storage_bytes: usize = 0,
+pub const GcColor = enum(u8) {
+    white,
+    gray,
+    black,
 };
+```
+
+<a id="type-gcage"></a>
+
+## GcAge
+
+```zig
+pub const GcAge = enum(u8) {
+    new,
+    survivor,
+    old,
+};
+```
+
+<a id="type-gcheader"></a>
+
+## GcHeader
+
+Collector state embedded in every collectable object.
+
+```zig
+pub const GcHeader = extern struct {
+    /// Collector epoch of the last mark; `color` is stale when it differs.
+    epoch: u32 = 0,
+    /// Collector generation at allocation; any older generation means old.
+    generation: u32 = 0,
+    /// Position in this type's registry; `untracked` for strings and objects the collector doesn't own.
+    registry_index: u32 = untracked,
+    color: GcColor = .white,
+    age: GcAge = .new,
+    /// In `Gc.remembered`.
+    remembered: bool = false,
+    /// Referenced a young object when last traced.
+    has_young: bool = false,
+};
+```
+
+### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [untracked](#const-gcheader-untracked) |  |  |  |
+
+<a id="const-gcheader-untracked"></a>
+
+### GcHeader.untracked
+
+```zig
+pub const untracked = std.math.maxInt(u32);
 ```
 
 <a id="type-gcobject"></a>

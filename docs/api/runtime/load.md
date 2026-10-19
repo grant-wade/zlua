@@ -29,25 +29,27 @@
 - [stdlib](../stdlib.md)
 - [stdlib.base](../stdlib/base.md)
 - [runtime.call](../runtime/call.md)
+- [stdlib.static_strings](../stdlib/static_strings.md)
+- [runtime.table_index](../runtime/table_index.md)
+- [runtime.value](../runtime/value.md)
+- [runtime.number_format](../runtime/number_format.md)
 - [runtime.coroutine](../runtime/coroutine.md)
 - [runtime.debug](../runtime/debug.md)
 - [runtime.metatable](../runtime/metatable.md)
 - [runtime.rollback](../runtime/rollback.md)
-- [runtime.value](../runtime/value.md)
-- [runtime.number_format](../runtime/number_format.md)
-- [runtime.table_index](../runtime/table_index.md)
-- [runtime.host](../runtime/host.md)
-- [runtime.upvalue](../runtime/upvalue.md)
+- [runtime.strings](../runtime/strings.md)
+- [runtime.operators](../runtime/operators.md)
 - [runtime.failure](../runtime/failure.md)
 - [runtime.io](../runtime/io.md)
+- [runtime.host](../runtime/host.md)
 - [runtime.load](../runtime/load.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.gc](../runtime/gc.md)
 - [runtime.entry](../runtime/entry.md)
 - [runtime.system](../runtime/system.md)
 - [runtime.timezone](../runtime/timezone.md)
+- [runtime.upvalue](../runtime/upvalue.md)
 - [runtime.index](../runtime/index.md)
-- [runtime.operators](../runtime/operators.md)
 - [stdlib.table](../stdlib/table.md)
 - [stdlib.string](../stdlib/string.md)
 - [stdlib.string.format](../stdlib/string/format.md)
@@ -58,7 +60,6 @@
 - [stdlib.coroutine](../stdlib/coroutine.md)
 - [stdlib.debug](../stdlib/debug.md)
 - [stdlib.io](../stdlib/io.md)
-- [stdlib.static_strings](../stdlib/static_strings.md)
 - [stdlib.os](../stdlib/os.md)
 - [stdlib.package](../stdlib/package.md)
 - [stdlib.json](../stdlib/json.md)
@@ -68,13 +69,12 @@
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
 - [runtime.budget](../runtime/budget.md)
-- [runtime.strings](../runtime/strings.md)
+- [runtime.object_pool](../runtime/object_pool.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
 - [runtime.native_fn](../runtime/native_fn.md)
-- [runtime.address_index](../runtime/address_index.md)
 - [compile.compiler](../compile/compiler.md)
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
@@ -110,6 +110,7 @@
 - [testing.bench.c_startup](../testing/bench/c_startup.md)
 - [testing.bench.snapshots](../testing/bench/snapshots.md)
 - [testing.bench.gc](../testing/bench/gc.md)
+- [testing.bench.system](../testing/bench/system.md)
 - [testing.diff_runner](../testing/diff_runner.md)
 - [testing.fixtures](../testing/fixtures.md)
 - [testing.expected_failures](../testing/expected_failures.md)
@@ -131,6 +132,8 @@
 - [setRootThreadArgs](#fn-setrootthreadargs)
 - [decodeStringLiteral](#fn-decodestringliteral)
 - [newRootClosure](#fn-newrootclosure)
+- [newChunk](#fn-newchunk)
+- [discardNewChunk](#fn-discardnewchunk)
 - [runtimeSourceName](#fn-runtimesourcename)
 - [appendUnicodeEscapeDigit](#fn-appendunicodeescapedigit)
 
@@ -191,15 +194,35 @@ pub fn setRootThreadArgs(self: *State, thread: *Thread, args: []const Value) !vo
 ## decodeStringLiteral
 
 ```zig
-pub fn decodeStringLiteral(self: *State, lexeme: []const u8) ![]const u8
+pub fn decodeStringLiteral(self: *State, lexeme: []const u8) !*const types.String
 ```
 
 <a id="fn-newrootclosure"></a>
 
 ## newRootClosure
 
+`proto` stays owned by the caller.
+
 ```zig
-pub fn newRootClosure(self: *State, proto: *const proto_mod.Proto) !*Closure
+pub fn newRootClosure(self: *State, proto: *proto_mod.Proto) !*Closure
+```
+
+<a id="fn-newchunk"></a>
+
+## newChunk
+
+```zig
+pub fn newChunk(self: *State, root: *proto_mod.Proto, root_owner: types.Chunk.RootOwner) !*types.Chunk
+```
+
+<a id="fn-discardnewchunk"></a>
+
+## discardNewChunk
+
+`chunk` must be the most recently registered chunk; its root is not freed.
+
+```zig
+pub fn discardNewChunk(self: *State, chunk: *types.Chunk) void
 ```
 
 <a id="fn-runtimesourcename"></a>

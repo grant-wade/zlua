@@ -29,25 +29,27 @@
 - [stdlib](../stdlib.md)
 - [stdlib.base](../stdlib/base.md)
 - [runtime.call](../runtime/call.md)
+- [stdlib.static_strings](../stdlib/static_strings.md)
+- [runtime.table_index](../runtime/table_index.md)
+- [runtime.value](../runtime/value.md)
+- [runtime.number_format](../runtime/number_format.md)
 - [runtime.coroutine](../runtime/coroutine.md)
 - [runtime.debug](../runtime/debug.md)
 - [runtime.metatable](../runtime/metatable.md)
 - [runtime.rollback](../runtime/rollback.md)
-- [runtime.value](../runtime/value.md)
-- [runtime.number_format](../runtime/number_format.md)
-- [runtime.table_index](../runtime/table_index.md)
-- [runtime.host](../runtime/host.md)
-- [runtime.upvalue](../runtime/upvalue.md)
+- [runtime.strings](../runtime/strings.md)
+- [runtime.operators](../runtime/operators.md)
 - [runtime.failure](../runtime/failure.md)
 - [runtime.io](../runtime/io.md)
+- [runtime.host](../runtime/host.md)
 - [runtime.load](../runtime/load.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.gc](../runtime/gc.md)
 - [runtime.entry](../runtime/entry.md)
 - [runtime.system](../runtime/system.md)
 - [runtime.timezone](../runtime/timezone.md)
+- [runtime.upvalue](../runtime/upvalue.md)
 - [runtime.index](../runtime/index.md)
-- [runtime.operators](../runtime/operators.md)
 - [stdlib.table](../stdlib/table.md)
 - [stdlib.string](../stdlib/string.md)
 - [stdlib.string.format](../stdlib/string/format.md)
@@ -58,7 +60,6 @@
 - [stdlib.coroutine](../stdlib/coroutine.md)
 - [stdlib.debug](../stdlib/debug.md)
 - [stdlib.io](../stdlib/io.md)
-- [stdlib.static_strings](../stdlib/static_strings.md)
 - [stdlib.os](../stdlib/os.md)
 - [stdlib.package](../stdlib/package.md)
 - [stdlib.json](../stdlib/json.md)
@@ -68,13 +69,12 @@
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
 - [runtime.budget](../runtime/budget.md)
-- [runtime.strings](../runtime/strings.md)
+- [runtime.object_pool](../runtime/object_pool.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
 - [runtime.native_fn](../runtime/native_fn.md)
-- [runtime.address_index](../runtime/address_index.md)
 - [compile.compiler](../compile/compiler.md)
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
@@ -110,6 +110,7 @@
 - [testing.bench.c_startup](../testing/bench/c_startup.md)
 - [testing.bench.snapshots](../testing/bench/snapshots.md)
 - [testing.bench.gc](../testing/bench/gc.md)
+- [testing.bench.system](../testing/bench/system.md)
 - [testing.diff_runner](../testing/diff_runner.md)
 - [testing.fixtures](../testing/fixtures.md)
 - [testing.expected_failures](../testing/expected_failures.md)
@@ -128,10 +129,12 @@
 - [concatRangeToRegister](#fn-concatrangetoregister)
 - [finishConcatRange](#fn-finishconcatrange)
 - [binaryOpToRegister](#fn-binaryoptoregister)
+- [binaryValuesToRegister](#fn-binaryvaluestoregister)
 - [unaryOpToRegister](#fn-unaryoptoregister)
 - [equalValuesToRegister](#fn-equalvaluestoregister)
 - [compareValuesToRegister](#fn-comparevaluestoregister)
 - [compareBranch](#fn-comparebranch)
+- [compareBranchConstant](#fn-comparebranchconstant)
 - [jumpIfBranchResult](#fn-jumpifbranchresult)
 - [lengthToRegister](#fn-lengthtoregister)
 - [compareValues](#fn-comparevalues)
@@ -139,6 +142,9 @@
 - [rawNumericBinaryOpFast](#fn-rawnumericbinaryopfast)
 - [rawIntegerBitwiseOpFast](#fn-rawintegerbitwiseopfast)
 - [equalityHasMetamethod](#fn-equalityhasmetamethod)
+- [rawCompareConstantResult](#fn-rawcompareconstantresult)
+- [constantBinaryOp](#fn-constantbinaryop)
+- [rawBinaryOpFast](#fn-rawbinaryopfast)
 - [rawCompareBranchResult](#fn-rawcomparebranchresult)
 - [floorModNumber](#fn-floormodnumber)
 - [toBitwiseInteger](#fn-tobitwiseinteger)
@@ -199,6 +205,16 @@ pub fn binaryOpToRegister(self: *State, thread: *Thread, op: bytecode.Binary, ki
 
 References: [`BinaryOp`](#type-binaryop)
 
+<a id="fn-binaryvaluestoregister"></a>
+
+## binaryValuesToRegister
+
+```zig
+pub fn binaryValuesToRegister(self: *State, thread: *Thread, dest: bytecode.Register, lhs: Value, rhs: Value, kind: BinaryOp) !void
+```
+
+References: [`BinaryOp`](#type-binaryop)
+
 <a id="fn-unaryoptoregister"></a>
 
 ## unaryOpToRegister
@@ -233,6 +249,14 @@ References: [`CompareOp`](#type-compareop)
 
 ```zig
 pub fn compareBranch(self: *State, thread: *Thread, op: bytecode.CompareBranch) !void
+```
+
+<a id="fn-comparebranchconstant"></a>
+
+## compareBranchConstant
+
+```zig
+pub fn compareBranchConstant(self: *State, thread: *Thread, op: bytecode.CompareBranchConstant, constant: Value) !void
 ```
 
 <a id="fn-jumpifbranchresult"></a>
@@ -342,6 +366,34 @@ References: [`BinaryOp`](#type-binaryop)
 ```zig
 pub fn equalityHasMetamethod(lhs: Value, rhs: Value) bool
 ```
+
+<a id="fn-rawcompareconstantresult"></a>
+
+## rawCompareConstantResult
+
+```zig
+pub inline fn rawCompareConstantResult(value: Value, constant: Value, op: bytecode.CompareConstantOp) ?bool
+```
+
+<a id="fn-constantbinaryop"></a>
+
+## constantBinaryOp
+
+```zig
+pub fn constantBinaryOp(comptime tag: std.meta.Tag(bytecode.Instruction)) BinaryOp
+```
+
+References: [`BinaryOp`](#type-binaryop)
+
+<a id="fn-rawbinaryopfast"></a>
+
+## rawBinaryOpFast
+
+```zig
+pub inline fn rawBinaryOpFast(lhs: Value, rhs: Value, comptime op: BinaryOp) ?Value
+```
+
+References: [`BinaryOp`](#type-binaryop)
 
 <a id="fn-rawcomparebranchresult"></a>
 

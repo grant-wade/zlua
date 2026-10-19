@@ -29,25 +29,27 @@
 - [stdlib](../stdlib.md)
 - [stdlib.base](../stdlib/base.md)
 - [runtime.call](../runtime/call.md)
+- [stdlib.static_strings](../stdlib/static_strings.md)
+- [runtime.table_index](../runtime/table_index.md)
+- [runtime.value](../runtime/value.md)
+- [runtime.number_format](../runtime/number_format.md)
 - [runtime.coroutine](../runtime/coroutine.md)
 - [runtime.debug](../runtime/debug.md)
 - [runtime.metatable](../runtime/metatable.md)
 - [runtime.rollback](../runtime/rollback.md)
-- [runtime.value](../runtime/value.md)
-- [runtime.number_format](../runtime/number_format.md)
-- [runtime.table_index](../runtime/table_index.md)
-- [runtime.host](../runtime/host.md)
-- [runtime.upvalue](../runtime/upvalue.md)
+- [runtime.strings](../runtime/strings.md)
+- [runtime.operators](../runtime/operators.md)
 - [runtime.failure](../runtime/failure.md)
 - [runtime.io](../runtime/io.md)
+- [runtime.host](../runtime/host.md)
 - [runtime.load](../runtime/load.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.gc](../runtime/gc.md)
 - [runtime.entry](../runtime/entry.md)
 - [runtime.system](../runtime/system.md)
 - [runtime.timezone](../runtime/timezone.md)
+- [runtime.upvalue](../runtime/upvalue.md)
 - [runtime.index](../runtime/index.md)
-- [runtime.operators](../runtime/operators.md)
 - [stdlib.table](../stdlib/table.md)
 - [stdlib.string](../stdlib/string.md)
 - [stdlib.string.format](../stdlib/string/format.md)
@@ -58,7 +60,6 @@
 - [stdlib.coroutine](../stdlib/coroutine.md)
 - [stdlib.debug](../stdlib/debug.md)
 - [stdlib.io](../stdlib/io.md)
-- [stdlib.static_strings](../stdlib/static_strings.md)
 - [stdlib.os](../stdlib/os.md)
 - [stdlib.package](../stdlib/package.md)
 - [stdlib.json](../stdlib/json.md)
@@ -68,13 +69,12 @@
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
 - [runtime.budget](../runtime/budget.md)
-- [runtime.strings](../runtime/strings.md)
+- [runtime.object_pool](../runtime/object_pool.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
 - [runtime.native_fn](../runtime/native_fn.md)
-- [runtime.address_index](../runtime/address_index.md)
 - [compile.compiler](../compile/compiler.md)
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
@@ -110,6 +110,7 @@
 - [testing.bench.c_startup](../testing/bench/c_startup.md)
 - [testing.bench.snapshots](../testing/bench/snapshots.md)
 - [testing.bench.gc](../testing/bench/gc.md)
+- [testing.bench.system](../testing/bench/system.md)
 - [testing.diff_runner](../testing/diff_runner.md)
 - [testing.fixtures](../testing/fixtures.md)
 - [testing.expected_failures](../testing/expected_failures.md)
@@ -121,42 +122,41 @@
 
 </details>
 
+## Functions
+
+- [destroy](#fn-destroy)
+
 ## Types
 
+- [InternSet](#type-internset)
 - [Strings](#type-strings)
+- [Builder](#type-builder)
 
-## Constants
+## Aliases
 
-- [short_string_limit](#const-short_string_limit)
-- [InternMap](#const-internmap)
+- [short_string_limit](#alias-short_string_limit)
 
-<a id="const-short_string_limit"></a>
+<a id="alias-short_string_limit"></a>
 
 ## short_string_limit
 
 Longer strings are allocated without interning, as in Lua.
 
 ```zig
-pub const short_string_limit = 40;
+pub const short_string_limit = String.short_limit;
 ```
 
-<a id="const-internmap"></a>
+<a id="type-internset"></a>
 
-## InternMap
+## InternSet
 
-```zig
-pub const InternMap = std.HashMap([]const u8, []const u8, InternContext, std.hash_map.default_max_load_percentage);
-```
-
-<a id="type-strings"></a>
-
-## Strings
-
-String interning. The table holds strings weakly; the collector removes entries it frees.
+Open-addressed set of interned strings, seeded with the static catalog.
 
 ```zig
-pub const Strings = struct {
-    map: InternMap,
+pub const InternSet = struct {
+    hashes: []u32 = &.{},
+    entries: []?*const String = &.{},
+    count: usize = 0,
 };
 ```
 
@@ -164,17 +164,131 @@ pub const Strings = struct {
 
 | Name | Parameters | Return Type | Description |
 | --- | --- | --- | --- |
-| [intern](#fn-strings-intern) | `strings: *Strings, bytes: []const u8` | `![]const u8` |  |
-| [internConstant](#fn-strings-internconstant) | `strings: *Strings, bytes: []const u8` | `![]const u8` | Interns at any length: identical literals share one string, as with Lua's parser. |
-| [allocate](#fn-strings-allocate) | `strings: *Strings, bytes: []const u8` | `![]const u8` | Copies &#96;bytes&#96; into a new collectable string without interning it. |
-| [adopt](#fn-strings-adopt) | `strings: *Strings, allocated: []u8` | `![]const u8` | Takes ownership of &#96;allocated&#96;, which must come from the state's allocator. |
+| [initStatic](#fn-internset-initstatic) | `allocator: std.mem.Allocator, extra: usize` | `!InternSet` | &#96;extra&#96; is the number of strings to reserve beyond the static catalog. |
+| [deinit](#fn-internset-deinit) | `self: *InternSet, allocator: std.mem.Allocator` | `void` |  |
+| [clone](#fn-internset-clone) | `self: *const InternSet, allocator: std.mem.Allocator` | `!InternSet` |  |
+| [find](#fn-internset-find) | `self: *const InternSet, bytes: []const u8, hash: u32` | `?*const String` |  |
+| [ensureUnusedCapacity](#fn-internset-ensureunusedcapacity) | `self: *InternSet, allocator: std.mem.Allocator, extra: usize` | `!void` |  |
+| [insertAssumeCapacity](#fn-internset-insertassumecapacity) | `self: *InternSet, string: *const String` | `void` | The string must be absent and capacity reserved. |
+| [remove](#fn-internset-remove) | `self: *InternSet, string: *const String` | `void` |  |
+
+<a id="fn-internset-initstatic"></a>
+
+### InternSet.initStatic
+
+`extra` is the number of strings to reserve beyond the static catalog.
+
+```zig
+pub fn initStatic(allocator: std.mem.Allocator, extra: usize) !InternSet
+```
+
+References: [`InternSet`](#type-internset)
+
+<a id="fn-internset-deinit"></a>
+
+### InternSet.deinit
+
+```zig
+pub fn deinit(self: *InternSet, allocator: std.mem.Allocator) void
+```
+
+References: [`InternSet`](#type-internset)
+
+<a id="fn-internset-clone"></a>
+
+### InternSet.clone
+
+```zig
+pub fn clone(self: *const InternSet, allocator: std.mem.Allocator) !InternSet
+```
+
+References: [`InternSet`](#type-internset)
+
+<a id="fn-internset-find"></a>
+
+### InternSet.find
+
+```zig
+pub inline fn find(self: *const InternSet, bytes: []const u8, hash: u32) ?*const String
+```
+
+References: [`InternSet`](#type-internset)
+
+<a id="fn-internset-ensureunusedcapacity"></a>
+
+### InternSet.ensureUnusedCapacity
+
+```zig
+pub fn ensureUnusedCapacity(self: *InternSet, allocator: std.mem.Allocator, extra: usize) !void
+```
+
+References: [`InternSet`](#type-internset)
+
+<a id="fn-internset-insertassumecapacity"></a>
+
+### InternSet.insertAssumeCapacity
+
+The string must be absent and capacity reserved.
+
+```zig
+pub fn insertAssumeCapacity(self: *InternSet, string: *const String) void
+```
+
+References: [`InternSet`](#type-internset)
+
+<a id="fn-internset-remove"></a>
+
+### InternSet.remove
+
+```zig
+pub fn remove(self: *InternSet, string: *const String) void
+```
+
+References: [`InternSet`](#type-internset)
+
+<a id="type-strings"></a>
+
+## Strings
+
+String interning. The set holds strings weakly; the collector removes entries it frees.
+
+```zig
+pub const Strings = struct {
+    set: InternSet = .{},
+    /// `Builder` storage, empty while a builder holds it.
+    scratch: std.ArrayList(u8) = .empty,
+};
+```
+
+### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [deinit](#fn-strings-deinit) | `strings: *Strings, allocator: std.mem.Allocator` | `void` |  |
+| [intern](#fn-strings-intern) | `strings: *Strings, bytes: []const u8` | `!*const String` |  |
+| [internConstant](#fn-strings-internconstant) | `strings: *Strings, bytes: []const u8` | `!*const String` | Interns at any length: identical literals share one string, as with Lua's parser. |
+| [allocate](#fn-strings-allocate) | `strings: *Strings, bytes: []const u8` | `!*const String` | Copies &#96;bytes&#96; into a new collectable string without interning it. |
+| [createLong](#fn-strings-createlong) | `strings: *Strings, len: usize` | `!*String` |  |
+| [concat](#fn-strings-concat) | `strings: *Strings, left: []const u8, right: []const u8` | `!*const String` |  |
+| [duplicate](#fn-strings-duplicate) | `strings: *Strings, source: *const String` | `!*const String` |  |
+| [builder](#fn-strings-builder) | `strings: *Strings` | `Builder` |  |
+
+<a id="fn-strings-deinit"></a>
+
+### Strings.deinit
+
+```zig
+pub fn deinit(strings: *Strings, allocator: std.mem.Allocator) void
+```
+
+References: [`Strings`](#type-strings)
 
 <a id="fn-strings-intern"></a>
 
 ### Strings.intern
 
 ```zig
-pub fn intern(strings: *Strings, bytes: []const u8) ![]const u8
+pub fn intern(strings: *Strings, bytes: []const u8) !*const String
 ```
 
 References: [`Strings`](#type-strings)
@@ -186,7 +300,7 @@ References: [`Strings`](#type-strings)
 Interns at any length: identical literals share one string, as with Lua's parser.
 
 ```zig
-pub fn internConstant(strings: *Strings, bytes: []const u8) ![]const u8
+pub fn internConstant(strings: *Strings, bytes: []const u8) !*const String
 ```
 
 References: [`Strings`](#type-strings)
@@ -198,20 +312,151 @@ References: [`Strings`](#type-strings)
 Copies `bytes` into a new collectable string without interning it.
 
 ```zig
-pub fn allocate(strings: *Strings, bytes: []const u8) ![]const u8
+pub fn allocate(strings: *Strings, bytes: []const u8) !*const String
 ```
 
 References: [`Strings`](#type-strings)
 
-<a id="fn-strings-adopt"></a>
+<a id="fn-strings-createlong"></a>
 
-### Strings.adopt
-
-Takes ownership of `allocated`, which must come from the state's allocator.
+### Strings.createLong
 
 ```zig
-pub fn adopt(strings: *Strings, allocated: []u8) ![]const u8
+pub fn createLong(strings: *Strings, len: usize) !*String
 ```
 
 References: [`Strings`](#type-strings)
+
+<a id="fn-strings-concat"></a>
+
+### Strings.concat
+
+```zig
+pub fn concat(strings: *Strings, left: []const u8, right: []const u8) !*const String
+```
+
+References: [`Strings`](#type-strings)
+
+<a id="fn-strings-duplicate"></a>
+
+### Strings.duplicate
+
+```zig
+pub fn duplicate(strings: *Strings, source: *const String) !*const String
+```
+
+References: [`Strings`](#type-strings)
+
+<a id="fn-strings-builder"></a>
+
+### Strings.builder
+
+```zig
+pub fn builder(strings: *Strings) Builder
+```
+
+References: [`Strings`](#type-strings), [`Builder`](#type-builder)
+
+<a id="fn-destroy"></a>
+
+## destroy
+
+```zig
+pub fn destroy(allocator: std.mem.Allocator, string: *const String) void
+```
+
+<a id="type-builder"></a>
+
+## Builder
+
+Accumulates bytes for one new string, like `luaL_Buffer`.
+
+```zig
+pub const Builder = struct {
+    strings: *Strings,
+    buffer: std.ArrayList(u8),
+};
+```
+
+### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [deinit](#fn-builder-deinit) | `self: *Builder` | `void` |  |
+| [allocator](#fn-builder-allocator) | `self: *const Builder` | `std.mem.Allocator` |  |
+| [append](#fn-builder-append) | `self: *Builder, byte: u8` | `!void` |  |
+| [appendSlice](#fn-builder-appendslice) | `self: *Builder, bytes: []const u8` | `!void` |  |
+| [appendNTimes](#fn-builder-appendntimes) | `self: *Builder, byte: u8, count: usize` | `!void` |  |
+| [print](#fn-builder-print) | `self: *Builder, comptime fmt: []const u8, args: anytype` | `!void` |  |
+| [finish](#fn-builder-finish) | `self: *Builder` | `!*const String` |  |
+
+<a id="fn-builder-deinit"></a>
+
+### Builder.deinit
+
+```zig
+pub fn deinit(self: *Builder) void
+```
+
+References: [`Builder`](#type-builder)
+
+<a id="fn-builder-allocator"></a>
+
+### Builder.allocator
+
+```zig
+pub fn allocator(self: *const Builder) std.mem.Allocator
+```
+
+References: [`Builder`](#type-builder)
+
+<a id="fn-builder-append"></a>
+
+### Builder.append
+
+```zig
+pub fn append(self: *Builder, byte: u8) !void
+```
+
+References: [`Builder`](#type-builder)
+
+<a id="fn-builder-appendslice"></a>
+
+### Builder.appendSlice
+
+```zig
+pub fn appendSlice(self: *Builder, bytes: []const u8) !void
+```
+
+References: [`Builder`](#type-builder)
+
+<a id="fn-builder-appendntimes"></a>
+
+### Builder.appendNTimes
+
+```zig
+pub fn appendNTimes(self: *Builder, byte: u8, count: usize) !void
+```
+
+References: [`Builder`](#type-builder)
+
+<a id="fn-builder-print"></a>
+
+### Builder.print
+
+```zig
+pub fn print(self: *Builder, comptime fmt: []const u8, args: anytype) !void
+```
+
+References: [`Builder`](#type-builder)
+
+<a id="fn-builder-finish"></a>
+
+### Builder.finish
+
+```zig
+pub fn finish(self: *Builder) !*const String
+```
+
+References: [`Builder`](#type-builder)
 
