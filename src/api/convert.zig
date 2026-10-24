@@ -58,7 +58,6 @@ pub fn toRuntimeValue(state: *State, value: anytype) !runtime.Value {
         .function => |v| toRuntimeValue(state, v),
         .coroutine => |v| toRuntimeValue(state, v),
         .userdata => |v| toRuntimeValue(state, v),
-        .unsupported => error.UnsupportedType,
     };
     if (T == Ref) {
         try handle.validate(value, state);
@@ -163,7 +162,7 @@ pub fn fromRuntimeValue(state: *State, raw: runtime.Value, comptime T: type) !T 
     if (T == Value) return valueFromRuntime(state, raw);
     if (T == Ref) return handle.fromRuntime(state, raw);
     if (T == Table) return if (raw == .table) rooted(Table, state, raw) else error.TypeMismatch;
-    if (T == Function) return if (raw == .closure or raw == .api_callback) rooted(Function, state, raw) else error.TypeMismatch;
+    if (T == Function) return if (isFunction(raw)) rooted(Function, state, raw) else error.TypeMismatch;
     if (T == Coroutine) return if (raw == .thread) rooted(Coroutine, state, raw) else error.TypeMismatch;
     if (T == AnyUserdata) return if (raw == .userdata) rooted(AnyUserdata, state, raw) else error.TypeMismatch;
     if (comptime userdata_mod.isHandle(T)) return switch (raw) {
@@ -217,10 +216,16 @@ fn valueFromRuntime(state: *State, raw: runtime.Value) !Value {
         .number => |number| .{ .number = number },
         .string => |string| .{ .string = string.bytes() },
         .table => .{ .table = try rooted(Table, state, raw) },
-        .closure, .api_callback => .{ .function = try rooted(Function, state, raw) },
         .userdata => .{ .userdata = try rooted(AnyUserdata, state, raw) },
         .thread => .{ .coroutine = try rooted(Coroutine, state, raw) },
-        else => .unsupported,
+        else => .{ .function = try rooted(Function, state, raw) },
+    };
+}
+
+fn isFunction(raw: runtime.Value) bool {
+    return switch (raw) {
+        .nil, .boolean, .integer, .number, .string, .table, .userdata, .thread => false,
+        else => true,
     };
 }
 

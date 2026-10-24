@@ -149,8 +149,6 @@ pub const Value = union(enum) {
     function: Function,
     coroutine: Coroutine,
     userdata: AnyUserdata,
-    /// Lua value kind not represented by the high-level API.
-    unsupported,
 };
 ```
 
@@ -159,6 +157,7 @@ pub const Value = union(enum) {
 | Name | Parameters | Return Type | Description |
 | --- | --- | --- | --- |
 | [deinit](#fn-value-deinit) | `self: *Value` | `void` |  |
+| [typeName](#fn-value-typename) | `self: Value` | `[]const u8` | The name Lua's &#96;type&#96; gives this value. |
 
 <a id="fn-value-deinit"></a>
 
@@ -166,6 +165,18 @@ pub const Value = union(enum) {
 
 ```zig
 pub fn deinit(self: *Value) void
+```
+
+References: [`Value`](#type-value)
+
+<a id="fn-value-typename"></a>
+
+### Value.typeName
+
+The name Lua's `type` gives this value.
+
+```zig
+pub fn typeName(self: Value) []const u8
 ```
 
 References: [`Value`](#type-value)

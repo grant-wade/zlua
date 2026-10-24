@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Embedding API
+
+- `Function` and `Value.function` accept standard library functions and their iterators, and `Value.unsupported` is removed.
+- `Value.typeName` returns the name Lua's `type` gives a value.
+
 ## 0.7.3
 
 ### Embedding API

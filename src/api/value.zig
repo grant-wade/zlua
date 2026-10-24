@@ -17,8 +17,6 @@ pub const Value = union(enum) {
     function: Function,
     coroutine: Coroutine,
     userdata: AnyUserdata,
-    /// Lua value kind not represented by the high-level API.
-    unsupported,
 
     pub fn deinit(self: *Value) void {
         switch (self.*) {
@@ -29,6 +27,20 @@ pub const Value = union(enum) {
             else => {},
         }
         self.* = undefined;
+    }
+
+    /// The name Lua's `type` gives this value.
+    pub fn typeName(self: Value) []const u8 {
+        return switch (self) {
+            .nil => "nil",
+            .boolean => "boolean",
+            .integer, .number => "number",
+            .string => "string",
+            .table => "table",
+            .function => "function",
+            .coroutine => "thread",
+            .userdata => "userdata",
+        };
     }
 };
 

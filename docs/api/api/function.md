@@ -130,7 +130,7 @@
 
 ## Function
 
-Rooted handle to a Lua function or loaded chunk.
+Rooted handle to any Lua function: a closure, host callback, or standard library function.
 
 ```zig
 pub const Function = struct {

@@ -488,3 +488,43 @@ test "api callback context io stays null across snapshot states and reset" {
     try worker.reset();
     try worker.doString(expect_no_io, .{ .name = "=worker-reset" });
 }
+
+test "api function handles accept every callable lua value" {
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+
+    var chunk = try lua.loadString(
+        \\return tostring, coroutine.wrap(function() return 1 end), ("a"):gmatch("a"), coroutine.yield
+    , .{});
+    defer chunk.deinit();
+    var values = try chunk.call(.{}, Tuple(&.{ Function, Function, Function, api.Value }));
+    defer values.deinit();
+
+    try std.testing.expectEqualStrings("7", try values.get(0).call(.{@as(i64, 7)}, []const u8));
+    try std.testing.expectEqual(@as(i64, 1), try values.get(1).call(.{}, i64));
+    try std.testing.expectEqualStrings("a", try values.get(2).call(.{}, []const u8));
+    try std.testing.expect(values.get(3) == .function);
+}
+
+test "api value type names match lua" {
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+
+    var chunk = try lua.loadString(
+        \\local names = {}
+        \\for _, v in ipairs(...) do names[#names + 1] = type(v) end
+        \\return names
+    , .{});
+    defer chunk.deinit();
+    var source = try lua.loadString("return {true, 1, 1.5, 's', {}, print, coroutine.create(print)}", .{});
+    defer source.deinit();
+    var list = try source.call(.{}, Table);
+    defer list.deinit();
+    var expected = try chunk.call(.{list}, Table);
+    defer expected.deinit();
+    for (1..8) |index| {
+        var value = try list.rawGet(@as(i64, @intCast(index)), api.Value);
+        defer value.deinit();
+        try std.testing.expectEqualStrings(try expected.rawGet(@as(i64, @intCast(index)), []const u8), value.typeName());
+    }
+}

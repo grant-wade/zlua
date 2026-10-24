@@ -11,7 +11,7 @@ const Ref = handle.Ref;
 const State = @import("state.zig").State;
 const entry_mod = @import("../runtime/entry.zig");
 
-/// Rooted handle to a Lua function or loaded chunk.
+/// Rooted handle to any Lua function: a closure, host callback, or standard library function.
 pub const Function = struct {
     ref: Ref,
 

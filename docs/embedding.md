@@ -340,7 +340,7 @@ defer result.deinit();
 
 Handles keep Lua objects alive. `Table`, `Function`, `Coroutine`, `Ref`, userdata, and `ErrorRef` each own a registry root, as do values and tuples that contain them, so call `deinit` when you are finished with one. Assigning a handle into Lua does not consume your root, and you still need to release it.
 
-When you don't know a value's type ahead of time, read it as a dynamic `zlua.Value`. It can represent nil, booleans, numbers, strings, tables, functions, coroutines, and userdata. Any other runtime-only value appears as `.unsupported`.
+When you don't know a value's type ahead of time, read it as a dynamic `zlua.Value`. It can represent nil, booleans, numbers, strings, tables, functions, coroutines, and userdata, and `Value.typeName` returns the name Lua's `type` gives it. Standard library functions and the iterators they return, such as `print` and `coroutine.wrap` results, are functions too.
 
 ### Borrowed Strings
 
