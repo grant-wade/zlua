@@ -462,7 +462,7 @@ test "api userdata finalizers run under forced GC" {
     const Tracker = struct {
         finalized: *usize,
 
-        fn finalize(self: *@This()) void {
+        fn finalize(self: *@This(), _: std.mem.Allocator) void {
             self.finalized.* += 1;
         }
     };
@@ -625,4 +625,51 @@ test "api userdata table index and Lua iteration metamethods" {
         \\  assert(not ok and type(value) == 'string')
         \\end
     , .{});
+}
+
+test "api finalizers receive the state allocator and external bytes drive collection" {
+    const Buffer = struct {
+        bytes: []u8,
+
+        var finalized: usize = 0;
+
+        fn finalize(self: *@This(), allocator: std.mem.Allocator) void {
+            allocator.free(self.bytes);
+            finalized += 1;
+        }
+
+        fn create(ctx: *Context) !void {
+            const size: usize = 1024;
+            const lua = ctx.state();
+            const bytes = try lua.allocator().alloc(u8, size);
+            var ud = try lua.newUserdata(@This(), .{ .bytes = bytes }, .{ .finalizer = finalize, .external_bytes = size * 1024 });
+            defer ud.deinit();
+            try ctx.returnValues(.{ud});
+        }
+    };
+    Buffer.finalized = 0;
+
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    var create = try lua.register("create", Buffer.create);
+    defer create.deinit();
+    try lua.setGlobal("create", create);
+
+    try lua.doString("for _ = 1, 200 do create() end", .{});
+    try std.testing.expect(Buffer.finalized > 0);
+}
+
+test "api setExternalBytes replaces the reported amount" {
+    const Blob = struct { size: usize };
+
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    var blob = try lua.newUserdata(Blob, .{ .size = 1 }, .{});
+    defer blob.deinit();
+
+    const before = lua.raw_state.gc.known_total;
+    try blob.setExternalBytes(4096);
+    try std.testing.expectEqual(before + 4096, lua.raw_state.gc.known_total);
+    try blob.setExternalBytes(1024);
+    try std.testing.expectEqual(before + 1024, lua.raw_state.gc.known_total);
 }

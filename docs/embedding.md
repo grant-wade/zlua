@@ -580,7 +580,9 @@ try lua.setGlobal("counter", counter);
 
 To skip that step, `newUserdataAuto` and `newUserdataPtrAuto` bind the public functions whose first parameter is `*T` or `*const T`. Names beginning with `__` become metamethods, and other methods go on `__index`. `registerUserdataInitializerWith` creates a typed Lua constructor that returns auto-bound userdata.
 
-Both `newUserdata` and `newUserdataPtr` accept a `finalizer` option. For Lua-owned userdata it runs before the storage is freed, and for host-owned storage it runs when the Lua wrapper is finalized. Callbacks can take either kind as a typed argument, such as `ctx.arg(0, *Counter)`.
+Both `newUserdata` and `newUserdataPtr` accept a `finalizer` option. For Lua-owned userdata it runs before the storage is freed, and for host-owned storage it runs when the Lua wrapper is finalized. It receives the payload and the state's allocator. Callbacks can take either kind as a typed argument, such as `ctx.arg(0, *Counter)`.
+
+Pass the size of host storage a payload keeps alive, such as a pixel buffer, as `.external_bytes`, or call `Userdata.setExternalBytes` when it changes. The collector counts those bytes as allocated memory. They do not count against `max_memory`; storage allocated with `state.allocator()` does.
 
 To share one metatable between userdata from the same state, pass `.metatable = table` to `newUserdata` or `newUserdataPtr`, and install its methods before you share it. If construction fails, responsibility for finalizing the value stays with the host.
 

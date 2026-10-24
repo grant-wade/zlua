@@ -389,7 +389,7 @@ References: [`String`](#type-string)
 ## UserdataFinalizer
 
 ```zig
-pub const UserdataFinalizer = *const fn (*anyopaque, ?*const anyopaque) void;
+pub const UserdataFinalizer = *const fn (*anyopaque, ?*const anyopaque, std.mem.Allocator) void;
 ```
 
 <a id="const-userdatadeinit"></a>
@@ -463,6 +463,8 @@ pub const UserdataPayload = struct {
     ptr: *anyopaque,
     /// Inline storage owned by this payload; nested storage is accounted by the host allocator.
     managed_bytes: usize = 0,
+    /// Host storage the payload keeps alive, reported to the collector.
+    external_bytes: usize = 0,
     finalizer: ?UserdataFinalizer,
     finalizer_data: ?*const anyopaque,
     dispose: ?UserdataDeinit,

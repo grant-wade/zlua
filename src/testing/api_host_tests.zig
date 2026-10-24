@@ -196,7 +196,7 @@ fn runLua(lua: *api.State, source: []const u8) !void {
 test "failed userdata construction never takes the host finalizer obligation" {
     const Payload = struct {
         finalized: *usize,
-        fn release(self: *@This()) void {
+        fn release(self: *@This(), _: std.mem.Allocator) void {
             self.finalized.* += 1;
         }
     };
@@ -260,7 +260,7 @@ test "userdata __gc metamethods run before host finalizers" {
     const Item = struct {
         log: *std.ArrayList(u8),
 
-        fn finalize(self: *@This()) void {
+        fn finalize(self: *@This(), _: std.mem.Allocator) void {
             self.log.appendSlice(std.testing.allocator, "host;") catch {};
         }
     };

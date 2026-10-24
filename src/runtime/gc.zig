@@ -1440,7 +1440,7 @@ pub const Gc = struct {
             userdata.finalization_pending = false;
             userdata.finalized = true;
             if (state.finalizeBuiltinUserdata(userdata)) continue;
-            if (userdata.payload) |payload| payload.finalize() else if (userdata.finalizer) |finalizer| finalizer(userdata.ptr, userdata.finalizer_data);
+            if (userdata.payload) |payload| payload.finalize() else if (userdata.finalizer) |finalizer| finalizer(userdata.ptr, userdata.finalizer_data, state.allocator);
         }
         return true;
     }
@@ -1604,7 +1604,7 @@ pub const Gc = struct {
             return;
         }
         if (!userdata.finalized and !state.discarding) {
-            if (userdata.finalizer) |finalizer| finalizer(userdata.ptr, userdata.finalizer_data);
+            if (userdata.finalizer) |finalizer| finalizer(userdata.ptr, userdata.finalizer_data, state.allocator);
             userdata.finalized = true;
         }
         if (userdata.deinit_fn) |deinit_fn| deinit_fn(state.allocator, userdata.ptr);
@@ -1805,7 +1805,7 @@ fn threadListBytes(thread: *const Thread) usize {
 }
 
 pub fn userdataBytes(userdata: *const Userdata) usize {
-    return @sizeOf(Userdata) + if (userdata.payload) |payload| @sizeOf(types.UserdataPayload) + payload.managed_bytes else @as(usize, 0);
+    return @sizeOf(Userdata) + if (userdata.payload) |payload| @sizeOf(types.UserdataPayload) + payload.managed_bytes + payload.external_bytes else @as(usize, 0);
 }
 
 // Lua's floating-byte parameter encoding, decoded back to a percentage.

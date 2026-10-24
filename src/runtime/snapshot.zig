@@ -354,6 +354,7 @@ const Copier = struct {
                 .dispose = p.snapshot_dispose,
                 .finalized = p.finalized,
                 .managed_bytes = p.managed_bytes,
+                .external_bytes = p.external_bytes,
                 .snapshot_copy = p.snapshot_copy,
                 .snapshot_dispose = p.snapshot_dispose,
                 .snapshot_tracking = p.snapshot_tracking,
@@ -469,6 +470,6 @@ comptime {
     review(types.UserdataPayload, .{
         .external = "allocator lifetime ptr finalizer finalizer_data dispose snapshot_copy snapshot_dispose",
         .rebuilt = "references is_snapshot_copy",
-        .copied = "finalized snapshot_tracking managed_bytes",
+        .copied = "finalized snapshot_tracking managed_bytes external_bytes",
     });
 }

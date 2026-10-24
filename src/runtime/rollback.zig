@@ -141,6 +141,7 @@ pub fn copyPayload(a: std.mem.Allocator, lifetime: ?*types.AllocatorLifetime, p:
         .dispose = p.snapshot_dispose,
         .finalized = p.finalized,
         .managed_bytes = p.managed_bytes,
+        .external_bytes = p.external_bytes,
         .snapshot_copy = p.snapshot_copy,
         .snapshot_dispose = p.snapshot_dispose,
         .snapshot_tracking = p.snapshot_tracking,

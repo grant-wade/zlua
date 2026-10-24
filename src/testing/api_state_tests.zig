@@ -356,7 +356,7 @@ test "api userdata handles root weak values until finalizers can run" {
     const Tracker = struct {
         finalized: *usize,
 
-        fn finalize(self: *@This()) void {
+        fn finalize(self: *@This(), _: std.mem.Allocator) void {
             self.finalized.* += 1;
         }
     };

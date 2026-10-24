@@ -120,7 +120,7 @@ fn managedBytes(file: *const File) usize {
     return @sizeOf(File) + file.content.capacity + file.path.len;
 }
 
-fn fileFinalizer(_: *anyopaque, _: ?*const anyopaque) void {}
+fn fileFinalizer(_: *anyopaque, _: ?*const anyopaque, _: std.mem.Allocator) void {}
 
 fn disposeFile(allocator: std.mem.Allocator, ptr: *anyopaque) void {
     const file: *File = @ptrCast(@alignCast(ptr));

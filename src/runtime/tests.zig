@@ -1290,7 +1290,7 @@ test "automatic finalization runs a bounded userdata batch" {
     state.gc.mode = .incremental;
     var calls: usize = 0;
     const finalizer = struct {
-        fn run(ptr: *anyopaque, _: ?*const anyopaque) void {
+        fn run(ptr: *anyopaque, _: ?*const anyopaque, _: std.mem.Allocator) void {
             const count: *usize = @ptrCast(@alignCast(ptr));
             count.* += 1;
         }

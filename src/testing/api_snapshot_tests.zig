@@ -316,7 +316,7 @@ const Payload = struct {
     finalizers: *usize,
     disposals: *usize,
     fail: *bool,
-    fn finalize(self: *Payload) void {
+    fn finalize(self: *Payload, _: std.mem.Allocator) void {
         self.finalizers.* += 1;
     }
     fn copy(allocator: std.mem.Allocator, self: *const Payload) !*Payload {
@@ -939,7 +939,7 @@ const ScopedPayload = struct {
         self.disposals.* += 1;
         allocator.destroy(self);
     }
-    fn finalize(self: *@This()) void {
+    fn finalize(self: *@This(), _: std.mem.Allocator) void {
         self.finals.* += 1;
         self.value = -100;
     }
@@ -1215,7 +1215,7 @@ const ConcurrentPayload = struct {
     counters: *ConcurrentCounters,
     value: usize = 17,
 
-    fn finalize(self: *@This()) void {
+    fn finalize(self: *@This(), _: std.mem.Allocator) void {
         _ = self.counters.finals.fetchAdd(1, .monotonic);
     }
 
@@ -1385,8 +1385,8 @@ test "simultaneous final hookless payload releases finalize dispose and destroy 
         }
     };
     const Worker = struct {
-        fn finalize(ptr: *anyopaque, _: ?*const anyopaque) void {
-            ConcurrentPayload.finalize(@ptrCast(@alignCast(ptr)));
+        fn finalize(ptr: *anyopaque, _: ?*const anyopaque, allocator: std.mem.Allocator) void {
+            ConcurrentPayload.finalize(@ptrCast(@alignCast(ptr)), allocator);
         }
         fn dispose(allocator: std.mem.Allocator, ptr: *anyopaque) void {
             ConcurrentPayload.dispose(allocator, @ptrCast(@alignCast(ptr)));
@@ -1607,7 +1607,7 @@ test "snapshot preserves pending userdata finalizers without running them" {
     var lua = try api.State.init(a, .{ .gc = .{ .running = false, .mode = .incremental } });
     defer lua.deinit();
     const finalizer = struct {
-        fn run(ptr: *anyopaque, _: ?*const anyopaque) void {
+        fn run(ptr: *anyopaque, _: ?*const anyopaque, _: std.mem.Allocator) void {
             const counter: *usize = @ptrCast(@alignCast(ptr));
             counter.* += 1;
         }

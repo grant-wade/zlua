@@ -119,7 +119,7 @@ pub const String = extern struct {
     }
 };
 
-pub const UserdataFinalizer = *const fn (*anyopaque, ?*const anyopaque) void;
+pub const UserdataFinalizer = *const fn (*anyopaque, ?*const anyopaque, std.mem.Allocator) void;
 pub const UserdataDeinit = *const fn (std.mem.Allocator, *anyopaque) void;
 
 /// Keeps allocator infrastructure alive while shared userdata outlives its State.
@@ -149,6 +149,8 @@ pub const UserdataPayload = struct {
     ptr: *anyopaque,
     /// Inline storage owned by this payload; nested storage is accounted by the host allocator.
     managed_bytes: usize = 0,
+    /// Host storage the payload keeps alive, reported to the collector.
+    external_bytes: usize = 0,
     finalizer: ?UserdataFinalizer,
     finalizer_data: ?*const anyopaque,
     dispose: ?UserdataDeinit,
@@ -172,7 +174,7 @@ pub const UserdataPayload = struct {
     fn finalizeOwned(self: *UserdataPayload) void {
         if (self.finalized) return;
         self.finalized = true;
-        if (self.finalizer) |f| f(self.ptr, self.finalizer_data);
+        if (self.finalizer) |f| f(self.ptr, self.finalizer_data, self.allocator);
     }
 
     pub fn release(self: *UserdataPayload, discard: bool) void {

@@ -19,9 +19,11 @@ pub fn UserdataOptions(comptime T: type) type {
     return struct {
         /// Shared metatable used instead of allocating one; install methods before sharing it.
         metatable: ?Table = null,
-        /// Runs before Lua-owned storage is destroyed.
-        finalizer: ?*const fn (*T) void = null,
+        /// Runs before Lua-owned storage is destroyed, with the state's allocator.
+        finalizer: ?*const fn (*T, std.mem.Allocator) void = null,
         snapshot: ?UserdataSnapshotHooks(T) = null,
+        /// Host storage the payload keeps alive, reported to the collector.
+        external_bytes: usize = 0,
     };
 }
 
@@ -29,9 +31,11 @@ pub fn UserdataPtrOptions(comptime T: type) type {
     return struct {
         /// Shared metatable used instead of allocating one.
         metatable: ?Table = null,
-        /// Runs when the Lua userdata wrapper is finalized.
-        finalizer: ?*const fn (*T) void = null,
+        /// Runs when the Lua userdata wrapper is finalized, with the state's allocator.
+        finalizer: ?*const fn (*T, std.mem.Allocator) void = null,
         snapshot: ?UserdataSnapshotHooks(T) = null,
+        /// Host storage the payload keeps alive, reported to the collector.
+        external_bytes: usize = 0,
     };
 }
 
@@ -63,6 +67,13 @@ pub fn Userdata(comptime T: type) type {
 
         pub fn ptr(self: @This()) !*T {
             return payloadPtr(T, try self.rawUserdata());
+        }
+
+        /// Reports host storage the payload keeps alive to the collector, replacing the previous
+        /// amount. It does not count against `Limits.max_memory`.
+        pub fn setExternalBytes(self: @This(), bytes: usize) !void {
+            reportExternalBytes(self.ref.state, try self.rawUserdata(), bytes);
+            try state_mod.gcBoundary(self.ref.state);
         }
 
         /// Scoped read-only access; the payload and nested pointers must not escape or be mutated.
@@ -216,6 +227,7 @@ pub fn create(state: *State, comptime T: type, value: T, options: UserdataOption
     raw.userdata.payload.?.finalizer = raw.userdata.finalizer;
     raw.userdata.payload.?.finalizer_data = raw.userdata.finalizer_data;
     setSnapshotHooks(T, raw.userdata, options.snapshot);
+    reportExternalBytes(state, raw.userdata, options.external_bytes);
     try state_mod.gcBoundary(state);
     return userdata;
 }
@@ -232,8 +244,17 @@ pub fn wrapPtr(state: *State, comptime T: type, ptr: *T, options: UserdataPtrOpt
     raw.userdata.payload.?.finalizer = raw.userdata.finalizer;
     raw.userdata.payload.?.finalizer_data = raw.userdata.finalizer_data;
     setSnapshotHooks(T, raw.userdata, options.snapshot);
+    reportExternalBytes(state, raw.userdata, options.external_bytes);
     try state_mod.gcBoundary(state);
     return userdata;
+}
+
+fn reportExternalBytes(state: *State, raw: *runtime.Userdata, bytes: usize) void {
+    const payload = raw.payload orelse return;
+    rollback_runtime.touch(raw);
+    state.raw_state.gc.noteAllocationFreed(payload.external_bytes);
+    state.raw_state.gc.noteAllocation(bytes);
+    payload.external_bytes = bytes;
 }
 
 fn sharedMetatable(state: *State, metatable: ?Table) !?*runtime.Table {
@@ -329,17 +350,17 @@ pub fn payloadPtr(comptime T: type, raw: *runtime.Userdata) !*T {
     return @ptrCast(@alignCast(raw.ptr));
 }
 
-fn userdataFinalizer(comptime T: type, finalizer: ?*const fn (*T) void) ?runtime.UserdataFinalizer {
+fn userdataFinalizer(comptime T: type, finalizer: ?*const fn (*T, std.mem.Allocator) void) ?runtime.UserdataFinalizer {
     if (finalizer == null) return null;
     return struct {
-        fn call(ptr: *anyopaque, data: ?*const anyopaque) void {
-            const typed_finalizer: *const fn (*T) void = @ptrCast(@alignCast(data.?));
-            typed_finalizer(@ptrCast(@alignCast(ptr)));
+        fn call(ptr: *anyopaque, data: ?*const anyopaque, allocator: std.mem.Allocator) void {
+            const typed_finalizer: *const fn (*T, std.mem.Allocator) void = @ptrCast(@alignCast(data.?));
+            typed_finalizer(@ptrCast(@alignCast(ptr)), allocator);
         }
     }.call;
 }
 
-fn userdataFinalizerData(comptime T: type, finalizer: ?*const fn (*T) void) ?*const anyopaque {
+fn userdataFinalizerData(comptime T: type, finalizer: ?*const fn (*T, std.mem.Allocator) void) ?*const anyopaque {
     return if (finalizer) |active| @ptrCast(active) else null;
 }
 
