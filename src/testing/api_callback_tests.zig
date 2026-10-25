@@ -9,6 +9,23 @@ const Value = api.Value;
 
 const memory_limit_error_message = "memory limit exceeded";
 
+fn expectProtectedErrorContains(lua: *State, function: Function, needle: []const u8) !void {
+    const result = try function.protectedCall(.{}, void);
+    switch (result) {
+        .ok => return error.TestExpectedLuaError,
+        .lua_error => |err_ref| {
+            var err = err_ref;
+            defer err.deinit();
+            const message = try err.message();
+            defer lua.allocator().free(message);
+            if (std.mem.indexOf(u8, message, needle) == null) {
+                std.debug.print("expected \"{s}\" in \"{s}\"\n", .{ needle, message });
+                return error.TestUnexpectedMessage;
+            }
+        },
+    }
+}
+
 test "api host callbacks read arguments and return multiple values" {
     const Callbacks = struct {
         fn add(ctx: *Context) !void {
@@ -527,4 +544,38 @@ test "api value type names match lua" {
         defer value.deinit();
         try std.testing.expectEqualStrings(try expected.rawGet(@as(i64, @intCast(index)), []const u8), value.typeName());
     }
+}
+
+test "api integer arguments report numbers without an integer representation" {
+    const Host = struct {
+        fn takesInteger(ctx: *Context) !void {
+            try ctx.returnValues(.{try ctx.arg(0, i64)});
+        }
+
+        fn takesOptional(ctx: *Context) !void {
+            try ctx.returnValues(.{try ctx.optionalArg(0, i32)});
+        }
+    };
+
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    var integer = try lua.register("integer", Host.takesInteger);
+    defer integer.deinit();
+    try lua.setGlobal("integer", integer);
+    var optional = try lua.register("optional", Host.takesOptional);
+    defer optional.deinit();
+    try lua.setGlobal("optional", optional);
+
+    var fraction = try lua.loadString("return integer(1.5)", .{});
+    defer fraction.deinit();
+    try expectProtectedErrorContains(&lua, fraction, "bad argument #1 to 'integer' (number has no integer representation)");
+    var optional_fraction = try lua.loadString("return optional(1.5)", .{});
+    defer optional_fraction.deinit();
+    try expectProtectedErrorContains(&lua, optional_fraction, "number has no integer representation");
+    var text = try lua.loadString("return integer('x')", .{});
+    defer text.deinit();
+    try expectProtectedErrorContains(&lua, text, "number expected, got string");
+    var whole = try lua.loadString("return integer(2.0)", .{});
+    defer whole.deinit();
+    try std.testing.expectEqual(@as(i64, 2), try whole.call(.{}, i64));
 }

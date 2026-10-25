@@ -39,7 +39,7 @@ pub const Context = struct {
         if (index >= self.argCount()) return null;
         const raw = self.raw.callbackArgValue(index);
         if (raw == .nil) return null;
-        return self.arg(index, T);
+        return try self.arg(index, T);
     }
 
     pub fn pushReturn(self: *Context, value: anytype) !void {
@@ -106,10 +106,21 @@ pub const Context = struct {
 
     fn argConversionError(self: *Context, index: usize, comptime T: type, raw: runtime.Value, err: anyerror) anyerror {
         return switch (err) {
-            error.TypeMismatch => self.raw.failArgumentType(index, convert.expectedLuaType(T), raw),
+            error.TypeMismatch => if (expectsInteger(T) and raw == .number)
+                self.raw.failArgumentMessage(index, "number has no integer representation")
+            else
+                self.raw.failArgumentType(index, convert.expectedLuaType(T), raw),
             error.IntegerOutOfRange => self.raw.failArgumentMessage(index, "integer out of range"),
             error.UnsupportedType => self.raw.failArgumentMessage(index, "unsupported host argument type"),
             else => err,
+        };
+    }
+
+    fn expectsInteger(comptime T: type) bool {
+        return switch (@typeInfo(T)) {
+            .int, .comptime_int => true,
+            .optional => |optional| expectsInteger(optional.child),
+            else => false,
         };
     }
 

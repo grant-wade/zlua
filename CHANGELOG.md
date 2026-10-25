@@ -10,6 +10,11 @@
 - `UserdataOptions.external_bytes` and `Userdata.setExternalBytes` report host storage to the collector.
 - `Coroutine.protectedResumeWith` takes `ResumeOptions` for a traceback and a per-resume instruction budget.
 
+### Fixes
+
+- `Context.optionalArg` failed to compile.
+- Callback integer arguments given a fractional number report that it has no integer representation.
+
 ## 0.7.3
 
 ### Embedding API
