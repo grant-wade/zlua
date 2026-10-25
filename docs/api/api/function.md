@@ -125,6 +125,7 @@
 ## Types
 
 - [Function](#type-function)
+- [CallBudget](#type-callbudget)
 
 <a id="type-function"></a>
 
@@ -221,4 +222,42 @@ pub fn dumpBytecode(self: Function, options: BytecodeDumpOptions) ![]const u8
 ```
 
 References: [`Function`](#type-function)
+
+<a id="type-callbudget"></a>
+
+## CallBudget
+
+```zig
+pub const CallBudget = struct {
+    active: bool,
+    previous: ?u64,
+};
+```
+
+### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [begin](#fn-callbudget-begin) | `state: *State, max_instructions: ?u64` | `CallBudget` |  |
+| [end](#fn-callbudget-end) | `self: CallBudget, state: *State` | `void` |  |
+
+<a id="fn-callbudget-begin"></a>
+
+### CallBudget.begin
+
+```zig
+pub fn begin(state: *State, max_instructions: ?u64) CallBudget
+```
+
+References: [`CallBudget`](#type-callbudget)
+
+<a id="fn-callbudget-end"></a>
+
+### CallBudget.end
+
+```zig
+pub fn end(self: CallBudget, state: *State) void
+```
+
+References: [`CallBudget`](#type-callbudget)
 

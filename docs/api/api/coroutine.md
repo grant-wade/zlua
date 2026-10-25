@@ -172,6 +172,7 @@ pub const Coroutine = struct {
 | [deinit](#fn-coroutine-deinit) | `self: *Coroutine` | `void` | Releases only the root; use &#96;close&#96; to unwind pending frames. |
 | [resumeCoroutine](#fn-coroutine-resumecoroutine) | `self: Coroutine, args: anytype, comptime Y: type, comptime R: type` | `!ResumeResult(Y, R)` | Converts yields to &#96;Y&#96; and returns to &#96;R&#96;; Lua failures return &#96;error.LuaError&#96;. |
 | [protectedResume](#fn-coroutine-protectedresume) | `self: Coroutine, args: anytype, comptime Y: type, comptime R: type` | `!CallResult(ResumeResult(Y, R))` | Like &#96;resumeCoroutine&#96;, returning Lua errors as an &#96;ErrorRef&#96;. |
+| [protectedResumeWith](#fn-coroutine-protectedresumewith) | `self: Coroutine, args: anytype, comptime Y: type, comptime R: type, options: ResumeOptions` | `!CallResult(ResumeResult(Y, R))` | &#96;protectedResume&#96; with &#96;ResumeOptions&#96;; a captured traceback is owned by the &#96;ErrorRef&#96;. |
 | [status](#fn-coroutine-status) | `self: Coroutine` | `!CoroutineStatus` |  |
 | [identity](#fn-coroutine-identity) | `self: Coroutine` | `!usize` | State-local token valid while rooted and until reset. |
 | [close](#fn-coroutine-close) | `self: Coroutine` | `!void` | Unwinds pending frames and &#96;__close&#96; handlers; rejects main, running, and normal coroutines. |
@@ -209,6 +210,18 @@ Like `resumeCoroutine`, returning Lua errors as an `ErrorRef`.
 
 ```zig
 pub fn protectedResume(self: Coroutine, args: anytype, comptime Y: type, comptime R: type) !CallResult(ResumeResult(Y, R))
+```
+
+References: [`Coroutine`](#type-coroutine)
+
+<a id="fn-coroutine-protectedresumewith"></a>
+
+### Coroutine.protectedResumeWith
+
+`protectedResume` with `ResumeOptions`; a captured traceback is owned by the `ErrorRef`.
+
+```zig
+pub fn protectedResumeWith(self: Coroutine, args: anytype, comptime Y: type, comptime R: type, options: ResumeOptions) !CallResult(ResumeResult(Y, R))
 ```
 
 References: [`Coroutine`](#type-coroutine)

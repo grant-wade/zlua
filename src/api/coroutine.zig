@@ -4,8 +4,11 @@ const convert = @import("convert.zig");
 const errors = @import("errors.zig");
 const handle = @import("handle.zig");
 const coroutine_mod = @import("../runtime/coroutine.zig");
+const debug_mod = @import("../runtime/debug.zig");
+const CallBudget = @import("function.zig").CallBudget;
 const CallResult = errors.CallResult;
 const Ref = handle.Ref;
+const ResumeOptions = @import("options.zig").ResumeOptions;
 
 pub const CoroutineStatus = runtime_types.ThreadStatus;
 
@@ -51,11 +54,19 @@ pub const Coroutine = struct {
 
     /// Like `resumeCoroutine`, returning Lua errors as an `ErrorRef`.
     pub fn protectedResume(self: Coroutine, args: anytype, comptime Y: type, comptime R: type) !CallResult(ResumeResult(Y, R)) {
+        return self.protectedResumeWith(args, Y, R, .{});
+    }
+
+    /// `protectedResume` with `ResumeOptions`; a captured traceback is owned by the `ErrorRef`.
+    pub fn protectedResumeWith(self: Coroutine, args: anytype, comptime Y: type, comptime R: type, options: ResumeOptions) !CallResult(ResumeResult(Y, R)) {
         const raw = try self.rawThread();
         const state = self.ref.state;
         const raw_args = try convert.convertArgs(state, args);
         defer state.allocator().free(raw_args);
         _ = errors.takeMemoryLimitExceeded(state);
+        const resumable = raw.status == .suspended;
+        const budget = CallBudget.begin(state, options.max_instructions);
+        defer budget.end(state);
         const result = coroutine_mod.resumeCoroutine(&state.raw_state, raw, raw_args) catch |err| {
             if (err == error.OutOfMemory and errors.takeMemoryLimitExceeded(state)) {
                 return .{ .lua_error = try errors.memoryLimitErrorRef(state) };
@@ -73,7 +84,10 @@ pub const Coroutine = struct {
             .failure => |value| blk: {
                 if (errors.takeMemoryLimitExceeded(state)) break :blk .{ .lua_error = try errors.memoryLimitErrorRef(state) };
                 try errors.setLastErrorValue(state, value);
-                break :blk .{ .lua_error = try errors.refFromRuntime(state, value) };
+                var error_ref = try errors.refFromRuntime(state, value);
+                errdefer error_ref.deinit();
+                if (options.traceback and resumable) error_ref.traceback_text = try debug_mod.formatTraceback(&state.raw_state, raw, false);
+                break :blk .{ .lua_error = error_ref };
             },
         };
     }

@@ -38,8 +38,8 @@ pub const ErrorRef = struct {
         self.* = undefined;
     }
 
-    /// Traceback when `CallOptions.traceback` was set, formatted like `debug.traceback`;
-    /// valid until `deinit`.
+    /// Traceback when `CallOptions.traceback` or `ResumeOptions.traceback` was set, formatted
+    /// like `debug.traceback`; valid until `deinit`.
     pub fn traceback(self: ErrorRef) ?[]const u8 {
         return self.traceback_text;
     }

@@ -195,7 +195,7 @@ var lua = try zlua.State.init(allocator, .{
 
 `max_instructions` is cumulative, counting instructions across all calls and coroutine resumes. You can check it with `instructionBudget` and start it over with `resetInstructionBudget`.
 
-To limit a single call instead, pass `CallOptions` to `Function.callWith` or `Function.protectedCallWith`. Its `max_instructions` covers that call, including nested calls and any coroutines it resumes. When budgets nest, the tighter limit applies.
+To limit a single call instead, pass `CallOptions` to `Function.callWith` or `Function.protectedCallWith`. Its `max_instructions` covers that call, including nested calls and any coroutines it resumes. `ResumeOptions` does the same for one `Coroutine.protectedResumeWith`. When budgets nest, the tighter limit applies.
 
 ```zig
 const result = try handler.protectedCallWith(.{event}, void, .{ .max_instructions = 100_000 });
@@ -536,6 +536,7 @@ A few more things to know about coroutine handles:
 
 - `status()` returns `.suspended`, `.running`, `.normal`, or `.dead`. Only suspended coroutines can be resumed.
 - Lua failures return `error.LuaError`. Use `protectedResume` to receive the error as a value, as with `protectedCall`.
+- `protectedResumeWith` takes `ResumeOptions`: `.traceback = true` keeps a traceback of the failed coroutine on the `ErrorRef`, and `.max_instructions` bounds that resume.
 - Call `deinit` on each result to release its handles. Strings are borrowed VM slices, so copy any you need to keep.
 - A conversion error leaves the coroutine wherever Lua stopped, and its side effects are not undone.
 - `deinit` only drops the handle. If you are abandoning a suspended coroutine, call `close()` first to run its pending `__close` handlers. Use `protectedClose()` if you want to keep a Lua error raised during closing, and deinitialize the resulting `ErrorRef`.

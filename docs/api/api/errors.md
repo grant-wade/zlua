@@ -207,7 +207,7 @@ pub const ErrorRef = struct {
 | Name | Parameters | Return Type | Description |
 | --- | --- | --- | --- |
 | [deinit](#fn-errorref-deinit) | `self: *ErrorRef` | `void` |  |
-| [traceback](#fn-errorref-traceback) | `self: ErrorRef` | `?[]const u8` | Traceback when &#96;CallOptions.traceback&#96; was set, formatted like &#96;debug.traceback&#96;; valid until &#96;deinit&#96;. |
+| [traceback](#fn-errorref-traceback) | `self: ErrorRef` | `?[]const u8` | Traceback when &#96;CallOptions.traceback&#96; or &#96;ResumeOptions.traceback&#96; was set, formatted like &#96;debug.traceback&#96;; valid until &#96;deinit&#96;. |
 | [value](#fn-errorref-value) | `self: ErrorRef` | `!Value` |  |
 | [message](#fn-errorref-message) | `self: ErrorRef` | `![]const u8` | Formats the error value; the caller frees it with the state's allocator. |
 
@@ -225,8 +225,8 @@ References: [`ErrorRef`](#type-errorref)
 
 ### ErrorRef.traceback
 
-Traceback when `CallOptions.traceback` was set, formatted like `debug.traceback`;
-valid until `deinit`.
+Traceback when `CallOptions.traceback` or `ResumeOptions.traceback` was set, formatted
+like `debug.traceback`; valid until `deinit`.
 
 ```zig
 pub fn traceback(self: ErrorRef) ?[]const u8

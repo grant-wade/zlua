@@ -31,6 +31,7 @@ pub const ResumeResult = api.ResumeResult;
 pub const CallResult = api.CallResult;
 pub const ErrorRef = api.ErrorRef;
 pub const CallOptions = api.CallOptions;
+pub const ResumeOptions = api.ResumeOptions;
 pub const InterruptHandle = api.InterruptHandle;
 pub const Context = api.Context;
 pub const Error = api.Error;

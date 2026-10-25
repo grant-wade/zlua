@@ -43,6 +43,15 @@ pub const CallOptions = struct {
     message_handler: ?Function = null,
 };
 
+/// Options for `Coroutine.protectedResumeWith`.
+pub const ResumeOptions = struct {
+    /// Instruction budget for this resume, covering nested calls and coroutines; nested budgets
+    /// keep the tighter limit, and `Limits.max_instructions` still applies.
+    max_instructions: ?u64 = null,
+    /// Capture a traceback of the failed coroutine; read it via `ErrorRef.traceback`.
+    traceback: bool = false,
+};
+
 pub const InstructionBudget = struct {
     limit: ?u64,
     /// Instructions since state creation or the last reset.

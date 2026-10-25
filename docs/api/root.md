@@ -150,6 +150,7 @@
 - [CallResult](#alias-callresult)
 - [ErrorRef](#alias-errorref)
 - [CallOptions](#alias-calloptions)
+- [ResumeOptions](#alias-resumeoptions)
 - [InterruptHandle](#alias-interrupthandle)
 - [Context](#alias-context)
 - [Error](#alias-error)
@@ -479,6 +480,16 @@ pub const CallOptions = api.CallOptions;
 ```
 
 References: [`api.CallOptions`](api.md#alias-calloptions)
+
+<a id="alias-resumeoptions"></a>
+
+## ResumeOptions
+
+```zig
+pub const ResumeOptions = api.ResumeOptions;
+```
+
+References: [`api.ResumeOptions`](api.md#alias-resumeoptions)
 
 <a id="alias-interrupthandle"></a>
 

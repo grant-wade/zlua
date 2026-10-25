@@ -146,6 +146,7 @@ See `docs/embedding.md` for capabilities, error handling, snapshots, and ownersh
 - [Stdlib](#alias-stdlib)
 - [Limits](#alias-limits)
 - [CallOptions](#alias-calloptions)
+- [ResumeOptions](#alias-resumeoptions)
 - [InstructionBudget](#alias-instructionbudget)
 - [GcMode](#alias-gcmode)
 - [GcParam](#alias-gcparam)
@@ -321,6 +322,16 @@ pub const CallOptions = options.CallOptions;
 ```
 
 References: [`options.CallOptions`](api/options.md#type-calloptions)
+
+<a id="alias-resumeoptions"></a>
+
+## ResumeOptions
+
+```zig
+pub const ResumeOptions = options.ResumeOptions;
+```
+
+References: [`options.ResumeOptions`](api/options.md#type-resumeoptions)
 
 <a id="alias-instructionbudget"></a>
 

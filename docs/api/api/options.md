@@ -133,6 +133,7 @@
 - [Stdlib](#type-stdlib)
 - [Limits](#type-limits)
 - [CallOptions](#type-calloptions)
+- [ResumeOptions](#type-resumeoptions)
 - [InstructionBudget](#type-instructionbudget)
 - [GcOptions](#type-gcoptions)
 - [DebugOptions](#type-debugoptions)
@@ -215,6 +216,22 @@ pub const CallOptions = struct {
     /// `xpcall`-style handler run at the error point before `__close` handlers; its first
     /// result becomes the error value. Must belong to the called state.
     message_handler: ?Function = null,
+};
+```
+
+<a id="type-resumeoptions"></a>
+
+## ResumeOptions
+
+[Options](#type-options) for `Coroutine.protectedResumeWith`.
+
+```zig
+pub const ResumeOptions = struct {
+    /// Instruction budget for this resume, covering nested calls and coroutines; nested budgets
+    /// keep the tighter limit, and `Limits.max_instructions` still applies.
+    max_instructions: ?u64 = null,
+    /// Capture a traceback of the failed coroutine; read it via `ErrorRef.traceback`.
+    traceback: bool = false,
 };
 ```
 

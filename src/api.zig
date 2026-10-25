@@ -34,6 +34,7 @@ pub const LibrarySet = options.LibrarySet;
 pub const Stdlib = options.Stdlib;
 pub const Limits = options.Limits;
 pub const CallOptions = options.CallOptions;
+pub const ResumeOptions = options.ResumeOptions;
 pub const InstructionBudget = options.InstructionBudget;
 pub const GcMode = options.GcMode;
 pub const GcParam = options.GcParam;
