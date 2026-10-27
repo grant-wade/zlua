@@ -8,6 +8,8 @@
 - `Value.typeName` returns the name Lua's `type` gives a value.
 - Userdata finalizers receive the state's allocator.
 - `UserdataOptions.external_bytes` and `Userdata.setExternalBytes` report host storage to the collector.
+- `State.defineUserdata` gives a userdata type one metatable, with typed methods and a name used by `tostring` and argument errors.
+- `newUserdataAuto` and `newUserdataPtrAuto` share one metatable per type.
 - `Coroutine.protectedResumeWith` takes `ResumeOptions` for a traceback and a per-resume instruction budget.
 
 ### Fixes

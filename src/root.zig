@@ -41,6 +41,7 @@ pub const Tuple = api.Tuple;
 pub const HostFn = api.HostFn;
 pub const Userdata = api.Userdata;
 pub const AnyUserdata = api.AnyUserdata;
+pub const UserdataType = api.UserdataType;
 pub const MemoryFile = api.MemoryFile;
 pub const MemoryFilesystem = api.MemoryFilesystem;
 pub const FilesystemCapability = api.FilesystemCapability;

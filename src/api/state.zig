@@ -39,6 +39,7 @@ const TableOptions = options_mod.TableOptions;
 const Userdata = userdata_mod.Userdata;
 const UserdataOptions = userdata_mod.UserdataOptions;
 const UserdataPtrOptions = userdata_mod.UserdataPtrOptions;
+const UserdataType = userdata_mod.UserdataType;
 const Value = @import("value.zig").Value;
 const coroutine_mod = @import("../runtime/coroutine.zig");
 const entry_mod = @import("../runtime/entry.zig");
@@ -309,14 +310,24 @@ pub const State = struct {
         return result;
     }
 
+    /// Gives every later `T` userdata one metatable holding `options.methods`, unless it passes its
+    /// own `metatable`. Returns `error.UserdataTypeDefined` when `T` already has a definition.
+    pub fn defineUserdata(self: *State, comptime T: type, comptime options: UserdataType) !void {
+        return userdata_mod.define(self, T, options);
+    }
+
     /// Allocates Lua-owned userdata initialized with `value`.
     pub fn newUserdata(self: *State, comptime T: type, value: T, options: UserdataOptions(T)) !Userdata(T) {
         return userdata_mod.create(self, T, value, options);
     }
 
-    /// Like `newUserdata`, also installing `T`'s methods whose receiver is `*T` or `*const T`;
-    /// names starting with `__` become metamethods.
+    /// Like `newUserdata`, defining `T` with `defineUserdata` on first use. With an explicit
+    /// `metatable`, installs `T`'s methods on it instead.
     pub fn newUserdataAuto(self: *State, comptime T: type, value: T, options: UserdataOptions(T)) !Userdata(T) {
+        if (options.metatable == null) {
+            if (!userdata_mod.isDefined(self, T)) try userdata_mod.define(self, T, .{});
+            return self.newUserdata(T, value, options);
+        }
         var userdata = try self.newUserdata(T, value, options);
         errdefer userdata.deinit();
         try userdata.bindMethods(T);
@@ -330,6 +341,10 @@ pub const State = struct {
 
     /// Like `newUserdataPtr`, also installing `T`'s methods as in `newUserdataAuto`.
     pub fn newUserdataPtrAuto(self: *State, comptime T: type, ptr: *T, options: UserdataPtrOptions(T)) !Userdata(T) {
+        if (options.metatable == null) {
+            if (!userdata_mod.isDefined(self, T)) try userdata_mod.define(self, T, .{});
+            return self.newUserdataPtr(T, ptr, options);
+        }
         var userdata = try self.newUserdataPtr(T, ptr, options);
         errdefer userdata.deinit();
         try userdata.bindMethods(T);

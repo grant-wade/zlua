@@ -105,6 +105,7 @@ pub const LibraryTable = enum {
     package,
     package_loaded,
     package_preload,
+    userdata_types,
 };
 
 pub const InitHints = struct {

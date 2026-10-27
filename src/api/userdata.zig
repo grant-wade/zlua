@@ -39,6 +39,15 @@ pub fn UserdataPtrOptions(comptime T: type) type {
     };
 }
 
+/// Options for `State.defineUserdata`.
+pub const UserdataType = struct {
+    /// Name for `__name` and argument errors; the Zig type name by default.
+    name: ?[]const u8 = null,
+    /// Struct whose public functions with a `*T` or `*const T` receiver become methods; `T` by
+    /// default. Names starting with `__` become metamethods.
+    methods: ?type = null,
+};
+
 /// Snapshot copy/dispose hooks for userdata payloads. Copies must own all nested storage and
 /// must not retain VM pointers or reenter snapshot operations. Hooks must be thread-safe:
 /// concurrent `Snapshot.newState` calls may copy one payload, and disposal runs on any thread.
@@ -209,8 +218,68 @@ pub const AnyUserdata = struct {
     }
 };
 
+pub fn define(state: *State, comptime T: type, comptime options: UserdataType) !void {
+    if (definedMetatable(state, T) != null) return error.UserdataTypeDefined;
+    const raw = &state.raw_state;
+    const name = options.name orelse @typeName(T);
+    const metatable = raw.newTableWithHints(0, 3) catch |err| return errors.captureLuaError(state, err);
+    const index = raw.newTableWithHints(0, 4) catch |err| return errors.captureLuaError(state, err);
+    try raw.setTableRaw(metatable.table, .{ .string = try raw.strings.intern("__name") }, .{ .string = try raw.strings.intern(name) });
+    try raw.setTableRaw(metatable.table, .{ .string = try raw.strings.intern("__index") }, index);
+    const types = raw.library_tables.get(.userdata_types) orelse blk: {
+        const created = raw.newTableWithHints(0, 4) catch |err| return errors.captureLuaError(state, err);
+        raw.library_tables.set(.userdata_types, created.table);
+        break :blk created.table;
+    };
+    try raw.setTableRaw(types, typeKey(T), metatable);
+
+    const Source = options.methods orelse T;
+    if (@typeInfo(Source) != .@"struct") @compileError("userdata methods must come from a struct type");
+    inline for (reflection.declarationNames(Source)) |decl| {
+        const member = @field(Source, decl);
+        if (comptime isMethod(T, @TypeOf(member))) {
+            const Wrapper = struct {
+                fn call(ctx: *Context) !void {
+                    try callbacks.callUserdataMethod(T, member, ctx);
+                }
+            };
+            const callback_name = try std.fmt.allocPrint(state.allocator(), "{s}.{s}", .{ name, decl });
+            defer state.allocator().free(callback_name);
+            var function = try callbacks.create(state, callback_name, Wrapper.call);
+            defer function.deinit();
+            const target = if (comptime isMetamethodName(decl)) metatable else index;
+            try index_mod.setTableValue(raw, target, .{ .string = try raw.strings.intern(decl) }, try handle.rawValue(function.ref));
+        }
+    }
+}
+
+pub fn isDefined(state: *State, comptime T: type) bool {
+    return definedMetatable(state, T) != null;
+}
+
+/// The `__name` of `T` when it has been defined, borrowed from the VM.
+pub fn definedName(state: *State, comptime T: type) ?[]const u8 {
+    const metatable = definedMetatable(state, T) orelse return null;
+    return switch (metatable.getLiteral("__name")) {
+        .string => |name| name.bytes(),
+        else => null,
+    };
+}
+
+fn definedMetatable(state: *State, comptime T: type) ?*runtime.Table {
+    const types = state.raw_state.library_tables.get(.userdata_types) orelse return null;
+    return switch (types.get(typeKey(T))) {
+        .table => |metatable| metatable,
+        else => null,
+    };
+}
+
+fn typeKey(comptime T: type) runtime.Value {
+    return .{ .integer = @bitCast(@as(u64, typeId(T))) };
+}
+
 pub fn create(state: *State, comptime T: type, value: T, options: UserdataOptions(T)) !Userdata(T) {
-    const metatable = try sharedMetatable(state, options.metatable);
+    const metatable = try sharedMetatable(state, options.metatable) orelse definedMetatable(state, T);
     const ptr = try state.allocator().create(T);
     ptr.* = value;
     const raw = state.raw_state.newUserdata(ptr, typeId(T), @typeName(T), null, null, userdataDestroy(T)) catch |err| {
@@ -234,7 +303,7 @@ pub fn create(state: *State, comptime T: type, value: T, options: UserdataOption
 
 pub fn wrapPtr(state: *State, comptime T: type, ptr: *T, options: UserdataPtrOptions(T)) !Userdata(T) {
     if (options.snapshot) |hooks| if (hooks.tracking == .scoped) return error.ScopedAccessRequiresOwnedUserdata;
-    const metatable = try sharedMetatable(state, options.metatable);
+    const metatable = try sharedMetatable(state, options.metatable) orelse definedMetatable(state, T);
     const raw = try state.raw_state.newUserdata(ptr, typeId(T), @typeName(T), null, null, null);
     var userdata = try convert.fromRuntimeValue(state, raw, Userdata(T));
     errdefer userdata.deinit();
@@ -370,6 +439,16 @@ fn userdataDestroy(comptime T: type) runtime.UserdataDeinit {
             allocator.destroy(@as(*T, @ptrCast(@alignCast(ptr))));
         }
     }.destroy;
+}
+
+/// The payload type of a typed userdata argument `T`, or null for any other type.
+pub fn PayloadOf(comptime T: type) ?type {
+    if (comptime isHandle(T)) return T.ValueType;
+    return switch (@typeInfo(T)) {
+        .optional => |optional| PayloadOf(optional.child),
+        .pointer => |pointer| if (pointer.size == .one and @typeInfo(pointer.child) == .@"struct") pointer.child else null,
+        else => null,
+    };
 }
 
 pub fn isHandle(comptime T: type) bool {

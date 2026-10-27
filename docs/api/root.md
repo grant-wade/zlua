@@ -160,6 +160,7 @@
 - [HostFn](#alias-hostfn)
 - [Userdata](#alias-userdata)
 - [AnyUserdata](#alias-anyuserdata)
+- [UserdataType](#alias-userdatatype)
 - [MemoryFile](#alias-memoryfile)
 - [MemoryFilesystem](#alias-memoryfilesystem)
 - [FilesystemCapability](#alias-filesystemcapability)
@@ -580,6 +581,16 @@ pub const AnyUserdata = api.AnyUserdata;
 ```
 
 References: [`api.AnyUserdata`](api.md#alias-anyuserdata)
+
+<a id="alias-userdatatype"></a>
+
+## UserdataType
+
+```zig
+pub const UserdataType = api.UserdataType;
+```
+
+References: [`api.UserdataType`](api.md#alias-userdatatype)
 
 <a id="alias-memoryfile"></a>
 

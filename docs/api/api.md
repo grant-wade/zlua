@@ -198,6 +198,7 @@ See `docs/embedding.md` for capabilities, error handling, snapshots, and ownersh
 - [Userdata](#alias-userdata)
 - [AnyUserdata](#alias-anyuserdata)
 - [UserdataOptions](#alias-userdataoptions)
+- [UserdataType](#alias-userdatatype)
 - [UserdataPtrOptions](#alias-userdataptroptions)
 - [UserdataSnapshotHooks](#alias-userdatasnapshothooks)
 - [HostFn](#alias-hostfn)
@@ -842,6 +843,16 @@ pub const UserdataOptions = userdata.UserdataOptions;
 ```
 
 References: [`userdata.UserdataOptions`](api/userdata.md#fn-userdataoptions)
+
+<a id="alias-userdatatype"></a>
+
+## UserdataType
+
+```zig
+pub const UserdataType = userdata.UserdataType;
+```
+
+References: [`userdata.UserdataType`](api/userdata.md#type-userdatatype)
 
 <a id="alias-userdataptroptions"></a>
 

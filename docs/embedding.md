@@ -579,13 +579,31 @@ try counter.method("inc", Counter.inc);
 try lua.setGlobal("counter", counter);
 ```
 
-To skip that step, `newUserdataAuto` and `newUserdataPtrAuto` bind the public functions whose first parameter is `*T` or `*const T`. Names beginning with `__` become metamethods, and other methods go on `__index`. `registerUserdataInitializerWith` creates a typed Lua constructor that returns auto-bound userdata.
+To skip that step, `newUserdataAuto` and `newUserdataPtrAuto` use the public functions whose first parameter is `*T` or `*const T`. Names beginning with `__` become metamethods, and other methods go on `__index`. `registerUserdataInitializerWith` creates a typed Lua constructor that returns auto-bound userdata.
 
 Both `newUserdata` and `newUserdataPtr` accept a `finalizer` option. For Lua-owned userdata it runs before the storage is freed, and for host-owned storage it runs when the Lua wrapper is finalized. It receives the payload and the state's allocator. Callbacks can take either kind as a typed argument, such as `ctx.arg(0, *Counter)`.
 
 Pass the size of host storage a payload keeps alive, such as a pixel buffer, as `.external_bytes`, or call `Userdata.setExternalBytes` when it changes. The collector counts those bytes as allocated memory. They do not count against `max_memory`; storage allocated with `state.allocator()` does.
 
-To share one metatable between userdata from the same state, pass `.metatable = table` to `newUserdata` or `newUserdataPtr`, and install its methods before you share it. If construction fails, responsibility for finalizing the value stays with the host.
+`defineUserdata` builds one metatable for `T` holding its typed methods, and every later `newUserdata` or `newUserdataPtr` of `T` uses it:
+
+```zig
+const Canvas = struct {
+    width: i64,
+
+    pub fn getWidth(self: *const @This()) i64 {
+        return self.width;
+    }
+};
+
+try lua.defineUserdata(Canvas, .{ .name = "canvas" });
+var canvas = try lua.newUserdata(Canvas, .{ .width = 16 }, .{});
+defer canvas.deinit();
+```
+
+`.name` sets `__name`, which `tostring` and argument errors show: `canvas: 0x...` and `canvas expected, got mesh`. `.methods` names another struct to take the methods from. `newUserdataAuto` and `newUserdataPtrAuto` define `T` on first use. Without a definition, `newUserdata` gives each value its own metatable, and `method`, `metamethod`, and `bindMethods` change that metatable, or the shared one when the type is defined. Each installed method adds a callback that lasts as long as the state.
+
+To use a metatable of your own, pass `.metatable = table` to `newUserdata` or `newUserdataPtr`, and install its methods before you share it. If construction fails, responsibility for finalizing the value stays with the host.
 
 A `__gc` metamethod works on userdata the same way it does on tables. It runs before the host finalizer and the deinit hook.
 

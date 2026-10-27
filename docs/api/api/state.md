@@ -238,8 +238,9 @@ pub const State = struct {
 | [registerUserdataInitializerWith](#fn-state-registeruserdatainitializerwith) | `self: *State, comptime T: type, name: []const u8, comptime initializer: anytype, comptime options: UserdataOptions(T)` | `!Function` | Registers a Lua constructor that reads &#96;initializer&#96;'s arguments by type (&#96;*Context&#96; is injected) and wraps its &#96;T&#96; or &#96;!T&#96; result with &#96;newUserdataAuto&#96;. |
 | [createTable](#fn-state-createtable) | `self: *State, options: TableOptions` | `!Table` |  |
 | [newCoroutine](#fn-state-newcoroutine) | `self: *State, entry: Function` | `!Coroutine` | Creates a suspended coroutine; first resume arguments become &#96;entry&#96;'s arguments. |
+| [defineUserdata](#fn-state-defineuserdata) | `self: *State, comptime T: type, comptime options: UserdataType` | `!void` | Gives every later &#96;T&#96; userdata one metatable holding &#96;options.methods&#96;, unless it passes its own &#96;metatable&#96;. Returns &#96;error.UserdataTypeDefined&#96; when &#96;T&#96; already has a definition. |
 | [newUserdata](#fn-state-newuserdata) | `self: *State, comptime T: type, value: T, options: UserdataOptions(T)` | `!Userdata(T)` | Allocates Lua-owned userdata initialized with &#96;value&#96;. |
-| [newUserdataAuto](#fn-state-newuserdataauto) | `self: *State, comptime T: type, value: T, options: UserdataOptions(T)` | `!Userdata(T)` | Like &#96;newUserdata&#96;, also installing &#96;T&#96;'s methods whose receiver is &#96;*T&#96; or &#96;*const T&#96;; names starting with &#96;__&#96; become metamethods. |
+| [newUserdataAuto](#fn-state-newuserdataauto) | `self: *State, comptime T: type, value: T, options: UserdataOptions(T)` | `!Userdata(T)` | Like &#96;newUserdata&#96;, defining &#96;T&#96; with &#96;defineUserdata&#96; on first use. With an explicit &#96;metatable&#96;, installs &#96;T&#96;'s methods on it instead. |
 | [newUserdataPtr](#fn-state-newuserdataptr) | `self: *State, comptime T: type, ptr: *T, options: UserdataPtrOptions(T)` | `!Userdata(T)` | Wraps host-owned &#96;ptr&#96; as userdata without taking ownership. |
 | [newUserdataPtrAuto](#fn-state-newuserdataptrauto) | `self: *State, comptime T: type, ptr: *T, options: UserdataPtrOptions(T)` | `!Userdata(T)` | Like &#96;newUserdataPtr&#96;, also installing &#96;T&#96;'s methods as in &#96;newUserdataAuto&#96;. |
 | [createModule](#fn-state-createmodule) | `self: *State, name: []const u8` | `!Table` | Creates a module table; it is not installed (see &#96;setLoadedModule&#96;). |
@@ -590,6 +591,19 @@ pub fn newCoroutine(self: *State, entry: Function) !Coroutine
 
 References: [`State`](#type-state)
 
+<a id="fn-state-defineuserdata"></a>
+
+### State.defineUserdata
+
+Gives every later `T` userdata one metatable holding `options.methods`, unless it passes its
+own `metatable`. Returns `error.UserdataTypeDefined` when `T` already has a definition.
+
+```zig
+pub fn defineUserdata(self: *State, comptime T: type, comptime options: UserdataType) !void
+```
+
+References: [`State`](#type-state)
+
 <a id="fn-state-newuserdata"></a>
 
 ### State.newUserdata
@@ -606,8 +620,8 @@ References: [`State`](#type-state)
 
 ### State.newUserdataAuto
 
-Like `newUserdata`, also installing `T`'s methods whose receiver is `*T` or `*const T`;
-names starting with `__` become metamethods.
+Like `newUserdata`, defining `T` with `defineUserdata` on first use. With an explicit
+`metatable`, installs `T`'s methods on it instead.
 
 ```zig
 pub fn newUserdataAuto(self: *State, comptime T: type, value: T, options: UserdataOptions(T)) !Userdata(T)

@@ -128,6 +128,9 @@
 - [UserdataPtrOptions](#fn-userdataptroptions)
 - [UserdataSnapshotHooks](#fn-userdatasnapshothooks)
 - [Userdata](#fn-userdata)
+- [define](#fn-define)
+- [isDefined](#fn-isdefined)
+- [definedName](#fn-definedname)
 - [create](#fn-create)
 - [wrapPtr](#fn-wrapptr)
 - [isReceiver](#fn-isreceiver)
@@ -135,10 +138,12 @@
 - [endScope](#fn-endscope)
 - [typeId](#fn-typeid)
 - [payloadPtr](#fn-payloadptr)
+- [PayloadOf](#fn-payloadof)
 - [isHandle](#fn-ishandle)
 
 ## Types
 
+- [UserdataType](#type-userdatatype)
 - [AnyUserdata](#type-anyuserdata)
 
 <a id="fn-userdataoptions"></a>
@@ -155,6 +160,22 @@ pub fn UserdataOptions(comptime T: type) type
 
 ```zig
 pub fn UserdataPtrOptions(comptime T: type) type
+```
+
+<a id="type-userdatatype"></a>
+
+## UserdataType
+
+Options for `State.defineUserdata`.
+
+```zig
+pub const UserdataType = struct {
+    /// Name for `__name` and argument errors; the Zig type name by default.
+    name: ?[]const u8 = null,
+    /// Struct whose public functions with a `*T` or `*const T` receiver become methods; `T` by
+    /// default. Names starting with `__` become metamethods.
+    methods: ?type = null,
+};
 ```
 
 <a id="fn-userdatasnapshothooks"></a>
@@ -220,6 +241,34 @@ pub fn as(self: AnyUserdata, comptime T: type) !Userdata(T)
 
 References: [`AnyUserdata`](#type-anyuserdata)
 
+<a id="fn-define"></a>
+
+## define
+
+```zig
+pub fn define(state: *State, comptime T: type, comptime options: UserdataType) !void
+```
+
+References: [`UserdataType`](#type-userdatatype)
+
+<a id="fn-isdefined"></a>
+
+## isDefined
+
+```zig
+pub fn isDefined(state: *State, comptime T: type) bool
+```
+
+<a id="fn-definedname"></a>
+
+## definedName
+
+The `__name` of `T` when it has been defined, borrowed from the VM.
+
+```zig
+pub fn definedName(state: *State, comptime T: type) ?[]const u8
+```
+
 <a id="fn-create"></a>
 
 ## create
@@ -281,6 +330,16 @@ pub fn payloadPtr(comptime T: type, raw: *runtime.Userdata) !*T
 ```
 
 References: [`runtime.Userdata`](../runtime.md#alias-userdata)
+
+<a id="fn-payloadof"></a>
+
+## PayloadOf
+
+The payload type of a typed userdata argument `T`, or null for any other type.
+
+```zig
+pub fn PayloadOf(comptime T: type) ?type
+```
 
 <a id="fn-ishandle"></a>
 

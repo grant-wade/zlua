@@ -8,6 +8,7 @@ const handle = @import("handle.zig");
 const Coroutine = @import("coroutine.zig").Coroutine;
 const Function = @import("function.zig").Function;
 const State = @import("state.zig").State;
+const userdata_mod = @import("userdata.zig");
 const call_mod = @import("../runtime/call.zig");
 
 /// Callback context for functions registered with `State.register`.
@@ -109,11 +110,18 @@ pub const Context = struct {
             error.TypeMismatch => if (expectsInteger(T) and raw == .number)
                 self.raw.failArgumentMessage(index, "number has no integer representation")
             else
-                self.raw.failArgumentType(index, convert.expectedLuaType(T), raw),
+                self.raw.failArgumentType(index, expectedTypeName(self.lua, T), raw),
             error.IntegerOutOfRange => self.raw.failArgumentMessage(index, "integer out of range"),
             error.UnsupportedType => self.raw.failArgumentMessage(index, "unsupported host argument type"),
             else => err,
         };
+    }
+
+    fn expectedTypeName(lua: *State, comptime T: type) []const u8 {
+        if (comptime userdata_mod.PayloadOf(T)) |Payload| {
+            if (userdata_mod.definedName(lua, Payload)) |name| return name;
+        }
+        return convert.expectedLuaType(T);
     }
 
     fn expectsInteger(comptime T: type) bool {
