@@ -140,6 +140,7 @@ See `docs/embedding.md` for capabilities, error handling, snapshots, and ownersh
 - [CallResult](#alias-callresult)
 - [ErrorRef](#alias-errorref)
 - [State](#alias-state)
+- [HostData](#alias-hostdata)
 - [InterruptHandle](#alias-interrupthandle)
 - [Snapshot](#alias-snapshot)
 - [LibrarySet](#alias-libraryset)
@@ -203,6 +204,7 @@ See `docs/embedding.md` for capabilities, error handling, snapshots, and ownersh
 - [UserdataSnapshotHooks](#alias-userdatasnapshothooks)
 - [HostFn](#alias-hostfn)
 - [Context](#alias-context)
+- [Host](#alias-host)
 
 <a id="alias-error"></a>
 
@@ -263,6 +265,16 @@ pub const State = state.State;
 ```
 
 References: [`state.State`](api/state.md#type-state)
+
+<a id="alias-hostdata"></a>
+
+## HostData
+
+```zig
+pub const HostData = state.HostData;
+```
+
+References: [`state.HostData`](api/state.md#type-hostdata)
 
 <a id="alias-interrupthandle"></a>
 
@@ -893,4 +905,14 @@ pub const Context = context.Context;
 ```
 
 References: [`context.Context`](api/context.md#type-context)
+
+<a id="alias-host"></a>
+
+## Host
+
+```zig
+pub const Host = context.Host;
+```
+
+References: [`context.Host`](api/context.md#fn-host)
 

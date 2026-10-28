@@ -438,6 +438,25 @@ defer clamp_fn.deinit();
 try lua.setGlobal("clamp", clamp_fn);
 ```
 
+Callbacks reach host state through `State.setHost`, which attaches one typed pointer to the state. Read it with `ctx.host(T)`, which returns null when the state holds no `*T`, or take a `zlua.Host(T)` parameter in a typed callback. That parameter consumes no Lua argument and raises a Lua error when the pointer is missing:
+
+```zig
+const Game = struct { gold: i64 };
+
+fn giveGold(game: zlua.Host(Game), amount: i64) i64 {
+    game.ptr.gold += amount;
+    return game.ptr.gold;
+}
+
+var game = Game{ .gold = 0 };
+try lua.setHost(&game);
+var give_gold = try lua.registerTyped("give_gold", giveGold);
+defer give_gold.deinit();
+try lua.setGlobal("give_gold", give_gold);
+```
+
+Snapshots and their workers keep the pointer, and `reset` restores the one the baseline had. A worker on another thread can call `setHost` with its own. `ctx.functionName()` returns the name a callback was registered under.
+
 `ctx.io()` returns the `std.Io` passed as `capabilities.io.runtime`, or null when the state has none:
 
 ```zig

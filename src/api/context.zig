@@ -11,6 +11,22 @@ const State = @import("state.zig").State;
 const userdata_mod = @import("userdata.zig");
 const call_mod = @import("../runtime/call.zig");
 
+/// A typed callback parameter that receives the `T` given to `State.setHost` and takes no Lua
+/// argument. The callback raises a Lua error when the state has no such pointer.
+pub fn Host(comptime T: type) type {
+    return struct {
+        /// Marker for zlua's compile-time conversions.
+        pub const is_zlua_host = true;
+        pub const ValueType = T;
+
+        ptr: *T,
+    };
+}
+
+pub fn isHost(comptime T: type) bool {
+    return @typeInfo(T) == .@"struct" and @hasDecl(T, "is_zlua_host") and T.is_zlua_host;
+}
+
 /// Callback context for functions registered with `State.register`.
 pub const Context = struct {
     lua: *State,
@@ -23,6 +39,16 @@ pub const Context = struct {
     /// The `IoCapability.runtime` the state was created with, or null when none was configured.
     pub fn io(self: *Context) ?std.Io {
         return self.raw.state.options.io;
+    }
+
+    /// The pointer given to `State.setHost` when it points to a `T`, or null.
+    pub fn host(self: *Context, comptime T: type) ?*T {
+        return self.lua.host(T);
+    }
+
+    /// The name this callback was registered under.
+    pub fn functionName(self: *Context) []const u8 {
+        return self.raw.function_name;
     }
 
     pub fn argCount(self: *Context) usize {

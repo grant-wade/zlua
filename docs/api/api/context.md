@@ -122,9 +122,33 @@
 
 </details>
 
+## Functions
+
+- [Host](#fn-host)
+- [isHost](#fn-ishost)
+
 ## Types
 
 - [Context](#type-context)
+
+<a id="fn-host"></a>
+
+## Host
+
+A typed callback parameter that receives the `T` given to `State.setHost` and takes no Lua
+argument. The callback raises a Lua error when the state has no such pointer.
+
+```zig
+pub fn Host(comptime T: type) type
+```
+
+<a id="fn-ishost"></a>
+
+## isHost
+
+```zig
+pub fn isHost(comptime T: type) bool
+```
 
 <a id="type-context"></a>
 
@@ -145,6 +169,8 @@ pub const Context = struct {
 | --- | --- | --- | --- |
 | [state](#fn-context-state) | `self: *Context` | `*State` |  |
 | [io](#fn-context-io) | `self: *Context` | `?std.Io` | The &#96;IoCapability.runtime&#96; the state was created with, or null when none was configured. |
+| [host](#fn-context-host) | `self: *Context, comptime T: type` | `?*T` | The pointer given to &#96;State.setHost&#96; when it points to a &#96;T&#96;, or null. |
+| [functionName](#fn-context-functionname) | `self: *Context` | `[]const u8` | The name this callback was registered under. |
 | [argCount](#fn-context-argcount) | `self: *Context` | `usize` |  |
 | [arg](#fn-context-arg) | `self: *Context, index: usize, comptime T: type` | `!T` | A &#96;[]const u8&#96; argument borrows VM memory until the callback returns. |
 | [optionalArg](#fn-context-optionalarg) | `self: *Context, index: usize, comptime T: type` | `!?T` | Returns null when absent or &#96;nil&#96;. |
@@ -175,6 +201,30 @@ The `IoCapability.runtime` the state was created with, or null when none was con
 
 ```zig
 pub fn io(self: *Context) ?std.Io
+```
+
+References: [`Context`](#type-context)
+
+<a id="fn-context-host"></a>
+
+### Context.host
+
+The pointer given to `State.setHost` when it points to a `T`, or null.
+
+```zig
+pub fn host(self: *Context, comptime T: type) ?*T
+```
+
+References: [`Context`](#type-context)
+
+<a id="fn-context-functionname"></a>
+
+### Context.functionName
+
+The name this callback was registered under.
+
+```zig
+pub fn functionName(self: *Context) []const u8
 ```
 
 References: [`Context`](#type-context)

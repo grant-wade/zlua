@@ -27,6 +27,7 @@ pub const CallResult = errors.CallResult;
 pub const ErrorRef = errors.ErrorRef;
 
 pub const State = state.State;
+pub const HostData = state.HostData;
 pub const InterruptHandle = state.InterruptHandle;
 pub const Snapshot = snapshot.Snapshot;
 
@@ -95,6 +96,7 @@ pub const UserdataSnapshotHooks = userdata.UserdataSnapshotHooks;
 
 pub const HostFn = callbacks.HostFn;
 pub const Context = context.Context;
+pub const Host = context.Host;
 
 test {
     _ = @import("api/memory_limit.zig");

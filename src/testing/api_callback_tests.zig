@@ -579,3 +579,86 @@ test "api integer arguments report numbers without an integer representation" {
     defer whole.deinit();
     try std.testing.expectEqual(@as(i64, 2), try whole.call(.{}, i64));
 }
+
+test "api callbacks reach host data through the context and typed parameters" {
+    const Game = struct {
+        gold: i64,
+
+        fn readGold(ctx: *Context) !void {
+            const game = ctx.host(@This()) orelse return ctx.raise("no game");
+            try ctx.returnValues(.{game.gold});
+        }
+
+        fn give(host: api.Host(@This()), amount: i64) i64 {
+            host.ptr.gold += amount;
+            return host.ptr.gold;
+        }
+
+        fn named(ctx: *Context) !void {
+            try ctx.returnValues(.{ctx.functionName()});
+        }
+    };
+    const Other = struct { unused: u8 };
+
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    var game = Game{ .gold = 5 };
+
+    var gold = try lua.register("gold", Game.readGold);
+    defer gold.deinit();
+    try lua.setGlobal("gold", gold);
+    var give = try lua.registerTyped("give", Game.give);
+    defer give.deinit();
+    try lua.setGlobal("give", give);
+    var named = try lua.register("the_name", Game.named);
+    defer named.deinit();
+    try lua.setGlobal("named", named);
+
+    var unset = try lua.loadString("return give(1)", .{});
+    defer unset.deinit();
+    try expectProtectedErrorContains(&lua, unset, "no host");
+
+    try lua.setHost(&game);
+    try std.testing.expect(lua.host(Other) == null);
+    try std.testing.expectEqual(&game, lua.host(Game).?);
+    try lua.doString(
+        \\assert(gold() == 5)
+        \\assert(give(3) == 8)
+        \\assert(give(2) == 10)
+        \\assert(named() == "the_name")
+    , .{});
+    try std.testing.expectEqual(@as(i64, 10), game.gold);
+
+    try lua.clearHost();
+    try std.testing.expect(lua.host(Game) == null);
+}
+
+test "api host data follows snapshots and reset" {
+    const Game = struct {
+        id: i64,
+
+        fn readId(host: api.Host(@This())) i64 {
+            return host.ptr.id;
+        }
+    };
+
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    var original = Game{ .id = 1 };
+    var replacement = Game{ .id = 2 };
+    try lua.setHost(&original);
+    var id = try lua.registerTyped("id", Game.readId);
+    try lua.setGlobal("id", id);
+    id.deinit();
+
+    var snapshot = try lua.snapshot(std.testing.allocator);
+    defer snapshot.deinit();
+    var worker = try snapshot.newState(std.testing.allocator);
+    defer worker.deinit();
+    try worker.doString("assert(id() == 1)", .{});
+    try worker.setHost(&replacement);
+    try worker.doString("assert(id() == 2)", .{});
+    try worker.reset();
+    try worker.doString("assert(id() == 1)", .{});
+    try std.testing.expectEqual(&original, lua.host(Game).?);
+}

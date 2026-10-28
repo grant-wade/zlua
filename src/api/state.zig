@@ -61,6 +61,12 @@ pub const InterruptHandle = struct {
     }
 };
 
+/// A typed pointer the host attaches to a state with `State.setHost`.
+pub const HostData = struct {
+    ptr: *anyopaque,
+    type_id: usize,
+};
+
 /// Owns a Lua VM and its host-facing API state.
 pub const State = struct {
     base_allocator: std.mem.Allocator,
@@ -83,6 +89,7 @@ pub const State = struct {
     /// Whether each memory-file entry owns its contents slice.
     memory_file_owned_contents: std.ArrayList(bool) = .empty,
     callbacks: std.ArrayList(RegisteredCallback) = .empty,
+    host_data: ?HostData = null,
 
     /// `state_allocator` must remain valid until `deinit`.
     pub fn init(state_allocator: std.mem.Allocator, options: Options) !State {
@@ -149,6 +156,25 @@ pub const State = struct {
     /// opened since the baseline without flushing them.
     pub fn reset(self: *State) !void {
         return snapshot_mod.reset(self);
+    }
+
+    /// Attaches a host pointer for `host` and `Context.host`, replacing any earlier one. Snapshots
+    /// and their workers keep the pointer, and `reset` restores the baseline's.
+    pub fn setHost(self: *State, ptr: anytype) !void {
+        try snapshot_mod.writableBindings(self);
+        self.host_data = .{ .ptr = @ptrCast(@constCast(ptr)), .type_id = userdata_mod.typeId(@typeInfo(@TypeOf(ptr)).pointer.child) };
+    }
+
+    pub fn clearHost(self: *State) !void {
+        try snapshot_mod.writableBindings(self);
+        self.host_data = null;
+    }
+
+    /// The pointer given to `setHost` when it points to a `T`, or null.
+    pub fn host(self: *const State, comptime T: type) ?*T {
+        const data = self.host_data orelse return null;
+        if (data.type_id != userdata_mod.typeId(T)) return null;
+        return @ptrCast(@alignCast(data.ptr));
     }
 
     /// Allocator for API-owned allocations returned to the host.
@@ -567,7 +593,7 @@ comptime {
     snapshot_runtime.review(State, .{
         .external = "base_allocator memory_limit_allocator baseline immutable_owner rollback_metadata",
         .rebuilt = "generation last_error_root last_error_traceback",
-        .copied = "raw_state memory_files memory_file_owned_contents callbacks",
+        .copied = "raw_state memory_files memory_file_owned_contents callbacks host_data",
     });
     snapshot_runtime.review(runtime.StateOptions, .{
         .copied = "stdlib stdin stdout_flush stderr_flush capture_output warnings max_file_bytes max_memory max_stack_values max_call_frames max_instructions debug_errors trace_vm",

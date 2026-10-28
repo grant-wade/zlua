@@ -5,7 +5,8 @@ const runtime_types = @import("../runtime/types.zig");
 const convert = @import("convert.zig");
 const snapshot_mod = @import("snapshot.zig");
 const userdata_mod = @import("userdata.zig");
-const Context = @import("context.zig").Context;
+const context_mod = @import("context.zig");
+const Context = context_mod.Context;
 const Function = @import("function.zig").Function;
 const State = @import("state.zig").State;
 const UserdataOptions = userdata_mod.UserdataOptions;
@@ -76,12 +77,7 @@ pub fn callTyped(comptime function: anytype, ctx: *Context) !void {
     var lua_arg_index: usize = 0;
     inline for (reflection.paramTypes(function_info), 0..) |param, index| {
         const Param = param orelse @compileError("registerTyped requires typed parameters");
-        if (Param == *Context) {
-            args[index] = ctx;
-        } else {
-            args[index] = try scopes.arg(ctx, lua_arg_index, Param);
-            lua_arg_index += 1;
-        }
+        args[index] = try scopes.param(ctx, &lua_arg_index, Param);
     }
 
     const Return = function_info.return_type orelse void;
@@ -137,12 +133,7 @@ pub fn callUserdataInitializer(comptime T: type, comptime initializer: anytype, 
     var lua_arg_index: usize = 0;
     inline for (reflection.paramTypes(function_info), 0..) |param, index| {
         const Param = param orelse @compileError("userdata initializer parameters must be typed");
-        if (Param == *Context) {
-            args[index] = ctx;
-        } else {
-            args[index] = try scopes.arg(ctx, lua_arg_index, Param);
-            lua_arg_index += 1;
-        }
+        args[index] = try scopes.param(ctx, &lua_arg_index, Param);
     }
 
     const Return = function_info.return_type orelse @compileError("userdata initializers must return T or !T");
@@ -196,12 +187,7 @@ pub fn callUserdataMethod(comptime T: type, comptime function: anytype, ctx: *Co
     var lua_arg_index: usize = 1;
     inline for (reflection.paramTypes(function_info)[1..], 1..) |param, index| {
         const Param = param orelse @compileError("userdata method parameters must be typed");
-        if (Param == *Context) {
-            args[index] = ctx;
-        } else {
-            args[index] = try scopes.arg(ctx, lua_arg_index, Param);
-            lua_arg_index += 1;
-        }
+        args[index] = try scopes.param(ctx, &lua_arg_index, Param);
     }
 
     const Return = function_info.return_type orelse void;
@@ -241,6 +227,16 @@ fn ArgumentScopes(comptime capacity: usize) type {
                 userdata_mod.endScope(&ctx.lua.raw_state, &self.entries[self.len]);
             }
         }
+        fn param(self: *@This(), ctx: *Context, lua_index: *usize, comptime T: type) !T {
+            if (T == *Context) return ctx;
+            if (comptime context_mod.isHost(T)) {
+                const host = ctx.host(T.ValueType) orelse return ctx.raise(comptime std.fmt.comptimePrint("no host {s} is set", .{@typeName(T.ValueType)}));
+                return .{ .ptr = host };
+            }
+            defer lua_index.* += 1;
+            return self.arg(ctx, lua_index.*, T);
+        }
+
         fn arg(self: *@This(), ctx: *Context, index: usize, comptime T: type) !T {
             const raw = ctx.raw.callbackArgValue(index);
             if (comptime @typeInfo(T) == .optional) {

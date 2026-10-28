@@ -153,6 +153,7 @@
 - [ResumeOptions](#alias-resumeoptions)
 - [InterruptHandle](#alias-interrupthandle)
 - [Context](#alias-context)
+- [Host](#alias-host)
 - [Error](#alias-error)
 - [BytecodeLoadOptions](#alias-bytecodeloadoptions)
 - [BytecodeDumpOptions](#alias-bytecodedumpoptions)
@@ -511,6 +512,16 @@ pub const Context = api.Context;
 ```
 
 References: [`api.Context`](api.md#alias-context)
+
+<a id="alias-host"></a>
+
+## Host
+
+```zig
+pub const Host = api.Host;
+```
+
+References: [`api.Host`](api.md#alias-host)
 
 <a id="alias-error"></a>
 

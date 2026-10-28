@@ -243,6 +243,7 @@ pub const RollbackMetadata = struct {
     owned: std.ArrayList(bool),
     callbacks: std.ArrayList(RegisteredCallback),
     error_value: ?runtime.Value,
+    host_data: ?state_mod.HostData,
     detached: bool = false,
 };
 ```

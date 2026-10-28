@@ -10,6 +10,8 @@
 - `UserdataOptions.external_bytes` and `Userdata.setExternalBytes` report host storage to the collector.
 - `State.defineUserdata` gives a userdata type one metatable, with typed methods and a name used by `tostring` and argument errors.
 - `newUserdataAuto` and `newUserdataPtrAuto` share one metatable per type.
+- `State.setHost` attaches a typed host pointer, read with `State.host`, `Context.host`, or a `Host(T)` typed callback parameter.
+- `Context.functionName` returns the name a callback was registered under.
 - `Coroutine.protectedResumeWith` takes `ResumeOptions` for a traceback and a per-resume instruction budget.
 
 ### Fixes

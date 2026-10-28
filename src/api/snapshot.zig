@@ -81,10 +81,11 @@ pub const RollbackMetadata = struct {
     owned: std.ArrayList(bool),
     callbacks: std.ArrayList(RegisteredCallback),
     error_value: ?runtime.Value,
+    host_data: ?state_mod.HostData,
     detached: bool = false,
 
     fn capture(state: *State) RollbackMetadata {
-        return .{ .files = state.memory_files, .owned = state.memory_file_owned_contents, .callbacks = state.callbacks, .error_value = if (state.last_error_root) |index| state.raw_state.rootedValue(index) else null };
+        return .{ .files = state.memory_files, .owned = state.memory_file_owned_contents, .callbacks = state.callbacks, .error_value = if (state.last_error_root) |index| state.raw_state.rootedValue(index) else null, .host_data = state.host_data };
     }
     fn freeContainers(self: *RollbackMetadata, a: std.mem.Allocator) void {
         self.files.deinit(a);
@@ -94,7 +95,7 @@ pub const RollbackMetadata = struct {
     fn detach(self: *RollbackMetadata, state: *State) !void {
         if (self.detached) return;
         const a = state.allocator();
-        var copy = RollbackMetadata{ .files = .empty, .owned = .empty, .callbacks = .empty, .error_value = null };
+        var copy = RollbackMetadata{ .files = .empty, .owned = .empty, .callbacks = .empty, .error_value = null, .host_data = null };
         errdefer copy.freeContainers(a);
         // Entries stay owned by the live state; only container storage is retained for rollback.
         try copy.files.appendSlice(a, state.memory_files.items);
@@ -119,6 +120,7 @@ pub const RollbackMetadata = struct {
         state.memory_files = self.files;
         state.memory_file_owned_contents = self.owned;
         state.callbacks = self.callbacks;
+        state.host_data = self.host_data;
         self.detached = false;
     }
     fn abandon(self: *RollbackMetadata, state: *State) void {
@@ -243,7 +245,7 @@ fn copyFrozenImage(state: *const State, base: std.mem.Allocator, a: std.mem.Allo
 }
 
 fn copyImageMetadata(state: *const State, base: std.mem.Allocator, a: std.mem.Allocator, raw: runtime.State) !State {
-    var result = State{ .base_allocator = base, .raw_state = raw };
+    var result = State{ .base_allocator = base, .raw_state = raw, .host_data = state.host_data };
     errdefer discardImage(&result);
     if (state.last_error_root != null) result.last_error_root = 0;
     for (state.callbacks.items) |entry| {

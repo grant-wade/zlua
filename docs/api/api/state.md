@@ -131,6 +131,7 @@
 ## Types
 
 - [InterruptHandle](#type-interrupthandle)
+- [HostData](#type-hostdata)
 - [State](#type-state)
 
 <a id="type-interrupthandle"></a>
@@ -174,6 +175,19 @@ pub fn isPending(self: InterruptHandle) bool
 
 References: [`InterruptHandle`](#type-interrupthandle)
 
+<a id="type-hostdata"></a>
+
+## HostData
+
+A typed pointer the host attaches to a state with `State.setHost`.
+
+```zig
+pub const HostData = struct {
+    ptr: *anyopaque,
+    type_id: usize,
+};
+```
+
 <a id="type-state"></a>
 
 ## State
@@ -202,6 +216,7 @@ pub const State = struct {
     /// Whether each memory-file entry owns its contents slice.
     memory_file_owned_contents: std.ArrayList(bool) = .empty,
     callbacks: std.ArrayList(RegisteredCallback) = .empty,
+    host_data: ?HostData = null,
 };
 ```
 
@@ -213,6 +228,9 @@ pub const State = struct {
 | [deinit](#fn-state-deinit) | `self: *State` | `void` | Runs pending finalizers like &#96;lua_close&#96; (errors ignored, open files flushed), then frees the state and invalidates all handles. &#96;reset&#96; runs no finalizers. |
 | [snapshot](#fn-state-snapshot) | `self: *State, snapshot_allocator: std.mem.Allocator` | `!Snapshot` | Captures an idle VM, including suspended coroutines, as the new reset baseline. Borrowed capabilities and &#96;snapshot_allocator&#96; must outlive every state retaining it. |
 | [reset](#fn-state-reset) | `self: *State` | `!void` | Restores the active baseline and invalidates prior handles; &#96;error.NoSnapshot&#96; without one. Fails atomically. Skips Lua &#96;__gc&#96; and &#96;__close&#96; handlers and discards file handles opened since the baseline without flushing them. |
+| [setHost](#fn-state-sethost) | `self: *State, ptr: anytype` | `!void` | Attaches a host pointer for &#96;host&#96; and &#96;Context.host&#96;, replacing any earlier one. Snapshots and their workers keep the pointer, and &#96;reset&#96; restores the baseline's. |
+| [clearHost](#fn-state-clearhost) | `self: *State` | `!void` |  |
+| [host](#fn-state-host) | `self: *const State, comptime T: type` | `?*T` | The pointer given to &#96;setHost&#96; when it points to a &#96;T&#96;, or null. |
 | [allocator](#fn-state-allocator) | `self: *State` | `std.mem.Allocator` | Allocator for API-owned allocations returned to the host. |
 | [instructionBudget](#fn-state-instructionbudget) | `self: *const State` | `InstructionBudget` |  |
 | [resetInstructionBudget](#fn-state-resetinstructionbudget) | `self: *State` | `void` |  |
@@ -309,6 +327,41 @@ opened since the baseline without flushing them.
 
 ```zig
 pub fn reset(self: *State) !void
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-sethost"></a>
+
+### State.setHost
+
+Attaches a host pointer for `host` and `Context.host`, replacing any earlier one. Snapshots
+and their workers keep the pointer, and `reset` restores the baseline's.
+
+```zig
+pub fn setHost(self: *State, ptr: anytype) !void
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-clearhost"></a>
+
+### State.clearHost
+
+```zig
+pub fn clearHost(self: *State) !void
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-host"></a>
+
+### State.host
+
+The pointer given to `setHost` when it points to a `T`, or null.
+
+```zig
+pub fn host(self: *const State, comptime T: type) ?*T
 ```
 
 References: [`State`](#type-state)
