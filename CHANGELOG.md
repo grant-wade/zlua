@@ -12,6 +12,8 @@
 - `newUserdataAuto` and `newUserdataPtrAuto` share one metatable per type.
 - `State.setHost` attaches a typed host pointer, read with `State.host`, `Context.host`, or a `Host(T)` typed callback parameter.
 - `Context.functionName` returns the name a callback was registered under.
+- `Context.raisef` raises a formatted error with the Lua position, `Context.argError` raises a `bad argument` error, and `Context.caller` returns a Lua function's source and line.
+- `State.describeError` returns the Lua message or the name of an error from a state call.
 - `Coroutine.protectedResumeWith` takes `ResumeOptions` for a traceback and a per-resume instruction budget.
 
 ### Fixes

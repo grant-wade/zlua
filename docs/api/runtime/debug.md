@@ -131,6 +131,7 @@
 - [errorRaisedByLuaCode](#fn-errorraisedbyluacode)
 - [messageHandlerCallName](#fn-messagehandlercallname)
 - [isCoroutineEntryFrame](#fn-iscoroutineentryframe)
+- [chunkId](#fn-chunkid)
 - [currentLine](#fn-currentline)
 - [currentExtraArgs](#fn-currentextraargs)
 - [currentWhat](#fn-currentwhat)
@@ -154,6 +155,7 @@
 
 ## Constants
 
+- [chunk_id_size](#const-chunk_id_size)
 - [coroutine_entry_source](#const-coroutine_entry_source)
 
 <a id="fn-lineforframe"></a>
@@ -170,6 +172,14 @@ pub fn lineForFrame(frame: CallFrame) ?usize
 
 ```zig
 pub fn appendUnhandledErrorDebugDump(self: *State, thread: *Thread, err: anyerror) !void
+```
+
+<a id="const-chunk_id_size"></a>
+
+## chunk_id_size
+
+```zig
+pub const chunk_id_size = 60;
 ```
 
 <a id="fn-formattraceback"></a>
@@ -241,6 +251,16 @@ True for the synthetic frame calling a coroutine's non-Lua body, which C Lua lac
 
 ```zig
 pub fn isCoroutineEntryFrame(frame: CallFrame) bool
+```
+
+<a id="fn-chunkid"></a>
+
+## chunkId
+
+Formats a chunk name for messages, as `luaO_chunkid` does.
+
+```zig
+pub fn chunkId(buffer: *[chunk_id_size]u8, source: []const u8) []const u8
 ```
 
 <a id="fn-currentline"></a>

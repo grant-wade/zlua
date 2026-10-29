@@ -2,6 +2,7 @@ const std = @import("std");
 const reflection = @import("../reflection.zig");
 const runtime = @import("../runtime.zig");
 const coroutine_runtime = @import("../runtime/coroutine.zig");
+const debug_runtime = @import("../runtime/debug.zig");
 const callbacks = @import("callbacks.zig");
 const convert = @import("convert.zig");
 const handle = @import("handle.zig");
@@ -27,6 +28,19 @@ pub fn isHost(comptime T: type) bool {
     return @typeInfo(T) == .@"struct" and @hasDecl(T, "is_zlua_host") and T.is_zlua_host;
 }
 
+/// A Lua function on a callback's coroutine.
+pub const Caller = struct {
+    /// Chunk name as given to `load`, such as `@path` or `=name`; borrows VM memory.
+    source: []const u8,
+    /// Null when the function's debug info is stripped.
+    line: ?usize,
+
+    /// The chunk name as error messages show it, written to `buffer`.
+    pub fn shortSource(self: Caller, buffer: *[debug_runtime.chunk_id_size]u8) []const u8 {
+        return debug_runtime.chunkId(buffer, self.source);
+    }
+};
+
 /// Callback context for functions registered with `State.register`.
 pub const Context = struct {
     lua: *State,
@@ -49,6 +63,26 @@ pub const Context = struct {
     /// The name this callback was registered under.
     pub fn functionName(self: *Context) []const u8 {
         return self.raw.function_name;
+    }
+
+    /// The Lua function `level` calls up this callback's coroutine, not counting native functions;
+    /// level 0 is the innermost one.
+    pub fn caller(self: *Context, level: usize) ?Caller {
+        const frames = self.raw.thread.frames.items;
+        var remaining = level;
+        var index = frames.len;
+        while (index > 0) {
+            index -= 1;
+            const frame = frames[index];
+            const source = frame.closure.proto.source_name;
+            if (debug_runtime.isCoroutineEntryFrame(frame) or std.mem.eql(u8, source, "=[C]")) continue;
+            if (remaining == 0) return .{
+                .source = source,
+                .line = if (frame.closure.stripped_debug) null else debug_runtime.lineForFrame(frame),
+            };
+            remaining -= 1;
+        }
+        return null;
     }
 
     pub fn argCount(self: *Context) usize {
@@ -84,6 +118,24 @@ pub const Context = struct {
     pub fn raise(self: *Context, value: anytype) error{ LuaError, OutOfMemory, InvalidHandle } {
         const raw_value = convert.toRuntimeValue(self.lua, value) catch |err| return raiseConversionError(err);
         return self.raw.raise(raw_value);
+    }
+
+    /// Raises the formatted message as the Lua error object, after the position of the innermost
+    /// Lua function when it has debug info.
+    pub fn raisef(self: *Context, comptime fmt: []const u8, args: anytype) error{ LuaError, OutOfMemory, InvalidHandle } {
+        const allocator = self.lua.allocator();
+        const message = if (self.caller(0)) |at| blk: {
+            const line = at.line orelse break :blk try std.fmt.allocPrint(allocator, fmt, args);
+            var buffer: [debug_runtime.chunk_id_size]u8 = undefined;
+            break :blk try std.fmt.allocPrint(allocator, "{s}:{d}: " ++ fmt, .{ at.shortSource(&buffer), line } ++ args);
+        } else try std.fmt.allocPrint(allocator, fmt, args);
+        defer allocator.free(message);
+        return self.raise(message);
+    }
+
+    /// Raises `bad argument #index + 1 to 'name' (message)`; the first argument has index 0.
+    pub fn argError(self: *Context, index: usize, message: []const u8) runtime.RuntimeError {
+        return self.raw.failArgumentMessage(index, message);
     }
 
     /// Rooted handle to this callback's coroutine, usable beyond the callback.

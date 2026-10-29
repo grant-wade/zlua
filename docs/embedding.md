@@ -424,7 +424,7 @@ try lua.setGlobal("host_add", host_add);
 
 Registered callbacks are native functions. Each registration has its own identity, `debug.getinfo` reports `what = "C"`, and there are no Lua upvalues or compiler-generated dispatcher globals behind them. They cannot be dumped with `string.dump`, and `Function.dumpBytecode` returns `error.TypeMismatch` for them. The callback name is kept, so argument errors can still mention it.
 
-Use `ctx.optionalArg` for optional arguments and `ctx.raise` to raise a Lua error. When an argument fails to convert, the error includes the callback and argument it came from. A callback may also receive rooted `Table` or `Function` handles as arguments, and it must deinitialize them.
+Use `ctx.optionalArg` for optional arguments. `ctx.raise` raises any value as a Lua error, `ctx.raisef(fmt, args)` raises a formatted message starting with the calling Lua code's position like `error` does, and `ctx.argError(index, message)` raises a `bad argument` error. When an argument fails to convert, the error includes the callback and argument it came from. A callback may also receive rooted `Table` or `Function` handles as arguments, and it must deinitialize them.
 
 For simple functions, `registerTyped` skips the `Context` and converts parameters and return values for you:
 
@@ -475,6 +475,8 @@ The state stores a copy of the `std.Io` handle, and the implementation behind it
 
 A callback can call back into Lua with `Context.callNonYielding(function, args, R)`. The call runs on the callback's coroutine, within that coroutine's current instruction budget, and the Lua code is not allowed to yield. Lua errors propagate unchanged once cleanup, including `__close`, has run, and any effects that already completed stay in place. `Context.coroutineIdentity()` returns a token for the current coroutine that is valid only during the callback and is invalidated by reset.
 
+`ctx.caller(level)` describes a Lua function on the callback's coroutine, with its `source`, `shortSource()`, and `line`. Level 0 is the innermost one, usually the function that called the callback, and native functions are not counted. It returns null past the last function.
+
 ## Calling and Errors
 
 To call a Lua function from Zig, fetch it as a `Function` and call it:
@@ -486,7 +488,7 @@ defer add.deinit();
 const sum = try add.call(.{ 20, 22 }, i64);
 ```
 
-`call` and the convenience APIs report Lua failures as `error.LuaError`. After that, `errorMessage` gives you an allocated copy of the message, and `takeErrorValue` hands you ownership of the rooted Lua error.
+`call` and the convenience APIs report Lua failures as `error.LuaError`. After that, `errorMessage` gives you an allocated copy of the message, and `takeErrorValue` hands you ownership of the rooted Lua error. `describeError(err)` takes any error from a state call and returns that message for `error.LuaError` and the error's name otherwise.
 
 When a Lua failure is an expected outcome, `protectedCall` returns it as a value instead:
 

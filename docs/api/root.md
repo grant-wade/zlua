@@ -154,6 +154,7 @@
 - [InterruptHandle](#alias-interrupthandle)
 - [Context](#alias-context)
 - [Host](#alias-host)
+- [Caller](#alias-caller)
 - [Error](#alias-error)
 - [BytecodeLoadOptions](#alias-bytecodeloadoptions)
 - [BytecodeDumpOptions](#alias-bytecodedumpoptions)
@@ -522,6 +523,16 @@ pub const Host = api.Host;
 ```
 
 References: [`api.Host`](api.md#alias-host)
+
+<a id="alias-caller"></a>
+
+## Caller
+
+```zig
+pub const Caller = api.Caller;
+```
+
+References: [`api.Caller`](api.md#alias-caller)
 
 <a id="alias-error"></a>
 

@@ -205,6 +205,7 @@ See `docs/embedding.md` for capabilities, error handling, snapshots, and ownersh
 - [HostFn](#alias-hostfn)
 - [Context](#alias-context)
 - [Host](#alias-host)
+- [Caller](#alias-caller)
 
 <a id="alias-error"></a>
 
@@ -915,4 +916,14 @@ pub const Host = context.Host;
 ```
 
 References: [`context.Host`](api/context.md#fn-host)
+
+<a id="alias-caller"></a>
+
+## Caller
+
+```zig
+pub const Caller = context.Caller;
+```
+
+References: [`context.Caller`](api/context.md#type-caller)
 

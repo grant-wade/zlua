@@ -35,6 +35,7 @@ pub const ResumeOptions = api.ResumeOptions;
 pub const InterruptHandle = api.InterruptHandle;
 pub const Context = api.Context;
 pub const Host = api.Host;
+pub const Caller = api.Caller;
 pub const Error = api.Error;
 pub const BytecodeLoadOptions = api.BytecodeLoadOptions;
 pub const BytecodeDumpOptions = api.BytecodeDumpOptions;

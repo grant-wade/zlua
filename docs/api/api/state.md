@@ -277,6 +277,7 @@ pub const State = struct {
 | [clearExitRequest](#fn-state-clearexitrequest) | `self: *State` | `void` |  |
 | [setWarnings](#fn-state-setwarnings) | `self: *State, on: bool` | `void` |  |
 | [errorMessage](#fn-state-errormessage) | `self: *State` | `![]const u8` | Formats the last Lua error; the caller frees the result with &#96;allocator()&#96;. |
+| [describeError](#fn-state-describeerror) | `self: *State, err: anyerror` | `![]const u8` | The last Lua error's message for &#96;error.LuaError&#96;, otherwise the name of &#96;err&#96;; the caller frees the result with &#96;allocator()&#96;. |
 | [takeErrorValue](#fn-state-takeerrorvalue) | `self: *State` | `?ErrorRef` | Takes ownership of the last Lua error value; the caller must &#96;deinit&#96; it. |
 
 <a id="fn-state-init"></a>
@@ -885,6 +886,19 @@ Formats the last Lua error; the caller frees the result with `allocator()`.
 
 ```zig
 pub fn errorMessage(self: *State) ![]const u8
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-describeerror"></a>
+
+### State.describeError
+
+The last Lua error's message for `error.LuaError`, otherwise the name of `err`; the caller
+frees the result with `allocator()`.
+
+```zig
+pub fn describeError(self: *State, err: anyerror) ![]const u8
 ```
 
 References: [`State`](#type-state)

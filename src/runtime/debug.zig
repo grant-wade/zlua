@@ -158,7 +158,7 @@ fn appendDebugValue(self: *State, out: *std.ArrayList(u8), value: Value) !void {
 
 const traceback_levels_head = 10;
 const traceback_levels_tail = 11;
-const chunk_id_size = 60;
+pub const chunk_id_size = 60;
 
 const TracebackEntry = union(enum) {
     /// Index into `thread.frames`.
@@ -434,7 +434,7 @@ fn originName(origin: proto_mod.OperandOrigin) []const u8 {
 }
 
 /// Formats a chunk name for messages, as `luaO_chunkid` does.
-fn chunkId(buffer: *[chunk_id_size]u8, source: []const u8) []const u8 {
+pub fn chunkId(buffer: *[chunk_id_size]u8, source: []const u8) []const u8 {
     const max = chunk_id_size - 1;
     if (source.len > 0 and source[0] == '=') {
         const rest = source[1..];

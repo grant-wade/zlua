@@ -97,6 +97,7 @@ pub const UserdataSnapshotHooks = userdata.UserdataSnapshotHooks;
 pub const HostFn = callbacks.HostFn;
 pub const Context = context.Context;
 pub const Host = context.Host;
+pub const Caller = context.Caller;
 
 test {
     _ = @import("api/memory_limit.zig");

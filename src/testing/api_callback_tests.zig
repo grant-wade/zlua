@@ -662,3 +662,124 @@ test "api host data follows snapshots and reset" {
     try worker.doString("assert(id() == 1)", .{});
     try std.testing.expectEqual(&original, lua.host(Game).?);
 }
+
+test "api raisef prefixes the lua position and argError names the argument" {
+    const Host = struct {
+        fn fail(ctx: *Context) !void {
+            return ctx.raisef("bad value {d}", .{try ctx.arg(0, i64)});
+        }
+
+        fn badArgument(ctx: *Context) !void {
+            return ctx.argError(1, "not a color");
+        }
+    };
+
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    var fail = try lua.register("fail", Host.fail);
+    defer fail.deinit();
+    try lua.setGlobal("fail", fail);
+    var bad = try lua.register("bad", Host.badArgument);
+    defer bad.deinit();
+    try lua.setGlobal("bad", bad);
+
+    var chunk = try lua.loadString("\nfail(7)", .{ .name = "@scripts/thing.lua" });
+    defer chunk.deinit();
+    try expectProtectedErrorContains(&lua, chunk, "scripts/thing.lua:2: bad value 7");
+
+    var long = try lua.loadString("fail(1)", .{ .name = "@a/long/directory/path/that/does/not/fit/in/a/chunk/id/at/all/end.lua" });
+    defer long.deinit();
+    try expectProtectedErrorContains(&lua, long, "...");
+    try expectProtectedErrorContains(&lua, long, "end.lua:1: bad value 1");
+
+    const direct = try fail.protectedCall(.{@as(i64, 3)}, void);
+    switch (direct) {
+        .ok => return error.TestExpectedLuaError,
+        .lua_error => |failure| {
+            var err = failure;
+            defer err.deinit();
+            const message = try err.message();
+            defer lua.allocator().free(message);
+            try std.testing.expectEqualStrings("bad value 3", message);
+        },
+    }
+
+    var argument = try lua.loadString("bad(1, 2)", .{});
+    defer argument.deinit();
+    try expectProtectedErrorContains(&lua, argument, "bad argument #2 to 'bad' (not a color)");
+}
+
+test "api caller walks the lua functions of a coroutine" {
+    const Host = struct {
+        var sources: [3][64]u8 = undefined;
+        var lines: [3]?usize = undefined;
+        var count: usize = 0;
+
+        fn record(ctx: *Context) !void {
+            count = 0;
+            while (ctx.caller(count)) |at| : (count += 1) {
+                if (count == sources.len) return error.TestTooManyCallers;
+                @memcpy(sources[count][0..at.source.len], at.source);
+                sources[count][at.source.len] = 0;
+                lines[count] = at.line;
+            }
+        }
+    };
+
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    var record = try lua.register("record", Host.record);
+    defer record.deinit();
+    try lua.setGlobal("record", record);
+
+    try record.call(.{}, void);
+    try std.testing.expectEqual(@as(usize, 0), Host.count);
+
+    var chunk = try lua.loadString(
+        \\local function inner()
+        \\  record()
+        \\end
+        \\pcall(inner)
+    , .{ .name = "@walk.lua" });
+    defer chunk.deinit();
+    try chunk.call(.{}, void);
+    try std.testing.expectEqual(@as(usize, 2), Host.count);
+    try std.testing.expectEqualStrings("@walk.lua", std.mem.sliceTo(&Host.sources[0], 0));
+    try std.testing.expectEqual(@as(?usize, 2), Host.lines[0]);
+    try std.testing.expectEqual(@as(?usize, 4), Host.lines[1]);
+
+    var in_coroutine = try lua.loadString("\n\nrecord()", .{ .name = "=co" });
+    defer in_coroutine.deinit();
+    var co = try lua.newCoroutine(in_coroutine);
+    defer co.deinit();
+    var resumed = try co.resumeCoroutine(.{}, void, void);
+    resumed.deinit();
+    try std.testing.expectEqual(@as(usize, 1), Host.count);
+    try std.testing.expectEqualStrings("=co", std.mem.sliceTo(&Host.sources[0], 0));
+    try std.testing.expectEqual(@as(?usize, 3), Host.lines[0]);
+
+    const stripped_bytes = try chunk.dumpBytecode(.{ .strip_debug = true });
+    defer lua.allocator().free(stripped_bytes);
+    var stripped = try lua.loadBytecode(stripped_bytes, .{});
+    defer stripped.deinit();
+    try stripped.call(.{}, void);
+    try std.testing.expectEqual(@as(?usize, null), Host.lines[0]);
+}
+
+test "api describeError gives the lua message or the error name" {
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+
+    var chunk = try lua.loadString("return setmetatable({}, { __index = function() error('boom', 0) end })", .{});
+    defer chunk.deinit();
+    var table = try chunk.call(.{}, Table);
+    defer table.deinit();
+    const failure = if (table.get("x", Value)) |_| error.TestExpectedLuaError else |err| err;
+    const message = try lua.describeError(failure);
+    defer lua.allocator().free(message);
+    try std.testing.expectEqualStrings("boom", message);
+
+    const name = try lua.describeError(error.TypeMismatch);
+    defer lua.allocator().free(name);
+    try std.testing.expectEqualStrings("TypeMismatch", name);
+}

@@ -510,6 +510,13 @@ pub const State = struct {
         return self.allocator().dupe(u8, out.items);
     }
 
+    /// The last Lua error's message for `error.LuaError`, otherwise the name of `err`; the caller
+    /// frees the result with `allocator()`.
+    pub fn describeError(self: *State, err: anyerror) ![]const u8 {
+        if (err == error.LuaError) return self.errorMessage();
+        return self.allocator().dupe(u8, @errorName(err));
+    }
+
     /// Takes ownership of the last Lua error value; the caller must `deinit` it.
     pub fn takeErrorValue(self: *State) ?ErrorRef {
         const index = self.last_error_root orelse return null;

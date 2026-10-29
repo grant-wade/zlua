@@ -129,6 +129,7 @@
 
 ## Types
 
+- [Caller](#type-caller)
 - [Context](#type-context)
 
 <a id="fn-host"></a>
@@ -149,6 +150,39 @@ pub fn Host(comptime T: type) type
 ```zig
 pub fn isHost(comptime T: type) bool
 ```
+
+<a id="type-caller"></a>
+
+## Caller
+
+A Lua function on a callback's coroutine.
+
+```zig
+pub const Caller = struct {
+    /// Chunk name as given to `load`, such as `@path` or `=name`; borrows VM memory.
+    source: []const u8,
+    /// Null when the function's debug info is stripped.
+    line: ?usize,
+};
+```
+
+### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [shortSource](#fn-caller-shortsource) | `self: Caller, buffer: *[debug_runtime.chunk_id_size]u8` | `[]const u8` | The chunk name as error messages show it, written to &#96;buffer&#96;. |
+
+<a id="fn-caller-shortsource"></a>
+
+### Caller.shortSource
+
+The chunk name as error messages show it, written to `buffer`.
+
+```zig
+pub fn shortSource(self: Caller, buffer: *[debug_runtime.chunk_id_size]u8) []const u8
+```
+
+References: [`Caller`](#type-caller)
 
 <a id="type-context"></a>
 
@@ -171,12 +205,15 @@ pub const Context = struct {
 | [io](#fn-context-io) | `self: *Context` | `?std.Io` | The &#96;IoCapability.runtime&#96; the state was created with, or null when none was configured. |
 | [host](#fn-context-host) | `self: *Context, comptime T: type` | `?*T` | The pointer given to &#96;State.setHost&#96; when it points to a &#96;T&#96;, or null. |
 | [functionName](#fn-context-functionname) | `self: *Context` | `[]const u8` | The name this callback was registered under. |
+| [caller](#fn-context-caller) | `self: *Context, level: usize` | `?Caller` | The Lua function &#96;level&#96; calls up this callback's coroutine, not counting native functions; level 0 is the innermost one. |
 | [argCount](#fn-context-argcount) | `self: *Context` | `usize` |  |
 | [arg](#fn-context-arg) | `self: *Context, index: usize, comptime T: type` | `!T` | A &#96;[]const u8&#96; argument borrows VM memory until the callback returns. |
 | [optionalArg](#fn-context-optionalarg) | `self: *Context, index: usize, comptime T: type` | `!?T` | Returns null when absent or &#96;nil&#96;. |
 | [pushReturn](#fn-context-pushreturn) | `self: *Context, value: anytype` | `!void` |  |
 | [returnValues](#fn-context-returnvalues) | `self: *Context, values: anytype` | `!void` | Replaces callback returns; tuples like &#96;.{ a, b }&#96; return multiple values. |
 | [raise](#fn-context-raise) | `self: *Context, value: anytype` | `error` | Raises &#96;value&#96; as the Lua error object. |
+| [raisef](#fn-context-raisef) | `self: *Context, comptime fmt: []const u8, args: anytype` | `error` | Raises the formatted message as the Lua error object, after the position of the innermost Lua function when it has debug info. |
+| [argError](#fn-context-argerror) | `self: *Context, index: usize, message: []const u8` | `runtime.RuntimeError` | Raises &#96;bad argument #index + 1 to 'name' (message)&#96;; the first argument has index 0. |
 | [coroutine](#fn-context-coroutine) | `self: *Context` | `!Coroutine` | Rooted handle to this callback's coroutine, usable beyond the callback. |
 | [isYieldable](#fn-context-isyieldable) | `self: *Context` | `bool` | Reports whether this callback can yield across the current native boundary. |
 | [yield](#fn-context-yield) | `self: *Context, values: anytype` | `error` | Terminal yield: &#96;return ctx.yield(.{values});&#96;. Defers run before suspension; resume continues Lua with the resume arguments without reentering the Zig body. |
@@ -228,6 +265,19 @@ pub fn functionName(self: *Context) []const u8
 ```
 
 References: [`Context`](#type-context)
+
+<a id="fn-context-caller"></a>
+
+### Context.caller
+
+The Lua function `level` calls up this callback's coroutine, not counting native functions;
+level 0 is the innermost one.
+
+```zig
+pub fn caller(self: *Context, level: usize) ?Caller
+```
+
+References: [`Context`](#type-context), [`Caller`](#type-caller)
 
 <a id="fn-context-argcount"></a>
 
@@ -296,6 +346,31 @@ pub fn raise(self: *Context, value: anytype) error{ LuaError, OutOfMemory, Inval
 ```
 
 References: [`Context`](#type-context)
+
+<a id="fn-context-raisef"></a>
+
+### Context.raisef
+
+Raises the formatted message as the Lua error object, after the position of the innermost
+Lua function when it has debug info.
+
+```zig
+pub fn raisef(self: *Context, comptime fmt: []const u8, args: anytype) error{ LuaError, OutOfMemory, InvalidHandle }
+```
+
+References: [`Context`](#type-context)
+
+<a id="fn-context-argerror"></a>
+
+### Context.argError
+
+Raises `bad argument #index + 1 to 'name' (message)`; the first argument has index 0.
+
+```zig
+pub fn argError(self: *Context, index: usize, message: []const u8) runtime.RuntimeError
+```
+
+References: [`Context`](#type-context), [`runtime.RuntimeError`](../runtime.md#alias-runtimeerror)
 
 <a id="fn-context-coroutine"></a>
 
