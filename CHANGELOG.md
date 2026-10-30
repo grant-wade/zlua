@@ -14,6 +14,9 @@
 - `Context.functionName` returns the name a callback was registered under.
 - `Context.raisef` raises a formatted error with the Lua position, `Context.argError` raises a `bad argument` error, and `Context.caller` returns a Lua function's source and line.
 - `State.describeError` returns the Lua message or the name of an error from a state call.
+- `decode` and `Decoder` read Lua values into Zig values by type with path-tracked errors, and `fromLua` hooks customize a type.
+- Typed callbacks and userdata methods decode enum, array, slice, struct, and `fromLua` parameters, and `Context.decodeArg` does the same in plain callbacks.
+- Conversions to Lua turn enums into names, follow `lua` field options, and handle `std.EnumArray`, `std.EnumSet`, and `toLua` hooks.
 - `Coroutine.protectedResumeWith` takes `ResumeOptions` for a traceback and a per-resume instruction budget.
 
 ### Fixes

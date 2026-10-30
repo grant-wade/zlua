@@ -44,6 +44,10 @@ pub inline fn isVariadic(comptime info: Type.Fn) bool {
     return if (@hasField(Type.Fn, "attrs")) info.attrs.varargs else info.is_var_args;
 }
 
+pub inline fn isExhaustive(comptime info: Type.Enum) bool {
+    return if (@hasField(Type.Enum, "mode")) info.mode == .exhaustive else info.is_exhaustive;
+}
+
 pub inline fn isConstPointer(comptime info: Type.Pointer) bool {
     return if (@hasField(Type.Pointer, "attrs")) info.attrs.@"const" else info.is_const;
 }

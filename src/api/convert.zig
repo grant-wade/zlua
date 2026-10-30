@@ -5,6 +5,7 @@ const errors = @import("errors.zig");
 const handle = @import("handle.zig");
 const userdata_mod = @import("userdata.zig");
 const AnyUserdata = userdata_mod.AnyUserdata;
+const decode_mod = @import("decode.zig");
 const Coroutine = @import("coroutine.zig").Coroutine;
 const ErrorRef = errors.ErrorRef;
 const Function = @import("function.zig").Function;
@@ -67,6 +68,9 @@ pub fn toRuntimeValue(state: *State, value: anytype) !runtime.Value {
         try handle.validate(value.ref, state);
         return handle.rawValue(value.ref);
     }
+    if (comptime decode_mod.hasToLua(T)) return toRuntimeValue(state, value.toLua());
+    if (comptime decode_mod.isEnumArray(T)) return enumArrayToRuntimeValue(state, value);
+    if (comptime decode_mod.isEnumSet(T)) return enumSetToRuntimeValue(state, value);
 
     return switch (@typeInfo(T)) {
         .null => .nil,
@@ -80,8 +84,35 @@ pub fn toRuntimeValue(state: *State, value: anytype) !runtime.Value {
         else
             arrayToRuntimeValue(state, value[0..]),
         .@"struct" => |info| structToRuntimeValue(state, value, info),
+        .@"enum" => .{ .string = try state.raw_state.strings.intern(std.enums.tagName(T, value) orelse return error.UnsupportedType) },
+        .enum_literal => .{ .string = try state.raw_state.strings.intern(@tagName(value)) },
         else => error.UnsupportedType,
     };
+}
+
+fn enumArrayToRuntimeValue(state: *State, value: anytype) !runtime.Value {
+    const T = @TypeOf(value);
+    const table = state.raw_state.newTableWithHints(0, T.len) catch |err| return errors.captureLuaError(state, err);
+    inline for (comptime reflection.fieldsOf(T.Key)) |name| {
+        const raw_key = runtime.Value{ .string = try state.raw_state.strings.intern(name) };
+        const raw_value = try toRuntimeValue(state, value.get(@field(T.Key, name)));
+        index_mod.setTableValue(&state.raw_state, table, raw_key, raw_value) catch |err| return errors.captureLuaError(state, err);
+    }
+    return table;
+}
+
+fn enumSetToRuntimeValue(state: *State, value: anytype) !runtime.Value {
+    const T = @TypeOf(value);
+    const table = state.raw_state.newTableWithHints(@intCast(value.count()), 0) catch |err| return errors.captureLuaError(state, err);
+    var next: i64 = 1;
+    inline for (comptime reflection.fieldsOf(T.Key)) |name| {
+        if (value.contains(@field(T.Key, name))) {
+            const raw_name = runtime.Value{ .string = try state.raw_state.strings.intern(name) };
+            index_mod.setTableValue(&state.raw_state, table, .{ .integer = next }, raw_name) catch |err| return errors.captureLuaError(state, err);
+            next += 1;
+        }
+    }
+    return table;
 }
 
 fn pointerToRuntimeValue(state: *State, value: anytype, comptime pointer: std.builtin.Type.Pointer) !runtime.Value {
@@ -119,12 +150,22 @@ fn structToRuntimeValue(state: *State, value: anytype, comptime info: std.builti
     const hash_hint = std.math.cast(u32, reflection.fieldNames(info).len) orelse return error.IntegerOutOfRange;
 
     const table = state.raw_state.newTableWithHints(0, hash_hint) catch |err| return errors.captureLuaError(state, err);
-    inline for (reflection.fieldNames(info)) |field| {
-        const raw_key = runtime.Value{ .string = try state.raw_state.strings.intern(field) };
-        const raw_value = try toRuntimeValue(state, @field(value, field));
-        index_mod.setTableValue(&state.raw_state, table, raw_key, raw_value) catch |err| return errors.captureLuaError(state, err);
-    }
+    try writeStructFields(state, table, value);
     return table;
+}
+
+fn writeStructFields(state: *State, table: runtime.Value, value: anytype) !void {
+    const T = @TypeOf(value);
+    inline for (comptime reflection.fieldsOf(T)) |field| {
+        const options = comptime decode_mod.fieldOptions(T, field);
+        if (options.embed) {
+            try writeStructFields(state, table, @field(value, field));
+        } else {
+            const raw_key = runtime.Value{ .string = try state.raw_state.strings.intern(options.key) };
+            const raw_value = try toRuntimeValue(state, @field(value, field));
+            index_mod.setTableValue(&state.raw_state, table, raw_key, raw_value) catch |err| return errors.captureLuaError(state, err);
+        }
+    }
 }
 
 fn tupleToRuntimeValue(state: *State, value: anytype, comptime len: usize) !runtime.Value {
@@ -247,12 +288,12 @@ fn isTupleResult(comptime T: type) bool {
     };
 }
 
-fn isOwnedApiValue(comptime T: type) bool {
-    return T == Value or T == Ref or T == Table or T == Function or T == Coroutine or T == ErrorRef or T == AnyUserdata or userdata_mod.isHandle(T);
+pub fn isOwnedApiValue(comptime T: type) bool {
+    return isTupleResult(T) or T == Value or T == Ref or T == Table or T == Function or T == Coroutine or T == ErrorRef or T == AnyUserdata or userdata_mod.isHandle(T);
 }
 
 pub fn deinitIfOwned(comptime T: type, value: *T) void {
-    if (comptime isOwnedApiValue(T) or isTupleResult(T)) {
+    if (comptime isOwnedApiValue(T)) {
         value.deinit();
     } else if (comptime @typeInfo(T) == .optional) {
         if (value.*) |*payload| deinitIfOwned(@typeInfo(T).optional.child, payload);

@@ -477,6 +477,56 @@ A callback can call back into Lua with `Context.callNonYielding(function, args, 
 
 `ctx.caller(level)` describes a Lua function on the callback's coroutine, with its `source`, `shortSource()`, and `line`. Level 0 is the innermost one, usually the function that called the callback, and native functions are not counted. It returns null past the last function.
 
+## Decoding Tables
+
+`zlua.decode` reads a Lua value into a Zig value by its type, checking every key. It handles integers, floats, booleans, strings, enums by name, optionals, arrays, slices, structs, `std.EnumArray`, and `std.EnumSet`. Absent keys keep the struct's defaults:
+
+```zig
+const Weapon = struct {
+    name: []const u8 = "",
+    kind: enum { sword, spear } = .sword,
+    might: i32 = 0,
+    tags: []const []const u8 = &.{},
+
+    pub const lua = .{ .name = .{ .required = true } };
+};
+
+var arena: std.heap.ArenaAllocator = .init(allocator);
+defer arena.deinit();
+var diagnostic: zlua.Diagnostic = .{ .gpa = allocator };
+defer diagnostic.deinit();
+
+const weapon = zlua.decode(Weapon, value, .{ .allocator = arena.allocator(), .diagnostic = &diagnostic }) catch |err| switch (err) {
+    error.Invalid => return fail(diagnostic.text),
+    else => return err,
+};
+```
+
+A failure returns `error.Invalid` and leaves the first message in the diagnostic, with its path: `tags[2]: expected a string, got number`, `unknown field "mighty"`, or `name: missing`. Strings and slices come from `.allocator`, and a failed decode does not free them. `.strict` makes that many levels below the value require every field.
+
+A struct's `lua` declaration sets options per field, read back with `zlua.fieldOptions` and `zlua.fieldKeys`:
+
+| Option | Meaning |
+| --- | --- |
+| `.key` | The Lua key, the field name by default. |
+| `.required` | Decoding fails when the key is absent. |
+| `.embed` | The fields of this struct field are given inline in the outer table. |
+| `.elements` | The enum whose values a `std.bit_set` field lists. |
+| `.doc` | A description for generated documentation. |
+
+A type can decode itself by declaring `pub fn fromLua(d: anytype, value: zlua.Value, out: *@This()) zlua.DecodeError!void`, reporting failures with `d.fail(fmt, args)`. For types it can't change, or lookups that need outside data, create a `zlua.Decoder(Context)`. `Context.decodes(T)` picks the types it handles and `Context.decode(d, T, value, out)` decodes them, with the context reachable as `d.context`. A decoder's `push` and `pop` add to the error path, and `decodeStruct` can leave keys for the caller.
+
+Typed callbacks and userdata methods decode enum, array, slice, struct, and `fromLua` parameters the same way, with strings and slices that last until the callback returns. A value that doesn't fit raises `bad argument #2 to 'box' (size[2]: expected a number, got string)`. In a plain callback, `ctx.decodeArg(index, T, allocator)` does the same.
+
+```zig
+fn box(size: [3]f32, options: struct { hollow: bool = false }) void {
+    _ = size;
+    _ = options;
+}
+```
+
+The other direction goes through ordinary value conversion. A struct given to `returnValues`, `push`, `setGlobal`, or `Table.set` becomes a table following the same `.key` and `.embed` options, enums become their names, `std.EnumArray` becomes a table by name, and `std.EnumSet` becomes a list of names. A type can declare `pub fn toLua(self: @This()) U` to convert as the `U` it returns.
+
 ## Calling and Errors
 
 To call a Lua function from Zig, fetch it as a `Function` and call it:
@@ -816,7 +866,6 @@ The current API has a few limits to be aware of:
 
 - No stable raw runtime wrapper is exposed.
 - A Zig callback cannot call Lua that yields and then continue running. `Context.yield` must be the callback's last action.
-- Broad decoding of Lua tables into Zig structs is not implemented.
 - There are no `callGlobal` convenience methods. Fetch a `Function` and call it instead.
 
 The embedding examples under `examples/` cover scripts, library selection, callbacks, sandboxing, interrupts, bytecode, memory files, userdata, modules, and coroutines. Either of these commands builds and runs them:

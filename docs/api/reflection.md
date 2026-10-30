@@ -91,6 +91,7 @@
 - [api.value](api/value.md)
 - [api.userdata](api/userdata.md)
 - [api.context](api/context.md)
+- [api.decode](api/decode.md)
 - [api.coroutine](api/coroutine.md)
 - [api.snapshot](api/snapshot.md)
 - [api.memory_limit](api/memory_limit.md)
@@ -132,6 +133,7 @@ Compile-time reflection shared by Zig 0.16 and 0.17.
 - [declarationNames](#fn-declarationnames)
 - [paramTypes](#fn-paramtypes)
 - [isVariadic](#fn-isvariadic)
+- [isExhaustive](#fn-isexhaustive)
 - [isConstPointer](#fn-isconstpointer)
 
 <a id="fn-fieldnames"></a>
@@ -172,6 +174,14 @@ pub inline fn paramTypes(comptime info: Type.Fn) []const ?type
 
 ```zig
 pub inline fn isVariadic(comptime info: Type.Fn) bool
+```
+
+<a id="fn-isexhaustive"></a>
+
+## isExhaustive
+
+```zig
+pub inline fn isExhaustive(comptime info: Type.Enum) bool
 ```
 
 <a id="fn-isconstpointer"></a>

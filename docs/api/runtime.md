@@ -92,6 +92,7 @@
 - [api.value](api/value.md)
 - [api.userdata](api/userdata.md)
 - [api.context](api/context.md)
+- [api.decode](api/decode.md)
 - [api.coroutine](api/coroutine.md)
 - [api.snapshot](api/snapshot.md)
 - [api.memory_limit](api/memory_limit.md)

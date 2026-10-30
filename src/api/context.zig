@@ -5,11 +5,13 @@ const coroutine_runtime = @import("../runtime/coroutine.zig");
 const debug_runtime = @import("../runtime/debug.zig");
 const callbacks = @import("callbacks.zig");
 const convert = @import("convert.zig");
+const decode_mod = @import("decode.zig");
 const handle = @import("handle.zig");
 const Coroutine = @import("coroutine.zig").Coroutine;
 const Function = @import("function.zig").Function;
 const State = @import("state.zig").State;
 const userdata_mod = @import("userdata.zig");
+const Value = @import("value.zig").Value;
 const call_mod = @import("../runtime/call.zig");
 
 /// A typed callback parameter that receives the `T` given to `State.setHost` and takes no Lua
@@ -93,6 +95,19 @@ pub const Context = struct {
     pub fn arg(self: *Context, index: usize, comptime T: type) !T {
         const raw = self.raw.callbackArgValue(index);
         return convert.fromRuntimeValue(self.lua, raw, T) catch |err| return self.argConversionError(index, T, raw, err);
+    }
+
+    /// Decodes an argument by type like `decode`, allocating strings and slices with `allocator`;
+    /// a value that doesn't fit raises a `bad argument` error.
+    pub fn decodeArg(self: *Context, index: usize, comptime T: type, allocator: std.mem.Allocator) !T {
+        var value = try convert.fromRuntimeValue(self.lua, self.raw.callbackArgValue(index), Value);
+        defer value.deinit();
+        var diagnostic: decode_mod.Diagnostic = .{ .gpa = self.lua.allocator() };
+        defer diagnostic.deinit();
+        return decode_mod.decode(T, value, .{ .allocator = allocator, .diagnostic = &diagnostic }) catch |err| switch (err) {
+            error.Invalid => self.raw.failArgumentMessage(index, diagnostic.text),
+            error.OutOfMemory => error.OutOfMemory,
+        };
     }
 
     /// Returns null when absent or `nil`.

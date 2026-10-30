@@ -92,6 +92,7 @@
 - [api.value](../api/value.md)
 - [api.userdata](../api/userdata.md)
 - [api.context](../api/context.md)
+- [api.decode](../api/decode.md)
 - [api.coroutine](../api/coroutine.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
@@ -129,6 +130,7 @@
 - [toRuntimeValue](#fn-toruntimevalue)
 - [fromRuntimeResults](#fn-fromruntimeresults)
 - [fromRuntimeValue](#fn-fromruntimevalue)
+- [isOwnedApiValue](#fn-isownedapivalue)
 - [deinitIfOwned](#fn-deinitifowned)
 
 <a id="fn-expectedluatype"></a>
@@ -178,6 +180,14 @@ pub fn fromRuntimeValue(state: *State, raw: runtime.Value, comptime T: type) !T
 ```
 
 References: [`runtime.Value`](../runtime.md#alias-value)
+
+<a id="fn-isownedapivalue"></a>
+
+## isOwnedApiValue
+
+```zig
+pub fn isOwnedApiValue(comptime T: type) bool
+```
 
 <a id="fn-deinitifowned"></a>
 

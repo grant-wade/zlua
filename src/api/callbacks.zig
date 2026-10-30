@@ -3,6 +3,7 @@ const reflection = @import("../reflection.zig");
 const runtime = @import("../runtime.zig");
 const runtime_types = @import("../runtime/types.zig");
 const convert = @import("convert.zig");
+const decode_mod = @import("decode.zig");
 const snapshot_mod = @import("snapshot.zig");
 const userdata_mod = @import("userdata.zig");
 const context_mod = @import("context.zig");
@@ -220,8 +221,10 @@ fn ArgumentScopes(comptime capacity: usize) type {
     return struct {
         entries: [capacity]runtime_types.UserdataScope = undefined,
         len: usize = 0,
+        arena: ?std.heap.ArenaAllocator = null,
         fn deinit(self: *@This(), ctx: *Context) void {
             if (comptime capacity == 0) return;
+            if (self.arena) |*arena| arena.deinit();
             while (self.len != 0) {
                 self.len -= 1;
                 userdata_mod.endScope(&ctx.lua.raw_state, &self.entries[self.len]);
@@ -242,6 +245,10 @@ fn ArgumentScopes(comptime capacity: usize) type {
             if (comptime @typeInfo(T) == .optional) {
                 if (raw == .nil) return null;
                 return try self.arg(ctx, index, @typeInfo(T).optional.child);
+            }
+            if (comptime decode_mod.needsDecoding(T)) {
+                if (self.arena == null) self.arena = .init(ctx.lua.allocator());
+                return ctx.decodeArg(index, T, self.arena.?.allocator());
             }
             if (comptime @typeInfo(T) == .pointer) {
                 const pointer = @typeInfo(T).pointer;

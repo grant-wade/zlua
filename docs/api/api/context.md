@@ -92,6 +92,7 @@
 - [api.value](../api/value.md)
 - [api.userdata](../api/userdata.md)
 - [api.context](../api/context.md)
+- [api.decode](../api/decode.md)
 - [api.coroutine](../api/coroutine.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
@@ -208,6 +209,7 @@ pub const Context = struct {
 | [caller](#fn-context-caller) | `self: *Context, level: usize` | `?Caller` | The Lua function &#96;level&#96; calls up this callback's coroutine, not counting native functions; level 0 is the innermost one. |
 | [argCount](#fn-context-argcount) | `self: *Context` | `usize` |  |
 | [arg](#fn-context-arg) | `self: *Context, index: usize, comptime T: type` | `!T` | A &#96;[]const u8&#96; argument borrows VM memory until the callback returns. |
+| [decodeArg](#fn-context-decodearg) | `self: *Context, index: usize, comptime T: type, allocator: std.mem.Allocator` | `!T` | Decodes an argument by type like &#96;decode&#96;, allocating strings and slices with &#96;allocator&#96;; a value that doesn't fit raises a &#96;bad argument&#96; error. |
 | [optionalArg](#fn-context-optionalarg) | `self: *Context, index: usize, comptime T: type` | `!?T` | Returns null when absent or &#96;nil&#96;. |
 | [pushReturn](#fn-context-pushreturn) | `self: *Context, value: anytype` | `!void` |  |
 | [returnValues](#fn-context-returnvalues) | `self: *Context, values: anytype` | `!void` | Replaces callback returns; tuples like &#96;.{ a, b }&#96; return multiple values. |
@@ -297,6 +299,19 @@ A `[]const u8` argument borrows VM memory until the callback returns.
 
 ```zig
 pub fn arg(self: *Context, index: usize, comptime T: type) !T
+```
+
+References: [`Context`](#type-context)
+
+<a id="fn-context-decodearg"></a>
+
+### Context.decodeArg
+
+Decodes an argument by type like `decode`, allocating strings and slices with `allocator`;
+a value that doesn't fit raises a `bad argument` error.
+
+```zig
+pub fn decodeArg(self: *Context, index: usize, comptime T: type, allocator: std.mem.Allocator) !T
 ```
 
 References: [`Context`](#type-context)

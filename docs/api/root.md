@@ -91,6 +91,7 @@
 - [api.value](api/value.md)
 - [api.userdata](api/userdata.md)
 - [api.context](api/context.md)
+- [api.decode](api/decode.md)
 - [api.coroutine](api/coroutine.md)
 - [api.snapshot](api/snapshot.md)
 - [api.memory_limit](api/memory_limit.md)
@@ -160,6 +161,15 @@
 - [BytecodeDumpOptions](#alias-bytecodedumpoptions)
 - [Tuple](#alias-tuple)
 - [HostFn](#alias-hostfn)
+- [Decoder](#alias-decoder)
+- [DecodeError](#alias-decodeerror)
+- [DecodeOptions](#alias-decodeoptions)
+- [Diagnostic](#alias-diagnostic)
+- [FieldOptions](#alias-fieldoptions)
+- [decode](#alias-decode)
+- [defaultValue](#alias-defaultvalue)
+- [fieldKeys](#alias-fieldkeys)
+- [fieldOptions](#alias-fieldoptions)
 - [Userdata](#alias-userdata)
 - [AnyUserdata](#alias-anyuserdata)
 - [UserdataType](#alias-userdatatype)
@@ -583,6 +593,96 @@ pub const HostFn = api.HostFn;
 ```
 
 References: [`api.HostFn`](api.md#alias-hostfn)
+
+<a id="alias-decoder"></a>
+
+## Decoder
+
+```zig
+pub const Decoder = api.Decoder;
+```
+
+References: [`api.Decoder`](api.md#alias-decoder)
+
+<a id="alias-decodeerror"></a>
+
+## DecodeError
+
+```zig
+pub const DecodeError = api.DecodeError;
+```
+
+References: [`api.DecodeError`](api.md#alias-decodeerror)
+
+<a id="alias-decodeoptions"></a>
+
+## DecodeOptions
+
+```zig
+pub const DecodeOptions = api.DecodeOptions;
+```
+
+References: [`api.DecodeOptions`](api.md#alias-decodeoptions)
+
+<a id="alias-diagnostic"></a>
+
+## Diagnostic
+
+```zig
+pub const Diagnostic = api.Diagnostic;
+```
+
+References: [`api.Diagnostic`](api.md#alias-diagnostic)
+
+<a id="alias-fieldoptions"></a>
+
+## FieldOptions
+
+```zig
+pub const FieldOptions = api.FieldOptions;
+```
+
+References: [`api.FieldOptions`](api.md#alias-fieldoptions)
+
+<a id="alias-decode"></a>
+
+## decode
+
+```zig
+pub const decode = api.decode;
+```
+
+References: [`api.decode`](api.md#alias-decode)
+
+<a id="alias-defaultvalue"></a>
+
+## defaultValue
+
+```zig
+pub const defaultValue = api.defaultValue;
+```
+
+References: [`api.defaultValue`](api.md#alias-defaultvalue)
+
+<a id="alias-fieldkeys"></a>
+
+## fieldKeys
+
+```zig
+pub const fieldKeys = api.fieldKeys;
+```
+
+References: [`api.fieldKeys`](api.md#alias-fieldkeys)
+
+<a id="alias-fieldoptions"></a>
+
+## fieldOptions
+
+```zig
+pub const fieldOptions = api.fieldOptions;
+```
+
+References: [`api.fieldOptions`](api.md#alias-fieldoptions)
 
 <a id="alias-userdata"></a>
 

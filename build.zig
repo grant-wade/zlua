@@ -154,6 +154,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "zlua-embed-run-script", .path = "examples/run_script.zig" },
         .{ .name = "zlua-embed-select-libraries", .path = "examples/select_libraries.zig" },
         .{ .name = "zlua-embed-register-function", .path = "examples/register_function.zig" },
+        .{ .name = "zlua-embed-decode-config", .path = "examples/decode_config.zig" },
         .{ .name = "zlua-embed-typed-host-function", .path = "examples/typed_host_function.zig" },
         .{ .name = "zlua-embed-plugin-sandbox", .path = "examples/plugin_sandbox.zig" },
         .{ .name = "zlua-embed-bytecode-roundtrip", .path = "examples/bytecode_roundtrip.zig" },

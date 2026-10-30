@@ -10,6 +10,7 @@ const callbacks = @import("api/callbacks.zig");
 const capabilities = @import("api/capabilities.zig");
 const context = @import("api/context.zig");
 const coroutine = @import("api/coroutine.zig");
+const decoding = @import("api/decode.zig");
 const errors = @import("api/errors.zig");
 const function = @import("api/function.zig");
 const handle = @import("api/handle.zig");
@@ -94,6 +95,16 @@ pub const UserdataType = userdata.UserdataType;
 pub const UserdataPtrOptions = userdata.UserdataPtrOptions;
 pub const UserdataSnapshotHooks = userdata.UserdataSnapshotHooks;
 
+pub const Decoder = decoding.Decoder;
+pub const DecodeError = decoding.DecodeError;
+pub const DecodeOptions = decoding.DecodeOptions;
+pub const Diagnostic = decoding.Diagnostic;
+pub const FieldOptions = decoding.FieldOptions;
+pub const decode = decoding.decode;
+pub const defaultValue = decoding.defaultValue;
+pub const fieldKeys = decoding.fieldKeys;
+pub const fieldOptions = decoding.fieldOptions;
+
 pub const HostFn = callbacks.HostFn;
 pub const Context = context.Context;
 pub const Host = context.Host;
@@ -110,6 +121,7 @@ test {
     _ = @import("testing/api_host_tests.zig");
     _ = @import("testing/api_file_tests.zig");
     _ = @import("testing/api_coroutine_tests.zig");
+    _ = @import("testing/api_decode_tests.zig");
     _ = @import("testing/api_limit_tests.zig");
     _ = @import("testing/api_table_tests.zig");
     _ = @import("testing/api_fuzz_tests.zig");

@@ -3,7 +3,7 @@
 ## Navigation
 
 - [API Index](README.md)
-- Submodules: [api.callbacks](api/callbacks.md), [api.convert](api/convert.md), [api.errors](api/errors.md), [api.handle](api/handle.md), [api.state](api/state.md), [api.capabilities](api/capabilities.md), [api.options](api/options.md), [api.function](api/function.md), [api.table](api/table.md), [api.value](api/value.md), [api.userdata](api/userdata.md), [api.context](api/context.md), [api.coroutine](api/coroutine.md), [api.snapshot](api/snapshot.md), [api.memory_limit](api/memory_limit.md)
+- Submodules: [api.callbacks](api/callbacks.md), [api.convert](api/convert.md), [api.errors](api/errors.md), [api.handle](api/handle.md), [api.state](api/state.md), [api.capabilities](api/capabilities.md), [api.options](api/options.md), [api.function](api/function.md), [api.table](api/table.md), [api.value](api/value.md), [api.userdata](api/userdata.md), [api.context](api/context.md), [api.decode](api/decode.md), [api.coroutine](api/coroutine.md), [api.snapshot](api/snapshot.md), [api.memory_limit](api/memory_limit.md)
 
 <details>
 <summary>All documents</summary>
@@ -92,6 +92,7 @@
 - [api.value](api/value.md)
 - [api.userdata](api/userdata.md)
 - [api.context](api/context.md)
+- [api.decode](api/decode.md)
 - [api.coroutine](api/coroutine.md)
 - [api.snapshot](api/snapshot.md)
 - [api.memory_limit](api/memory_limit.md)
@@ -202,6 +203,15 @@ See `docs/embedding.md` for capabilities, error handling, snapshots, and ownersh
 - [UserdataType](#alias-userdatatype)
 - [UserdataPtrOptions](#alias-userdataptroptions)
 - [UserdataSnapshotHooks](#alias-userdatasnapshothooks)
+- [Decoder](#alias-decoder)
+- [DecodeError](#alias-decodeerror)
+- [DecodeOptions](#alias-decodeoptions)
+- [Diagnostic](#alias-diagnostic)
+- [FieldOptions](#alias-fieldoptions)
+- [decode](#alias-decode)
+- [defaultValue](#alias-defaultvalue)
+- [fieldKeys](#alias-fieldkeys)
+- [fieldOptions](#alias-fieldoptions)
 - [HostFn](#alias-hostfn)
 - [Context](#alias-context)
 - [Host](#alias-host)
@@ -886,6 +896,78 @@ pub const UserdataSnapshotHooks = userdata.UserdataSnapshotHooks;
 ```
 
 References: [`userdata.UserdataSnapshotHooks`](api/userdata.md#fn-userdatasnapshothooks)
+
+<a id="alias-decoder"></a>
+
+## Decoder
+
+```zig
+pub const Decoder = decoding.Decoder;
+```
+
+<a id="alias-decodeerror"></a>
+
+## DecodeError
+
+```zig
+pub const DecodeError = decoding.DecodeError;
+```
+
+<a id="alias-decodeoptions"></a>
+
+## DecodeOptions
+
+```zig
+pub const DecodeOptions = decoding.DecodeOptions;
+```
+
+<a id="alias-diagnostic"></a>
+
+## Diagnostic
+
+```zig
+pub const Diagnostic = decoding.Diagnostic;
+```
+
+<a id="alias-fieldoptions"></a>
+
+## FieldOptions
+
+```zig
+pub const FieldOptions = decoding.FieldOptions;
+```
+
+<a id="alias-decode"></a>
+
+## decode
+
+```zig
+pub const decode = decoding.decode;
+```
+
+<a id="alias-defaultvalue"></a>
+
+## defaultValue
+
+```zig
+pub const defaultValue = decoding.defaultValue;
+```
+
+<a id="alias-fieldkeys"></a>
+
+## fieldKeys
+
+```zig
+pub const fieldKeys = decoding.fieldKeys;
+```
+
+<a id="alias-fieldoptions"></a>
+
+## fieldOptions
+
+```zig
+pub const fieldOptions = decoding.fieldOptions;
+```
 
 <a id="alias-hostfn"></a>
 
