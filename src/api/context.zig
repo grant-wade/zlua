@@ -2,6 +2,7 @@ const std = @import("std");
 const reflection = @import("../reflection.zig");
 const runtime = @import("../runtime.zig");
 const coroutine_runtime = @import("../runtime/coroutine.zig");
+const debug_runtime = @import("../runtime/debug.zig");
 const callbacks = @import("callbacks.zig");
 const convert = @import("convert.zig");
 const handle = @import("handle.zig");
@@ -22,6 +23,16 @@ pub const Context = struct {
     /// The `IoCapability.runtime` the state was created with, or null when none was configured.
     pub fn io(self: *Context) ?std.Io {
         return self.raw.state.options.io;
+    }
+
+    /// Line of the Lua function running on this callback's coroutine, or null when there is
+    /// none or its debug info is stripped.
+    pub fn currentLine(self: *Context) ?usize {
+        const frames = self.raw.thread.frames.items;
+        if (frames.len == 0) return null;
+        const frame = frames[frames.len - 1];
+        if (frame.closure.stripped_debug) return null;
+        return debug_runtime.lineForFrame(frame);
     }
 
     pub fn argCount(self: *Context) usize {

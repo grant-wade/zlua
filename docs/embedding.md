@@ -456,6 +456,8 @@ The state stores a copy of the `std.Io` handle, and the implementation behind it
 
 A callback can call back into Lua with `Context.callNonYielding(function, args, R)`. The call runs on the callback's coroutine, within that coroutine's current instruction budget, and the Lua code is not allowed to yield. Lua errors propagate unchanged once cleanup, including `__close`, has run, and any effects that already completed stay in place. `Context.coroutineIdentity()` returns a token for the current coroutine that is valid only during the callback and is invalidated by reset.
 
+`ctx.currentLine()` returns the line of the Lua function running on the callback's coroutine, including the function that called the callback through `pcall` or a metamethod. It returns null when the coroutine has no running Lua function, such as when the host calls the callback directly, and when that function's debug info is stripped.
+
 ## Calling and Errors
 
 To call a Lua function from Zig, fetch it as a `Function` and call it:

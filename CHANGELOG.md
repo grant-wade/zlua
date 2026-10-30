@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Embedding API
+
+- `Context.currentLine` returns the line of the running Lua function.
+
 ## 0.7.3
 
 ### Embedding API

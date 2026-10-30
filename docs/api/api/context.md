@@ -145,6 +145,7 @@ pub const Context = struct {
 | --- | --- | --- | --- |
 | [state](#fn-context-state) | `self: *Context` | `*State` |  |
 | [io](#fn-context-io) | `self: *Context` | `?std.Io` | The &#96;IoCapability.runtime&#96; the state was created with, or null when none was configured. |
+| [currentLine](#fn-context-currentline) | `self: *Context` | `?usize` | Line of the Lua function running on this callback's coroutine, or null when there is none or its debug info is stripped. |
 | [argCount](#fn-context-argcount) | `self: *Context` | `usize` |  |
 | [arg](#fn-context-arg) | `self: *Context, index: usize, comptime T: type` | `!T` | A &#96;[]const u8&#96; argument borrows VM memory until the callback returns. |
 | [optionalArg](#fn-context-optionalarg) | `self: *Context, index: usize, comptime T: type` | `!?T` | Returns null when absent or &#96;nil&#96;. |
@@ -175,6 +176,19 @@ The `IoCapability.runtime` the state was created with, or null when none was con
 
 ```zig
 pub fn io(self: *Context) ?std.Io
+```
+
+References: [`Context`](#type-context)
+
+<a id="fn-context-currentline"></a>
+
+### Context.currentLine
+
+Line of the Lua function running on this callback's coroutine, or null when there is
+none or its debug info is stripped.
+
+```zig
+pub fn currentLine(self: *Context) ?usize
 ```
 
 References: [`Context`](#type-context)

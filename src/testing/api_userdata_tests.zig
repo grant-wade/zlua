@@ -626,3 +626,43 @@ test "api userdata table index and Lua iteration metamethods" {
         \\end
     , .{});
 }
+
+test "api userdata method raises an error naming the current Lua line" {
+    const Scene = struct {
+        fn text(self: *@This(), ctx: *Context, parent_id: i64) !void {
+            _ = self;
+            if (parent_id == 1) return;
+            const line = ctx.currentLine() orelse 0;
+            const message = try std.fmt.allocPrint(ctx.state().allocator(), "line {d}: parent_id not found", .{line});
+            defer ctx.state().allocator().free(message);
+            return ctx.raise(message);
+        }
+    };
+
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+
+    var scene = try lua.newUserdata(Scene, .{}, .{});
+    defer scene.deinit();
+    try scene.method("text", Scene.text);
+    try lua.setGlobal("s", scene);
+
+    var chunk = try lua.loadString(
+        \\s:text(1)
+        \\
+        \\s:text(2)
+    , .{ .name = "=config" });
+    defer chunk.deinit();
+
+    const result = try chunk.protectedCall(.{}, void);
+    switch (result) {
+        .ok => return error.TestExpectedLuaError,
+        .lua_error => |err_ref| {
+            var err = err_ref;
+            defer err.deinit();
+            const message = try err.message();
+            defer lua.allocator().free(message);
+            try std.testing.expectEqualStrings("line 3: parent_id not found", message);
+        },
+    }
+}
