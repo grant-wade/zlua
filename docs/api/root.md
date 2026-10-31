@@ -34,13 +34,13 @@
 - [runtime.number_format](runtime/number_format.md)
 - [runtime.coroutine](runtime/coroutine.md)
 - [runtime.debug](runtime/debug.md)
+- [runtime.io](runtime/io.md)
+- [runtime.host](runtime/host.md)
 - [runtime.metatable](runtime/metatable.md)
 - [runtime.rollback](runtime/rollback.md)
 - [runtime.strings](runtime/strings.md)
 - [runtime.operators](runtime/operators.md)
 - [runtime.failure](runtime/failure.md)
-- [runtime.io](runtime/io.md)
-- [runtime.host](runtime/host.md)
 - [runtime.load](runtime/load.md)
 - [runtime.vm](runtime/vm.md)
 - [runtime.gc](runtime/gc.md)
@@ -196,6 +196,25 @@
 - [ProcessResult](#alias-processresult)
 - [ProcessStatus](#alias-processstatus)
 - [OutputFlush](#alias-outputflush)
+- [UnsupportedOption](#alias-unsupportedoption)
+- [ConversionError](#alias-conversionerror)
+- [HostData](#alias-hostdata)
+- [Limits](#alias-limits)
+- [InstructionBudget](#alias-instructionbudget)
+- [DebugOptions](#alias-debugoptions)
+- [LoadMode](#alias-loadmode)
+- [LoadOptions](#alias-loadoptions)
+- [DoOptions](#alias-dooptions)
+- [TableOptions](#alias-tableoptions)
+- [IoCapability](#alias-iocapability)
+- [FixedClock](#alias-fixedclock)
+- [UtcOffset](#alias-utcoffset)
+- [PopenResult](#alias-popenresult)
+- [ExitRequest](#alias-exitrequest)
+- [WarningHandler](#alias-warninghandler)
+- [Capabilities](#alias-capabilities)
+- [UserdataOptions](#alias-userdataoptions)
+- [UserdataPtrOptions](#alias-userdataptroptions)
 
 ## Imports
 
@@ -938,4 +957,194 @@ pub const OutputFlush = api.OutputFlush;
 ```
 
 References: [`api.OutputFlush`](api.md#alias-outputflush)
+
+<a id="alias-unsupportedoption"></a>
+
+## UnsupportedOption
+
+```zig
+pub const UnsupportedOption = api.UnsupportedOption;
+```
+
+References: [`api.UnsupportedOption`](api.md#alias-unsupportedoption)
+
+<a id="alias-conversionerror"></a>
+
+## ConversionError
+
+```zig
+pub const ConversionError = api.ConversionError;
+```
+
+References: [`api.ConversionError`](api.md#alias-conversionerror)
+
+<a id="alias-hostdata"></a>
+
+## HostData
+
+```zig
+pub const HostData = api.HostData;
+```
+
+References: [`api.HostData`](api.md#alias-hostdata)
+
+<a id="alias-limits"></a>
+
+## Limits
+
+```zig
+pub const Limits = api.Limits;
+```
+
+References: [`api.Limits`](api.md#alias-limits)
+
+<a id="alias-instructionbudget"></a>
+
+## InstructionBudget
+
+```zig
+pub const InstructionBudget = api.InstructionBudget;
+```
+
+References: [`api.InstructionBudget`](api.md#alias-instructionbudget)
+
+<a id="alias-debugoptions"></a>
+
+## DebugOptions
+
+```zig
+pub const DebugOptions = api.DebugOptions;
+```
+
+References: [`api.DebugOptions`](api.md#alias-debugoptions)
+
+<a id="alias-loadmode"></a>
+
+## LoadMode
+
+```zig
+pub const LoadMode = api.LoadMode;
+```
+
+References: [`api.LoadMode`](api.md#alias-loadmode)
+
+<a id="alias-loadoptions"></a>
+
+## LoadOptions
+
+```zig
+pub const LoadOptions = api.LoadOptions;
+```
+
+References: [`api.LoadOptions`](api.md#alias-loadoptions)
+
+<a id="alias-dooptions"></a>
+
+## DoOptions
+
+```zig
+pub const DoOptions = api.DoOptions;
+```
+
+References: [`api.DoOptions`](api.md#alias-dooptions)
+
+<a id="alias-tableoptions"></a>
+
+## TableOptions
+
+```zig
+pub const TableOptions = api.TableOptions;
+```
+
+References: [`api.TableOptions`](api.md#alias-tableoptions)
+
+<a id="alias-iocapability"></a>
+
+## IoCapability
+
+```zig
+pub const IoCapability = api.IoCapability;
+```
+
+References: [`api.IoCapability`](api.md#alias-iocapability)
+
+<a id="alias-fixedclock"></a>
+
+## FixedClock
+
+```zig
+pub const FixedClock = api.FixedClock;
+```
+
+References: [`api.FixedClock`](api.md#alias-fixedclock)
+
+<a id="alias-utcoffset"></a>
+
+## UtcOffset
+
+```zig
+pub const UtcOffset = api.UtcOffset;
+```
+
+References: [`api.UtcOffset`](api.md#alias-utcoffset)
+
+<a id="alias-popenresult"></a>
+
+## PopenResult
+
+```zig
+pub const PopenResult = api.PopenResult;
+```
+
+References: [`api.PopenResult`](api.md#alias-popenresult)
+
+<a id="alias-exitrequest"></a>
+
+## ExitRequest
+
+```zig
+pub const ExitRequest = api.ExitRequest;
+```
+
+References: [`api.ExitRequest`](api.md#alias-exitrequest)
+
+<a id="alias-warninghandler"></a>
+
+## WarningHandler
+
+```zig
+pub const WarningHandler = api.WarningHandler;
+```
+
+References: [`api.WarningHandler`](api.md#alias-warninghandler)
+
+<a id="alias-capabilities"></a>
+
+## Capabilities
+
+```zig
+pub const Capabilities = api.Capabilities;
+```
+
+References: [`api.Capabilities`](api.md#alias-capabilities)
+
+<a id="alias-userdataoptions"></a>
+
+## UserdataOptions
+
+```zig
+pub const UserdataOptions = api.UserdataOptions;
+```
+
+References: [`api.UserdataOptions`](api.md#alias-userdataoptions)
+
+<a id="alias-userdataptroptions"></a>
+
+## UserdataPtrOptions
+
+```zig
+pub const UserdataPtrOptions = api.UserdataPtrOptions;
+```
+
+References: [`api.UserdataPtrOptions`](api.md#alias-userdataptroptions)
 

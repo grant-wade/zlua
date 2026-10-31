@@ -1,8 +1,12 @@
 # zlua
 
-zlua is a source-compatible Lua 5.5 implementation written in Zig. You can use it as a command-line interpreter, or embed it in a Zig application and decide exactly what Lua code is allowed to touch.
+zlua is a source-compatible Lua 5.5 implementation written in Zig. You can use
+it as a command-line interpreter, or embed it in a Zig application and decide
+exactly what Lua code is allowed to touch.
 
-zlua is pre-1.0 and supports Zig `0.16.0` and `0.17.0`. The Zig embedding API is the main public interface. Internals and the binary chunk format may still change between releases.
+zlua is pre-1.0 and supports Zig `0.16.0` and `0.17.0`. The Zig embedding API is
+the main public interface. Internals and the binary chunk format may still
+change between releases.
 
 Development happens on GitHub, and Codeberg hosts a source mirror.
 
@@ -52,7 +56,12 @@ pub fn main(init: std.process.Init) !void {
     var lua = try zlua.State.init(allocator, .{});
     defer lua.deinit();
 
-    var new_budget = try lua.registerUserdataInitializerWith(Budget, "new_budget", Budget.init, .{});
+    var new_budget = try lua.registerUserdataInitializerWith(
+        Budget,
+        "new_budget",
+        Budget.init,
+        .{},
+    );
     defer new_budget.deinit();
     try lua.setGlobal("new_budget", new_budget);
 
@@ -77,59 +86,50 @@ Output:
 remaining=0
 ```
 
-By default, a new state opens only the sandbox-friendly standard libraries. Everything else is up to the host: filesystem access, output, clocks, processes, bytecode, callbacks, userdata, and resource limits are all opt-in.
+By default, a new state opens only the sandbox-friendly standard libraries.
+Everything else is up to the host: filesystem access, output, clocks, processes,
+bytecode, callbacks, userdata, and resource limits are all opt-in.
 
 ## Goals
 
-zlua follows the official Lua 5.5 implementation as closely as practical, from parser behavior and runtime semantics to the standard libraries and diagnostics. Beyond compatibility, the project has three goals:
+zlua follows the official Lua 5.5 implementation as closely as practical, from
+parser behavior and runtime semantics to the standard libraries and diagnostics.
+Beyond compatibility, the project has three goals:
 
 - Run Lua 5.5 programs from the command line.
 - Make Lua straightforward to embed in Zig.
-- Give hosts explicit control over what Lua can access and how many resources it can use.
-
-## Common Commands
-
-These are the commands you will reach for most often. Build the CLI and the Lua 5.5 reference binary:
-
-```sh
-zig build
-```
-
-Run a Lua script through the build runner:
-
-```sh
-zig build run -- path/to/script.lua
-```
-
-Compile and run the Zig embedding examples:
-
-```sh
-zig build examples
-```
-
-Run the full check suite before you send a change:
-
-```sh
-zig build ci
-```
+- Give hosts explicit control over what Lua can access and how many resources it
+  can use.
 
 ## Compatibility
 
-Compatibility is checked against the real thing. The build downloads the Lua 5.5 sources and official tests, then builds a local `lua5.5` to compare against, so you do not need Lua installed on your system.
+Compatibility is checked against the real thing. The build downloads the Lua 5.5
+sources and official tests, then builds a local `lua5.5` to compare against, so
+you do not need Lua installed on your system.
 
 `zig build ci` brings all of this together. It runs:
 
 - Zig unit tests for the compiler, runtime, and public API.
-- Small Lua programs under both zlua and the official implementation, comparing the results.
+- x86_64 and wasm32 freestanding smoke builds.
+- Small Lua programs under both zlua and the official implementation, comparing
+  the results.
+- zlua-only library fixtures, checked against stored output.
 - The upstream Lua 5.5 test suite.
 - The Zig embedding examples.
 
 ## More Documentation
 
-The [documentation index](docs/README.md) links to guides on embedding, the standard library, commands, testing, architecture, and the development workflow. Release notes are in the [changelog](CHANGELOG.md).
+[Commands](docs/commands.md) covers building, running scripts, and running the
+checks. The [documentation index](docs/README.md) links to guides on embedding,
+the standard library, testing, architecture, and development. Release notes are
+in the [changelog](CHANGELOG.md).
 
 ## License
 
 zlua is available under the [MIT License](LICENSE).
 
-zlua gratefully acknowledges [Lua](https://www.lua.org/), created and maintained by the Lua team at PUC-Rio. The Lua language and reference implementation guide zlua's compatibility, and the project uses the official implementation and test suite for validation. Lua's copyright and MIT license are reproduced in [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES).
+zlua gratefully acknowledges [Lua](https://www.lua.org/), created and maintained
+by the Lua team at PUC-Rio. The Lua language and reference implementation guide
+zlua's compatibility, and the project uses the official implementation and test
+suite for validation. Lua's copyright and MIT license are reproduced in
+[THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES).

@@ -1,4 +1,5 @@
 set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
+set positional-arguments
 
 zig := "zig"
 zlua := "zig-out/bin/zlua"
@@ -49,7 +50,7 @@ fmt:
 
 # Run zlua through the Zig build runner.
 run *args:
-    {{zig}} build run -- {{args}}
+    {{zig}} build run -- "$@"
 
 # Print zlua version.
 version:
@@ -61,19 +62,19 @@ clua-version: build
 
 # Run the differential harness with the downloaded CLua oracle.
 diff *args:
-    {{zig}} build --summary all run-test-diff -- --debug-errors {{args}}
+    {{zig}} build --summary all run-test-diff -- --debug-errors "$@"
 
 # Run zlua extension fixtures, or one fixture file/directory.
 extensions *args:
-    {{zig}} build --summary all run-test-extensions -- {{args}}
+    {{zig}} build --summary all run-test-extensions -- "$@"
 
 # Run all official Lua 5.5 files, or selected files by name.
 official *args:
-    {{zig}} build --summary all run-test-official -- --debug-errors {{official_memory_limit}} {{args}}
+    {{zig}} build --summary all run-test-official -- --debug-errors {{official_memory_limit}} "$@"
 
 # Run the full benchmark suite, or select cases with arguments.
 bench *args:
-    {{zig}} build --summary all bench -- {{args}}
+    {{zig}} build --summary all bench -- "$@"
 
 # Remove build outputs and Zig cache directories.
 clean:

@@ -35,13 +35,13 @@
 - [runtime.number_format](runtime/number_format.md)
 - [runtime.coroutine](runtime/coroutine.md)
 - [runtime.debug](runtime/debug.md)
+- [runtime.io](runtime/io.md)
+- [runtime.host](runtime/host.md)
 - [runtime.metatable](runtime/metatable.md)
 - [runtime.rollback](runtime/rollback.md)
 - [runtime.strings](runtime/strings.md)
 - [runtime.operators](runtime/operators.md)
 - [runtime.failure](runtime/failure.md)
-- [runtime.io](runtime/io.md)
-- [runtime.host](runtime/host.md)
 - [runtime.load](runtime/load.md)
 - [runtime.vm](runtime/vm.md)
 - [runtime.gc](runtime/gc.md)
@@ -359,9 +359,20 @@ pub const LibrarySet = struct {
 
 | Name | Parameters | Return Type | Description |
 | --- | --- | --- | --- |
+| [merged](#fn-libraryset-merged) | `self: LibrarySet, other: LibrarySet` | `LibrarySet` |  |
 | [safe](#fn-libraryset-safe) |  | `LibrarySet` |  |
 | [full](#fn-libraryset-full) |  | `LibrarySet` |  |
 | [isEmpty](#fn-libraryset-isempty) | `self: LibrarySet` | `bool` |  |
+
+<a id="fn-libraryset-merged"></a>
+
+### LibrarySet.merged
+
+```zig
+pub fn merged(self: LibrarySet, other: LibrarySet) LibrarySet
+```
+
+References: [`LibrarySet`](#type-libraryset)
 
 <a id="fn-libraryset-safe"></a>
 

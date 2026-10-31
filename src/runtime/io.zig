@@ -170,7 +170,7 @@ pub fn fsReadFileAlloc(self: *State, path: []const u8, requested_max_bytes: usiz
         },
         .host_dir => |root| if (comptime builtin.os.tag == .freestanding) return error.OperationUnsupported else {
             const io = self.options.io orelse return error.IoUnavailable;
-            const normalized = try host.MemoryFilesystem.normalizePathAlloc(self.allocator, path, host.MemoryFilesystem.default_max_path_len);
+            const normalized = try hostDirPath(self, io, root.dir, path, true);
             defer self.allocator.free(normalized);
             return root.dir.readFileAlloc(io, normalized, self.allocator, .limited(max_bytes));
         },
@@ -193,12 +193,14 @@ pub fn fsWriteFile(self: *State, path: []const u8, data: []const u8) anyerror!vo
         .host_dir => |root| if (comptime builtin.os.tag == .freestanding) return error.OperationUnsupported else {
             if (root.read_only) return error.FilesystemReadOnly;
             const io = self.options.io orelse return error.IoUnavailable;
-            const normalized = try host.MemoryFilesystem.normalizePathAlloc(self.allocator, path, host.MemoryFilesystem.default_max_path_len);
+            const normalized = try hostDirPath(self, io, root.dir, path, true);
             defer self.allocator.free(normalized);
             return root.dir.writeFile(io, .{ .sub_path = normalized, .data = data });
         },
     }
 }
+
+const max_symlink_depth = 40;
 
 /// Reserves a new empty file like `mkstemp`, failing with `error.PathAlreadyExists`.
 /// Only host filesystems create exclusively; others check first.
@@ -235,7 +237,7 @@ pub fn fsCreateFileExclusive(self: *State, path: []const u8) anyerror!void {
         .host_dir => |root| if (comptime builtin.os.tag == .freestanding) return error.OperationUnsupported else {
             if (root.read_only) return error.FilesystemReadOnly;
             const io = self.options.io orelse return error.IoUnavailable;
-            const normalized = try host.MemoryFilesystem.normalizePathAlloc(self.allocator, path, host.MemoryFilesystem.default_max_path_len);
+            const normalized = try hostDirPath(self, io, root.dir, path, true);
             defer self.allocator.free(normalized);
             const file = try root.dir.createFile(io, normalized, .{ .exclusive = true });
             file.close(io);
@@ -281,7 +283,7 @@ fn fsWritePositioned(self: *State, path: []const u8, offset: ?usize, data: []con
                 },
                 else => unreachable,
             };
-            const owned = if (self.options.filesystem == .host_dir) try host.MemoryFilesystem.normalizePathAlloc(self.allocator, path, host.MemoryFilesystem.default_max_path_len) else null;
+            const owned = if (self.options.filesystem == .host_dir) try hostDirPath(self, io, root, path, true) else null;
             defer if (owned) |normalized| self.allocator.free(normalized);
             const sub_path = owned orelse path;
             // Zig 0.16 sizes a Windows handle with a query write-only handles may not make.
@@ -323,6 +325,7 @@ pub fn fsStat(self: *State, path: []const u8, follow_symlinks: bool) anyerror!ho
             const io = self.options.io orelse return error.IoUnavailable;
             const normalized = try host.MemoryFilesystem.normalizeRootPathAlloc(self.allocator, path, host.MemoryFilesystem.default_max_path_len);
             defer self.allocator.free(normalized);
+            try checkHostDirSymlinks(self, io, root.dir, normalized, follow_symlinks);
             if (normalized.len == 0) return .fromStd(try root.dir.stat(io));
             return .fromStd(try root.dir.statFile(io, normalized, .{ .follow_symlinks = follow_symlinks }));
         },
@@ -355,6 +358,7 @@ pub fn fsReadDirAlloc(self: *State, path: []const u8) anyerror![]host.DirectoryE
             else
                 null;
             defer if (owned_path) |normalized| self.allocator.free(normalized);
+            if (owned_path) |normalized| try checkHostDirSymlinks(self, io, base, normalized, true);
             const open_path = if (owned_path) |normalized| if (normalized.len == 0) "." else normalized else path;
             var dir = try base.openDir(io, open_path, .{ .iterate = true });
             defer dir.close(io);
@@ -395,7 +399,7 @@ pub fn fsMakeDir(self: *State, path: []const u8, parents: bool) anyerror!void {
                 else => unreachable,
             };
             const io = self.options.io orelse return error.IoUnavailable;
-            const owned = if (self.options.filesystem == .host_dir) try host.MemoryFilesystem.normalizePathAlloc(self.allocator, path, host.MemoryFilesystem.default_max_path_len) else null;
+            const owned = if (self.options.filesystem == .host_dir) try hostDirPath(self, io, root, path, true) else null;
             defer if (owned) |normalized| self.allocator.free(normalized);
             const actual = owned orelse path;
             if (parents) return root.createDirPath(io, actual);
@@ -425,7 +429,7 @@ pub fn fsRemovePath(self: *State, path: []const u8, recursive: bool) anyerror!vo
                 else => unreachable,
             };
             const io = self.options.io orelse return error.IoUnavailable;
-            const owned = if (self.options.filesystem == .host_dir) try host.MemoryFilesystem.normalizePathAlloc(self.allocator, path, host.MemoryFilesystem.default_max_path_len) else null;
+            const owned = if (self.options.filesystem == .host_dir) try hostDirPath(self, io, root, path, false) else null;
             defer if (owned) |normalized| self.allocator.free(normalized);
             const actual = owned orelse path;
             if (recursive) return root.deleteTree(io, actual);
@@ -455,9 +459,9 @@ pub fn fsRenamePath(self: *State, old_path: []const u8, new_path: []const u8) an
                 else => unreachable,
             };
             const io = self.options.io orelse return error.IoUnavailable;
-            const old_owned = if (self.options.filesystem == .host_dir) try host.MemoryFilesystem.normalizePathAlloc(self.allocator, old_path, host.MemoryFilesystem.default_max_path_len) else null;
+            const old_owned = if (self.options.filesystem == .host_dir) try hostDirPath(self, io, root, old_path, false) else null;
             defer if (old_owned) |normalized| self.allocator.free(normalized);
-            const new_owned = if (self.options.filesystem == .host_dir) try host.MemoryFilesystem.normalizePathAlloc(self.allocator, new_path, host.MemoryFilesystem.default_max_path_len) else null;
+            const new_owned = if (self.options.filesystem == .host_dir) try hostDirPath(self, io, root, new_path, false) else null;
             defer if (new_owned) |normalized| self.allocator.free(normalized);
             return root.rename(old_owned orelse old_path, root, new_owned orelse new_path, io);
         },
@@ -487,12 +491,63 @@ pub fn fsCopyFile(self: *State, source: []const u8, destination: []const u8, ove
                 else => unreachable,
             };
             const io = self.options.io orelse return error.IoUnavailable;
-            const source_owned = if (self.options.filesystem == .host_dir) try host.MemoryFilesystem.normalizePathAlloc(self.allocator, source, host.MemoryFilesystem.default_max_path_len) else null;
+            const source_owned = if (self.options.filesystem == .host_dir) try hostDirPath(self, io, root, source, true) else null;
             defer if (source_owned) |normalized| self.allocator.free(normalized);
-            const destination_owned = if (self.options.filesystem == .host_dir) try host.MemoryFilesystem.normalizePathAlloc(self.allocator, destination, host.MemoryFilesystem.default_max_path_len) else null;
+            const destination_owned = if (self.options.filesystem == .host_dir) try hostDirPath(self, io, root, destination, true) else null;
             defer if (destination_owned) |normalized| self.allocator.free(normalized);
             return root.copyFile(source_owned orelse source, root, destination_owned orelse destination, io, .{ .replace = overwrite });
         },
+    }
+}
+
+fn hostDirPath(self: *State, io: std.Io, root: Dir, path: []const u8, follow_last: bool) anyerror![]u8 {
+    const normalized = try host.MemoryFilesystem.normalizePathAlloc(self.allocator, path, host.MemoryFilesystem.default_max_path_len);
+    errdefer self.allocator.free(normalized);
+    try checkHostDirSymlinks(self, io, root, normalized, follow_last);
+    return normalized;
+}
+
+fn pushPathComponents(allocator: std.mem.Allocator, pending: *std.ArrayList([]const u8), path: []const u8) !void {
+    var parts = std.mem.tokenizeAny(u8, path, if (builtin.os.tag == .windows) "/\\" else "/");
+    const start = pending.items.len;
+    while (parts.next()) |part| try pending.append(allocator, part);
+    std.mem.reverse([]const u8, pending.items[start..]);
+}
+
+/// Returns `error.AccessDenied` when a symlink along `normalized` resolves outside `root`.
+/// `follow_last` is false for operations on the last component itself.
+fn checkHostDirSymlinks(self: *State, io: std.Io, root: Dir, normalized: []const u8, follow_last: bool) anyerror!void {
+    var arena = std.heap.ArenaAllocator.init(self.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var pending: std.ArrayList([]const u8) = .empty;
+    try pushPathComponents(allocator, &pending, normalized);
+    var resolved: std.ArrayList(u8) = .empty;
+    var lengths: std.ArrayList(usize) = .empty;
+    var links: usize = 0;
+    while (pending.pop()) |component| {
+        if (std.mem.eql(u8, component, ".")) continue;
+        if (std.mem.eql(u8, component, "..")) {
+            resolved.shrinkRetainingCapacity(lengths.pop() orelse return error.AccessDenied);
+            continue;
+        }
+        if (!follow_last and pending.items.len == 0) return;
+        try lengths.append(allocator, resolved.items.len);
+        if (resolved.items.len != 0) try resolved.append(allocator, '/');
+        try resolved.appendSlice(allocator, component);
+        const stat = root.statFile(io, resolved.items, .{ .follow_symlinks = false }) catch |err| switch (@as(anyerror, err)) {
+            error.FileNotFound, error.NotDir => return,
+            else => return err,
+        };
+        if (stat.kind != .sym_link) continue;
+        links += 1;
+        if (links > max_symlink_depth) return error.SymLinkLoop;
+        var buffer: [host.MemoryFilesystem.default_max_path_len]u8 = undefined;
+        const length = try root.readLink(io, resolved.items, &buffer);
+        const target = try allocator.dupe(u8, buffer[0..length]);
+        if (std.fs.path.isAbsolute(target)) return error.AccessDenied;
+        resolved.shrinkRetainingCapacity(lengths.pop().?);
+        try pushPathComponents(allocator, &pending, target);
     }
 }
 

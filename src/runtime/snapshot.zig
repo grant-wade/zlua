@@ -250,7 +250,7 @@ const Copier = struct {
         }
         for (source.thread_allocations.items, d.thread_allocations.items) |old, new| try self.thread(old, new);
         for (source.userdata_allocations.items, d.userdata_allocations.items) |old, new| try self.userdata(old, new);
-        inline for (.{ "global_table", "userdata_pending_finalizer_head", "userdata_lua_pending_head", "table_finalizer_serial", "stdin_pos", "file_generation", "last_error", "error_handled", "warnings_on", "string_metatable", "number_metatable", "boolean_metatable", "nil_metatable", "file_metatable", "fs_file_metatable", "io_input", "io_output", "random_state" }) |name| @field(d, name) = try self.remap(@field(source, name));
+        inline for (.{ "opened_libraries", "global_table", "userdata_pending_finalizer_head", "userdata_lua_pending_head", "table_finalizer_serial", "stdin_pos", "file_generation", "last_error", "error_handled", "warnings_on", "string_metatable", "number_metatable", "boolean_metatable", "nil_metatable", "file_metatable", "fs_file_metatable", "io_input", "io_output", "random_state" }) |name| @field(d, name) = try self.remap(@field(source, name));
         inline for (.{ "running", "mode", "params" }) |name| @field(d.gc, name) = @field(source.gc, name);
         inline for (.{ "instructions", "base" }) |name| @field(d.budget, name) = @field(source.budget, name);
         for (&d.library_tables.values, source.library_tables.values) |*slot, table| slot.* = try self.remap(table);
@@ -409,7 +409,7 @@ comptime {
         .external = "allocator allocator_lifetime options",
         .rebuilt = "object_pool strings api_roots gc budget",
         .remapped = "global_table table_finalizers table_pending_finalizers userdata_pending_finalizer_head userdata_lua_pending_head string_metatable number_metatable boolean_metatable nil_metatable file_metatable fs_file_metatable io_input io_output library_tables last_error",
-        .copied = "string_allocations table_allocations userdata_allocations closure_allocations upvalue_allocations thread_allocations chunk_allocations source_allocations stdout stderr table_finalizer_serial stdin_pos file_generation error_handled warnings_on random_state",
+        .copied = "opened_libraries string_allocations table_allocations userdata_allocations closure_allocations upvalue_allocations thread_allocations chunk_allocations source_allocations stdout stderr table_finalizer_serial stdin_pos file_generation error_handled warnings_on random_state",
         .transient = "execution_depth userdata_scope value_roots rollback snapshot_busy discarding exit_request local_zone current_thread api_callback_dispatch api_callback_user_data active_api_callback coroutine_close_depth",
     });
     review(budget_mod.Budget, .{

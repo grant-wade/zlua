@@ -328,6 +328,10 @@ pub const Journal = struct {
         const string_scratch = state.strings.scratch;
         const epoch = state.gc.epoch;
         const generation = state.gc.generation;
+        if (state.local_zone != self.saved.local_zone) if (state.local_zone) |zone| {
+            zone.deinit();
+            state.allocator.destroy(zone);
+        };
         state.* = self.saved;
         state.gc.work = gc_work;
         state.gc.remembered = gc_remembered;

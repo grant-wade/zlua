@@ -35,13 +35,13 @@
 - [runtime.number_format](../runtime/number_format.md)
 - [runtime.coroutine](../runtime/coroutine.md)
 - [runtime.debug](../runtime/debug.md)
+- [runtime.io](../runtime/io.md)
+- [runtime.host](../runtime/host.md)
 - [runtime.metatable](../runtime/metatable.md)
 - [runtime.rollback](../runtime/rollback.md)
 - [runtime.strings](../runtime/strings.md)
 - [runtime.operators](../runtime/operators.md)
 - [runtime.failure](../runtime/failure.md)
-- [runtime.io](../runtime/io.md)
-- [runtime.host](../runtime/host.md)
 - [runtime.load](../runtime/load.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.gc](../runtime/gc.md)
@@ -138,6 +138,7 @@
 - [stack_error_frames](#const-stack_error_frames)
 - [stack_error_values](#const-stack_error_values)
 - [max_metamethod_depth](#const-max_metamethod_depth)
+- [nil_root](#const-nil_root)
 
 ## Aliases
 
@@ -314,6 +315,16 @@ pub const FilesystemCapability = host.FilesystemCapability;
 
 ```zig
 pub const HostDirectory = host.HostDirectory;
+```
+
+<a id="const-nil_root"></a>
+
+## nil_root
+
+Root index of a rooted nil, which takes no slot in `api_roots`.
+
+```zig
+pub const nil_root = std.math.maxInt(usize);
 ```
 
 <a id="alias-filesystemfilekind"></a>
@@ -582,6 +593,7 @@ pub const State = struct {
     io_input: ?*Userdata = null,
     io_output: ?*Userdata = null,
     library_tables: std.EnumArray(stdlib.LibraryTable, ?*Table) = .initFill(null),
+    opened_libraries: stdlib.LibrarySet = .{},
     gc: gc_mod.Gc = .{},
     random_state: [4]u64 = .{ 0x123456789abcdef0, 0xff, 0xfedcba9876543210, 0 },
     budget: budget_mod.Budget = .{},

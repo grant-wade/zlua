@@ -74,6 +74,8 @@ pub const DebugOptions = struct {
     /// Richer internal error diagnostics.
     errors: bool = false,
     trace_vm: bool = false,
+    /// Keep Lua output in `raw_state.stdout` and `raw_state.stderr`, for test harnesses.
+    capture_output: bool = false,
 };
 
 pub const Options = struct {
@@ -152,6 +154,7 @@ pub fn runtimeOptions(options: Options) runtime.StateOptions {
         .max_instructions = options.limits.max_instructions,
         .debug_errors = options.debug.errors,
         .trace_vm = options.debug.trace_vm,
+        .capture_output = options.debug.capture_output,
     };
 }
 

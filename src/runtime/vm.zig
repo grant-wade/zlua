@@ -6,6 +6,7 @@ const debug_mod = @import("debug.zig");
 const failure_mod = @import("failure.zig");
 const gc_mod = @import("gc.zig");
 const index_mod = @import("index.zig");
+const io_mod = @import("io.zig");
 const metatable_mod = @import("metatable.zig");
 const operators_mod = @import("operators.zig");
 const rollback_mod = @import("rollback.zig");
@@ -1276,7 +1277,10 @@ fn fastTableKnownKeySet(self: *State, table_value: Value, key: Value, value: Val
 
 fn traceInstruction(self: *State, frame: CallFrame, pc: usize, instruction: bytecode.Instruction) !void {
     const line = if (pc < frame.closure.proto.line_info.items.len) frame.closure.proto.line_info.items[pc].line else 0;
-    try appendFmt(self.allocator, &self.stderr, "[trace-vm] {s}:{d} pc={d} op={s}\n", .{ frame.closure.proto.source_name, line, pc, @tagName(instruction) });
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(self.allocator);
+    try appendFmt(self.allocator, &text, "[trace-vm] {s}:{d} pc={d} op={s}\n", .{ frame.closure.proto.source_name, line, pc, @tagName(instruction) });
+    try io_mod.writeStderr(self, text.items);
 }
 
 pub fn get(_: *State, thread: *Thread, register: usize) Value {

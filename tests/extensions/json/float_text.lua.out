@@ -1,0 +1,23 @@
+2.0	float	true
+0.5	float	true
+-0.0	float	true
+1e300	float	true
+-1e300	float	true
+9.223372036854776e18	float	true
+1e15	float	true
+999999999999999.0	float	true
+1e-7	float	true
+1.5e-300	float	true
+3	integer
+[1,2.0,{"value":9.223372036854776e18}]
+value = 2.0	float	true
+value = 0.5	float	true
+value = -0.0	float	true
+value = 1e300	float	true
+value = -1e300	float	true
+value = 9.223372036854776e18	float	true
+value = 1e15	float	true
+value = 999999999999999.0	float	true
+value = 1e-7	float	true
+value = 1.5e-300	float	true
+whole = 3	integer

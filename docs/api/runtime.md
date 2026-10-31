@@ -3,7 +3,7 @@
 ## Navigation
 
 - [API Index](README.md)
-- Submodules: [runtime.types](runtime/types.md), [runtime.chunk](runtime/chunk.md), [runtime.state](runtime/state.md), [runtime.call](runtime/call.md), [runtime.table_index](runtime/table_index.md), [runtime.value](runtime/value.md), [runtime.number_format](runtime/number_format.md), [runtime.coroutine](runtime/coroutine.md), [runtime.debug](runtime/debug.md), [runtime.metatable](runtime/metatable.md), [runtime.rollback](runtime/rollback.md), [runtime.strings](runtime/strings.md), [runtime.operators](runtime/operators.md), [runtime.failure](runtime/failure.md), [runtime.io](runtime/io.md), [runtime.host](runtime/host.md), [runtime.load](runtime/load.md), [runtime.vm](runtime/vm.md), [runtime.gc](runtime/gc.md), [runtime.entry](runtime/entry.md), [runtime.system](runtime/system.md), [runtime.timezone](runtime/timezone.md), [runtime.upvalue](runtime/upvalue.md), [runtime.index](runtime/index.md), [runtime.budget](runtime/budget.md), [runtime.object_pool](runtime/object_pool.md), [runtime.execute](runtime/execute.md), [runtime.tests](runtime/tests.md), [runtime.internal](runtime/internal.md), [runtime.native_fn](runtime/native_fn.md), [runtime.snapshot](runtime/snapshot.md)
+- Submodules: [runtime.types](runtime/types.md), [runtime.chunk](runtime/chunk.md), [runtime.state](runtime/state.md), [runtime.call](runtime/call.md), [runtime.table_index](runtime/table_index.md), [runtime.value](runtime/value.md), [runtime.number_format](runtime/number_format.md), [runtime.coroutine](runtime/coroutine.md), [runtime.debug](runtime/debug.md), [runtime.io](runtime/io.md), [runtime.host](runtime/host.md), [runtime.metatable](runtime/metatable.md), [runtime.rollback](runtime/rollback.md), [runtime.strings](runtime/strings.md), [runtime.operators](runtime/operators.md), [runtime.failure](runtime/failure.md), [runtime.load](runtime/load.md), [runtime.vm](runtime/vm.md), [runtime.gc](runtime/gc.md), [runtime.entry](runtime/entry.md), [runtime.system](runtime/system.md), [runtime.timezone](runtime/timezone.md), [runtime.upvalue](runtime/upvalue.md), [runtime.index](runtime/index.md), [runtime.budget](runtime/budget.md), [runtime.object_pool](runtime/object_pool.md), [runtime.execute](runtime/execute.md), [runtime.tests](runtime/tests.md), [runtime.internal](runtime/internal.md), [runtime.native_fn](runtime/native_fn.md), [runtime.snapshot](runtime/snapshot.md)
 
 <details>
 <summary>All documents</summary>
@@ -35,13 +35,13 @@
 - [runtime.number_format](runtime/number_format.md)
 - [runtime.coroutine](runtime/coroutine.md)
 - [runtime.debug](runtime/debug.md)
+- [runtime.io](runtime/io.md)
+- [runtime.host](runtime/host.md)
 - [runtime.metatable](runtime/metatable.md)
 - [runtime.rollback](runtime/rollback.md)
 - [runtime.strings](runtime/strings.md)
 - [runtime.operators](runtime/operators.md)
 - [runtime.failure](runtime/failure.md)
-- [runtime.io](runtime/io.md)
-- [runtime.host](runtime/host.md)
 - [runtime.load](runtime/load.md)
 - [runtime.vm](runtime/vm.md)
 - [runtime.gc](runtime/gc.md)

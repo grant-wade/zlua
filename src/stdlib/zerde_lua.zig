@@ -156,11 +156,33 @@ pub const LuaSink = struct {
     }
 };
 
-pub fn source(state: *State, encoder: anytype, operation: []const u8) LuaSource(@TypeOf(encoder.*)) {
-    return LuaSource(@TypeOf(encoder.*)).init(state, encoder, operation);
+/// With `{d}`, prints a float with a fraction or an exponent.
+pub const FloatText = struct {
+    value: f64,
+
+    pub fn formatNumber(self: FloatText, writer: *std.Io.Writer, options: anytype) std.Io.Writer.Error!void {
+        _ = options;
+        const magnitude = @abs(self.value);
+        if (magnitude != 0 and (magnitude >= 1e15 or magnitude < 1e-5)) return writer.print("{e}", .{self.value});
+        try writer.print("{d}", .{self.value});
+        if (self.value == @trunc(self.value)) try writer.writeAll(".0");
+    }
+};
+
+fn emitNativeFloat(encoder: anytype, value: f64) anyerror!void {
+    try encoder.emitFloat(value);
 }
 
-pub fn LuaSource(comptime Encoder: type) type {
+pub fn source(state: *State, encoder: anytype, operation: []const u8) LuaSource(@TypeOf(encoder.*), emitNativeFloat) {
+    return LuaSource(@TypeOf(encoder.*), emitNativeFloat).init(state, encoder, operation);
+}
+
+/// `emit_float(encoder, value)` writes each finite float.
+pub fn sourceWithFloats(state: *State, encoder: anytype, operation: []const u8, comptime emit_float: anytype) LuaSource(@TypeOf(encoder.*), emit_float) {
+    return LuaSource(@TypeOf(encoder.*), emit_float).init(state, encoder, operation);
+}
+
+pub fn LuaSource(comptime Encoder: type, comptime emit_float: anytype) type {
     return struct {
         const Self = @This();
 
@@ -190,7 +212,7 @@ pub fn LuaSource(comptime Encoder: type) type {
                 .integer => |integer| try self.encoder.emitInt(integer),
                 .number => |number| {
                     if (!std.math.isFinite(number)) return self.fail("non-finite number");
-                    try self.encoder.emitFloat(number);
+                    try emit_float(self.encoder, number);
                 },
                 .string => |string| try self.encoder.emitString(string.bytes()),
                 .table => |table| try self.emitTable(table),

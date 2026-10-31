@@ -86,7 +86,7 @@ pub fn executeSourceWithOptions(allocator: std.mem.Allocator, source: []const u8
 
 fn closeExitCode(state: *state_mod.State) ?i32 {
     state.exit_request = null;
-    state.gc.runCloseFinalizers();
+    state.gc.runCloseFinalizers(.stop);
     return if (state.exit_request) |exit| exit.code else null;
 }
 

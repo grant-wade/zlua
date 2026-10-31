@@ -9,6 +9,7 @@ const host = @import("host.zig");
 const io_mod = @import("io.zig");
 const metatable_mod = @import("metatable.zig");
 const rollback = @import("rollback.zig");
+const system_mod = @import("system.zig");
 const State = @import("state.zig").State;
 const types = @import("types.zig");
 const upvalue_mod = @import("upvalue.zig");
@@ -1350,8 +1351,9 @@ pub const Gc = struct {
     }
 
     /// Calls all pending finalizers like `luaC_freeallobjects`, ignoring errors.
-    /// An interrupt, `os.exit`, or a host failure stops the calls.
-    fn runCloseFinalizersOnThread(gc: *Gc, thread: *Thread) void {
+    /// An interrupt or a host failure stops the calls, and `os.exit` follows `on_exit`.
+    /// `thread` is replaced when a finalizer exits and the calls proceed.
+    fn runCloseFinalizersOnThread(gc: *Gc, thread: **Thread, closure: *Closure, on_exit: CloseExit) void {
         const state = gc.parentState();
         var finalizers = std.ArrayList(CloseFinalizer).empty;
         defer finalizers.deinit(state.allocator);
@@ -1372,10 +1374,18 @@ pub const Gc = struct {
         defer state.gc.collecting = previous_collecting;
         for (finalizers.items) |finalizer| switch (finalizer.object) {
             inline .table, .userdata => |object, tag| {
-                const frame = thread.frames.items[thread.frames.items.len - 1];
-                thread.ensureStack(state.allocator, frame.base + @as(usize, thread.scratchRegister()) + 2, call_mod.callStackValueLimit(state, thread)) catch return;
+                const frame = thread.*.frames.items[thread.*.frames.items.len - 1];
+                thread.*.ensureStack(state.allocator, frame.base + @as(usize, thread.*.scratchRegister()) + 2, call_mod.callStackValueLimit(state, thread.*)) catch return;
                 state.budget.reset();
-                gc.callLuaFinalizer(thread, @unionInit(Value, @tagName(tag), object), object.metatable) catch return;
+                gc.callLuaFinalizer(thread.*, @unionInit(Value, @tagName(tag), object), object.metatable) catch |err| {
+                    if (err != error.LuaExit or on_exit == .stop) return;
+                    system_mod.finishExitUnwind(state, thread.*) catch return;
+                    state.exit_request = null;
+                    const next = entry_mod.newHostThread(state, closure) catch return;
+                    entry_mod.retireHostThread(state, thread.*);
+                    thread.* = next;
+                    state.current_thread = next;
+                };
             },
             .file => |userdata| _ = state.finalizeBuiltinUserdata(userdata),
         };
@@ -1737,7 +1747,7 @@ pub const Gc = struct {
 
     /// Runs pending finalizers as `deinit` does, keeping the state. Only for an idle host;
     /// later registrations are left for `deinit`.
-    pub fn runCloseFinalizers(gc: *Gc) void {
+    pub fn runCloseFinalizers(gc: *Gc, on_exit: CloseExit) void {
         const state = gc.parentState();
         if (state.execution_depth != 0 or state.current_thread != null) return;
         if (state.table_pending_finalizers.items.len == 0 and state.table_finalizers.items.len == 0 and !gc.hasUserdataLuaFinalizers() and !stdlib.io.hasOpenFiles(state)) return;
@@ -1745,11 +1755,11 @@ pub const Gc = struct {
         defer proto.deinit();
         proto.source_name = "=[C]";
         var closure = Closure{ .proto = &proto };
-        const thread = entry_mod.newHostThread(state, &closure) catch return;
+        var thread = entry_mod.newHostThread(state, &closure) catch return;
         defer entry_mod.retireHostThread(state, thread);
         state.current_thread = thread;
         defer state.current_thread = null;
-        gc.runCloseFinalizersOnThread(thread);
+        gc.runCloseFinalizersOnThread(&thread, &closure, on_exit);
     }
 
     fn runFinalizersFromHost(gc: *Gc, limit: usize) anyerror!bool {
@@ -1845,6 +1855,9 @@ fn callerLiveEnd(frame: types.CallFrame) usize {
     const args: usize = if (op.arg_count == bytecode.multret_arg_count) 0 else op.arg_count;
     return frame.base + op.base + 1 + args;
 }
+
+/// What `os.exit` inside a closing finalizer does to the finalizers after it.
+pub const CloseExit = enum { stop, proceed };
 
 const CloseFinalizer = struct {
     object: union(enum) { table: *Table, userdata: *Userdata, file: *Userdata },

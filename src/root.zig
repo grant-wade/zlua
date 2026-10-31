@@ -75,6 +75,33 @@ pub const CustomProcess = api.CustomProcess;
 pub const ProcessResult = api.ProcessResult;
 pub const ProcessStatus = api.ProcessStatus;
 pub const OutputFlush = api.OutputFlush;
+pub const UnsupportedOption = api.UnsupportedOption;
+pub const ConversionError = api.ConversionError;
+pub const HostData = api.HostData;
+pub const Limits = api.Limits;
+pub const InstructionBudget = api.InstructionBudget;
+pub const DebugOptions = api.DebugOptions;
+pub const LoadMode = api.LoadMode;
+pub const LoadOptions = api.LoadOptions;
+pub const DoOptions = api.DoOptions;
+pub const TableOptions = api.TableOptions;
+pub const IoCapability = api.IoCapability;
+pub const FixedClock = api.FixedClock;
+pub const UtcOffset = api.UtcOffset;
+pub const PopenResult = api.PopenResult;
+pub const ExitRequest = api.ExitRequest;
+pub const WarningHandler = api.WarningHandler;
+pub const Capabilities = api.Capabilities;
+pub const UserdataOptions = api.UserdataOptions;
+pub const UserdataPtrOptions = api.UserdataPtrOptions;
+
+test "root exports the types host callbacks must name" {
+    comptime {
+        for ([_]type{ UtcOffset, PopenResult, ExitRequest, IoCapability, FixedClock, Limits, LoadOptions }) |T| {
+            _ = T;
+        }
+    }
+}
 
 test {
     _ = frontend;

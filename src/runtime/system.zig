@@ -114,9 +114,11 @@ pub fn executeProcess(self: *State, command: []const u8) !ProcessResult {
             const io = try io_mod.requireIo(self, "process I/O unavailable");
             try flushOutputForChild(self);
             const argv = shellArgv(command);
+            var empty_environment = std.process.Environ.Map.init(self.allocator);
+            defer empty_environment.deinit();
             var child = std.process.spawn(io, .{
                 .argv = &argv,
-                .environ_map = environmentMap(self),
+                .environ_map = environmentMap(self, &empty_environment),
             }) catch return self.fail("process execution failed");
             const term = child.wait(io) catch {
                 child.kill(io);
@@ -150,9 +152,11 @@ pub fn popenProcess(self: *State, command: []const u8, input: ?[]const u8) !host
             const io = try io_mod.requireIo(self, "process I/O unavailable");
             try flushOutputForChild(self);
             const argv = shellArgv(command);
+            var empty_environment = std.process.Environ.Map.init(self.allocator);
+            defer empty_environment.deinit();
             var child = std.process.spawn(io, .{
                 .argv = &argv,
-                .environ_map = environmentMap(self),
+                .environ_map = environmentMap(self, &empty_environment),
                 .stdin = if (input == null) .inherit else .pipe,
                 .stdout = if (input == null) .pipe else .inherit,
             }) catch return self.fail("process execution failed");
@@ -230,10 +234,11 @@ fn signalNumber(signal: anytype) i64 {
     };
 }
 
-fn environmentMap(self: *State) ?*const std.process.Environ.Map {
+/// `empty` is the map for capabilities that can't list variables; children then get none.
+fn environmentMap(self: *State, empty: *const std.process.Environ.Map) *const std.process.Environ.Map {
     return switch (self.options.environment) {
         .map => |environment| environment,
-        .disabled, .custom => null,
+        .disabled, .custom => empty,
     };
 }
 

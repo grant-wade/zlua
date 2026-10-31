@@ -35,13 +35,13 @@
 - [runtime.number_format](../runtime/number_format.md)
 - [runtime.coroutine](../runtime/coroutine.md)
 - [runtime.debug](../runtime/debug.md)
+- [runtime.io](../runtime/io.md)
+- [runtime.host](../runtime/host.md)
 - [runtime.metatable](../runtime/metatable.md)
 - [runtime.rollback](../runtime/rollback.md)
 - [runtime.strings](../runtime/strings.md)
 - [runtime.operators](../runtime/operators.md)
 - [runtime.failure](../runtime/failure.md)
-- [runtime.io](../runtime/io.md)
-- [runtime.host](../runtime/host.md)
 - [runtime.load](../runtime/load.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.gc](../runtime/gc.md)
@@ -172,7 +172,18 @@ pub const Caller = struct {
 
 | Name | Parameters | Return Type | Description |
 | --- | --- | --- | --- |
-| [shortSource](#fn-caller-shortsource) | `self: Caller, buffer: *[debug_runtime.chunk_id_size]u8` | `[]const u8` | The chunk name as error messages show it, written to &#96;buffer&#96;. |
+| [short_source_len](#alias-caller-short_source_len) |  |  | Buffer length for &#96;shortSource&#96;. |
+| [shortSource](#fn-caller-shortsource) | `self: Caller, buffer: *[short_source_len]u8` | `[]const u8` | The chunk name as error messages show it, written to &#96;buffer&#96;. |
+
+<a id="alias-caller-short_source_len"></a>
+
+### Caller.short_source_len
+
+Buffer length for `shortSource`.
+
+```zig
+pub const short_source_len = debug_runtime.chunk_id_size;
+```
 
 <a id="fn-caller-shortsource"></a>
 
@@ -181,7 +192,7 @@ pub const Caller = struct {
 The chunk name as error messages show it, written to `buffer`.
 
 ```zig
-pub fn shortSource(self: Caller, buffer: *[debug_runtime.chunk_id_size]u8) []const u8
+pub fn shortSource(self: Caller, buffer: *[short_source_len]u8) []const u8
 ```
 
 References: [`Caller`](#type-caller)

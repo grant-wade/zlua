@@ -37,8 +37,11 @@ pub const Caller = struct {
     /// Null when the function's debug info is stripped.
     line: ?usize,
 
+    /// Buffer length for `shortSource`.
+    pub const short_source_len = debug_runtime.chunk_id_size;
+
     /// The chunk name as error messages show it, written to `buffer`.
-    pub fn shortSource(self: Caller, buffer: *[debug_runtime.chunk_id_size]u8) []const u8 {
+    pub fn shortSource(self: Caller, buffer: *[short_source_len]u8) []const u8 {
         return debug_runtime.chunkId(buffer, self.source);
     }
 };

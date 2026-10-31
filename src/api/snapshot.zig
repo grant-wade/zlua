@@ -1,6 +1,7 @@
 const std = @import("std");
 const runtime = @import("../runtime.zig");
 const rollback_runtime = @import("../runtime/rollback.zig");
+const runtime_state = @import("../runtime/state.zig");
 const runtime_types = @import("../runtime/types.zig");
 const snapshot_runtime = @import("../runtime/snapshot.zig");
 const callbacks = @import("callbacks.zig");
@@ -169,8 +170,12 @@ pub fn reset(state: *State) !void {
     errors.clearLastErrorTraceback(state);
     state.last_error_root = null;
     if (metadata.error_value) |value| {
-        state.raw_state.api_roots.appendAssumeCapacity(value);
-        state.last_error_root = 0;
+        if (value == .nil) {
+            state.last_error_root = runtime_state.nil_root;
+        } else {
+            state.raw_state.api_roots.appendAssumeCapacity(value);
+            state.last_error_root = 0;
+        }
     }
     if (limit) |l| {
         l.limit = state.raw_state.options.max_memory orelse std.math.maxInt(usize);
@@ -251,7 +256,7 @@ fn copyFrozenImage(state: *const State, base: std.mem.Allocator, a: std.mem.Allo
 fn copyImageMetadata(state: *const State, base: std.mem.Allocator, a: std.mem.Allocator, raw: runtime.State) !State {
     var result = State{ .base_allocator = base, .raw_state = raw, .host_data = state.host_data };
     errdefer discardImage(&result);
-    if (state.last_error_root != null) result.last_error_root = 0;
+    if (state.last_error_root) |index| result.last_error_root = if (index == runtime_state.nil_root) index else 0;
     for (state.callbacks.items) |entry| {
         const name = try a.dupe(u8, entry.name);
         errdefer a.free(name);

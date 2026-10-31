@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const compile = @import("../compile.zig");
 const runtime = @import("../runtime.zig");
 const host = @import("../runtime/host.zig");
@@ -50,8 +51,10 @@ pub fn write(state: *State, thread: *Thread, op: bytecode.Call) !void {
         defer state.allocator.free(existing);
         const combined = try std.mem.concat(state.allocator, u8, &.{ existing, data });
         defer state.allocator.free(combined);
+        if (combined.len > state.options.max_file_bytes) return returnFailure(state, thread, op, "write", path, null, error.FileTooBig);
         writeBytes(state, path, combined, atomic) catch |err| return returnFailure(state, thread, op, "write", path, null, err);
     } else {
+        if (data.len > state.options.max_file_bytes) return returnFailure(state, thread, op, "write", path, null, error.FileTooBig);
         writeBytes(state, path, data, atomic) catch |err| return returnFailure(state, thread, op, "write", path, null, err);
     }
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = true }});
@@ -227,11 +230,16 @@ pub fn move(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const old_path = try state.expectArgumentString(thread, op, "fs.move", 0);
     const new_path = try state.expectArgumentString(thread, op, "fs.move", 1);
     io_mod.fsRenamePath(state, old_path, new_path) catch |rename_err| {
-        if (!std.mem.eql(u8, @errorName(rename_err), "CrossDeviceLink")) return returnFailure(state, thread, op, "move", old_path, new_path, rename_err);
-        io_mod.fsCopyFile(state, old_path, new_path, false) catch |err| return returnFailure(state, thread, op, "move", old_path, new_path, err);
-        io_mod.fsRemovePath(state, old_path, false) catch |err| return returnFailure(state, thread, op, "move", old_path, new_path, err);
+        if (rename_err != error.CrossDevice) return returnFailure(state, thread, op, "move", old_path, new_path, rename_err);
+        moveAcrossDevices(state, old_path, new_path) catch |err| return returnFailure(state, thread, op, "move", old_path, new_path, err);
     };
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = true }});
+}
+
+fn moveAcrossDevices(state: *State, old_path: []const u8, new_path: []const u8) !void {
+    const is_directory = (try io_mod.fsStat(state, old_path, false)).kind == .directory;
+    if (is_directory) try copyTree(state, old_path, new_path, false) else try io_mod.fsCopyFile(state, old_path, new_path, true);
+    try io_mod.fsRemovePath(state, old_path, is_directory);
 }
 
 pub fn touch(state: *State, thread: *Thread, op: bytecode.Call) !void {
@@ -465,7 +473,11 @@ pub fn pathIsAbsolute(state: *State, thread: *Thread, op: bytecode.Call) !void {
 pub fn pathRelative(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const from = try state.expectArgumentString(thread, op, "fs.path.relative", 0);
     const to = try state.expectArgumentString(thread, op, "fs.path.relative", 1);
-    const relative = try std.fs.path.relative(state.allocator, ".", null, from, to);
+    const relative = relativeLexical(state.allocator, from, to) catch |err| switch (err) {
+        error.MixedPaths => return state.failArgumentMessage("fs.path.relative", 2, "cannot mix absolute and relative paths"),
+        error.UnresolvablePath => return state.failArgumentMessage("fs.path.relative", 1, "cannot climb above the shared base"),
+        else => return err,
+    };
     defer state.allocator.free(relative);
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(relative) }});
 }
@@ -603,7 +615,7 @@ fn normalizedErrorCode(name: []const u8) []const u8 {
     if (std.mem.eql(u8, name, "InvalidPath") or std.mem.eql(u8, name, "BadPathName")) return "invalid_path";
     if (std.mem.eql(u8, name, "PathTooLong") or std.mem.eql(u8, name, "NameTooLong")) return "name_too_long";
     if (std.mem.eql(u8, name, "SymLinkLoop")) return "symlink_loop";
-    if (std.mem.eql(u8, name, "CrossDeviceLink")) return "cross_device";
+    if (std.mem.eql(u8, name, "CrossDevice")) return "cross_device";
     if (std.mem.eql(u8, name, "Canceled")) return "canceled";
     if (std.mem.eql(u8, name, "OperationUnsupported") or std.mem.eql(u8, name, "FilesystemDisabled")) return "unsupported";
     return "io";
@@ -672,6 +684,52 @@ fn normalizeLexical(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
         try out.appendSlice(allocator, part);
     }
     if (out.items.len == 0) try out.append(allocator, if (absolute) std.fs.path.sep else '.');
+    return out.toOwnedSlice(allocator);
+}
+
+fn samePathPart(left: []const u8, right: []const u8) bool {
+    return if (comptime builtin.os.tag == .windows) std.ascii.eqlIgnoreCase(left, right) else std.mem.eql(u8, left, right);
+}
+
+/// `error.MixedPaths` when only one path is absolute or their Windows drives differ;
+/// `error.UnresolvablePath` when `from` climbs above their shared base.
+fn relativeLexical(allocator: std.mem.Allocator, from: []const u8, to: []const u8) ![]u8 {
+    const absolute = std.fs.path.isAbsolute(from);
+    if (absolute != std.fs.path.isAbsolute(to)) return error.MixedPaths;
+    const from_normal = try normalizeLexical(allocator, from);
+    defer allocator.free(from_normal);
+    const to_normal = try normalizeLexical(allocator, to);
+    defer allocator.free(to_normal);
+    var from_parts = std.mem.tokenizeAny(u8, if (std.mem.eql(u8, from_normal, ".")) "" else from_normal, "/\\");
+    var to_parts = std.mem.tokenizeAny(u8, if (std.mem.eql(u8, to_normal, ".")) "" else to_normal, "/\\");
+    if (absolute) {
+        while (from_parts.peek()) |part| if (std.mem.eql(u8, part, "..")) {
+            _ = from_parts.next();
+        } else break;
+        while (to_parts.peek()) |part| if (std.mem.eql(u8, part, "..")) {
+            _ = to_parts.next();
+        } else break;
+        if (comptime builtin.os.tag == .windows) {
+            if (from_parts.peek()) |from_root| if (to_parts.peek()) |to_root| if (!samePathPart(from_root, to_root)) return error.MixedPaths;
+        }
+    }
+    while (from_parts.peek()) |part| {
+        const other = to_parts.peek() orelse break;
+        if (!samePathPart(part, other)) break;
+        _ = from_parts.next();
+        _ = to_parts.next();
+    }
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    while (from_parts.next()) |part| {
+        if (std.mem.eql(u8, part, "..")) return error.UnresolvablePath;
+        if (out.items.len != 0) try out.append(allocator, std.fs.path.sep);
+        try out.appendSlice(allocator, "..");
+    }
+    while (to_parts.next()) |part| {
+        if (out.items.len != 0) try out.append(allocator, std.fs.path.sep);
+        try out.appendSlice(allocator, part);
+    }
     return out.toOwnedSlice(allocator);
 }
 

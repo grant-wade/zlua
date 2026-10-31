@@ -35,13 +35,13 @@
 - [runtime.number_format](../runtime/number_format.md)
 - [runtime.coroutine](../runtime/coroutine.md)
 - [runtime.debug](../runtime/debug.md)
+- [runtime.io](../runtime/io.md)
+- [runtime.host](../runtime/host.md)
 - [runtime.metatable](../runtime/metatable.md)
 - [runtime.rollback](../runtime/rollback.md)
 - [runtime.strings](../runtime/strings.md)
 - [runtime.operators](../runtime/operators.md)
 - [runtime.failure](../runtime/failure.md)
-- [runtime.io](../runtime/io.md)
-- [runtime.host](../runtime/host.md)
 - [runtime.load](../runtime/load.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.gc](../runtime/gc.md)
@@ -130,11 +130,13 @@
 - [nullValue](#fn-nullvalue)
 - [inputBytes](#fn-inputbytes)
 - [source](#fn-source)
+- [sourceWithFloats](#fn-sourcewithfloats)
 - [LuaSource](#fn-luasource)
 
 ## Types
 
 - [LuaSink](#type-luasink)
+- [FloatText](#type-floattext)
 
 <a id="fn-ensuresupporttables"></a>
 
@@ -332,12 +334,50 @@ pub fn endStruct(self: *LuaSink) !void
 
 References: [`LuaSink`](#type-luasink)
 
+<a id="type-floattext"></a>
+
+## FloatText
+
+With `{d}`, prints a float with a fraction or an exponent.
+
+```zig
+pub const FloatText = struct {
+    value: f64,
+};
+```
+
+### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [formatNumber](#fn-floattext-formatnumber) | `self: FloatText, writer: *std.Io.Writer, options: anytype` | `std.Io.Writer.Error!void` |  |
+
+<a id="fn-floattext-formatnumber"></a>
+
+### FloatText.formatNumber
+
+```zig
+pub fn formatNumber(self: FloatText, writer: *std.Io.Writer, options: anytype) std.Io.Writer.Error!void
+```
+
+References: [`FloatText`](#type-floattext)
+
 <a id="fn-source"></a>
 
 ## source
 
 ```zig
-pub fn source(state: *State, encoder: anytype, operation: []const u8) LuaSource(@TypeOf(encoder.*))
+pub fn source(state: *State, encoder: anytype, operation: []const u8) LuaSource(@TypeOf(encoder.*), emitNativeFloat)
+```
+
+<a id="fn-sourcewithfloats"></a>
+
+## sourceWithFloats
+
+`emit_float(encoder, value)` writes each finite float.
+
+```zig
+pub fn sourceWithFloats(state: *State, encoder: anytype, operation: []const u8, comptime emit_float: anytype) LuaSource(@TypeOf(encoder.*), emit_float)
 ```
 
 <a id="fn-luasource"></a>
@@ -345,6 +385,6 @@ pub fn source(state: *State, encoder: anytype, operation: []const u8) LuaSource(
 ## LuaSource
 
 ```zig
-pub fn LuaSource(comptime Encoder: type) type
+pub fn LuaSource(comptime Encoder: type, comptime emit_float: anytype) type
 ```
 

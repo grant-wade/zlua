@@ -25,7 +25,7 @@ fn run(init: std.process.Init) !u8 {
             .process = .enabled,
             .clock = .system,
         },
-        .debug = .{ .errors = debug },
+        .debug = .{ .errors = debug, .capture_output = true },
     });
     defer baseline.deinit();
     const arg_value = try baseline.raw_state.newTableWithHints(@intCast(args.len), 0);

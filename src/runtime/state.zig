@@ -54,6 +54,8 @@ pub const MemoryFile = host.MemoryFile;
 pub const MemoryFilesystem = host.MemoryFilesystem;
 pub const FilesystemCapability = host.FilesystemCapability;
 pub const HostDirectory = host.HostDirectory;
+/// Root index of a rooted nil, which takes no slot in `api_roots`.
+pub const nil_root = std.math.maxInt(usize);
 pub const FilesystemFileKind = host.FileKind;
 pub const FilesystemFileStat = host.FileStat;
 pub const FilesystemDirectoryEntry = host.DirectoryEntry;
@@ -194,6 +196,7 @@ pub const State = struct {
     io_input: ?*Userdata = null,
     io_output: ?*Userdata = null,
     library_tables: std.EnumArray(stdlib.LibraryTable, ?*Table) = .initFill(null),
+    opened_libraries: stdlib.LibrarySet = .{},
     gc: gc_mod.Gc = .{},
 
     random_state: [4]u64 = .{ 0x123456789abcdef0, 0xff, 0xfedcba9876543210, 0 },
@@ -354,7 +357,7 @@ pub const State = struct {
     fn deinitClosing(self: *State, run_finalizers: bool) void {
         if (self.rollback) |journal| journal.abandon(self);
         if (!self.discarding) {
-            if (run_finalizers) self.gc.runCloseFinalizers();
+            if (run_finalizers) self.gc.runCloseFinalizers(.proceed);
             stdlib.io.closeOpenFiles(self);
         }
         self.snapshot_busy = true;
@@ -442,6 +445,7 @@ pub const State = struct {
     }
 
     pub fn rootValue(self: *State, value: Value) !usize {
+        if (value == .nil) return nil_root;
         for (self.api_roots.items, 0..) |root, index| {
             if (root == .nil) {
                 self.api_roots.items[index] = value;

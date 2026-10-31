@@ -234,7 +234,7 @@ test "snapshot preserves suspended coroutine continuations hooks and open upvalu
 }
 
 test "snapshot survives origin and restores modules files iterators streams errors and random state" {
-    var lua = try api.State.init(a, .{ .stdlib = .full, .capabilities = .{ .io = .{ .stdin = "first\nsecond\n" } } });
+    var lua = try api.State.init(a, .{ .stdlib = .full, .debug = .{ .capture_output = true }, .capabilities = .{ .io = .{ .stdin = "first\nsecond\n" } } });
     try lua.addMemoryFile("m.lua", "return {value = 23}");
     try lua.addMemoryFile("data", "abc\ndef\n");
     try lua.doString(
@@ -783,7 +783,7 @@ test "snapshot using the state allocator retains its accounting infrastructure" 
 }
 
 test "shared bytecode newState agrees with independent graph copy" {
-    var source = try api.State.init(a, .{ .stdlib = .full });
+    var source = try api.State.init(a, .{ .stdlib = .full, .debug = .{ .capture_output = true } });
     defer source.deinit();
     try source.doString(
         \\collectgarbage('stop')
@@ -1120,7 +1120,7 @@ test "scoped borrowed pointers are rejected and active scopes remain GC roots" {
 }
 
 test "incremental reset agrees with graph copy across weak GC and debug vararg writes" {
-    var lua = try api.State.init(a, .{ .stdlib = .full });
+    var lua = try api.State.init(a, .{ .stdlib = .full, .debug = .{ .capture_output = true } });
     defer lua.deinit();
     try lua.doString(
         \\collectgarbage('stop'); weak=setmetatable({}, {__mode='kv'})
@@ -1886,4 +1886,42 @@ test "api snapshot graph rollback and newState" {
     try another.doString("assert(get() == 4); assert(inc() == 5)", .{});
     try lua.reset();
     try lua.doString("assert(get() == 4)", .{});
+}
+
+test "a nil last error stays out of root slots across capture and reset" {
+    var lua = try api.State.init(a, .{});
+    defer lua.deinit();
+    try std.testing.expectError(error.LuaError, lua.doString("error(nil)", .{}));
+    var snapshot = try lua.snapshot(a);
+    defer snapshot.deinit();
+    var worker = try snapshot.newState(a);
+    defer worker.deinit();
+    for ([_]*api.State{ &lua, &worker }) |state| {
+        try state.reset();
+        var table = try state.createTable(.{});
+        defer table.deinit();
+        try table.set("x", 1);
+        try std.testing.expectError(error.LuaError, state.doString("error('next')", .{}));
+        try std.testing.expectEqual(@as(i64, 1), try table.get("x", i64));
+    }
+}
+
+test "reset frees a time zone loaded after the baseline" {
+    var lua = try api.State.init(a, .{
+        .stdlib = .full,
+        .capabilities = .{ .io = .{ .runtime = std.testing.io }, .clock = .system },
+    });
+    defer lua.deinit();
+    var snapshot = try lua.snapshot(a);
+    defer snapshot.deinit();
+    var worker = try snapshot.newState(a);
+    defer worker.deinit();
+    for ([_]*api.State{ &lua, &worker }) |state| {
+        for (0..2) |_| {
+            try state.doString("assert(os.date('%H'))", .{});
+            try state.reset();
+            try std.testing.expect(state.raw_state.local_zone == null);
+        }
+        try state.doString("assert(os.date('%H'))", .{});
+    }
 }

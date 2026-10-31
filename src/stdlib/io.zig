@@ -664,11 +664,13 @@ fn defaultFile(state: *State, which: CurrentFile) !*Userdata {
     return userdata;
 }
 
+const bad_descriptor: host.FileError = .{ .message = "Bad file descriptor", .errno = 9 };
+
 fn readFromFile(state: *State, thread: *Thread, op: bytecode.Call, handle: Handle, first_arg: u32) !void {
     const file = handle.file;
     try ensureOpen(state, file);
     if (!file.readable) {
-        try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.strings.intern("file is not readable") }, .{ .integer = 9 } });
+        try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.strings.intern(bad_descriptor.message) }, .{ .integer = bad_descriptor.errno } });
         return;
     }
     if (file.is_directory) {
@@ -724,8 +726,8 @@ fn parseReadFormat(state: *State, spec_value: Value) !ReadFormat {
 fn readOne(state: *State, handle: Handle, spec_value: Value) !Value {
     const file = handle.file;
     try ensureOpen(state, file);
-    if (!file.readable) return state.fail("file is not readable");
-    if (file.is_directory) return state.fail(host.fileError(error.IsDir).message);
+    if (!file.readable) return state.failLibrary(bad_descriptor.message);
+    if (file.is_directory) return state.failLibrary(host.fileError(error.IsDir).message);
     const format = try parseReadFormat(state, spec_value);
     if (file.kind == .stdin) return readStdinFormat(state, format);
     if (file.kind == .full_device) return readFullDevice(state, format);
@@ -932,8 +934,7 @@ fn writeToFile(state: *State, thread: *Thread, op: bytecode.Call, handle: Handle
     const file = handle.file;
     try ensureOpen(state, file);
     if (!file.writable) {
-        try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.strings.intern("file is not writable") }, .{ .integer = 9 } });
-        return;
+        return returnWriteFailure(state, thread, op, bad_descriptor, 0);
     }
     const target = writeTarget(file);
     // The Windows CRT treats `_IOLBF` as full buffering.

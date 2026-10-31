@@ -28,6 +28,11 @@ pub fn read(state: *State, thread: *Thread, op: bytecode.Call) !void {
     try state.returnValues(thread, op.base, op.return_count, &.{sink.root});
 }
 
+// The encoder's `emitFloat` takes only float types; its `emitInt` prints any `{d}` value.
+fn emitFloatText(encoder: anytype, value: f64) anyerror!void {
+    try encoder.emitInt(zerde_lua.FloatText{ .value = value });
+}
+
 pub fn write(state: *State, thread: *Thread, op: bytecode.Call) !void {
     if (op.arg_count == 0) return state.failArgumentMessage("json.write", 1, "value expected");
 
@@ -36,7 +41,7 @@ pub fn write(state: *State, thread: *Thread, op: bytecode.Call) !void {
     var out = std.Io.Writer.Allocating.init(state.allocator);
     errdefer out.deinit();
     var encoder = zerde.json.encoderWithOptions(&out.writer, options);
-    var source = zerde_lua.source(state, &encoder, "json.write");
+    var source = zerde_lua.sourceWithFloats(state, &encoder, "json.write", emitFloatText);
     defer source.deinit();
 
     source.emit(value) catch |err| return failJsonError(state, "json.write", err);

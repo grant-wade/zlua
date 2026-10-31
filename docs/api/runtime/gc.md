@@ -35,13 +35,13 @@
 - [runtime.number_format](../runtime/number_format.md)
 - [runtime.coroutine](../runtime/coroutine.md)
 - [runtime.debug](../runtime/debug.md)
+- [runtime.io](../runtime/io.md)
+- [runtime.host](../runtime/host.md)
 - [runtime.metatable](../runtime/metatable.md)
 - [runtime.rollback](../runtime/rollback.md)
 - [runtime.strings](../runtime/strings.md)
 - [runtime.operators](../runtime/operators.md)
 - [runtime.failure](../runtime/failure.md)
-- [runtime.io](../runtime/io.md)
-- [runtime.host](../runtime/host.md)
 - [runtime.load](../runtime/load.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.gc](../runtime/gc.md)
@@ -133,6 +133,7 @@
 ## Types
 
 - [Gc](#type-gc)
+- [CloseExit](#type-closeexit)
 
 <a id="type-gc"></a>
 
@@ -223,7 +224,7 @@ pub const Gc = struct {
 | [runSteps](#fn-gc-runsteps) | `gc: *Gc, steps: usize` | `!bool` |  |
 | [upvalueBarrier](#fn-gc-upvaluebarrier) | `gc: *Gc, closure: *Closure, upvalue: *Upvalue` | `void` |  |
 | [threadBarrier](#fn-gc-threadbarrier) | `gc: *Gc, thread: *Thread, value: Value` | `void` |  |
-| [runCloseFinalizers](#fn-gc-runclosefinalizers) | `gc: *Gc` | `void` | Runs pending finalizers as &#96;deinit&#96; does, keeping the state. Only for an idle host; later registrations are left for &#96;deinit&#96;. |
+| [runCloseFinalizers](#fn-gc-runclosefinalizers) | `gc: *Gc, on_exit: CloseExit` | `void` | Runs pending finalizers as &#96;deinit&#96; does, keeping the state. Only for an idle host; later registrations are left for &#96;deinit&#96;. |
 
 <a id="fn-gc-reservequeues"></a>
 
@@ -710,10 +711,10 @@ Runs pending finalizers as `deinit` does, keeping the state. Only for an idle ho
 later registrations are left for `deinit`.
 
 ```zig
-pub fn runCloseFinalizers(gc: *Gc) void
+pub fn runCloseFinalizers(gc: *Gc, on_exit: CloseExit) void
 ```
 
-References: [`Gc`](#type-gc)
+References: [`Gc`](#type-gc), [`CloseExit`](#type-closeexit)
 
 <a id="fn-tablecapacitybytes"></a>
 
@@ -737,5 +738,18 @@ pub fn tableGcBytes(table: *const Table) usize
 
 ```zig
 pub fn userdataBytes(userdata: *const Userdata) usize
+```
+
+<a id="type-closeexit"></a>
+
+## CloseExit
+
+What `os.exit` inside a closing finalizer does to the finalizers after it.
+
+```zig
+pub const CloseExit = enum {
+    stop,
+    proceed,
+};
 ```
 

@@ -306,9 +306,12 @@ test "metadata parser accepts benchmark fields" {
 }
 
 fn processSelector(selector: []const u8) []const u8 {
-    const prefix = "process/zlua+clua/";
-    if (std.mem.startsWith(u8, selector, prefix)) return selector[prefix.len..];
-    if (std.mem.eql(u8, selector, "process/zlua+clua")) return "";
+    for ([_][]const u8{ "process/zlua+zlua_snapshot+clua", "process/zlua+clua" }) |prefix| {
+        if (!std.mem.startsWith(u8, selector, prefix)) continue;
+        const rest = selector[prefix.len..];
+        if (rest.len == 0) return "";
+        if (rest[0] == '/') return rest[1..];
+    }
     if (std.mem.startsWith(u8, selector, "process/")) return selector[8..];
     return selector;
 }
@@ -317,7 +320,7 @@ test "listed process paths and legacy selectors select the same fixture" {
     const a = std.testing.allocator;
     var benchmark: Benchmark = .{ .path = try a.dupe(u8, "tests/bench/table/reads.lua"), .name = try a.dupe(u8, "table/reads"), .category = try a.dupe(u8, "table"), .iterations = 5, .warmup = 1, .timeout_ms = 1000, .expect = .pass, .reason = try a.dupe(u8, "") };
     defer benchmark.deinit(a);
-    for ([_][]const u8{ "table/reads", "table", "reads", "process/zlua+clua/table/reads", "process", "process/table" }) |selector|
+    for ([_][]const u8{ "table/reads", "table", "reads", "process/zlua+zlua_snapshot+clua/table/reads", "process/zlua+zlua_snapshot+clua", "process/zlua+clua/table/reads", "process", "process/table" }) |selector|
         try std.testing.expect(selectorMatches(benchmark, selector));
     try std.testing.expect(!selectorMatches(benchmark, "startup/native/full"));
 }
