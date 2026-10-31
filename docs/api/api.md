@@ -192,6 +192,7 @@ See `docs/embedding.md` for capabilities, error handling, snapshots, and ownersh
 - [Value](#alias-value)
 - [Tuple](#alias-tuple)
 - [Ref](#alias-ref)
+- [HandleScope](#alias-handlescope)
 - [Table](#alias-table)
 - [Function](#alias-function)
 - [Coroutine](#alias-coroutine)
@@ -786,6 +787,16 @@ pub const Ref = handle.Ref;
 ```
 
 References: [`handle.Ref`](api/handle.md#type-ref)
+
+<a id="alias-handlescope"></a>
+
+## HandleScope
+
+```zig
+pub const HandleScope = handle.HandleScope;
+```
+
+References: [`handle.HandleScope`](api/handle.md#type-handlescope)
 
 <a id="alias-table"></a>
 

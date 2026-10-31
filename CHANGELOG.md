@@ -19,6 +19,8 @@
 - Typed callbacks that return `void` keep return values set with `Context.returnValues`.
 - Typed callbacks and userdata methods decode enum, array, vector, slice, struct, and `fromLua` parameters, and `Context.decodeArg` does the same in plain callbacks.
 - Conversions to Lua turn enums into names, follow `lua` field options, and handle vectors, `std.EnumArray`, `std.EnumSet`, and `toLua` hooks.
+- Typed callbacks and userdata methods release handle parameters when they return.
+- `State.handleScope` releases the handles created until its `end`.
 - `Coroutine.protectedResumeWith` takes `ResumeOptions` for a traceback and a per-resume instruction budget.
 
 ### Performance

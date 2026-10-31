@@ -921,3 +921,145 @@ test "api callback context currentLine is null for stripped functions" {
         \\assert(stripped() == nil)
     , .{ .name = "=line-stripped" });
 }
+
+fn liveRoots(lua: *State) usize {
+    var count: usize = 0;
+    for (lua.raw_state.api_roots.items) |root| {
+        if (root != .nil) count += 1;
+    }
+    return count;
+}
+
+test "api typed callbacks release handle parameters" {
+    const Host = struct {
+        var kept: ?Function = null;
+
+        fn size(table: Table, value: Value, function: ?Function) !i64 {
+            _ = value;
+            _ = function;
+            return table.rawLen();
+        }
+
+        fn same(table: Table) Table {
+            return table;
+        }
+
+        fn keep(ctx: *Context, value: Value) !void {
+            kept = try ctx.state().read(value, Function);
+        }
+    };
+
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    var size = try lua.registerTyped("size", Host.size);
+    defer size.deinit();
+    try lua.setGlobal("size", size);
+    var same = try lua.registerTyped("same", Host.same);
+    defer same.deinit();
+    try lua.setGlobal("same", same);
+    var keep = try lua.registerTyped("keep", Host.keep);
+    defer keep.deinit();
+    try lua.setGlobal("keep", keep);
+
+    const before = liveRoots(&lua);
+    try lua.doString(
+        \\local t = { 1, 2 }
+        \\for _ = 1, 100 do
+        \\  assert(size(t, {}, print) == 2)
+        \\  assert(size(t, "x") == 2)
+        \\  assert(same(t) == t)
+        \\  assert(not pcall(size, t, {}, 1))
+        \\  assert(not pcall(size, 1))
+        \\end
+        \\keep(function() return 7 end)
+    , .{});
+    collectLast: {
+        var kept = Host.kept orelse break :collectLast;
+        defer kept.deinit();
+        try lua.collect();
+        try std.testing.expectEqual(@as(i64, 7), try kept.call(.{}, i64));
+    }
+    Host.kept = null;
+    try std.testing.expectEqual(before, liveRoots(&lua));
+}
+
+test "api handle scopes release handles and keep what they are told to" {
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    const before = liveRoots(&lua);
+
+    var outer = try lua.createTable(.{});
+    defer outer.deinit();
+    const kept = blk: {
+        var scope = lua.handleScope();
+        defer scope.end();
+        var a = try lua.createTable(.{});
+        var dropped = try lua.createTable(.{});
+        dropped.deinit();
+        var reused = try lua.createTable(.{});
+        try reused.rawSet("n", 1);
+        try a.rawSet("reused", reused);
+        var value = try a.rawGet("reused", Value);
+        _ = &value;
+        {
+            var inner = lua.handleScope();
+            defer inner.end();
+            _ = try lua.createTable(.{});
+            _ = try lua.createTable(.{});
+            outer.deinit();
+            outer = try lua.createTable(.{});
+            try std.testing.expectEqual(before + 6, liveRoots(&lua));
+            outer = inner.keep(outer);
+        }
+        try std.testing.expectEqual(before + 4, liveRoots(&lua));
+        break :blk scope.keep(a);
+    };
+    try std.testing.expectEqual(before + 2, liveRoots(&lua));
+    var table = kept;
+    defer table.deinit();
+    var reused = try table.rawGet("reused", Table);
+    defer reused.deinit();
+    try std.testing.expectEqual(@as(i64, 1), try reused.rawGet("n", i64));
+}
+
+test "api handle scopes leave roots outside handles alone" {
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    var t = try lua.createTable(.{});
+    defer t.deinit();
+    try t.rawSet("a", 1);
+    try t.rawSet("b", 2);
+
+    var scope = lua.handleScope();
+    defer scope.end();
+    var freed = try lua.createTable(.{});
+    freed.deinit();
+    var it = try t.rawIterator();
+    defer it.deinit();
+    var count: i64 = 0;
+    while (try it.next()) |_| count += 1;
+    try std.testing.expectEqual(@as(i64, 2), count);
+    for (0..1000) |_| {
+        var loop = try lua.createTable(.{});
+        loop.deinit();
+    }
+    try std.testing.expect(lua.scoped_roots.items.len < 16);
+}
+
+test "api handle scopes end quietly after a reset" {
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    var snapshot = try lua.snapshot(std.testing.allocator);
+    defer snapshot.deinit();
+    {
+        var scope = lua.handleScope();
+        defer scope.end();
+        _ = try lua.createTable(.{});
+        try lua.reset();
+        try std.testing.expectEqual(@as(usize, 0), lua.open_handle_scopes);
+    }
+    var scope = lua.handleScope();
+    defer scope.end();
+    _ = try lua.createTable(.{});
+    try std.testing.expectEqual(@as(usize, 1), lua.scoped_roots.items.len);
+}

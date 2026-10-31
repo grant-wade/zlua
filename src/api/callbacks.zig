@@ -76,9 +76,12 @@ pub fn callTyped(comptime function: anytype, ctx: *Context) !void {
     var scopes: ArgumentScopes(reflection.paramTypes(function_info).len) = .{};
     defer scopes.deinit(ctx);
     var lua_arg_index: usize = 0;
+    var bound: usize = 0;
+    defer releaseArgs(reflection.paramTypes(function_info), &args, bound);
     inline for (reflection.paramTypes(function_info), 0..) |param, index| {
         const Param = param orelse @compileError("registerTyped requires typed parameters");
         args[index] = try scopes.param(ctx, &lua_arg_index, Param);
+        bound += 1;
     }
 
     const Return = function_info.return_type orelse void;
@@ -130,9 +133,12 @@ pub fn callUserdataInitializer(comptime T: type, comptime initializer: anytype, 
     var scopes: ArgumentScopes(reflection.paramTypes(function_info).len) = .{};
     defer scopes.deinit(ctx);
     var lua_arg_index: usize = 0;
+    var bound: usize = 0;
+    defer releaseArgs(reflection.paramTypes(function_info), &args, bound);
     inline for (reflection.paramTypes(function_info), 0..) |param, index| {
         const Param = param orelse @compileError("userdata initializer parameters must be typed");
         args[index] = try scopes.param(ctx, &lua_arg_index, Param);
+        bound += 1;
     }
 
     const Return = function_info.return_type orelse @compileError("userdata initializers must return T or !T");
@@ -184,9 +190,12 @@ pub fn callUserdataMethod(comptime T: type, comptime function: anytype, ctx: *Co
     defer scopes.deinit(ctx);
     args[0] = try scopes.arg(ctx, 0, Receiver);
     var lua_arg_index: usize = 1;
+    var bound: usize = 1;
+    defer releaseArgs(reflection.paramTypes(function_info), &args, bound);
     inline for (reflection.paramTypes(function_info)[1..], 1..) |param, index| {
         const Param = param orelse @compileError("userdata method parameters must be typed");
         args[index] = try scopes.param(ctx, &lua_arg_index, Param);
+        bound += 1;
     }
 
     const Return = function_info.return_type orelse void;
@@ -210,6 +219,12 @@ pub fn callUserdataMethod(comptime T: type, comptime function: anytype, ctx: *Co
             defer convert.deinitIfOwned(Return, &result);
             try ctx.returnValues(result);
         },
+    }
+}
+
+fn releaseArgs(comptime params: []const ?type, args: anytype, bound: usize) void {
+    inline for (params, 0..) |param, index| {
+        if (index < bound) convert.deinitIfOwned(param.?, &args[index]);
     }
 }
 

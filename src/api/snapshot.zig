@@ -177,6 +177,9 @@ pub fn reset(state: *State) !void {
         l.exceeded = false;
     }
     state.generation += 1;
+    state.scoped_roots.clearRetainingCapacity();
+    state.handle_scope_start = 0;
+    state.open_handle_scopes = 0;
     callbacks.bindDispatch(state);
 }
 
@@ -230,6 +233,7 @@ fn discardImage(state: *State) void {
     state.memory_file_owned_contents.deinit(a);
     callbacks.deinitNames(state, a);
     state.callbacks.deinit(a);
+    state.scoped_roots.deinit(a);
     if (state.baseline) |baseline| baseline.release();
     if (state.immutable_owner) |owner| owner.release();
 }

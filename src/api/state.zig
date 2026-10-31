@@ -18,6 +18,8 @@ const ErrorRef = errors.ErrorRef;
 const ExitRequest = capabilities.ExitRequest;
 const Function = @import("function.zig").Function;
 const GcBudget = options_mod.GcBudget;
+const handle_mod = @import("handle.zig");
+const HandleScope = handle_mod.HandleScope;
 const GcMode = options_mod.GcMode;
 const GcParam = options_mod.GcParam;
 const GcStepResult = options_mod.GcStepResult;
@@ -90,6 +92,11 @@ pub const State = struct {
     memory_file_owned_contents: std.ArrayList(bool) = .empty,
     callbacks: std.ArrayList(RegisteredCallback) = .empty,
     host_data: ?HostData = null,
+    /// Root indices of the handles created in open handle scopes.
+    scoped_roots: std.ArrayList(usize) = .empty,
+    /// Where the innermost open handle scope starts in `scoped_roots`.
+    handle_scope_start: usize = 0,
+    open_handle_scopes: usize = 0,
 
     /// `state_allocator` must remain valid until `deinit`.
     pub fn init(state_allocator: std.mem.Allocator, options: Options) !State {
@@ -139,6 +146,7 @@ pub const State = struct {
         self.memory_file_owned_contents.deinit(state_allocator);
         callbacks.deinitNames(self, state_allocator);
         self.callbacks.deinit(state_allocator);
+        self.scoped_roots.deinit(state_allocator);
         self.destroyMemoryLimitAllocator();
         if (self.baseline) |baseline| baseline.release();
         if (self.immutable_owner) |owner| owner.release();
@@ -263,6 +271,12 @@ pub const State = struct {
 
     pub fn isGcRunning(self: *const State) bool {
         return self.raw_state.gc.running;
+    }
+
+    /// Starts a scope that releases the handles created until its `end`, except those given to
+    /// its `keep`: `var scope = lua.handleScope(); defer scope.end();`.
+    pub fn handleScope(self: *State) HandleScope {
+        return handle_mod.beginScope(self);
     }
 
     /// Converts a Zig value into a rooted `Value`.
@@ -599,7 +613,7 @@ comptime {
     @setEvalBranchQuota(1000000);
     snapshot_runtime.review(State, .{
         .external = "base_allocator memory_limit_allocator baseline immutable_owner rollback_metadata",
-        .rebuilt = "generation last_error_root last_error_traceback",
+        .rebuilt = "generation last_error_root last_error_traceback scoped_roots handle_scope_start open_handle_scopes",
         .copied = "raw_state memory_files memory_file_owned_contents callbacks host_data",
     });
     snapshot_runtime.review(runtime.StateOptions, .{

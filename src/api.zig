@@ -82,6 +82,7 @@ pub const Capabilities = capabilities.Capabilities;
 pub const Value = value.Value;
 pub const Tuple = value.Tuple;
 pub const Ref = handle.Ref;
+pub const HandleScope = handle.HandleScope;
 pub const Table = table.Table;
 pub const Function = function.Function;
 pub const Coroutine = coroutine.Coroutine;

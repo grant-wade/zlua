@@ -143,6 +143,7 @@
 - [LibrarySet](#alias-libraryset)
 - [Value](#alias-value)
 - [Ref](#alias-ref)
+- [HandleScope](#alias-handlescope)
 - [Table](#alias-table)
 - [Function](#alias-function)
 - [Coroutine](#alias-coroutine)
@@ -413,6 +414,16 @@ pub const Ref = api.Ref;
 ```
 
 References: [`api.Ref`](api.md#alias-ref)
+
+<a id="alias-handlescope"></a>
+
+## HandleScope
+
+```zig
+pub const HandleScope = api.HandleScope;
+```
+
+References: [`api.HandleScope`](api.md#alias-handlescope)
 
 <a id="alias-table"></a>
 

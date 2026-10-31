@@ -218,6 +218,11 @@ pub const State = struct {
     memory_file_owned_contents: std.ArrayList(bool) = .empty,
     callbacks: std.ArrayList(RegisteredCallback) = .empty,
     host_data: ?HostData = null,
+    /// Root indices of the handles created in open handle scopes.
+    scoped_roots: std.ArrayList(usize) = .empty,
+    /// Where the innermost open handle scope starts in `scoped_roots`.
+    handle_scope_start: usize = 0,
+    open_handle_scopes: usize = 0,
 };
 ```
 
@@ -248,6 +253,7 @@ pub const State = struct {
 | [stopGc](#fn-state-stopgc) | `self: *State` | `void` |  |
 | [restartGc](#fn-state-restartgc) | `self: *State` | `void` |  |
 | [isGcRunning](#fn-state-isgcrunning) | `self: *const State` | `bool` |  |
+| [handleScope](#fn-state-handlescope) | `self: *State` | `HandleScope` | Starts a scope that releases the handles created until its &#96;end&#96;, except those given to its &#96;keep&#96;: &#96;var scope = lua.handleScope(); defer scope.end();&#96;. |
 | [push](#fn-state-push) | `self: *State, value: anytype` | `!Value` | Converts a Zig value into a rooted &#96;Value&#96;. |
 | [read](#fn-state-read) | `self: *State, value: Value, comptime T: type` | `!T` | A &#96;[]const u8&#96; result borrows VM memory; see &#96;Value.string&#96;. |
 | [setGlobal](#fn-state-setglobal) | `self: *State, name: []const u8, value: anytype` | `!void` |  |
@@ -537,6 +543,19 @@ References: [`State`](#type-state)
 
 ```zig
 pub fn isGcRunning(self: *const State) bool
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-handlescope"></a>
+
+### State.handleScope
+
+Starts a scope that releases the handles created until its `end`, except those given to
+its `keep`: `var scope = lua.handleScope(); defer scope.end();`.
+
+```zig
+pub fn handleScope(self: *State) HandleScope
 ```
 
 References: [`State`](#type-state)

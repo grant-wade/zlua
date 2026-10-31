@@ -125,6 +125,7 @@
 
 ## Functions
 
+- [beginScope](#fn-beginscope)
 - [fromRuntime](#fn-fromruntime)
 - [validate](#fn-validate)
 - [rawValue](#fn-rawvalue)
@@ -132,6 +133,7 @@
 ## Types
 
 - [Ref](#type-ref)
+- [HandleScope](#type-handlescope)
 
 <a id="type-ref"></a>
 
@@ -173,6 +175,62 @@ pub fn value(self: Ref) !Value
 ```
 
 References: [`Ref`](#type-ref)
+
+<a id="type-handlescope"></a>
+
+## HandleScope
+
+Releases the handles rooted since `State.handleScope`, except those given to `keep`. Scopes
+nest and end in reverse order, as `defer scope.end()` does.
+
+```zig
+pub const HandleScope = struct {
+    state: *State,
+    generation: u64,
+    start: usize,
+    previous_start: usize,
+};
+```
+
+### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [end](#fn-handlescope-end) | `self: *HandleScope` | `void` |  |
+| [keep](#fn-handlescope-keep) | `self: *const HandleScope, handle: anytype` | `@TypeOf(handle)` | Takes &#96;handle&#96;, a handle or a &#96;Value&#96; holding one, out of every open scope and returns it; the caller deinits it. |
+
+<a id="fn-handlescope-end"></a>
+
+### HandleScope.end
+
+```zig
+pub fn end(self: *HandleScope) void
+```
+
+References: [`HandleScope`](#type-handlescope)
+
+<a id="fn-handlescope-keep"></a>
+
+### HandleScope.keep
+
+Takes `handle`, a handle or a `Value` holding one, out of every open scope and returns it;
+the caller deinits it.
+
+```zig
+pub fn keep(self: *const HandleScope, handle: anytype) @TypeOf(handle)
+```
+
+References: [`HandleScope`](#type-handlescope)
+
+<a id="fn-beginscope"></a>
+
+## beginScope
+
+```zig
+pub fn beginScope(state: *State) HandleScope
+```
+
+References: [`HandleScope`](#type-handlescope)
 
 <a id="fn-fromruntime"></a>
 

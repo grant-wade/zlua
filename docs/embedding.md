@@ -424,7 +424,7 @@ try lua.setGlobal("host_add", host_add);
 
 Registered callbacks are native functions. Each registration has its own identity, `debug.getinfo` reports `what = "C"`, and there are no Lua upvalues or compiler-generated dispatcher globals behind them. They cannot be dumped with `string.dump`, and `Function.dumpBytecode` returns `error.TypeMismatch` for them. The callback name is kept, so argument errors can still mention it.
 
-Use `ctx.optionalArg` for optional arguments. `ctx.raise` raises any value as a Lua error, `ctx.raisef(fmt, args)` raises a formatted message starting with the calling Lua code's position like `error` does, and `ctx.argError(index, message)` raises a `bad argument` error. When an argument fails to convert, the error includes the callback and argument it came from. A callback may also receive rooted `Table` or `Function` handles as arguments, and it must deinitialize them.
+Use `ctx.optionalArg` for optional arguments. `ctx.raise` raises any value as a Lua error, `ctx.raisef(fmt, args)` raises a formatted message starting with the calling Lua code's position like `error` does, and `ctx.argError(index, message)` raises a `bad argument` error. When an argument fails to convert, the error includes the callback and argument it came from. A callback may also read rooted `Table` or `Function` handles with `ctx.arg`, and it must deinitialize them.
 
 For simple functions, `registerTyped` skips the `Context` and converts parameters and return values for you:
 
@@ -438,7 +438,7 @@ defer clamp_fn.deinit();
 try lua.setGlobal("clamp", clamp_fn);
 ```
 
-A typed callback may also take `*zlua.Context`. One that returns `void` keeps whatever it set with `ctx.returnValues`, for results a return type can't express, such as nil or several values.
+Typed callbacks and userdata methods release handle parameters such as `Table`, `Function`, and `Value` when they return, so they must not deinitialize them. To keep one, make a new handle with `state.read(value, T)`. A typed callback may also take `*zlua.Context`. One that returns `void` keeps whatever it set with `ctx.returnValues`, for results a return type can't express, such as nil or several values.
 
 Callbacks reach host state through `State.setHost`, which attaches one typed pointer to the state. Read it with `ctx.host(T)`, which returns null when the state holds no `*T`, or take a `zlua.Host(T)` parameter in a typed callback. That parameter consumes no Lua argument and raises a Lua error when the pointer is missing:
 

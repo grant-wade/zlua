@@ -23,6 +23,7 @@ pub const Stdlib = api.Stdlib;
 pub const LibrarySet = api.LibrarySet;
 pub const Value = api.Value;
 pub const Ref = api.Ref;
+pub const HandleScope = api.HandleScope;
 pub const Table = api.Table;
 pub const Function = api.Function;
 pub const Coroutine = api.Coroutine;
