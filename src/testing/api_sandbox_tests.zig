@@ -106,7 +106,7 @@ test "finalizer budget bounds deinit and collect and host finalizers still run" 
 }
 
 test "native stack limit raises a catchable error and leaves the state usable" {
-    var lua = try api.State.init(a, .{ .limits = .{ .max_native_stack = 64 << 10 } });
+    var lua = try api.State.init(a, .{ .limits = .{ .max_native_stack = 256 << 10 } });
     defer lua.deinit();
     try lua.doString(
         \\local function f() return ("x"):gsub("x", f) end
