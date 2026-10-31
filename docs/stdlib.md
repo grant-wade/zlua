@@ -128,11 +128,12 @@ handles can't grow a file past `max_file_bytes` (256 MiB by default). A write
 past `max_memory` raises `not enough memory`. Other failed writes return
 `nil, message, errno, count`. Writing to a handle not opened for writing returns
 `nil, "Bad file descriptor", 9, 0`, and reading from one not opened for reading
-returns `nil, "Bad file descriptor", 9`. When you close or flush a file
-explicitly with `close` or `flush`, failures come back as `nil, message, errno`.
-Handles you don't close yourself are still cleaned up: the collector flushes and
-closes unreachable ones, and `State.deinit` closes any that remain open. These
-implicit closes ignore flush failures.
+returns `nil, "Bad file descriptor", 9`, or `nil, "(no extra info)", 0` on
+Windows. When you close or flush a file explicitly with `close` or `flush`,
+failures come back as `nil, message, errno`. Handles you don't close yourself
+are still cleaned up: the collector flushes and closes unreachable ones, and
+`State.deinit` closes any that remain open. These implicit closes ignore flush
+failures.
 
 The `io` library emulates `/dev/null` in every filesystem mode, and `/dev/full`
 on Linux and FreeBSD. `fs.*` treats `/dev/null` as an ordinary path.

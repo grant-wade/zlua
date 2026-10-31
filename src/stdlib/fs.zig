@@ -687,6 +687,14 @@ fn normalizeLexical(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
     return out.toOwnedSlice(allocator);
 }
 
+fn isDrivePart(part: []const u8) bool {
+    return part.len == 2 and part[1] == ':';
+}
+
+fn drivesDiffer(left: []const u8, right: []const u8) bool {
+    return (isDrivePart(left) or isDrivePart(right)) and !std.ascii.eqlIgnoreCase(left, right);
+}
+
 fn samePathPart(left: []const u8, right: []const u8) bool {
     return if (comptime builtin.os.tag == .windows) std.ascii.eqlIgnoreCase(left, right) else std.mem.eql(u8, left, right);
 }
@@ -710,7 +718,7 @@ fn relativeLexical(allocator: std.mem.Allocator, from: []const u8, to: []const u
             _ = to_parts.next();
         } else break;
         if (comptime builtin.os.tag == .windows) {
-            if (from_parts.peek()) |from_root| if (to_parts.peek()) |to_root| if (!samePathPart(from_root, to_root)) return error.MixedPaths;
+            if (from_parts.peek()) |from_root| if (to_parts.peek()) |to_root| if (drivesDiffer(from_root, to_root)) return error.MixedPaths;
         }
     }
     while (from_parts.peek()) |part| {
@@ -759,4 +767,11 @@ fn integerFromUnsigned(value: u64) Value {
 }
 fn lessEntry(_: void, left: host.DirectoryEntry, right: host.DirectoryEntry) bool {
     return std.mem.lessThan(u8, left.name, right.name);
+}
+
+test "only Windows drive parts make rooted paths unrelated" {
+    try std.testing.expect(drivesDiffer("C:", "D:"));
+    try std.testing.expect(drivesDiffer("C:", "dir"));
+    try std.testing.expect(!drivesDiffer("c:", "C:"));
+    try std.testing.expect(!drivesDiffer("a", "b"));
 }

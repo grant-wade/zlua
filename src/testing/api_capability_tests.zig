@@ -731,29 +731,42 @@ const CrossDeviceFilesystem = struct {
     fn memory(context: ?*anyopaque) *MemoryFilesystem {
         return @ptrCast(@alignCast(context.?));
     }
+    fn forwardSlashes(buffer: *[256]u8, path: []const u8) []const u8 {
+        const out = buffer[0..path.len];
+        _ = std.mem.replace(u8, path, "\\", "/", out);
+        return out;
+    }
     fn readFile(context: ?*anyopaque, allocator: std.mem.Allocator, path: []const u8) anyerror![]const u8 {
-        return memory(context).readFileAlloc(allocator, path);
+        var buffer: [256]u8 = undefined;
+        return memory(context).readFileAlloc(allocator, forwardSlashes(&buffer, path));
     }
     fn writeFile(context: ?*anyopaque, path: []const u8, contents: []const u8) anyerror!void {
-        return memory(context).writeFile(path, contents);
+        var buffer: [256]u8 = undefined;
+        return memory(context).writeFile(forwardSlashes(&buffer, path), contents);
     }
     fn rename(_: ?*anyopaque, _: []const u8, _: []const u8) anyerror!void {
         return error.CrossDevice;
     }
     fn stat(context: ?*anyopaque, path: []const u8, _: bool) anyerror!api.FilesystemFileStat {
-        return memory(context).statPath(path);
+        var buffer: [256]u8 = undefined;
+        return memory(context).statPath(forwardSlashes(&buffer, path));
     }
     fn readDir(context: ?*anyopaque, allocator: std.mem.Allocator, path: []const u8) anyerror![]api.FilesystemDirectoryEntry {
-        return memory(context).readDirAlloc(allocator, path);
+        var buffer: [256]u8 = undefined;
+        return memory(context).readDirAlloc(allocator, forwardSlashes(&buffer, path));
     }
     fn makeDir(context: ?*anyopaque, path: []const u8, parents: bool) anyerror!void {
-        return memory(context).makeDir(path, parents);
+        var buffer: [256]u8 = undefined;
+        return memory(context).makeDir(forwardSlashes(&buffer, path), parents);
     }
     fn removePath(context: ?*anyopaque, path: []const u8, recursive: bool) anyerror!void {
-        return memory(context).removePath(path, recursive);
+        var buffer: [256]u8 = undefined;
+        return memory(context).removePath(forwardSlashes(&buffer, path), recursive);
     }
     fn copyFile(context: ?*anyopaque, source: []const u8, destination: []const u8, overwrite: bool) anyerror!void {
-        return memory(context).copyFile(source, destination, overwrite);
+        var source_buffer: [256]u8 = undefined;
+        var destination_buffer: [256]u8 = undefined;
+        return memory(context).copyFile(forwardSlashes(&source_buffer, source), forwardSlashes(&destination_buffer, destination), overwrite);
     }
 };
 

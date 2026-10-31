@@ -32,11 +32,3 @@ print(input:read("l"))
 input:close()
 
 os.remove(path)
-
-local directory = io.open("tests/fixtures")
-if directory and not directory:read(0) then
-  print(message_of(pcall(function()
-    for line in directory:lines() do print(line) end
-  end)))
-  directory:close()
-end
