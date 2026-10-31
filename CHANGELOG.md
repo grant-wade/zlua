@@ -25,6 +25,8 @@
 
 - `Context.optionalArg` failed to compile.
 - Callback integer arguments given a fractional number report that it has no integer representation.
+- A large allocation ran only one collector step, so garbage holding large allocations outpaced collection.
+- A minor collection ran at most one host userdata finalizer.
 
 ## 0.7.3
 

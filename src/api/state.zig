@@ -565,7 +565,7 @@ pub const State = struct {
 // Called after embedding writes have installed all temporary values in roots.
 pub fn gcBoundary(state: *State) !void {
     if (state.raw_state.gc.running and state.raw_state.gc.shouldRunAuto()) {
-        _ = try state.raw_state.gc.runSteps(1);
+        try state.raw_state.gc.autoStep(state.raw_state.current_thread);
     }
 }
 

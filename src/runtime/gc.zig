@@ -417,7 +417,12 @@ pub const Gc = struct {
         defer state.gc.stress_mark = state.gc.known_total;
         const conservative = state.gc.conservative_depth != 0;
         if (state.gc.stress_collect or gc.luaFastStep()) return gc.collectWithFinalizersMode(thread, conservative);
-        _ = try gc.step(thread, conservative);
+        const stepsize: usize = @intCast(@max(state.gc.params.stepsize, 1));
+        var debt = state.gc.known_total -| state.gc.next_total;
+        while (!try gc.step(thread, conservative)) {
+            if (state.gc.phase == .pause or debt < stepsize) return;
+            debt -= stepsize;
+        }
     }
 
     fn basicWork(gc: *Gc) usize {
@@ -530,7 +535,7 @@ pub const Gc = struct {
                     state.gc.major_pending = state.gc.params.minormajor != 0 and
                         state.gc.known_total > state.gc.major_base +| @max(256, state.gc.major_base *| @as(usize, @intCast(@max(state.gc.params.minormajor, 0))) / 100);
                     state.gc.phase = .finalize;
-                    if (try gc.runFinalizerBatch(thread, 1)) _ = try gc.runUserdataFinalizerBatch(1);
+                    if (try gc.runFinalizerBatch(thread, 1)) _ = try gc.runUserdataFinalizerBatch(std.math.maxInt(usize));
                     gc.drain();
                     state.gc.phase = .pause;
                     gc.resetAutoThreshold();
@@ -1440,7 +1445,13 @@ pub const Gc = struct {
             userdata.finalization_pending = false;
             userdata.finalized = true;
             if (state.finalizeBuiltinUserdata(userdata)) continue;
-            if (userdata.payload) |payload| payload.finalize() else if (userdata.finalizer) |finalizer| finalizer(userdata.ptr, userdata.finalizer_data, state.allocator);
+            if (userdata.payload) |payload| {
+                payload.finalize();
+                if (payload.finalized) {
+                    gc.noteAllocationFreed(payload.external_bytes);
+                    payload.external_bytes = 0;
+                }
+            } else if (userdata.finalizer) |finalizer| finalizer(userdata.ptr, userdata.finalizer_data, state.allocator);
         }
         return true;
     }

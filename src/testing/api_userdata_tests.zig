@@ -627,27 +627,30 @@ test "api userdata table index and Lua iteration metamethods" {
     , .{});
 }
 
-test "api finalizers receive the state allocator and external bytes drive collection" {
+test "api finalizers receive the state allocator and external bytes keep garbage bounded" {
     const Buffer = struct {
         bytes: []u8,
 
-        var finalized: usize = 0;
+        var live: usize = 0;
+        var peak: usize = 0;
 
         fn finalize(self: *@This(), allocator: std.mem.Allocator) void {
             allocator.free(self.bytes);
-            finalized += 1;
+            live -= 1;
         }
 
         fn create(ctx: *Context) !void {
-            const size: usize = 1024;
             const lua = ctx.state();
-            const bytes = try lua.allocator().alloc(u8, size);
-            var ud = try lua.newUserdata(@This(), .{ .bytes = bytes }, .{ .finalizer = finalize, .external_bytes = size * 1024 });
+            const bytes = try lua.allocator().alloc(u8, 16);
+            var ud = try lua.newUserdata(@This(), .{ .bytes = bytes }, .{ .finalizer = finalize, .external_bytes = 1024 * 1024 });
             defer ud.deinit();
+            live += 1;
+            peak = @max(peak, live);
             try ctx.returnValues(.{ud});
         }
     };
-    Buffer.finalized = 0;
+    Buffer.live = 0;
+    Buffer.peak = 0;
 
     var lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
@@ -655,8 +658,50 @@ test "api finalizers receive the state allocator and external bytes drive collec
     defer create.deinit();
     try lua.setGlobal("create", create);
 
-    try lua.doString("for _ = 1, 200 do create() end", .{});
-    try std.testing.expect(Buffer.finalized > 0);
+    try lua.doString("for _ = 1, 2000 do create() end", .{});
+    try std.testing.expect(Buffer.peak < 64);
+    const before = lua.raw_state.gc.known_total;
+    try lua.collect();
+    try lua.collect();
+    try std.testing.expectEqual(@as(usize, 0), Buffer.live);
+    try std.testing.expect(lua.raw_state.gc.known_total < before + 1024);
+    try std.testing.expect(lua.raw_state.gc.known_total < 1024 * 1024);
+}
+
+test "api external bytes keep garbage bounded while a large heap collects" {
+    const Buffer = struct {
+        var live: usize = 0;
+        var peak: usize = 0;
+
+        pad: u8 = 0,
+
+        fn finalize(_: *@This(), _: std.mem.Allocator) void {
+            live -= 1;
+        }
+
+        fn create(ctx: *Context) !void {
+            var ud = try ctx.state().newUserdata(@This(), .{}, .{ .finalizer = finalize, .external_bytes = 256 * 1024 });
+            defer ud.deinit();
+            live += 1;
+            peak = @max(peak, live);
+            try ctx.returnValues(.{ud});
+        }
+    };
+    Buffer.live = 0;
+    Buffer.peak = 0;
+
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    var create = try lua.register("create", Buffer.create);
+    defer create.deinit();
+    try lua.setGlobal("create", create);
+
+    try lua.doString(
+        \\keep = {}
+        \\for i = 1, 200000 do keep[i] = { i } end
+        \\for _ = 1, 4000 do create() end
+    , .{});
+    try std.testing.expect(Buffer.peak < 800);
 }
 
 test "api setExternalBytes replaces the reported amount" {
