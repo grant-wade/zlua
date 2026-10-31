@@ -119,19 +119,23 @@ test "instruction accounting agrees across nested call dispatch paths" {
         \\  return 1 + f(n - 1)
         \\end
         \\local sum = 0
-        \\for i = 1, 20 do
+        \\for i = 1, 8 do
         \\  local t = { i, a = i }
         \\  sum = sum + f(i) + t[1] - t.a + math.floor(math.sqrt(i * i)) - i
         \\end
-        \\assert(sum == 270)
+        \\assert(sum == 60)
     ;
     var fast = try State.init(std.testing.allocator);
     defer fast.deinit();
     try entry_mod.executeSourceChunk(&fast, source);
-    var metered = try State.initWithOptions(std.testing.allocator, .{ .max_instructions = 100_000 });
+    var metered = try State.initWithOptions(std.testing.allocator, .{ .max_instructions = 1_000 });
     defer metered.deinit();
     try entry_mod.executeSourceChunk(&metered, source);
     try std.testing.expectEqual(metered.budget.instructions, fast.budget.instructions);
+    var budgeted = try State.initWithOptions(std.testing.allocator, .{ .max_instructions = 1_000_000 });
+    defer budgeted.deinit();
+    try entry_mod.executeSourceChunk(&budgeted, source);
+    try std.testing.expectEqual(metered.budget.instructions, budgeted.budget.instructions);
 }
 
 test "hand-built bytecode can fall through or jump past its final instruction" {

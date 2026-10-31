@@ -21,6 +21,10 @@
 - Conversions to Lua turn enums into names, follow `lua` field options, and handle vectors, `std.EnumArray`, `std.EnumSet`, and `toLua` hooks.
 - `Coroutine.protectedResumeWith` takes `ResumeOptions` for a traceback and a per-resume instruction budget.
 
+### Performance
+
+- Code under an instruction budget runs in the VM's fast loop.
+
 ### Fixes
 
 - `Context.optionalArg` failed to compile.

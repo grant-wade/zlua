@@ -209,7 +209,7 @@ pub const Budget = struct {
 | [interruptRequested](#fn-budget-interruptrequested) | `budget: *const Budget` | `bool` |  |
 | [clearInterrupt](#fn-budget-clearinterrupt) | `budget: *Budget` | `void` |  |
 | [fastLoopInterrupted](#fn-budget-fastloopinterrupted) | `budget: *Budget` | `bool` |  |
-| [active](#fn-budget-active) | `budget: *const Budget` | `bool` | The uncounted fast loop is disabled while any instruction budget applies. |
+| [fastLoopAllowance](#fn-budget-fastloopallowance) | `budget: *const Budget` | `u64` | Instructions the fast loop may run before leaving the rest of a budget to metered execution. |
 | [used](#fn-budget-used) | `budget: *const Budget` | `u64` |  |
 | [reset](#fn-budget-reset) | `budget: *Budget` | `void` | Restarts the cumulative &#96;max_instructions&#96; budget. |
 | [beginCall](#fn-budget-begincall) | `budget: *Budget, max: u64` | `?u64` | Limits a host call, including nested calls and coroutines, to &#96;max&#96; further instructions. Returns the enclosing deadline for &#96;endCall&#96;. |
@@ -280,14 +280,14 @@ pub inline fn fastLoopInterrupted(budget: *Budget) bool
 
 References: [`Budget`](#type-budget)
 
-<a id="fn-budget-active"></a>
+<a id="fn-budget-fastloopallowance"></a>
 
-### Budget.active
+### Budget.fastLoopAllowance
 
-The uncounted fast loop is disabled while any instruction budget applies.
+Instructions the fast loop may run before leaving the rest of a budget to metered execution.
 
 ```zig
-pub inline fn active(budget: *const Budget) bool
+pub fn fastLoopAllowance(budget: *const Budget) u64
 ```
 
 References: [`Budget`](#type-budget)

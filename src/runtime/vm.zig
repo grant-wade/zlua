@@ -360,11 +360,13 @@ fn executeInstruction(self: *State, thread: *Thread, proto: *const proto_mod.Pro
 
 fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) anyerror!bool {
     if (thread.frames.items.len <= target_frame_count) return false;
-    if (self.budget.active() or self.options.trace_vm) return false;
+    if (self.options.trace_vm) return false;
     if (self.budget.fastLoopInterrupted()) return false;
     if (self.stressPending()) return false;
     if (thread.hook != .nil and (thread.hook_line or thread.hook_count != 0 or thread.hook_running)) return false;
     if (self.gc.running and self.gc.shouldRunAuto()) return false;
+    var allowance = self.budget.fastLoopAllowance();
+    if (allowance == 0) return false;
 
     var stack_limit = @min(thread.stack.items.len, self.stackValueLimit());
     var frame_limit = @min(thread.frames.capacity, self.callFrameLimit());
@@ -377,7 +379,9 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
     var base: usize = frame.base;
     // Widen before wrapping subtraction: program counters may be only 32 bits.
     var count_bias: u64 = 0 -% @as(u64, pc);
-    defer self.budget.instructions = self.budget.instructions +| (pc +% count_bias);
+    // Executed instructions already added to the budget, for Lua that general operations run.
+    var flushed: u64 = 0;
+    defer self.budget.instructions = self.budget.instructions +| ((pc +% count_bias) -% flushed);
     var segment_start: u64 = 0;
     // Executed-instruction total after a general operation, which may have changed frames.
     var resync: ?u64 = null;
@@ -385,12 +389,19 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
         if (resync) |executed| {
             @branchHint(.unlikely);
             resync = null;
-            if (!try fastLoopCanResume(self, thread, target_frame_count)) return true;
+            flushed = flushExecuted(self, executed, flushed);
+            if (!try fastLoopCanResume(self, thread, target_frame_count)) {
+                pc = 0;
+                count_bias = flushed;
+                return true;
+            }
+            allowance = flushed +| self.budget.fastLoopAllowance();
             frame_index = thread.frames.items.len - 1;
             frame = &thread.frames.items[frame_index];
             proto = frame.closure.proto;
             pc = frame.pc;
             count_bias = executed -% pc;
+            if (executed >= allowance) return true;
             base = frame.base;
             stack_limit = @min(thread.stack.items.len, self.stackValueLimit());
             frame_limit = @min(thread.frames.capacity, self.callFrameLimit());
@@ -690,7 +701,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                     if (pc < source_pc) {
                         if (frame.has_extra) thread.frame_extras.items[frame_index].last_hook_line = null;
-                        if (self.budget.fastLoopInterrupted()) break :fast_loop;
+                        if (pc +% count_bias >= allowance or self.budget.fastLoopInterrupted()) break :fast_loop;
                     }
                 }
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
@@ -712,7 +723,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                     if (pc < source_pc) {
                         if (frame.has_extra) thread.frame_extras.items[frame_index].last_hook_line = null;
-                        if (self.budget.fastLoopInterrupted()) break :fast_loop;
+                        if (pc +% count_bias >= allowance or self.budget.fastLoopInterrupted()) break :fast_loop;
                     }
                 }
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
@@ -726,7 +737,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                 if (pc < source_pc) {
                     if (frame.has_extra) thread.frame_extras.items[frame_index].last_hook_line = null;
-                    if (self.budget.fastLoopInterrupted()) break :fast_loop;
+                    if (pc +% count_bias >= allowance or self.budget.fastLoopInterrupted()) break :fast_loop;
                 }
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
@@ -740,7 +751,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                     if (pc < source_pc) {
                         if (frame.has_extra) thread.frame_extras.items[frame_index].last_hook_line = null;
-                        if (self.budget.fastLoopInterrupted()) break :fast_loop;
+                        if (pc +% count_bias >= allowance or self.budget.fastLoopInterrupted()) break :fast_loop;
                     }
                 }
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
@@ -757,7 +768,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                     if (pc < source_pc) {
                         if (frame.has_extra) thread.frame_extras.items[frame_index].last_hook_line = null;
-                        if (self.budget.fastLoopInterrupted()) break :fast_loop;
+                        if (pc +% count_bias >= allowance or self.budget.fastLoopInterrupted()) break :fast_loop;
                     }
                 }
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
@@ -786,7 +797,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                     if (pc < source_pc) {
                         if (frame.has_extra) thread.frame_extras.items[frame_index].last_hook_line = null;
-                        if (self.budget.fastLoopInterrupted()) break :fast_loop;
+                        if (pc +% count_bias >= allowance or self.budget.fastLoopInterrupted()) break :fast_loop;
                     }
                 }
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
@@ -833,6 +844,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     pc += 1;
                     frame.pc = @intCast(pc);
                     segment_start = pc +% count_bias;
+                    flushed = flushExecuted(self, segment_start, flushed);
                     try call_mod.callValue(self, thread, op);
                     resync = segment_start;
                     continue :frames;
@@ -883,7 +895,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 count_bias = segment_start;
                 pc = 0;
                 base = callee_base;
-                if (self.budget.fastLoopInterrupted()) return true;
+                if (pc +% count_bias >= allowance or self.budget.fastLoopInterrupted()) return true;
                 continue :frames;
             },
             .vararg => {
@@ -935,6 +947,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 pc += 1;
                 frame.pc = @intCast(pc);
                 segment_start = pc +% count_bias;
+                flushed = flushExecuted(self, segment_start, flushed);
                 try call_mod.tailCallValue(self, thread, op);
                 resync = segment_start;
                 continue :frames;
@@ -956,6 +969,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     pc += 1;
                     frame.pc = @intCast(pc);
                     segment_start = pc +% count_bias;
+                    flushed = flushExecuted(self, segment_start, flushed);
                     try call_mod.returnFromFrame(self, thread, op.first, op.count);
                     resync = segment_start;
                     continue :frames;
@@ -978,7 +992,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 pc = frame.pc;
                 count_bias = segment_start -% pc;
                 base = frame.base;
-                if (frame_index + 1 == return_floor or self.budget.fastLoopInterrupted()) return true;
+                if (frame_index + 1 == return_floor or pc +% count_bias >= allowance or self.budget.fastLoopInterrupted()) return true;
                 continue :frames;
             },
             .tfor_prep => {
@@ -998,7 +1012,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                 if (pc < source_pc) {
                     if (frame.has_extra) thread.frame_extras.items[frame_index].last_hook_line = null;
-                    if (self.budget.fastLoopInterrupted()) break :fast_loop;
+                    if (pc +% count_bias >= allowance or self.budget.fastLoopInterrupted()) break :fast_loop;
                 }
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
@@ -1102,6 +1116,12 @@ fn fastReturnFloor(thread: *const Thread, target_frame_count: usize) usize {
     return target_frame_count;
 }
 
+/// Adds the instructions executed since the last flush to the budget; returns the new flush point.
+inline fn flushExecuted(self: *State, executed: u64, flushed: u64) u64 {
+    self.budget.instructions = self.budget.instructions +| (executed -% flushed);
+    return executed;
+}
+
 /// After a general call from the fast loop: runs a due collector step, then reports
 /// whether the fast loop may continue with the thread's new top frame.
 noinline fn fastLoopCanResume(self: *State, thread: *Thread, target_frame_count: usize) !bool {
@@ -1110,7 +1130,7 @@ noinline fn fastLoopCanResume(self: *State, thread: *Thread, target_frame_count:
     if (frame_count <= target_frame_count) return false;
     if (thread.pending_unwind_error != null or thread.pending_yield_hook_return) return false;
     if (call_mod.hasPendingContinuations(thread) and frame_count <= thread.continuation_frame_count) return false;
-    if (thread.hook != .nil or self.budget.active() or self.options.trace_vm or self.budget.fastLoopInterrupted() or self.stressPending()) return false;
+    if (thread.hook != .nil or self.options.trace_vm or self.budget.fastLoopInterrupted() or self.stressPending()) return false;
     return thread.frames.items[frame_count - 1].pc < thread.frames.items[frame_count - 1].closure.proto.instructions.items.len;
 }
 

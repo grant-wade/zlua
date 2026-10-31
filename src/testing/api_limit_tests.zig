@@ -636,3 +636,54 @@ test "nil error objects reach hosts and message handlers as nil" {
         },
     }
 }
+
+test "instruction budgets end at their exact count through nested calls" {
+    const Host = struct {
+        fn runs(ctx: *api.Context, function: api.Function) !void {
+            var f = function;
+            defer f.deinit();
+            try ctx.callNonYielding(f, .{}, void);
+        }
+    };
+
+    var lua = try api.State.init(a, .{});
+    defer lua.deinit();
+    var runs = try lua.register("runs", struct {
+        fn call(ctx: *api.Context) !void {
+            return Host.runs(ctx, try ctx.arg(0, api.Function));
+        }
+    }.call);
+    defer runs.deinit();
+    try lua.setGlobal("runs", runs);
+    try lua.doString(
+        \\local function step(x) return x + 1 end
+        \\function spin() local x = 0; while true do x = step(x) end end
+        \\function burn(n) local x = 0; for _ = 1, n do x = step(x) end return x end
+        \\function through_native() local x = burn(50000); runs(spin) end
+        \\function through_pcall() burn(50000); pcall(spin); spin() end
+    , .{});
+
+    inline for (.{ "spin", "through_native", "through_pcall" }) |name| {
+        var function = try lua.getGlobal(name, api.Function);
+        defer function.deinit();
+        const before = lua.instructionBudget().used;
+        try expectLimitError(function.callWith(.{}, void, .{ .max_instructions = 2_000_000 }), &lua);
+        try std.testing.expectEqual(@as(u64, 2_000_000), lua.instructionBudget().used - before);
+    }
+
+    var burn = try lua.getGlobal("burn", api.Function);
+    defer burn.deinit();
+    const before = lua.instructionBudget().used;
+    try std.testing.expectEqual(@as(i64, 1000), try burn.callWith(.{@as(i64, 1000)}, i64, .{ .max_instructions = 2_000_000 }));
+    const counted = lua.instructionBudget().used - before;
+    const unbudgeted_before = lua.instructionBudget().used;
+    try std.testing.expectEqual(@as(i64, 1000), try burn.call(.{@as(i64, 1000)}, i64));
+    try std.testing.expectEqual(counted, lua.instructionBudget().used - unbudgeted_before);
+}
+
+test "cumulative instruction limits end at their exact count" {
+    var lua = try api.State.init(a, .{ .limits = .{ .max_instructions = 3_000_000 } });
+    defer lua.deinit();
+    try std.testing.expectError(error.LuaError, lua.doString("while true do end", .{}));
+    try std.testing.expectEqual(@as(u64, 3_000_000), lua.instructionBudget().used);
+}

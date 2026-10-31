@@ -8,6 +8,9 @@ const Thread = types.Thread;
 /// Instructions between interrupt polls; the fast loop also polls at backward jumps and calls.
 const interrupt_poll_interval: u64 = 1024;
 
+/// Instructions before a budget's end that run metered.
+const metered_margin: u64 = 1024;
+
 /// Interrupt request shared with host threads. Heap-allocated so its address
 /// survives moves of the owning state.
 pub const InterruptControl = struct {
@@ -116,9 +119,13 @@ pub const Budget = struct {
         return true;
     }
 
-    /// The uncounted fast loop is disabled while any instruction budget applies.
-    pub inline fn active(budget: *const Budget) bool {
-        return budget.constParentState().options.max_instructions != null or budget.call_deadline != null;
+    /// Instructions the fast loop may run before leaving the rest of a budget to metered execution.
+    pub fn fastLoopAllowance(budget: *const Budget) u64 {
+        var deadline: u64 = std.math.maxInt(u64);
+        if (budget.constParentState().options.max_instructions) |max| deadline = @min(deadline, budget.base +| max);
+        if (budget.call_deadline) |call_deadline| deadline = @min(deadline, call_deadline);
+        if (deadline == std.math.maxInt(u64)) return deadline;
+        return (deadline -| budget.instructions) -| metered_margin;
     }
 
     pub fn used(budget: *const Budget) u64 {
