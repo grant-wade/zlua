@@ -103,6 +103,10 @@ pub fn isEnumSet(comptime T: type) bool {
     return @typeInfo(T) == .@"struct" and @hasDecl(T, "Key") and !@hasDecl(T, "Value") and T == std.EnumSet(T.Key);
 }
 
+fn isBitSet(comptime T: type) bool {
+    return @typeInfo(T) == .@"struct" and @hasDecl(T, "MaskInt") and @hasDecl(T, "bit_length");
+}
+
 fn hasDeclaration(comptime T: type, comptime name: []const u8) bool {
     return switch (@typeInfo(T)) {
         .@"struct", .@"enum", .@"union", .@"opaque" => @hasDecl(T, name),
@@ -122,7 +126,7 @@ pub fn hasToLua(comptime T: type) bool {
 pub fn needsDecoding(comptime T: type) bool {
     if (hasFromLua(T)) return true;
     return switch (@typeInfo(T)) {
-        .@"enum", .array => true,
+        .@"enum", .array, .vector => true,
         .@"struct" => !convert.isOwnedApiValue(T),
         .pointer => |pointer| pointer.size == .slice and pointer.child != u8,
         else => false,
@@ -139,6 +143,7 @@ pub fn defaultValue(comptime T: type) T {
         .optional => null,
         .@"enum" => |info| if (reflection.isExhaustive(info)) std.enums.values(T)[0] else @enumFromInt(0),
         .array => |array| @splat(defaultValue(array.child)),
+        .vector => |vector| @splat(defaultValue(vector.child)),
         .pointer => &.{},
         .@"struct" => std.mem.zeroInit(T, .{}),
         else => @compileError("no default value for " ++ @typeName(T)),
@@ -220,6 +225,7 @@ pub fn Decoder(comptime Context: type) type {
             if (comptime convert.isOwnedApiValue(T)) @compileError("can't decode into the handle type " ++ @typeName(T));
             if (comptime isEnumArray(T)) return self.decodeEnumArray(T, value, out);
             if (comptime isEnumSet(T)) return self.decodeEnumSet(T, value, out);
+            if (comptime isBitSet(T)) @compileError(@typeName(T) ++ " needs `.elements` in its field's lua declaration");
             switch (@typeInfo(T)) {
                 .int => out.* = try self.decodeInt(T, value),
                 .float => out.* = switch (value) {
@@ -243,6 +249,11 @@ pub fn Decoder(comptime Context: type) type {
                     const length = try self.rawLen(table);
                     if (length != array.len) return self.fail("expected {d} values, got {d}", .{ array.len, length });
                     try self.decodeSequence(array.child, table, out);
+                },
+                .vector => |vector| {
+                    var items: [vector.len]vector.child = undefined;
+                    try self.decode([vector.len]vector.child, value, &items);
+                    out.* = items;
                 },
                 .pointer => |pointer| {
                     if (pointer.size != .slice) @compileError("can't decode " ++ @typeName(T));

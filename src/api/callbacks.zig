@@ -84,7 +84,6 @@ pub fn callTyped(comptime function: anytype, ctx: *Context) !void {
     const Return = function_info.return_type orelse void;
     if (Return == void) {
         @call(.auto, function, args);
-        try ctx.returnValues(.{});
         return;
     }
 
@@ -92,7 +91,6 @@ pub fn callTyped(comptime function: anytype, ctx: *Context) !void {
         .error_union => |error_union| {
             if (comptime error_union.payload == void) {
                 try @call(.auto, function, args);
-                try ctx.returnValues(.{});
             } else {
                 var result = try @call(.auto, function, args);
                 defer convert.deinitIfOwned(error_union.payload, &result);
@@ -194,7 +192,6 @@ pub fn callUserdataMethod(comptime T: type, comptime function: anytype, ctx: *Co
     const Return = function_info.return_type orelse void;
     if (Return == void) {
         @call(.auto, function, args);
-        try ctx.returnValues(.{});
         return;
     }
 
@@ -202,7 +199,6 @@ pub fn callUserdataMethod(comptime T: type, comptime function: anytype, ctx: *Co
         .error_union => |error_union| {
             if (comptime error_union.payload == void) {
                 try @call(.auto, function, args);
-                try ctx.returnValues(.{});
             } else {
                 var result = try @call(.auto, function, args);
                 defer convert.deinitIfOwned(error_union.payload, &result);

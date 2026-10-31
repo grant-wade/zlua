@@ -83,6 +83,7 @@ pub fn toRuntimeValue(state: *State, value: anytype) !runtime.Value {
             .{ .string = try state.raw_state.strings.intern(value[0..]) }
         else
             arrayToRuntimeValue(state, value[0..]),
+        .vector => |vector| arrayToRuntimeValue(state, @as([vector.len]vector.child, value)[0..]),
         .@"struct" => |info| structToRuntimeValue(state, value, info),
         .@"enum" => .{ .string = try state.raw_state.strings.intern(std.enums.tagName(T, value) orelse return error.UnsupportedType) },
         .enum_literal => .{ .string = try state.raw_state.strings.intern(@tagName(value)) },

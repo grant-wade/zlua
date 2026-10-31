@@ -358,3 +358,38 @@ test "decoded values round trip through table conversion" {
     try std.testing.expect(copy.usable.contains(.bow) and !copy.usable.contains(.spear));
     try std.testing.expectEqualStrings("b", copy.tags[1]);
 }
+
+test "vectors decode from lists and convert to lists" {
+    const Face = struct {
+        normal: @Vector(3, f32) = @splat(0),
+        points: []const @Vector(2, f32) = &.{},
+    };
+
+    var d = try Decoded.init();
+    defer d.deinit();
+    const face = try d.decode(Face, "return { normal = { 0, 1, 0 }, points = { { 1, 2 }, { 3, 4 } } }");
+    try std.testing.expectEqual(@as(f32, 1), face.normal[1]);
+    try std.testing.expectEqual(@as(f32, 4), face.points[1][1]);
+    try d.expectFailure(Face, "return { normal = { 0, 1 } }", "normal: expected 3 values, got 2");
+
+    try d.lua.setGlobal("normal", face.normal);
+    try d.lua.doString("assert(#normal == 3 and normal[2] == 1)", .{});
+}
+
+test "typed callbacks can set their own return values" {
+    const Host = struct {
+        fn pair(ctx: *api.Context, value: i64) !void {
+            try ctx.returnValues(.{ value, value + 1 });
+        }
+    };
+
+    var lua = try State.init(a, .{});
+    defer lua.deinit();
+    var pair = try lua.registerTyped("pair", Host.pair);
+    defer pair.deinit();
+    try lua.setGlobal("pair", pair);
+    try lua.doString(
+        \\local x, y = pair(4)
+        \\assert(x == 4 and y == 5)
+    , .{});
+}

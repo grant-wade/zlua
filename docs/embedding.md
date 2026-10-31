@@ -438,6 +438,8 @@ defer clamp_fn.deinit();
 try lua.setGlobal("clamp", clamp_fn);
 ```
 
+A typed callback may also take `*zlua.Context`. One that returns `void` keeps whatever it set with `ctx.returnValues`, for results a return type can't express, such as nil or several values.
+
 Callbacks reach host state through `State.setHost`, which attaches one typed pointer to the state. Read it with `ctx.host(T)`, which returns null when the state holds no `*T`, or take a `zlua.Host(T)` parameter in a typed callback. That parameter consumes no Lua argument and raises a Lua error when the pointer is missing:
 
 ```zig
@@ -481,7 +483,7 @@ A callback can call back into Lua with `Context.callNonYielding(function, args, 
 
 ## Decoding Tables
 
-`zlua.decode` reads a Lua value into a Zig value by its type, checking every key. It handles integers, floats, booleans, strings, enums by name, optionals, arrays, slices, structs, `std.EnumArray`, and `std.EnumSet`. Absent keys keep the struct's defaults:
+`zlua.decode` reads a Lua value into a Zig value by its type, checking every key. It handles integers, floats, booleans, strings, enums by name, optionals, arrays, vectors, slices, structs, `std.EnumArray`, and `std.EnumSet`. Absent keys keep the struct's defaults:
 
 ```zig
 const Weapon = struct {
@@ -518,7 +520,7 @@ A struct's `lua` declaration sets options per field, read back with `zlua.fieldO
 
 A type can decode itself by declaring `pub fn fromLua(d: anytype, value: zlua.Value, out: *@This()) zlua.DecodeError!void`, reporting failures with `d.fail(fmt, args)`. For types it can't change, or lookups that need outside data, create a `zlua.Decoder(Context)`. `Context.decodes(T)` picks the types it handles and `Context.decode(d, T, value, out)` decodes them, with the context reachable as `d.context`. A decoder's `push` and `pop` add to the error path, and `decodeStruct` can leave keys for the caller.
 
-Typed callbacks and userdata methods decode enum, array, slice, struct, and `fromLua` parameters the same way, with strings and slices that last until the callback returns. A value that doesn't fit raises `bad argument #2 to 'box' (size[2]: expected a number, got string)`. In a plain callback, `ctx.decodeArg(index, T, allocator)` does the same.
+Typed callbacks and userdata methods decode enum, array, vector, slice, struct, and `fromLua` parameters the same way, with strings and slices that last until the callback returns. A value that doesn't fit raises `bad argument #2 to 'box' (size[2]: expected a number, got string)`. In a plain callback, `ctx.decodeArg(index, T, allocator)` does the same.
 
 ```zig
 fn box(size: [3]f32, options: struct { hollow: bool = false }) void {
