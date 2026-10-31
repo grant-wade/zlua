@@ -911,7 +911,7 @@ test "api callback context currentLine reports the nearest Lua frame through nes
 }
 
 test "api callback context currentLine is null for stripped functions" {
-    var lua = try State.init(std.testing.allocator, .{});
+    var lua = try State.init(std.testing.allocator, .{ .binary_chunks = true });
     defer lua.deinit();
     try installLineCallbacks(&lua);
     try lua.doString(

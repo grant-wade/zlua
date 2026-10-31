@@ -127,6 +127,7 @@ pub fn min(state: *State, thread: *Thread, op: bytecode.Call) !void {
 }
 
 pub fn modf(state: *State, thread: *Thread, op: bytecode.Call) !void {
+    if (runtime.argValue(state, thread, op, 0) == .integer) return state.returnValues(thread, op.base, op.return_count, &.{ runtime.argValue(state, thread, op, 0), .{ .number = 0.0 } });
     const number = try numberArgument(state, thread, op, "math.modf", 0);
     if (!std.math.isFinite(number)) {
         const frac = if (std.math.isNan(number)) number else 0.0;
@@ -189,6 +190,7 @@ pub fn tointeger(state: *State, thread: *Thread, op: bytecode.Call) !void {
 }
 
 pub fn typeValue(state: *State, thread: *Thread, op: bytecode.Call) !void {
+    if (op.arg_count == 0) return state.failArgumentMessage("math.type", 1, "value expected");
     const result: Value = switch (runtime.argValue(state, thread, op, 0)) {
         .integer => .{ .string = try state.strings.intern("integer") },
         .number => .{ .string = try state.strings.intern("float") },

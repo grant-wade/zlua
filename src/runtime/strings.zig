@@ -1,5 +1,6 @@
 const std = @import("std");
 const static_strings = @import("../stdlib/static_strings.zig");
+const budget_mod = @import("budget.zig");
 const State = @import("state.zig").State;
 const table_index = @import("table_index.zig");
 const types = @import("types.zig");
@@ -14,6 +15,10 @@ pub const InternSet = struct {
     hashes: []u32 = &.{},
     entries: []?*const String = &.{},
     count: usize = 0,
+    /// Nonzero after a long probe chain; see `HashPart.salt`.
+    salt: u32 = 0,
+    /// A long probe chain was seen; the next `ensureUnusedCapacity` picks a salt.
+    needs_salt: bool = false,
 
     const static_capacity = std.math.ceilPowerOfTwoAssert(usize, static_strings.strings.len * 2);
     const StaticImage = struct {
@@ -53,13 +58,13 @@ pub const InternSet = struct {
     pub fn clone(self: *const InternSet, allocator: std.mem.Allocator) !InternSet {
         const hashes = try allocator.dupe(u32, self.hashes);
         errdefer allocator.free(hashes);
-        return .{ .hashes = hashes, .entries = try allocator.dupe(?*const String, self.entries), .count = self.count };
+        return .{ .hashes = hashes, .entries = try allocator.dupe(?*const String, self.entries), .count = self.count, .salt = self.salt, .needs_salt = self.needs_salt };
     }
 
     pub inline fn find(self: *const InternSet, bytes: []const u8, hash: u32) ?*const String {
         if (self.entries.len == 0) return null;
         const mask = self.entries.len - 1;
-        var position = hash & mask;
+        var position = table_index.homePosition(hash, self.salt) & mask;
         while (self.entries[position]) |string| : (position = (position + 1) & mask) {
             if (self.hashes[position] == hash and string.eqlBytes(bytes)) return string;
         }
@@ -68,8 +73,9 @@ pub const InternSet = struct {
 
     pub fn ensureUnusedCapacity(self: *InternSet, allocator: std.mem.Allocator, extra: usize) !void {
         const needed = self.count + extra;
-        if (needed + needed / 3 <= self.entries.len) return;
-        const capacity = std.math.ceilPowerOfTwoAssert(usize, @max(16, needed * 2));
+        const rehash = self.needs_salt and self.salt == 0;
+        if (needed + needed / 3 <= self.entries.len and !rehash) return;
+        const capacity = if (rehash) @max(self.entries.len, std.math.ceilPowerOfTwoAssert(usize, @max(16, needed * 2))) else std.math.ceilPowerOfTwoAssert(usize, @max(16, needed * 2));
         const hashes = try allocator.alloc(u32, capacity);
         errdefer allocator.free(hashes);
         const entries = try allocator.alloc(?*const String, capacity);
@@ -78,6 +84,7 @@ pub const InternSet = struct {
         const old_entries = self.entries;
         self.hashes = hashes;
         self.entries = entries;
+        if (rehash) self.salt = table_index.newHashSalt(@intFromPtr(hashes.ptr));
         for (old_hashes, old_entries) |hash, entry| if (entry) |string| self.place(string, hash);
         allocator.free(old_hashes);
         allocator.free(old_entries);
@@ -92,19 +99,21 @@ pub const InternSet = struct {
 
     fn place(self: *InternSet, string: *const String, hash: u32) void {
         const mask = self.entries.len - 1;
-        var position = hash & mask;
-        while (self.entries[position] != null) position = (position + 1) & mask;
+        var position = table_index.homePosition(hash, self.salt) & mask;
+        var probes: u32 = 0;
+        while (self.entries[position] != null) : (probes += 1) position = (position + 1) & mask;
+        if (probes > table_index.long_probe_chain) self.needs_salt = true;
         self.hashes[position] = hash;
         self.entries[position] = string;
     }
 
     pub fn remove(self: *InternSet, string: *const String) void {
         const mask = self.entries.len - 1;
-        var hole = string.hash & mask;
+        var hole = table_index.homePosition(string.hash, self.salt) & mask;
         while (self.entries[hole] != string) hole = (hole + 1) & mask;
         var next = (hole + 1) & mask;
         while (self.entries[next] != null) : (next = (next + 1) & mask) {
-            const home = self.hashes[next] & mask;
+            const home = table_index.homePosition(self.hashes[next], self.salt) & mask;
             if (((next -% home) & mask) >= ((next -% hole) & mask)) {
                 self.hashes[hole] = self.hashes[next];
                 self.entries[hole] = self.entries[next];
@@ -204,6 +213,7 @@ pub const Strings = struct {
         errdefer state.objects().free(memory);
         const string: *String = @ptrCast(memory.ptr);
         string.* = .{ .len = len };
+        state.budget.note(budget_mod.cost.copied(len));
         try state.registerAllocation("string_allocations", string);
         state.gc.noteAllocation(string.gcBytes());
         return string;

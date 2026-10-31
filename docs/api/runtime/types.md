@@ -15,6 +15,7 @@
 - [frontend.token](../frontend/token.md)
 - [frontend.diagnostic](../frontend/diagnostic.md)
 - [frontend.lexer](../frontend/lexer.md)
+- [stack_guard](../stack_guard.md)
 - [frontend.ast](../frontend/ast.md)
 - [frontend.parser](../frontend/parser.md)
 - [compile](../compile.md)
@@ -29,26 +30,27 @@
 - [stdlib](../stdlib.md)
 - [stdlib.base](../stdlib/base.md)
 - [runtime.call](../runtime/call.md)
-- [stdlib.static_strings](../stdlib/static_strings.md)
-- [runtime.table_index](../runtime/table_index.md)
-- [runtime.value](../runtime/value.md)
-- [runtime.number_format](../runtime/number_format.md)
-- [runtime.coroutine](../runtime/coroutine.md)
+- [runtime.budget](../runtime/budget.md)
+- [runtime.failure](../runtime/failure.md)
 - [runtime.debug](../runtime/debug.md)
 - [runtime.io](../runtime/io.md)
 - [runtime.host](../runtime/host.md)
+- [runtime.value](../runtime/value.md)
+- [runtime.number_format](../runtime/number_format.md)
+- [stdlib.static_strings](../stdlib/static_strings.md)
+- [runtime.table_index](../runtime/table_index.md)
 - [runtime.metatable](../runtime/metatable.md)
 - [runtime.rollback](../runtime/rollback.md)
 - [runtime.strings](../runtime/strings.md)
 - [runtime.operators](../runtime/operators.md)
-- [runtime.failure](../runtime/failure.md)
-- [runtime.load](../runtime/load.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.gc](../runtime/gc.md)
 - [runtime.entry](../runtime/entry.md)
+- [runtime.coroutine](../runtime/coroutine.md)
+- [runtime.load](../runtime/load.md)
+- [runtime.upvalue](../runtime/upvalue.md)
 - [runtime.system](../runtime/system.md)
 - [runtime.timezone](../runtime/timezone.md)
-- [runtime.upvalue](../runtime/upvalue.md)
 - [runtime.index](../runtime/index.md)
 - [stdlib.table](../stdlib/table.md)
 - [stdlib.string](../stdlib/string.md)
@@ -68,7 +70,6 @@
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
-- [runtime.budget](../runtime/budget.md)
 - [runtime.object_pool](../runtime/object_pool.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
@@ -121,6 +122,8 @@
 - [testing.parallel](../testing/parallel.md)
 - [testing.extension_runner](../testing/extension_runner.md)
 - [testing.official_suite](../testing/official_suite.md)
+- [testing.sandbox_runner](../testing/sandbox_runner.md)
+- [testing.generators](../testing/generators.md)
 
 </details>
 
@@ -183,6 +186,10 @@
 - [UserdataDeinit](#const-userdatadeinit)
 - [UserdataSnapshotCopy](#const-userdatasnapshotcopy)
 - [ApiCallbackDispatchFn](#const-apicallbackdispatchfn)
+
+## Variables
+
+- [stress_stack_moves](#var-stress_stack_moves)
 
 ## Aliases
 
@@ -1641,6 +1648,8 @@ pub const Userdata = struct {
     finalizer_data: ?*const anyopaque = null,
     deinit_fn: ?UserdataDeinit = null,
     finalized: bool = false,
+    /// An auto-bound `__gc` ran; typed access to the payload now fails.
+    closed: bool = false,
     finalization_pending: bool = false,
     finalizer_next: ?*Userdata = null,
     /// Registered for its metatable's `__gc`, like `Table.finalizer_registered`.
@@ -1907,6 +1916,16 @@ pub fn scratchRegister(self: *const Thread) u32
 ```
 
 References: [`Thread`](#type-thread)
+
+<a id="var-stress_stack_moves"></a>
+
+## stress_stack_moves
+
+[Test](../compile/bytecode.md#type-test) switch: every `ensureStack` moves the stack and poisons the old block.
+
+```zig
+pub var stress_stack_moves: bool = false;
+```
 
 <a id="type-threadstatus"></a>
 

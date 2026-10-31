@@ -15,6 +15,7 @@
 - [frontend.token](frontend/token.md)
 - [frontend.diagnostic](frontend/diagnostic.md)
 - [frontend.lexer](frontend/lexer.md)
+- [stack_guard](stack_guard.md)
 - [frontend.ast](frontend/ast.md)
 - [frontend.parser](frontend/parser.md)
 - [compile](compile.md)
@@ -29,26 +30,27 @@
 - [stdlib](stdlib.md)
 - [stdlib.base](stdlib/base.md)
 - [runtime.call](runtime/call.md)
-- [stdlib.static_strings](stdlib/static_strings.md)
-- [runtime.table_index](runtime/table_index.md)
-- [runtime.value](runtime/value.md)
-- [runtime.number_format](runtime/number_format.md)
-- [runtime.coroutine](runtime/coroutine.md)
+- [runtime.budget](runtime/budget.md)
+- [runtime.failure](runtime/failure.md)
 - [runtime.debug](runtime/debug.md)
 - [runtime.io](runtime/io.md)
 - [runtime.host](runtime/host.md)
+- [runtime.value](runtime/value.md)
+- [runtime.number_format](runtime/number_format.md)
+- [stdlib.static_strings](stdlib/static_strings.md)
+- [runtime.table_index](runtime/table_index.md)
 - [runtime.metatable](runtime/metatable.md)
 - [runtime.rollback](runtime/rollback.md)
 - [runtime.strings](runtime/strings.md)
 - [runtime.operators](runtime/operators.md)
-- [runtime.failure](runtime/failure.md)
-- [runtime.load](runtime/load.md)
 - [runtime.vm](runtime/vm.md)
 - [runtime.gc](runtime/gc.md)
 - [runtime.entry](runtime/entry.md)
+- [runtime.coroutine](runtime/coroutine.md)
+- [runtime.load](runtime/load.md)
+- [runtime.upvalue](runtime/upvalue.md)
 - [runtime.system](runtime/system.md)
 - [runtime.timezone](runtime/timezone.md)
-- [runtime.upvalue](runtime/upvalue.md)
 - [runtime.index](runtime/index.md)
 - [stdlib.table](stdlib/table.md)
 - [stdlib.string](stdlib/string.md)
@@ -68,7 +70,6 @@
 - [stdlib.msgpack](stdlib/msgpack.md)
 - [stdlib.csv](stdlib/csv.md)
 - [stdlib.fs](stdlib/fs.md)
-- [runtime.budget](runtime/budget.md)
 - [runtime.object_pool](runtime/object_pool.md)
 - [runtime.execute](runtime/execute.md)
 - [testing.process](testing/process.md)
@@ -121,6 +122,8 @@
 - [testing.parallel](testing/parallel.md)
 - [testing.extension_runner](testing/extension_runner.md)
 - [testing.official_suite](testing/official_suite.md)
+- [testing.sandbox_runner](testing/sandbox_runner.md)
+- [testing.generators](testing/generators.md)
 
 </details>
 
@@ -129,6 +132,7 @@
 - [lex](#fn-lex)
 - [parse](#fn-parse)
 - [parseWithDiagnostic](#fn-parsewithdiagnostic)
+- [parseGuarded](#fn-parseguarded)
 
 ## Aliases
 
@@ -136,6 +140,7 @@
 - [Token](#alias-token)
 - [TokenTag](#alias-tokentag)
 - [Ast](#alias-ast)
+- [StackGuard](#alias-stackguard)
 
 ## Imports
 
@@ -145,6 +150,7 @@
 - [lexer](#import-lexer) `@import("frontend/lexer.zig")`
 - [ast](#import-ast) `@import("frontend/ast.zig")`
 - [parser](#import-parser) `@import("frontend/parser.zig")`
+- [stack_guard](#import-stack_guard) `@import("stack_guard.zig")`
 
 <a id="import-source"></a>
 
@@ -234,6 +240,24 @@ pub const Ast = ast.Ast;
 
 References: [`ast.Ast`](frontend/ast.md#type-ast)
 
+<a id="import-stack_guard"></a>
+
+## stack_guard
+
+```zig
+pub const stack_guard = @import("stack_guard.zig");
+```
+
+<a id="alias-stackguard"></a>
+
+## StackGuard
+
+```zig
+pub const StackGuard = stack_guard.StackGuard;
+```
+
+References: [`stack_guard.StackGuard`](stack_guard.md#type-stackguard)
+
 <a id="fn-lex"></a>
 
 ## lex
@@ -263,4 +287,14 @@ pub fn parseWithDiagnostic(allocator: std.mem.Allocator, source_text: []const u8
 ```
 
 References: [`errors.Diagnostic`](errors.md#type-diagnostic), [`Ast`](#alias-ast)
+
+<a id="fn-parseguarded"></a>
+
+## parseGuarded
+
+```zig
+pub fn parseGuarded(allocator: std.mem.Allocator, source_text: []const u8, error_diagnostic: *?errors.Diagnostic, stack: StackGuard) !Ast
+```
+
+References: [`errors.Diagnostic`](errors.md#type-diagnostic), [`StackGuard`](#alias-stackguard), [`Ast`](#alias-ast)
 

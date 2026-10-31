@@ -46,6 +46,8 @@ pub const UserdataType = struct {
     /// Struct whose public functions with a `*T` or `*const T` receiver become methods; `T` by
     /// default. Names starting with `__` become metamethods.
     methods: ?type = null,
+    /// Lets `getmetatable` return the metatable instead of false.
+    expose_metatable: bool = false,
 };
 
 /// Snapshot copy/dispose hooks for userdata payloads. Copies must own all nested storage and
@@ -89,6 +91,7 @@ pub fn Userdata(comptime T: type) type {
         pub fn withRead(self: @This(), context: anytype, comptime callback: anytype) !ScopeResult(@TypeOf(callback)) {
             comptime checkScopeResult(ScopeResult(@TypeOf(callback)));
             const raw = try self.rawUserdata();
+            if (raw.closed) return error.UserdataClosed;
             var scope: runtime_types.UserdataScope = undefined;
             try beginScope(&self.ref.state.raw_state, &scope, raw, true);
             defer endScope(&self.ref.state.raw_state, &scope);
@@ -100,6 +103,7 @@ pub fn Userdata(comptime T: type) type {
         pub fn withMut(self: @This(), context: anytype, comptime callback: anytype) !ScopeResult(@TypeOf(callback)) {
             comptime checkScopeResult(ScopeResult(@TypeOf(callback)));
             const raw = try self.rawUserdata();
+            if (raw.closed) return error.UserdataClosed;
             var scope: runtime_types.UserdataScope = undefined;
             try beginScope(&self.ref.state.raw_state, &scope, raw, false);
             defer endScope(&self.ref.state.raw_state, &scope);
@@ -158,12 +162,16 @@ pub fn Userdata(comptime T: type) type {
                 fn call(ctx: *Context) !void {
                     try callbacks.callUserdataMethod(T, function, ctx);
                 }
+
+                fn callFinalizer(ctx: *Context) !void {
+                    try callbacks.callUserdataFinalizer(T, function, ctx);
+                }
             };
 
             const callback_name = try std.fmt.allocPrint(self.ref.state.allocator(), "{s}.{s}", .{ @typeName(T), name });
             defer self.ref.state.allocator().free(callback_name);
 
-            var metamethod_function = try callbacks.create(self.ref.state, callback_name, Wrapper.call);
+            var metamethod_function = try callbacks.create(self.ref.state, callback_name, if (std.mem.eql(u8, name, "__gc")) Wrapper.callFinalizer else Wrapper.call);
             defer metamethod_function.deinit();
 
             const metatable = try self.metatableValue();
@@ -174,8 +182,9 @@ pub fn Userdata(comptime T: type) type {
         fn initMetatable(self: @This()) !void {
             const raw = try self.rawUserdata();
             if (raw.metatable != null) return;
-            const metatable = self.ref.state.raw_state.newTableWithHints(0, 3) catch |err| return errors.captureLuaError(self.ref.state, err);
+            const metatable = self.ref.state.raw_state.newTableWithHints(0, 4) catch |err| return errors.captureLuaError(self.ref.state, err);
             const index = self.ref.state.raw_state.newTableWithHints(0, 4) catch |err| return errors.captureLuaError(self.ref.state, err);
+            try self.ref.state.raw_state.setTableRaw(metatable.table, .{ .string = try self.ref.state.raw_state.strings.intern("__metatable") }, .{ .boolean = false });
             try self.ref.state.raw_state.setTableRaw(metatable.table, .{ .string = try self.ref.state.raw_state.strings.intern("__name") }, .{ .string = try self.ref.state.raw_state.strings.intern(@typeName(T)) });
             try self.ref.state.raw_state.setTableRaw(metatable.table, .{ .string = try self.ref.state.raw_state.strings.intern("__index") }, index);
             rollback_runtime.touch(raw);
@@ -222,8 +231,9 @@ pub fn define(state: *State, comptime T: type, comptime options: UserdataType) !
     if (definedMetatable(state, T) != null) return error.UserdataTypeDefined;
     const raw = &state.raw_state;
     const name = options.name orelse @typeName(T);
-    const metatable = raw.newTableWithHints(0, 3) catch |err| return errors.captureLuaError(state, err);
+    const metatable = raw.newTableWithHints(0, 4) catch |err| return errors.captureLuaError(state, err);
     const index = raw.newTableWithHints(0, 4) catch |err| return errors.captureLuaError(state, err);
+    if (!options.expose_metatable) try raw.setTableRaw(metatable.table, .{ .string = try raw.strings.intern("__metatable") }, .{ .boolean = false });
     try raw.setTableRaw(metatable.table, .{ .string = try raw.strings.intern("__name") }, .{ .string = try raw.strings.intern(name) });
     try raw.setTableRaw(metatable.table, .{ .string = try raw.strings.intern("__index") }, index);
     const types = raw.library_tables.get(.userdata_types) orelse blk: {
@@ -240,6 +250,7 @@ pub fn define(state: *State, comptime T: type, comptime options: UserdataType) !
         if (comptime isMethod(T, @TypeOf(member))) {
             const Wrapper = struct {
                 fn call(ctx: *Context) !void {
+                    if (comptime std.mem.eql(u8, decl, "__gc")) return callbacks.callUserdataFinalizer(T, member, ctx);
                     try callbacks.callUserdataMethod(T, member, ctx);
                 }
             };
@@ -415,6 +426,7 @@ fn setSnapshotHooks(comptime T: type, raw: *runtime.Userdata, hooks: ?UserdataSn
 
 pub fn payloadPtr(comptime T: type, raw: *runtime.Userdata) !*T {
     if (raw.type_id != typeId(T)) return error.TypeMismatch;
+    if (raw.closed) return error.UserdataClosed;
     if (raw.payload) |p| if (p.snapshot_tracking == .scoped) return error.ScopedAccessRequired;
     return @ptrCast(@alignCast(raw.ptr));
 }

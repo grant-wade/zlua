@@ -22,6 +22,7 @@ const upvalue_mod = @import("upvalue.zig");
 const value_mod = @import("value.zig");
 const vm_mod = @import("vm.zig");
 
+const stack_guard = @import("../stack_guard.zig");
 const bytecode = compile.bytecode;
 const proto_mod = compile.proto;
 pub const RuntimeError = types.RuntimeError;
@@ -120,6 +121,14 @@ pub const StateOptions = struct {
     max_stack_values: ?usize = null,
     max_call_frames: ?usize = null,
     max_instructions: ?u64 = null,
+    /// Native stack bytes a host call may use before Lua sees `C stack overflow`.
+    max_native_stack: usize = stack_guard.default_max_bytes,
+    /// Instructions for finalizers run by each `deinit` or host-driven collection; null is unlimited.
+    max_finalizer_instructions: ?u64 = null,
+    /// Bytes written to stdout and stderr; null is unlimited.
+    max_output_bytes: ?u64 = null,
+    /// Lets `load` accept binary chunks.
+    binary_chunks: bool = true,
     debug_errors: bool = false,
     trace_vm: bool = false,
 };
@@ -137,11 +146,25 @@ pub const HostErrorHandler = struct {
 
 pub const State = struct {
     pub const max_c_calls = lua_max_c_calls;
+
+    /// The guard of the running host call, or a new one when no call is active.
+    pub inline fn entryStackGuard(self: *const State) stack_guard.StackGuard {
+        var guard = if (self.execution_depth == 0 and self.native_invoke_depth == 0) stack_guard.StackGuard.start(self.options.max_native_stack) else self.native_stack;
+        if (self.budget.interrupt) |control| guard.interrupt = &control.requested;
+        return guard;
+    }
+
     rollback: ?*rollback_mod.Journal = null,
     userdata_scope: ?*types.UserdataScope = null,
     value_roots: ?*types.ValueRoots = null,
     /// Includes direct interpreter entry, nested calls, and suspended host callbacks.
     execution_depth: usize = 0,
+    /// Callables invoked from native code that have not returned.
+    native_invoke_depth: usize = 0,
+    /// Valid while `execution_depth` or `native_invoke_depth` is nonzero.
+    native_stack: stack_guard.StackGuard = .{},
+    /// Bytes counted against `max_output_bytes`.
+    output_bytes: u64 = 0,
     allocator_lifetime: ?*types.AllocatorLifetime = null,
     snapshot_busy: bool = false,
     discarding: bool = false,

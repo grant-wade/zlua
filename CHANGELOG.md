@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+### Sandbox
+
+- Long `f()()`, `or`, `and`, and arithmetic chains no longer overflow the native stack in the compiler.
+- `toml.read` rejects nesting deeper than 64 levels instead of overflowing the native stack.
+- `Limits.max_native_stack` limits native stack use, raising `C stack overflow`.
+- `max_instructions` and per-call budgets charge native work by its size.
+- The compiler polls for interrupts.
+- `Limits.max_finalizer_instructions` bounds Lua `__gc` run by `deinit`, `collect`, and `stepGc`, and defaults to 1,000,000.
+- `Limits.max_output_bytes` limits Lua output, with `State.outputBytes` and `State.resetOutputLimit`.
+- `Limits.untrusted` is a preset for code you don't trust.
+- Garbage is collected before `max_memory` fails an allocation.
+- `load` rejects binary chunks in embedded states unless `Options.binary_chunks` is set.
+- `getmetatable` returns false for userdata metatables zlua creates, unless `UserdataType.expose_metatable` is set.
+- A bound `__gc` runs at most once per object, and typed access afterward fails with `error.UserdataClosed`.
+- `decode` rejects values nested more than 200 levels deep.
+- A numeric `for` over non-numbers in a binary chunk raises an error message.
+- Strings chosen to collide no longer make table and string interning operations slow.
+- A crafted TZif file no longer overflows an integer in the timezone parser.
+- `host_dir` filesystems reject drive-relative paths, alternate data streams, and device names on Windows.
+
+### Lua Compatibility
+
+- Indexing a non-table with a nil or NaN key raises an error, and such keys reach `__index`.
+- `__index` functions receive float keys unchanged.
+- `math.type` requires an argument, and `math.modf` keeps integers exact.
+- `select` with an index past its arguments returns nothing.
+- `setmetatable` requires its second argument, and `error` checks its level.
+- `tonumber`, `string.gmatch`, `utf8.codepoint`, and `utf8.offset` check arguments in Lua's order.
+- `string.pack` reports bad arguments as argument errors, and format strings end at a NUL byte.
+- `coroutine.close` on the main thread and missing expressions after `return` use Lua's messages.
+
 ### Embedding API
 
 - `Context.currentLine` returns the line of the running Lua function.

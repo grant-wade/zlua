@@ -151,6 +151,8 @@ fn parseArgs(args: []const []const u8) !Options {
             options.show_zlua = true;
         } else if (std.mem.eql(u8, arg, "--gc-step-stress")) {
             options.gc_step_stress = true;
+        } else if (std.mem.eql(u8, arg, "--stack-stress")) {
+            @import("../runtime/types.zig").stress_stack_moves = true;
         } else if (std.mem.eql(u8, arg, "--gc-stress")) {
             options.gc_stress = true;
         } else if (std.mem.eql(u8, arg, "--debug-errors")) {

@@ -1,4 +1,5 @@
 const std = @import("std");
+const budget_mod = @import("budget.zig");
 const compile = @import("../compile.zig");
 const stdlib = @import("../stdlib.zig");
 const call_mod = @import("call.zig");
@@ -46,9 +47,11 @@ pub fn runThreadUntil(self: *State, thread: *Thread, target_frame_count: usize) 
 fn runThreadLoop(self: *State, thread: *Thread, target_frame_count: usize) anyerror!void {
     defer self.gc.syncThreadStorage(thread);
     self.gc.rememberObject(.{ .thread = thread });
+    self.native_stack = self.entryStackGuard();
     self.execution_depth += 1;
     defer self.execution_depth -= 1;
     if (self.execution_depth >= lua_max_c_calls) try call_mod.checkCStack(self, thread);
+    if (self.native_stack.exceeded()) try call_mod.failCStackOverflow(self, thread);
     try rollback_mod.threadWritable(thread);
     while (thread.frames.items.len > target_frame_count) {
         if (thread.pending_unwind_error != null or thread.pending_yield_hook_return or call_mod.hasPendingContinuations(thread)) {
@@ -99,6 +102,9 @@ fn runThreadLoop(self: *State, thread: *Thread, target_frame_count: usize) anyer
         if (self.gc.running and (self.gc.shouldRunAuto() or self.stressPending())) try self.gc.autoStep(thread);
     }
 }
+
+/// Largest vararg copy the fast loop makes.
+const fast_vararg_limit = 32;
 
 fn executeInstruction(self: *State, thread: *Thread, proto: *const proto_mod.Proto, instruction: bytecode.Instruction) anyerror!void {
     const frame = &thread.frames.items[thread.frames.items.len - 1];
@@ -222,6 +228,7 @@ fn executeInstruction(self: *State, thread: *Thread, proto: *const proto_mod.Pro
             const lhs = stack[base + op.left];
             const rhs = stack[base + op.right];
             if (!operators_mod.equalityHasMetamethod(lhs, rhs)) {
+                operators_mod.noteStringComparison(self, lhs, rhs);
                 stack[base + op.dest] = .{ .boolean = valuesEqual(lhs, rhs) };
             } else {
                 try operators_mod.equalValuesToRegister(self, thread, op);
@@ -546,6 +553,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 const op = instructions[pc].eq;
                 const lhs = stack[op.left];
                 const rhs = stack[op.right];
+                if (operators_mod.comparesLongStrings(lhs, rhs)) break :fast_loop;
                 if (operators_mod.equalityHasMetamethod(lhs, rhs) and !valuesEqual(lhs, rhs)) break :fast_loop;
                 stack[op.dest] = .{ .boolean = valuesEqual(lhs, rhs) };
                 pc += 1;
@@ -553,6 +561,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             },
             .lt => {
                 const op = instructions[pc].lt;
+                if (operators_mod.comparesLongStrings(stack[op.left], stack[op.right])) break :fast_loop;
                 const result = operators_mod.rawCompare(stack[op.left], stack[op.right], .lt) orelse break :fast_loop;
                 stack[op.dest] = .{ .boolean = result };
                 pc += 1;
@@ -560,6 +569,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             },
             .le => {
                 const op = instructions[pc].le;
+                if (operators_mod.comparesLongStrings(stack[op.left], stack[op.right])) break :fast_loop;
                 const result = operators_mod.rawCompare(stack[op.left], stack[op.right], .le) orelse break :fast_loop;
                 stack[op.dest] = .{ .boolean = result };
                 pc += 1;
@@ -712,6 +722,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 const op = instructions[pc].compare_branch;
                 const lhs = stack[op.left];
                 const rhs = stack[op.right];
+                if (operators_mod.comparesLongStrings(lhs, rhs)) break :fast_loop;
                 const result = if (lhs == .integer and rhs == .integer) switch (op.op) {
                     .eq => lhs.integer == rhs.integer,
                     .lt => lhs.integer < rhs.integer,
@@ -904,7 +915,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 if (proto.named_vararg and !frame.named_vararg_readonly) break :fast_loop;
                 const available = frame.vararg_count;
                 const count: usize = if (op.count == bytecode.multret_count) available else op.count;
-                if (base + op.dest + count > stack_limit) break :fast_loop;
+                if (count > fast_vararg_limit or base + op.dest + count > stack_limit) break :fast_loop;
                 const copied = @min(count, available);
                 for (0..copied) |index| stack[op.dest + index] = thread.stack.items[frame.vararg_base + index];
                 clearRegisters(stack[op.dest + copied .. op.dest + count]);
@@ -1385,9 +1396,12 @@ fn forLoop(self: *State, thread: *Thread, op: bytecode.ForLoop) !void {
         return;
     }
 
-    const next = (try toNumber(current)) + (try toNumber(step));
+    const current_number = toNumber(current) catch return failure_mod.failRuntimeDetail(self, thread, "'for' initial value must be a number");
+    const limit_number = toNumber(limit) catch return failure_mod.failRuntimeDetail(self, thread, "'for' limit must be a number");
+    const step_number = toNumber(step) catch return failure_mod.failRuntimeDetail(self, thread, "'for' step must be a number");
+    const next = current_number + step_number;
     stack[absolute_base] = .{ .number = next };
-    if (forLoopContinuesNumber(next, try toNumber(limit), try toNumber(step))) {
+    if (forLoopContinuesNumber(next, limit_number, step_number)) {
         if (frame.closure.proto.has_to_close_locals) {
             try jumpThread(self, thread, op.offset, false);
         } else {
@@ -1403,6 +1417,7 @@ fn setList(self: *State, thread: *Thread, op: bytecode.SetList) !void {
     const frame = thread.frames.items[thread.frames.items.len - 1];
     const source_start = frame.base + op.first;
     const count: usize = if (op.count == bytecode.multret_count) try call_mod.resolveResultCount(self, thread, source_start, bytecode.multret_count) else op.count;
+    self.budget.note(budget_mod.cost.registers(count));
     const table_value = get(self, thread, op.table);
     if (try fastSetListRaw(self, thread, table_value, source_start, count, op.start_index)) return;
     for (0..count) |index| {

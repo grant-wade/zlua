@@ -1,4 +1,5 @@
 const std = @import("std");
+const budget_mod = @import("budget.zig");
 const compile = @import("../compile.zig");
 const errors = @import("../errors.zig");
 const frontend = @import("../frontend.zig");
@@ -31,21 +32,26 @@ pub fn loadSourceAsClosureNamed(self: *State, source: []const u8, source_name: ?
 }
 
 pub fn loadSourceAsClosureNamedEnv(self: *State, source: []const u8, source_name: ?[]const u8, environment: Value) !Value {
+    if (self.execution_depth != 0) try self.budget.charge(budget_mod.cost.compiled(source.len));
+    const stack = self.entryStackGuard();
     var diagnostic: ?errors.Diagnostic = null;
-    var tree = frontend.parseWithDiagnostic(self.allocator, source, &diagnostic) catch |err| switch (err) {
+    var tree = frontend.parseGuarded(self.allocator, source, &diagnostic, stack) catch |err| switch (err) {
         error.OutOfMemory => return err,
+        error.Interrupted => return loadInterrupted(self),
         else => return failLoadDiagnostic(self, source_name, source, diagnostic, "cannot load source"),
     };
     defer tree.deinit();
 
-    compile.resolver.resolveWithDiagnostic(self.allocator, &tree, &diagnostic) catch |err| switch (err) {
+    compile.resolver.resolveGuarded(self.allocator, &tree, &diagnostic, stack) catch |err| switch (err) {
         error.OutOfMemory => return err,
+        error.Interrupted => return loadInterrupted(self),
         else => return failLoadDiagnostic(self, source_name, source, diagnostic, "cannot resolve source"),
     };
     const proto = try self.allocator.create(proto_mod.Proto);
     errdefer self.allocator.destroy(proto);
-    proto.* = compile.compileWithDiagnostic(self.allocator, &tree, &diagnostic) catch |err| switch (err) {
+    proto.* = compile.compileGuarded(self.allocator, &tree, &diagnostic, stack) catch |err| switch (err) {
         error.OutOfMemory => return err,
+        error.Interrupted => return loadInterrupted(self),
         else => return failLoadDiagnostic(self, source_name, source, diagnostic, "cannot compile source"),
     };
     errdefer proto.deinit();
@@ -58,7 +64,13 @@ pub fn loadSourceAsClosureNamedEnv(self: *State, source: []const u8, source_name
     return .{ .closure = closure };
 }
 
+fn loadInterrupted(self: *State) error{Interrupted} {
+    if (self.execution_depth == 0) self.budget.consumeInterrupt();
+    return error.Interrupted;
+}
+
 pub fn loadBinaryDump(self: *State, source: []const u8, environment: Value) !Value {
+    if (self.execution_depth != 0) try self.budget.charge(budget_mod.cost.scanned(source.len));
     var header = std.ArrayList(u8).empty;
     defer header.deinit(self.allocator);
     try appendBinaryChunkHeader(self.allocator, &header);

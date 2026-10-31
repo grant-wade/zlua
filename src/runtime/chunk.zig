@@ -20,6 +20,13 @@ const min_upvalue_bytes: usize = 4 + 1 + 2;
 const min_error_site_bytes: usize = 8 + 8 + 1 + 4 + 1;
 const min_origin_bytes: usize = 1;
 
+pub fn appendBinaryChunk(allocator: std.mem.Allocator, out: *std.ArrayList(u8), proto: *const proto_mod.Proto) !void {
+    try appendBinaryChunkHeader(allocator, out);
+    try out.appendSlice(allocator, binary_chunk_payload_magic);
+    try appendBinaryBool(allocator, out, false);
+    try appendBinaryProto(allocator, out, proto, null, false);
+}
+
 pub fn appendBinaryChunkHeader(allocator: std.mem.Allocator, out: *std.ArrayList(u8)) !void {
     try out.appendSlice(allocator, binary_chunk_signature);
     try out.append(allocator, 0x55);

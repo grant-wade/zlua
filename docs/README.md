@@ -6,6 +6,7 @@ you are working on zlua itself, start with [Contributing](../CONTRIBUTING.md).
 | Guide | Covers |
 | --- | --- |
 | [Embedding](embedding.md) | Creating states, loading code, callbacks, decoding, userdata, capabilities, and limits. |
+| [Running Untrusted Lua](security.md) | What the sandbox guarantees, recommended limits, and host responsibilities. |
 | [Snapshots](snapshots.md) | Baselines, reset, threads, allocators, and userdata payloads. |
 | [Lua Libraries and Extensions](stdlib.md) | Library selection, host-facing behavior, `fs`, and data-format libraries. |
 | [Architecture](architecture.md) | Source layout, compiler pipeline, runtime, startup, GC, and API boundaries. |

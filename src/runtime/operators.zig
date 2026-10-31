@@ -1,4 +1,5 @@
 const std = @import("std");
+const budget_mod = @import("budget.zig");
 const compile = @import("../compile.zig");
 const call_mod = @import("call.zig");
 const failure_mod = @import("failure.zig");
@@ -43,6 +44,14 @@ pub fn lengthInteger(self: *State, thread: *Thread, value: Value) !i64 {
 
 pub fn lengthToInteger(self: *State, length: Value) !i64 {
     return value_mod.coerceToInteger(length) orelse self.failLibrary("object length is not an integer");
+}
+
+fn reserveConcat(self: *State, thread: *Thread, operands: []const Value) !void {
+    var total: usize = 0;
+    for (operands) |operand| {
+        if (operand == .string) total +|= operand.string.len;
+    }
+    try self.gc.reserve(thread, total);
 }
 
 fn concatValues(self: *State, lhs: Value, rhs: Value) !Value {
@@ -98,6 +107,7 @@ pub fn concatRangeToRegister(self: *State, thread: *Thread, op: bytecode.ConcatR
 /// `__concat` can resume.
 pub fn finishConcatRange(self: *State, thread: *Thread, dest: usize, first: usize, count_in: usize) !void {
     var count = count_in;
+    try reserveConcat(self, thread, thread.stack.items[first .. first + count]);
     while (count > 1) {
         const operands = thread.stack.items[first .. first + count];
         var run: usize = 0;
@@ -157,6 +167,7 @@ pub fn unaryOpToRegister(self: *State, thread: *Thread, op: bytecode.Unary, kind
 pub fn equalValuesToRegister(self: *State, thread: *Thread, op: bytecode.Binary) !void {
     const lhs = vm_mod.get(self, thread, op.left);
     const rhs = vm_mod.get(self, thread, op.right);
+    noteStringComparison(self, lhs, rhs);
     if (valuesEqual(lhs, rhs)) {
         vm_mod.set(self, thread, op.dest, .{ .boolean = true });
         return;
@@ -173,9 +184,19 @@ pub fn equalValuesToRegister(self: *State, thread: *Thread, op: bytecode.Binary)
     vm_mod.set(self, thread, op.dest, .{ .boolean = truthy(result) });
 }
 
+/// True when comparing these values reads two long strings.
+pub inline fn comparesLongStrings(lhs: Value, rhs: Value) bool {
+    return lhs == .string and rhs == .string and lhs.string.len > types.String.short_limit and rhs.string.len > types.String.short_limit;
+}
+
+pub inline fn noteStringComparison(self: *State, lhs: Value, rhs: Value) void {
+    if (comparesLongStrings(lhs, rhs)) self.budget.note(budget_mod.cost.scanned(@min(lhs.string.len, rhs.string.len)));
+}
+
 pub fn compareValuesToRegister(self: *State, thread: *Thread, op: bytecode.Binary, kind: CompareOp) !void {
     const lhs = vm_mod.get(self, thread, op.left);
     const rhs = vm_mod.get(self, thread, op.right);
+    noteStringComparison(self, lhs, rhs);
     if (rawCompare(lhs, rhs, kind)) |result| {
         vm_mod.set(self, thread, op.dest, .{ .boolean = result });
         return;
@@ -215,6 +236,7 @@ pub fn compareBranchConstant(self: *State, thread: *Thread, op: bytecode.Compare
 }
 
 fn compareBranchValues(self: *State, thread: *Thread, lhs: Value, rhs: Value, kind: bytecode.CompareBranchOp, jump_if_truthy: bool, offset: bytecode.JumpOffset) !void {
+    noteStringComparison(self, lhs, rhs);
     switch (kind) {
         .eq => {
             if (valuesEqual(lhs, rhs)) return jumpIfBranchResult(self, thread, true, jump_if_truthy, offset);
@@ -272,6 +294,7 @@ pub fn lengthToRegister(self: *State, thread: *Thread, op: bytecode.Unary) !void
 }
 
 pub fn compareValues(self: *State, thread: *Thread, lhs: Value, rhs: Value, op: CompareOp) !bool {
+    noteStringComparison(self, lhs, rhs);
     if (rawCompare(lhs, rhs, op)) |result| return result;
     switch (op) {
         .lt => {

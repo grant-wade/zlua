@@ -15,7 +15,12 @@ pub fn compile(allocator: std.mem.Allocator, tree: *const frontend.ast.Ast) !Pro
 }
 
 pub fn compileWithDiagnostic(allocator: std.mem.Allocator, tree: *const frontend.ast.Ast, error_diagnostic: *?errors.Diagnostic) !Proto {
-    return compiler.compileWithDiagnostic(allocator, tree, error_diagnostic) catch |err| {
+    return compileGuarded(allocator, tree, error_diagnostic, .start(frontend.stack_guard.default_max_bytes));
+}
+
+/// Like `compileWithDiagnostic`, failing with a diagnostic when `stack` runs out.
+pub fn compileGuarded(allocator: std.mem.Allocator, tree: *const frontend.ast.Ast, error_diagnostic: *?errors.Diagnostic, stack: frontend.StackGuard) !Proto {
+    return compiler.compileGuarded(allocator, tree, error_diagnostic, stack) catch |err| {
         if (error_diagnostic.* == null) error_diagnostic.* = .{ .compile = compileDiagnostic(err) };
         return err;
     };
@@ -28,6 +33,7 @@ fn compileDiagnostic(err: anyerror) errors.CompileError {
         error.TooManyLocalVariables => .{ .too_many_local_variables = .{ .line = 1 } },
         error.TooManyUpvalues => .{ .too_many_upvalues = .{ .line = 1 } },
         error.JumpOutOfRange => .{ .jump_out_of_range = .{ .line = 1 } },
+        error.NativeStackOverflow => .native_stack_overflow,
         else => .{ .invalid_ast = .{ .line = 1 } },
     };
 }

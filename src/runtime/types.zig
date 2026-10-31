@@ -889,6 +889,8 @@ pub const Userdata = struct {
     finalizer_data: ?*const anyopaque = null,
     deinit_fn: ?UserdataDeinit = null,
     finalized: bool = false,
+    /// An auto-bound `__gc` ran; typed access to the payload now fails.
+    closed: bool = false,
     finalization_pending: bool = false,
     finalizer_next: ?*Userdata = null,
     /// Registered for its metatable's `__gc`, like `Table.finalizer_registered`.
@@ -1070,10 +1072,19 @@ pub const Thread = struct {
 
     pub fn ensureStack(self: *Thread, allocator: std.mem.Allocator, size: usize, limit: usize) !void {
         if (size > limit) return error.StackOverflow;
+        if (stress_stack_moves and self.stack.items.len <= stress_stack_limit) try self.moveStack(allocator);
         const old_len = self.stack.items.len;
         if (size <= old_len) return;
         try self.stack.resize(allocator, size);
         @memset(self.stack.items[old_len..], .nil);
+    }
+
+    fn moveStack(self: *Thread, allocator: std.mem.Allocator) !void {
+        var moved = try std.ArrayList(Value).initCapacity(allocator, self.stack.items.len);
+        moved.appendSliceAssumeCapacity(self.stack.items);
+        @memset(std.mem.sliceAsBytes(self.stack.allocatedSlice()), 0xaa);
+        self.stack.deinit(allocator);
+        self.stack = moved;
     }
 
     /// Register, relative to the top frame, for calls the runtime makes itself: above
@@ -1086,6 +1097,10 @@ pub const Thread = struct {
         return @max(registers, call.base + 1 + call.arg_count);
     }
 };
+
+/// Test switch: every `ensureStack` moves the stack and poisons the old block.
+pub var stress_stack_moves: bool = false;
+const stress_stack_limit = 4096;
 
 pub const ThreadStatus = enum {
     suspended,

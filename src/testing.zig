@@ -8,6 +8,7 @@ pub const normalizer = @import("testing/normalizer.zig");
 pub const official_suite = @import("testing/official_suite.zig");
 pub const parallel = @import("testing/parallel.zig");
 pub const process = @import("testing/process.zig");
+pub const sandbox_runner = @import("testing/sandbox_runner.zig");
 
 test {
     _ = clua;
@@ -20,4 +21,5 @@ test {
     _ = official_suite;
     _ = parallel;
     _ = process;
+    _ = sandbox_runner;
 }

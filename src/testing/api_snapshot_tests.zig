@@ -1446,7 +1446,7 @@ test "snapshot and reset preserve suspended userdata pairs normalization and clo
     try lua.setGlobal("userdata", userdata);
     try lua.doString(
         \\closed = 0
-        \\getmetatable(userdata).__pairs = function(self)
+        \\debug.getmetatable(userdata).__pairs = function(self)
         \\  local closer <close> = setmetatable({}, {__close = function() closed = closed + 1 end})
         \\  local value = coroutine.yield('setup')
         \\  assert(self == userdata)

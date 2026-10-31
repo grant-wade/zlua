@@ -1,6 +1,7 @@
 const std = @import("std");
 const reflection = @import("../reflection.zig");
 const runtime = @import("../runtime.zig");
+const rollback_runtime = @import("../runtime/rollback.zig");
 const runtime_types = @import("../runtime/types.zig");
 const convert = @import("convert.zig");
 const decode_mod = @import("decode.zig");
@@ -160,6 +161,19 @@ pub fn callUserdataInitializer(comptime T: type, comptime initializer: anytype, 
     }
 }
 
+/// Runs a bound `__gc` at most once per object and closes the payload to later typed access.
+pub fn callUserdataFinalizer(comptime T: type, comptime function: anytype, ctx: *Context) !void {
+    const receiver = ctx.raw.callbackArgValue(0);
+    if (receiver == .userdata and receiver.userdata.type_id == userdata_mod.typeId(T)) {
+        if (receiver.userdata.closed) return ctx.returnValues(.{});
+        try callUserdataMethod(T, function, ctx);
+        rollback_runtime.touch(receiver.userdata);
+        receiver.userdata.closed = true;
+        return;
+    }
+    try callUserdataMethod(T, function, ctx);
+}
+
 pub fn callUserdataMethod(comptime T: type, comptime function: anytype, ctx: *Context) !void {
     _ = userdata_mod.Userdata(T);
     const FunctionType = @TypeOf(function);
@@ -265,6 +279,7 @@ fn ArgumentScopes(comptime capacity: usize) type {
                 const pointer = @typeInfo(T).pointer;
                 if (comptime pointer.size == .one and @typeInfo(pointer.child) == .@"struct") {
                     if (raw == .userdata and raw.userdata.type_id == userdata_mod.typeId(pointer.child)) {
+                        if (raw.userdata.closed) return ctx.raw.failArgumentMessage(index, "userdata is closed");
                         if (raw.userdata.payload) |p| if (p.snapshot_tracking == .scoped) {
                             try userdata_mod.beginScope(&ctx.lua.raw_state, &self.entries[self.len], raw.userdata, reflection.isConstPointer(pointer));
                             self.len += 1;

@@ -1,4 +1,5 @@
 const std = @import("std");
+const budget_mod = @import("budget.zig");
 const compile = @import("../compile.zig");
 const errors = @import("../errors.zig");
 const reflection = @import("../reflection.zig");
@@ -47,6 +48,8 @@ pub const Gc = struct {
     params: GcParams = .{},
     next_total: usize = 0,
     known_total: usize = 0,
+    /// `known_total` after the last collection made by `reserve`.
+    last_reserve_total: usize = 0,
     epoch: u32 = 1,
     generation: u32 = 1,
     phase: types.GcPhase = .pause,
@@ -296,6 +299,7 @@ pub const Gc = struct {
             return gc.failInvalidOption(thread, op);
         }
         if (option == .nil or (option == .string and option.string.eqlBytes("collect"))) {
+            try state.budget.charge(budget_mod.cost.collected(state.gc.known_total));
             if (state.gc.conservative_depth != 0) {
                 try gc.collectConservatively(thread);
             } else {
@@ -306,11 +310,13 @@ pub const Gc = struct {
         }
         if (option == .string and option.string.eqlBytes("step")) {
             const budget = if (op.arg_count >= 2 and argValue(state, thread, op, 1) != .nil) toInteger(argValue(state, thread, op, 1)) orelse return state.fail("number expected") else 0;
+            try state.budget.charge(budget_mod.cost.collected(state.gc.known_total) >> 4);
             const complete = try gc.collectStep(thread, budget);
             try state.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = complete }});
             return;
         }
         if (option == .string and option.string.eqlBytes("count")) {
+            try state.budget.charge(budget_mod.cost.registers(state.thread_allocations.items.len));
             try state.returnValues(thread, op.base, op.return_count, &.{.{ .number = @as(f64, @floatFromInt(gc.refreshAllocationTotal())) / 1024.0 }});
             return;
         }
@@ -661,6 +667,22 @@ pub const Gc = struct {
             total +| @max(256, total *| @as(usize, @intCast(@max(state.gc.params.minormul, 0))) / 100)
         else
             @max(total +| 256, total *| @as(usize, @intCast(@max(state.gc.params.pause, 100))) / 100);
+        if (state.options.max_memory) |limit| {
+            state.gc.next_total = @min(state.gc.next_total, @max(limit / 4 * 3, total +| limit / 8));
+            if (total >= limit / 2) state.gc.major_pending = true;
+        }
+    }
+
+    /// Collects before a native allocation of `bytes` that may not fit under `max_memory`.
+    /// `thread` must be running a native function with no unrooted values.
+    pub fn reserve(gc: *Gc, thread: *Thread, bytes: usize) !void {
+        const state = gc.parentState();
+        const limit = state.options.max_memory orelse return;
+        if (bytes < limit / 32 or state.gc.collecting or state.rollback != null) return;
+        const total = gc.currentAllocationTotal();
+        if (total +| bytes <= limit - limit / 8 or total == state.gc.last_reserve_total) return;
+        try gc.collectWithFinalizersMode(thread, true);
+        state.gc.last_reserve_total = gc.currentAllocationTotal();
     }
 
     pub fn normalizeBaseline(gc: *Gc) void {
@@ -1745,12 +1767,26 @@ pub const Gc = struct {
         gc.markValue(value);
     }
 
+    const FinalizerDeadline = struct { active: bool, previous: ?u64 };
+
+    fn beginFinalizerBudget(gc: *Gc) FinalizerDeadline {
+        const state = gc.parentState();
+        const max = state.options.max_finalizer_instructions orelse return .{ .active = false, .previous = null };
+        return .{ .active = true, .previous = state.budget.beginCall(max) };
+    }
+
+    fn endFinalizerBudget(gc: *Gc, deadline: FinalizerDeadline) void {
+        if (deadline.active) gc.parentState().budget.endCall(deadline.previous);
+    }
+
     /// Runs pending finalizers as `deinit` does, keeping the state. Only for an idle host;
     /// later registrations are left for `deinit`.
     pub fn runCloseFinalizers(gc: *Gc, on_exit: CloseExit) void {
         const state = gc.parentState();
         if (state.execution_depth != 0 or state.current_thread != null) return;
         if (state.table_pending_finalizers.items.len == 0 and state.table_finalizers.items.len == 0 and !gc.hasUserdataLuaFinalizers() and !stdlib.io.hasOpenFiles(state)) return;
+        const deadline = gc.beginFinalizerBudget();
+        defer gc.endFinalizerBudget(deadline);
         var proto = proto_mod.Proto.init(state.allocator);
         defer proto.deinit();
         proto.source_name = "=[C]";
@@ -1764,6 +1800,8 @@ pub const Gc = struct {
 
     fn runFinalizersFromHost(gc: *Gc, limit: usize) anyerror!bool {
         const state = gc.parentState();
+        const deadline = gc.beginFinalizerBudget();
+        defer gc.endFinalizerBudget(deadline);
         var proto = proto_mod.Proto.init(state.allocator);
         defer proto.deinit();
         proto.source_name = "=[C]";

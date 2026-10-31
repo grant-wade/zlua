@@ -90,6 +90,7 @@ pub const ResolveError = union(enum) {
     unknown_attribute: struct { name: []const u8, span: source.Span },
     invalid_assignment_target: source.Span,
     invalid_environment: struct { name: []const u8, span: source.Span },
+    native_stack_overflow,
 };
 
 pub const CompileError = union(enum) {
@@ -99,6 +100,7 @@ pub const CompileError = union(enum) {
     too_many_upvalues: struct { line: usize },
     jump_out_of_range: struct { line: usize },
     invalid_ast: struct { line: usize },
+    native_stack_overflow,
 };
 
 pub fn tokenRef(token: token_mod.Token) TokenRef {
@@ -162,6 +164,7 @@ fn appendDiagnosticDetail(allocator: std.mem.Allocator, out: *std.ArrayList(u8),
             .unknown_attribute => |err| try appendFmt(allocator, out, "unknown attribute '{s}'", .{err.name}),
             .invalid_assignment_target => try out.appendSlice(allocator, "syntax error"),
             .invalid_environment => |err| try appendFmt(allocator, out, "_ENV is global when accessing variable '{s}'", .{err.name}),
+            .native_stack_overflow => try out.appendSlice(allocator, "C stack overflow"),
         },
         .compile => |compile| switch (compile) {
             .too_many_returns => try out.appendSlice(allocator, "too many returns"),
@@ -170,6 +173,7 @@ fn appendDiagnosticDetail(allocator: std.mem.Allocator, out: *std.ArrayList(u8),
             .too_many_upvalues => |err| try appendFmt(allocator, out, "too many upvalues (line {d})", .{err.line}),
             .jump_out_of_range => try out.appendSlice(allocator, "control structure too long"),
             .invalid_ast => try out.appendSlice(allocator, "internal compiler error"),
+            .native_stack_overflow => try out.appendSlice(allocator, "C stack overflow"),
         },
         .argument => |argument| try appendArgumentErrorDetail(allocator, out, argument),
     }
@@ -209,6 +213,7 @@ fn diagnosticLine(diagnostic: Diagnostic) usize {
             .unknown_attribute => |err| err.span.start.line,
             .invalid_assignment_target => |span| span.start.line,
             .invalid_environment => |err| err.span.start.line,
+            .native_stack_overflow => 1,
         },
         .compile => |compile| switch (compile) {
             .too_many_returns => |span| span.start.line,
@@ -217,6 +222,7 @@ fn diagnosticLine(diagnostic: Diagnostic) usize {
             .too_many_upvalues => |err| err.line,
             .jump_out_of_range => |err| err.line,
             .invalid_ast => |err| err.line,
+            .native_stack_overflow => 1,
         },
         .argument => 0,
     };

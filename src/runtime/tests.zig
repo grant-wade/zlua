@@ -1559,3 +1559,35 @@ test "formatNumber fits extreme floats" {
         try std.testing.expectEqual(number, try std.fmt.parseFloat(f64, text));
     }
 }
+
+test "string keys chosen to collide get a salted index and stay readable" {
+    const allocator = std.testing.allocator;
+    var state = try State.initWithOptions(allocator, .{ .stdlib = .none });
+    defer state.deinit();
+
+    var keys = std.ArrayList(Value).empty;
+    defer keys.deinit(allocator);
+    var buffer: [24]u8 = undefined;
+    var candidate: usize = 0;
+    while (keys.items.len < 800) : (candidate += 1) {
+        const text = try std.fmt.bufPrint(&buffer, "k{x}", .{candidate});
+        if (table_index.hashStringKey(text) & 0x7ff != 0) continue;
+        try keys.append(allocator, .{ .string = try state.strings.intern(text) });
+    }
+    const table = (try state.newTableWithHints(0, 0)).table;
+    for (keys.items, 1..) |key, index| try state.setTableRaw(table, key, .{ .integer = @intCast(index) });
+
+    try std.testing.expect(table.hash.?.salt != 0);
+    try std.testing.expect(state.strings.set.salt != 0);
+    for (keys.items, 1..) |key, index| {
+        try std.testing.expectEqual(@as(i64, @intCast(index)), table.get(key).integer);
+    }
+    for (keys.items, 0..) |key, index| {
+        const text = try std.fmt.bufPrint(&buffer, "{s}", .{key.string.bytes()});
+        try std.testing.expectEqual(key.string, try state.strings.intern(text));
+        if (index % 2 == 0) try state.setTableRaw(table, key, .nil);
+    }
+    for (keys.items, 0..) |key, index| {
+        try std.testing.expect((table.get(key) == .nil) == (index % 2 == 0));
+    }
+}

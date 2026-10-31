@@ -1,4 +1,6 @@
 const std = @import("std");
+const stack_guard = @import("../stack_guard.zig");
+const StackGuard = stack_guard.StackGuard;
 const ast = @import("ast.zig");
 const errors = @import("../errors.zig");
 const lexer = @import("lexer.zig");
@@ -15,6 +17,7 @@ const Parser = struct {
     error_diagnostic: ?*?errors.Diagnostic = null,
     index: usize = 0,
     syntax_depth: usize = 0,
+    stack: StackGuard = .{},
     current_function_line: ?usize = null,
 
     fn parseChunk(self: *Parser) anyerror![]const ast.Stmt {
@@ -22,7 +25,7 @@ const Parser = struct {
     }
 
     fn parseBlock(self: *Parser, end_tags: []const Tag) anyerror!ast.Block {
-        if (self.syntax_depth >= max_syntax_depth) return self.failTooManySyntaxLevels();
+        if (self.syntax_depth >= max_syntax_depth or self.stack.exceeded()) return self.failTooManySyntaxLevels();
         self.syntax_depth += 1;
         defer self.syntax_depth -= 1;
 
@@ -38,6 +41,7 @@ const Parser = struct {
     }
 
     fn parseStatement(self: *Parser, end_tags: []const Tag) anyerror!ast.Stmt {
+        if (self.stack.interrupted()) return error.Interrupted;
         _ = end_tags;
         if (self.match(.semicolon)) |tok| return .{ .empty = tok.span };
         if (self.match(.keyword_break)) |tok| return .{ .break_stmt = tok.span };
@@ -204,7 +208,11 @@ const Parser = struct {
     }
 
     fn parseReturn(self: *Parser, line: usize) anyerror!ast.Stmt {
-        const values = if (self.canStartExpression()) try self.parseExpressionList() else &.{};
+        const ends_block = switch (self.peek().tag) {
+            .semicolon, .keyword_else, .keyword_elseif, .keyword_end, .keyword_until, .eof => true,
+            else => false,
+        };
+        const values = if (ends_block) &.{} else try self.parseExpressionList();
         _ = self.match(.semicolon);
         return .{ .return_stmt = .{ .line = line, .values = values } };
     }
@@ -234,7 +242,8 @@ const Parser = struct {
     }
 
     fn parseExpression(self: *Parser, min_prec: u8) anyerror!*ast.Expr {
-        if (self.syntax_depth >= max_syntax_depth) return self.failTooManySyntaxLevels();
+        if (self.stack.interrupted()) return error.Interrupted;
+        if (self.syntax_depth >= max_syntax_depth or self.stack.exceeded()) return self.failTooManySyntaxLevels();
         self.syntax_depth += 1;
         defer self.syntax_depth -= 1;
 
@@ -265,7 +274,7 @@ const Parser = struct {
         if (self.match(.ellipsis)) |tok| return self.newExpr(.{ .vararg = tok.span });
         if (self.match(.left_brace)) |tok| return self.newExpr(.{ .table_constructor = try self.parseTableConstructorAfterLeftBrace(tok) });
         if (self.match(.keyword_function)) |tok| return self.newExpr(.{ .function_literal = try self.parseFunctionBody(tok.span.start.line) });
-        return self.failUnexpected(.syntax_error);
+        return self.failUnexpected(.unexpected_symbol);
     }
 
     fn parsePrefixExpression(self: *Parser) anyerror!*ast.Expr {
@@ -479,29 +488,6 @@ const Parser = struct {
     fn startsArgs(self: Parser) bool {
         return self.check(.left_paren) or self.check(.left_brace) or self.check(.string_literal);
     }
-
-    fn canStartExpression(self: Parser) bool {
-        return switch (self.peek().tag) {
-            .identifier,
-            .keyword_global,
-            .left_paren,
-            .keyword_nil,
-            .keyword_false,
-            .keyword_true,
-            .integer_literal,
-            .float_literal,
-            .string_literal,
-            .ellipsis,
-            .left_brace,
-            .keyword_function,
-            .minus,
-            .keyword_not,
-            .hash,
-            .tilde,
-            => true,
-            else => false,
-        };
-    }
 };
 
 const unary_precedence = 11;
@@ -578,20 +564,25 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8) !ast.Ast {
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
 
-    var parser: Parser = .{ .allocator = arena.allocator(), .tokens = tokens };
+    var parser: Parser = .{ .allocator = arena.allocator(), .tokens = tokens, .stack = .start(stack_guard.default_max_bytes) };
     const statements = try parser.parseChunk();
     _ = try parser.expect(.eof);
     return .{ .arena = arena, .source = source, .statements = statements };
 }
 
 pub fn parseWithDiagnostic(allocator: std.mem.Allocator, source: []const u8, error_diagnostic: *?errors.Diagnostic) !ast.Ast {
-    const tokens = try lexer.lexWithDiagnostic(allocator, source, error_diagnostic);
+    return parseGuarded(allocator, source, error_diagnostic, .start(stack_guard.default_max_bytes));
+}
+
+/// Like `parseWithDiagnostic`, failing with a syntax error when `stack` runs out.
+pub fn parseGuarded(allocator: std.mem.Allocator, source: []const u8, error_diagnostic: *?errors.Diagnostic, stack: StackGuard) !ast.Ast {
+    const tokens = try lexer.lexGuarded(allocator, source, error_diagnostic, stack);
     defer allocator.free(tokens);
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
 
-    var parser: Parser = .{ .allocator = arena.allocator(), .tokens = tokens, .error_diagnostic = error_diagnostic };
+    var parser: Parser = .{ .allocator = arena.allocator(), .tokens = tokens, .error_diagnostic = error_diagnostic, .stack = stack };
     const statements = try parser.parseChunk();
     _ = try parser.expect(.eof);
     return .{ .arena = arena, .source = source, .statements = statements };

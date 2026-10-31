@@ -15,6 +15,7 @@
 - [frontend.token](../frontend/token.md)
 - [frontend.diagnostic](../frontend/diagnostic.md)
 - [frontend.lexer](../frontend/lexer.md)
+- [stack_guard](../stack_guard.md)
 - [frontend.ast](../frontend/ast.md)
 - [frontend.parser](../frontend/parser.md)
 - [compile](../compile.md)
@@ -29,26 +30,27 @@
 - [stdlib](../stdlib.md)
 - [stdlib.base](../stdlib/base.md)
 - [runtime.call](../runtime/call.md)
-- [stdlib.static_strings](../stdlib/static_strings.md)
-- [runtime.table_index](../runtime/table_index.md)
-- [runtime.value](../runtime/value.md)
-- [runtime.number_format](../runtime/number_format.md)
-- [runtime.coroutine](../runtime/coroutine.md)
+- [runtime.budget](../runtime/budget.md)
+- [runtime.failure](../runtime/failure.md)
 - [runtime.debug](../runtime/debug.md)
 - [runtime.io](../runtime/io.md)
 - [runtime.host](../runtime/host.md)
+- [runtime.value](../runtime/value.md)
+- [runtime.number_format](../runtime/number_format.md)
+- [stdlib.static_strings](../stdlib/static_strings.md)
+- [runtime.table_index](../runtime/table_index.md)
 - [runtime.metatable](../runtime/metatable.md)
 - [runtime.rollback](../runtime/rollback.md)
 - [runtime.strings](../runtime/strings.md)
 - [runtime.operators](../runtime/operators.md)
-- [runtime.failure](../runtime/failure.md)
-- [runtime.load](../runtime/load.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.gc](../runtime/gc.md)
 - [runtime.entry](../runtime/entry.md)
+- [runtime.coroutine](../runtime/coroutine.md)
+- [runtime.load](../runtime/load.md)
+- [runtime.upvalue](../runtime/upvalue.md)
 - [runtime.system](../runtime/system.md)
 - [runtime.timezone](../runtime/timezone.md)
-- [runtime.upvalue](../runtime/upvalue.md)
 - [runtime.index](../runtime/index.md)
 - [stdlib.table](../stdlib/table.md)
 - [stdlib.string](../stdlib/string.md)
@@ -68,7 +70,6 @@
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
-- [runtime.budget](../runtime/budget.md)
 - [runtime.object_pool](../runtime/object_pool.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
@@ -121,13 +122,15 @@
 - [testing.parallel](../testing/parallel.md)
 - [testing.extension_runner](../testing/extension_runner.md)
 - [testing.official_suite](../testing/official_suite.md)
+- [testing.sandbox_runner](../testing/sandbox_runner.md)
+- [testing.generators](../testing/generators.md)
 
 </details>
 
 ## Functions
 
 - [compile](#fn-compile)
-- [compileWithDiagnostic](#fn-compilewithdiagnostic)
+- [compileGuarded](#fn-compileguarded)
 
 ## Types
 
@@ -144,6 +147,7 @@ pub const CompileError = error{
     TooManyReturns,
     TooManyLocalVariables,
     TooManyUpvalues,
+    NativeStackOverflow,
 };
 ```
 
@@ -155,13 +159,13 @@ pub const CompileError = error{
 pub fn compile(allocator: std.mem.Allocator, tree: *const ast.Ast) !proto_mod.Proto
 ```
 
-<a id="fn-compilewithdiagnostic"></a>
+<a id="fn-compileguarded"></a>
 
-## compileWithDiagnostic
+## compileGuarded
 
 ```zig
-pub fn compileWithDiagnostic(allocator: std.mem.Allocator, tree: *const ast.Ast, error_diagnostic: *?errors.Diagnostic) !proto_mod.Proto
+pub fn compileGuarded(allocator: std.mem.Allocator, tree: *const ast.Ast, error_diagnostic: *?errors.Diagnostic, stack: frontend.StackGuard) !proto_mod.Proto
 ```
 
-References: [`errors.Diagnostic`](../errors.md#type-diagnostic)
+References: [`errors.Diagnostic`](../errors.md#type-diagnostic), [`frontend.StackGuard`](../frontend.md#alias-stackguard)
 

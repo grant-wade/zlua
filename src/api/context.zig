@@ -219,6 +219,7 @@ pub const Context = struct {
                 self.raw.failArgumentType(index, expectedTypeName(self.lua, T), raw),
             error.IntegerOutOfRange => self.raw.failArgumentMessage(index, "integer out of range"),
             error.UnsupportedType => self.raw.failArgumentMessage(index, "unsupported host argument type"),
+            error.UserdataClosed => self.raw.failArgumentMessage(index, "userdata is closed"),
             else => err,
         };
     }

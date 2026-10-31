@@ -79,6 +79,10 @@ name:
 | `test-gc-stress` | Run the differential fixtures under `--gc-stress` and `--gc-step-stress`. |
 | `run-test-official -- [args...]` | Run selected official tests or modes. |
 | `bench -- [args...]` | Run all benchmark groups one after another and print one combined report. |
+| `test-sandbox` | Run the sandbox attack fixtures in every optimize mode. |
+| `run-test-sandbox -- [args...]` | Run selected sandbox fixtures in the current optimize mode. |
+| `test-stack-stress` | Run the differential fixtures, moving the Lua stack on every growth check. |
+| `test-diff-generated` | Compare generated programs under Lua 5.5 and zlua. |
 | `ci` | Run the tests, examples, and the differential, extension, and official checks. |
 
 ## zlua CLI

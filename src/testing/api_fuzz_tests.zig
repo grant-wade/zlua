@@ -157,3 +157,192 @@ test "fuzz targets accept seed inputs" {
     try runStringLibrary("(((x)))", "%b()", "!17 Xi16");
     try runStringLibrary("abc", "(()(%1))", "c99999999999");
 }
+
+const generators = @import("generators.zig");
+const Picker = generators.Picker;
+
+const sandbox_limits: api.Options = .{
+    .limits = .{ .max_memory = 16 << 20, .max_instructions = 4_000_000, .max_finalizer_instructions = 20_000, .max_output_bytes = 1 << 16 },
+};
+
+fn runGenerated(source: []const u8, options: api.Options) !void {
+    var buffer: [256]u8 = undefined;
+    var sink: std.Io.Writer.Discarding = .init(&buffer);
+    var configured = options;
+    configured.capabilities.io.stdout = &sink.writer;
+    configured.capabilities.io.stderr = &sink.writer;
+    var lua = try api.State.init(a, configured);
+    defer lua.deinit();
+    run: {
+        var function = lua.loadString(source, .{ .name = "=generated" }) catch break :run;
+        defer function.deinit();
+        var result = function.protectedCallWith(.{}, void, .{ .max_instructions = 200_000 }) catch break :run;
+        if (result == .lua_error) result.lua_error.deinit();
+    }
+    try expectUsable(&lua);
+}
+
+fn expectUsable(lua: *api.State) !void {
+    lua.resetInstructionBudget();
+    lua.resetOutputLimit();
+    lua.clearInterrupt();
+    var probe = lua.loadString("return 1 + 1", .{}) catch |err| switch (err) {
+        error.LuaError, error.OutOfMemory => return,
+        else => return err,
+    };
+    defer probe.deinit();
+    var result = probe.protectedCall(.{}, i64) catch |err| switch (err) {
+        error.OutOfMemory => return,
+        else => return err,
+    };
+    switch (result) {
+        .ok => |value| try std.testing.expectEqual(@as(i64, 2), value),
+        .lua_error => |*lua_error| lua_error.deinit(),
+    }
+}
+
+fn runProgram(picker: Picker) !void {
+    var out: std.Io.Writer.Allocating = .init(a);
+    defer out.deinit();
+    try generators.writeProgram(picker, &out.writer);
+    try runGenerated(out.written(), sandbox_limits);
+}
+
+fn runLibraryCalls(picker: Picker) !void {
+    var out: std.Io.Writer.Allocating = .init(a);
+    defer out.deinit();
+    try generators.writeLibraryCalls(picker, &out.writer);
+    try runGenerated(out.written(), sandbox_limits);
+}
+
+fn runFormatText(picker: Picker) !void {
+    var out: std.Io.Writer.Allocating = .init(a);
+    defer out.deinit();
+    try generators.writeFormatText(picker, &out.writer);
+
+    var lua = try api.State.init(a, sandbox_limits);
+    defer lua.deinit();
+    var function = try lua.loadString(
+        \\local text = ...
+        \\for _, format in ipairs({json, toml, msgpack, csv}) do
+        \\  local ok, value = pcall(format.read, text)
+        \\  if ok then
+        \\    local written, bytes = pcall(format.write, value)
+        \\    if written then pcall(format.read, bytes) end
+        \\  end
+        \\end
+    , .{ .name = "=formats" });
+    defer function.deinit();
+    var result = function.protectedCallWith(.{out.written()}, void, .{ .max_instructions = 200_000 }) catch |err| switch (err) {
+        error.OutOfMemory => return,
+        else => return err,
+    };
+    if (result == .lua_error) result.lua_error.deinit();
+    try expectUsable(&lua);
+}
+
+var generated_chunks_loaded: usize = 0;
+
+fn runChunk(picker: Picker) !void {
+    var bytes = std.ArrayList(u8).empty;
+    defer bytes.deinit(a);
+    try generators.appendChunk(picker, a, &bytes);
+
+    var options = sandbox_limits;
+    options.binary_chunks = true;
+    var lua = try api.State.init(a, options);
+    defer lua.deinit();
+    var function = lua.loadBytecode(bytes.items, .{}) catch |err| switch (err) {
+        error.LuaError, error.OutOfMemory => return,
+        else => return err,
+    };
+    defer function.deinit();
+    generated_chunks_loaded += 1;
+    var result = function.protectedCallWith(.{ @as(i64, 1), @as(f64, 2.5), "s" }, void, .{ .max_instructions = 20_000 }) catch |err| switch (err) {
+        error.OutOfMemory, error.Interrupted, error.LuaExit => return,
+        else => return err,
+    };
+    if (result == .lua_error) result.lua_error.deinit();
+    try expectUsable(&lua);
+}
+
+test "fuzz generated programs" {
+    try std.testing.fuzz({}, struct {
+        fn testOne(_: void, smith: *Smith) !void {
+            try runProgram(Picker.fromSmith(smith));
+        }
+    }.testOne, .{});
+}
+
+test "fuzz library calls with hostile arguments" {
+    try std.testing.fuzz({}, struct {
+        fn testOne(_: void, smith: *Smith) !void {
+            try runLibraryCalls(Picker.fromSmith(smith));
+        }
+    }.testOne, .{});
+}
+
+test "fuzz data format readers" {
+    try std.testing.fuzz({}, struct {
+        fn testOne(_: void, smith: *Smith) !void {
+            try runFormatText(Picker.fromSmith(smith));
+        }
+    }.testOne, .{});
+}
+
+test "fuzz verified binary chunks" {
+    try std.testing.fuzz({}, struct {
+        fn testOne(_: void, smith: *Smith) !void {
+            try runChunk(Picker.fromSmith(smith));
+        }
+    }.testOne, .{});
+}
+
+fn sweep(comptime run: fn (Picker) anyerror!void, seed: u64, count: usize) !void {
+    var prng: std.Random.DefaultPrng = .init(seed);
+    var random = prng.random();
+    for (0..count) |_| try run(Picker.fromRandom(&random));
+}
+
+fn runTimezone(picker: Picker) !void {
+    const timezone = @import("../runtime/timezone.zig");
+    var bytes: [512]u8 = undefined;
+    const length = picker.below(bytes.len);
+    for (bytes[0..length]) |*byte| byte.* = @intCast(picker.below(256));
+    if (picker.chance(70)) {
+        const header = "TZif2\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
+        @memcpy(bytes[0..@min(header.len, length)], header[0..@min(header.len, length)]);
+    }
+    const timestamps = [_]i64{ 0, 1 << 32, -(1 << 40), std.math.maxInt(i64), std.math.minInt(i64) };
+    var zone = timezone.Zone.parseTzif(a, bytes[0..length]) catch null;
+    if (zone) |*parsed| {
+        defer parsed.deinit();
+        for (timestamps) |timestamp| _ = parsed.offsetAt(timestamp);
+    }
+    const rules = [_][]const u8{ "<", "UTC", "EST5EDT", "EST5EDT,M3.2.0,M11.1.0", "A-99:99:99B,J366/999,0/-999", "X1,M13.9.9,M0.0.0", "AAA24BBB,J0,J9999", "<+03>-3<+04>,M1.1.1/-168,M12.5.6/167" };
+    if (timezone.PosixRule.parse(picker.pick([]const u8, &rules))) |rule| {
+        for (timestamps) |timestamp| _ = rule.offsetAt(timestamp);
+    }
+}
+
+test "timezone parsers accept any bytes" {
+    try sweep(runTimezone, 5, 3000);
+}
+
+test "generated programs keep the state usable" {
+    try sweep(runProgram, 1, 400);
+}
+
+test "library calls with hostile arguments keep the state usable" {
+    try sweep(runLibraryCalls, 2, 1500);
+}
+
+test "data format readers keep the state usable" {
+    try sweep(runFormatText, 3, 1500);
+}
+
+test "verified binary chunks keep the state usable" {
+    generated_chunks_loaded = 0;
+    try sweep(runChunk, 4, 1500);
+    try std.testing.expect(generated_chunks_loaded == 1500);
+}

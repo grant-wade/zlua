@@ -203,6 +203,17 @@ pub const State = struct {
         };
     }
 
+    /// Output bytes written since state creation or the last `resetOutputLimit`.
+    pub fn outputBytes(self: *const State) u64 {
+        return self.raw_state.output_bytes;
+    }
+
+    /// Restarts `Limits.max_output_bytes` and clears its error.
+    pub fn resetOutputLimit(self: *State) void {
+        self.raw_state.output_bytes = 0;
+        self.raw_state.budget.clearStop();
+    }
+
     pub fn resetInstructionBudget(self: *State) void {
         self.raw_state.budget.reset();
     }
@@ -617,7 +628,7 @@ comptime {
         .copied = "raw_state memory_files memory_file_owned_contents callbacks host_data",
     });
     snapshot_runtime.review(runtime.StateOptions, .{
-        .copied = "stdlib stdin stdout_flush stderr_flush capture_output warnings max_file_bytes max_memory max_stack_values max_call_frames max_instructions debug_errors trace_vm",
+        .copied = "stdlib stdin stdout_flush stderr_flush capture_output warnings max_file_bytes max_memory max_stack_values max_call_frames max_instructions max_native_stack max_finalizer_instructions max_output_bytes binary_chunks debug_errors trace_vm",
         .external = "io stdout stderr stdin_reader warning_handler filesystem environment clock process",
     });
 }

@@ -592,7 +592,7 @@ test "api userdata table index and Lua iteration metamethods" {
     defer userdata.deinit();
     try lua.setGlobal("userdata", userdata);
     try lua.doString(
-        \\local mt = getmetatable(userdata)
+        \\local mt = debug.getmetatable(userdata)
         \\mt.__index = {false, 22, [4] = 44}
         \\local count = 0
         \\for k, v in ipairs(userdata) do count = count + 1; assert(v == mt.__index[k]) end
@@ -751,7 +751,7 @@ test "api defined userdata share one metatable and one set of callbacks" {
     var lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
-    try lua.defineUserdata(DefinedCanvas, .{ .name = "canvas" });
+    try lua.defineUserdata(DefinedCanvas, .{ .name = "canvas", .expose_metatable = true });
     const callbacks = lua.callbacks.items.len;
     var a = try lua.newUserdata(DefinedCanvas, .{ .width = 1 }, .{});
     defer a.deinit();
@@ -807,7 +807,7 @@ test "api defined userdata can take methods from another struct and a default na
 
     var lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
-    try lua.defineUserdata(Payload, .{ .methods = Methods });
+    try lua.defineUserdata(Payload, .{ .methods = Methods, .expose_metatable = true });
     var payload = try lua.newUserdata(Payload, .{ .value = 4 }, .{});
     defer payload.deinit();
     try lua.setGlobal("payload", payload);

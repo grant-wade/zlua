@@ -7,6 +7,8 @@ const Allocator = std.mem.Allocator;
 
 pub const DecodeError = error{Invalid} || Allocator.Error;
 
+const max_decode_depth = 200;
+
 /// The message of the first decoding failure.
 pub const Diagnostic = struct {
     gpa: Allocator,
@@ -171,6 +173,8 @@ pub fn Decoder(comptime Context: type) type {
         ignore_enum_case: bool = false,
         /// Where the value being decoded is, as `.field[2].field`.
         path: std.ArrayList(u8) = .empty,
+        /// Nested `decode` calls in progress.
+        depth: u32 = 0,
 
         pub fn deinit(self: *Self) void {
             self.path.deinit(self.diagnostic.gpa);
@@ -220,6 +224,9 @@ pub fn Decoder(comptime Context: type) type {
 
         /// Decodes `value` into `out`.
         pub fn decode(self: *Self, comptime T: type, value: Value, out: *T) DecodeError!void {
+            if (self.depth >= max_decode_depth) return self.fail("value nested too deeply", .{});
+            self.depth += 1;
+            defer self.depth -= 1;
             if (comptime @typeInfo(Context) == .@"struct" and @hasDecl(Context, "decodes") and Context.decodes(T)) return Context.decode(self, T, value, out);
             if (comptime hasFromLua(T)) return T.fromLua(self, value, out);
             if (comptime convert.isOwnedApiValue(T)) @compileError("can't decode into the handle type " ++ @typeName(T));

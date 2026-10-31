@@ -15,6 +15,7 @@
 - [frontend.token](../frontend/token.md)
 - [frontend.diagnostic](../frontend/diagnostic.md)
 - [frontend.lexer](../frontend/lexer.md)
+- [stack_guard](../stack_guard.md)
 - [frontend.ast](../frontend/ast.md)
 - [frontend.parser](../frontend/parser.md)
 - [compile](../compile.md)
@@ -29,26 +30,27 @@
 - [stdlib](../stdlib.md)
 - [stdlib.base](../stdlib/base.md)
 - [runtime.call](../runtime/call.md)
-- [stdlib.static_strings](../stdlib/static_strings.md)
-- [runtime.table_index](../runtime/table_index.md)
-- [runtime.value](../runtime/value.md)
-- [runtime.number_format](../runtime/number_format.md)
-- [runtime.coroutine](../runtime/coroutine.md)
+- [runtime.budget](../runtime/budget.md)
+- [runtime.failure](../runtime/failure.md)
 - [runtime.debug](../runtime/debug.md)
 - [runtime.io](../runtime/io.md)
 - [runtime.host](../runtime/host.md)
+- [runtime.value](../runtime/value.md)
+- [runtime.number_format](../runtime/number_format.md)
+- [stdlib.static_strings](../stdlib/static_strings.md)
+- [runtime.table_index](../runtime/table_index.md)
 - [runtime.metatable](../runtime/metatable.md)
 - [runtime.rollback](../runtime/rollback.md)
 - [runtime.strings](../runtime/strings.md)
 - [runtime.operators](../runtime/operators.md)
-- [runtime.failure](../runtime/failure.md)
-- [runtime.load](../runtime/load.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.gc](../runtime/gc.md)
 - [runtime.entry](../runtime/entry.md)
+- [runtime.coroutine](../runtime/coroutine.md)
+- [runtime.load](../runtime/load.md)
+- [runtime.upvalue](../runtime/upvalue.md)
 - [runtime.system](../runtime/system.md)
 - [runtime.timezone](../runtime/timezone.md)
-- [runtime.upvalue](../runtime/upvalue.md)
 - [runtime.index](../runtime/index.md)
 - [stdlib.table](../stdlib/table.md)
 - [stdlib.string](../stdlib/string.md)
@@ -68,7 +70,6 @@
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
-- [runtime.budget](../runtime/budget.md)
 - [runtime.object_pool](../runtime/object_pool.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
@@ -121,6 +122,8 @@
 - [testing.parallel](../testing/parallel.md)
 - [testing.extension_runner](../testing/extension_runner.md)
 - [testing.official_suite](../testing/official_suite.md)
+- [testing.sandbox_runner](../testing/sandbox_runner.md)
+- [testing.generators](../testing/generators.md)
 
 </details>
 
@@ -150,6 +153,8 @@ pub const Gc = struct {
     params: GcParams = .{},
     next_total: usize = 0,
     known_total: usize = 0,
+    /// `known_total` after the last collection made by `reserve`.
+    last_reserve_total: usize = 0,
     epoch: u32 = 1,
     generation: u32 = 1,
     phase: types.GcPhase = .pause,
@@ -201,6 +206,7 @@ pub const Gc = struct {
 | [shouldRunAuto](#fn-gc-shouldrunauto) | `gc: *Gc` | `bool` |  |
 | [notePrototype](#fn-gc-noteprototype) | `gc: *Gc, proto: *const proto_mod.Proto` | `void` | Brings the next automatic step closer by the prototype's size without adding it to the heap total, whose growth decides the switches between minor and major collections. |
 | [resetAutoThreshold](#fn-gc-resetautothreshold) | `gc: *Gc` | `void` |  |
+| [reserve](#fn-gc-reserve) | `gc: *Gc, thread: *Thread, bytes: usize` | `!void` | Collects before a native allocation of &#96;bytes&#96; that may not fit under &#96;max_memory&#96;. &#96;thread&#96; must be running a native function with no unrooted values. |
 | [normalizeBaseline](#fn-gc-normalizebaseline) | `gc: *Gc` | `void` |  |
 | [advanceEpoch](#fn-gc-advanceepoch) | `gc: *Gc` | `void` |  |
 | [advanceGeneration](#fn-gc-advancegeneration) | `gc: *Gc` | `void` |  |
@@ -460,6 +466,19 @@ References: [`Gc`](#type-gc)
 
 ```zig
 pub fn resetAutoThreshold(gc: *Gc) void
+```
+
+References: [`Gc`](#type-gc)
+
+<a id="fn-gc-reserve"></a>
+
+### Gc.reserve
+
+Collects before a native allocation of `bytes` that may not fit under `max_memory`.
+`thread` must be running a native function with no unrooted values.
+
+```zig
+pub fn reserve(gc: *Gc, thread: *Thread, bytes: usize) !void
 ```
 
 References: [`Gc`](#type-gc)

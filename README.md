@@ -88,7 +88,8 @@ remaining=0
 
 By default, a new state opens only the sandbox-friendly standard libraries.
 Everything else is up to the host: filesystem access, output, clocks, processes,
-bytecode, callbacks, userdata, and resource limits are all opt-in.
+bytecode, callbacks, userdata, and resource limits are all opt-in. To run code
+you don't trust, see [Running Untrusted Lua](docs/security.md).
 
 ## Goals
 

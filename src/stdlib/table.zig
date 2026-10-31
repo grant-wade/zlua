@@ -1,4 +1,5 @@
 const std = @import("std");
+const cost = @import("../runtime/budget.zig").cost;
 const compile = @import("../compile.zig");
 const runtime = @import("../runtime.zig");
 const call_mod = @import("../runtime/call.zig");
@@ -22,7 +23,7 @@ pub fn concat(state: *State, thread: *Thread, op: bytecode.Call) !void {
     defer out.deinit();
     var index = start;
     while (index <= stop) : (index += 1) {
-        if ((index -% start) & 0xfff == 0) try state.budget.checkInterrupt();
+        try state.budget.charge(2);
         if (index != start) try out.appendSlice(sep);
         const value = try index_mod.getTableFromThread(state, thread, table_value, .{ .integer = index });
         switch (value) {
@@ -52,6 +53,7 @@ pub fn dedup(state: *State, thread: *Thread, op: bytecode.Call) !void {
     var result_index: i64 = 1;
     var index: i64 = 1;
     while (index <= len) : (index += 1) {
+        try state.budget.charge(4);
         const value = try index_mod.getTableFromThread(state, thread, table_value, .{ .integer = index });
         if (value == .nil) continue;
         const is_nan = value == .number and std.math.isNan(value.number);
@@ -75,6 +77,7 @@ pub fn insert(state: *State, thread: *Thread, op: bytecode.Call) !void {
     if (op.arg_count == 3 and @as(u64, @bitCast(pos)) -% 1 >= @as(u64, @bitCast(first_empty))) return state.failArgumentMessage("table.insert", 2, "position out of bounds");
     var index = first_empty;
     while (index > pos) : (index -= 1) {
+        try state.budget.charge(2);
         const shifted = try index_mod.getTableFromThread(state, thread, table_value, .{ .integer = index - 1 });
         try index_mod.setTableFromThread(state, thread, table_value, .{ .integer = index }, shifted);
     }
@@ -99,6 +102,7 @@ pub fn move(state: *State, thread: *Thread, op: bytecode.Call) !void {
         if (runtime.valuesEqual(src_value, dest_value) and dest_start > first and dest_start <= last) {
             var offset = count - 1;
             while (true) {
+                try state.budget.charge(2);
                 const value = try index_mod.getTableFromThread(state, thread, src_value, .{ .integer = first + offset });
                 try index_mod.setTableFromThread(state, thread, dest_value, .{ .integer = dest_start + offset }, value);
                 if (offset == 0) break;
@@ -107,6 +111,7 @@ pub fn move(state: *State, thread: *Thread, op: bytecode.Call) !void {
         } else {
             var offset: i64 = 0;
             while (offset < count) : (offset += 1) {
+                try state.budget.charge(2);
                 const value = try index_mod.getTableFromThread(state, thread, src_value, .{ .integer = first + offset });
                 try index_mod.setTableFromThread(state, thread, dest_value, .{ .integer = dest_start + offset }, value);
             }
@@ -134,6 +139,7 @@ pub fn remove(state: *State, thread: *Thread, op: bytecode.Call) !void {
     defer if (removed_root) |root| state.unrootValue(root);
     var index = pos;
     while (index < size) : (index += 1) {
+        try state.budget.charge(2);
         const shifted = try index_mod.getTableFromThread(state, thread, table_value, .{ .integer = index + 1 });
         try index_mod.setTableFromThread(state, thread, table_value, .{ .integer = index }, shifted);
     }
@@ -192,7 +198,7 @@ const Sorter = struct {
         var up = upper;
         var rnd = seed;
         while (lo < up) {
-            try self.state.budget.checkInterrupt();
+            try self.state.budget.charge(cost.elements(up - lo));
             if (try self.less(self.at(up).*, self.at(lo).*)) self.swap(lo, up);
             if (up - lo == 1) break;
             var p = if (up - lo < 100 or rnd == 0) (lo + up) / 2 else choosePivot(lo, up, rnd);
@@ -256,6 +262,7 @@ pub fn unpack(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const stop = if (runtime.argValue(state, thread, op, 2) == .nil) try operators_mod.lengthInteger(state, thread, table_value) else try state.argumentInteger(thread, op, "table.unpack", 2);
     const count = @as(i128, stop) - @as(i128, start) + 1;
     if (count > 0 and (count > std.math.maxInt(u32) or !call_mod.nativeStackFits(state, thread, op, @intCast(count)))) return state.failLibrary("too many results to unpack");
+    if (count > 0) try state.budget.charge(cost.elements(@intCast(count)));
     const values = try state.allocator.alloc(Value, if (count > 0) @intCast(count) else 0);
     defer state.allocator.free(values);
     @memset(values, .nil);

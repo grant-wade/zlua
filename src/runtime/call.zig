@@ -1,4 +1,5 @@
 const std = @import("std");
+const budget_mod = @import("budget.zig");
 const compile = @import("../compile.zig");
 const errors = @import("../errors.zig");
 const stdlib = @import("../stdlib.zig");
@@ -502,6 +503,10 @@ pub fn checkCStack(self: *State, thread: *Thread) !void {
         return error.RuntimeError;
     }
     if (self.execution_depth != lua_max_c_calls) return;
+    return failCStackOverflow(self, thread);
+}
+
+pub fn failCStackOverflow(self: *State, thread: *Thread) !void {
     const frame_count = thread.frames.items.len;
     if (frame_count > 1) thread.frames.items.len = frame_count - 1;
     const value = cStackOverflowValue(self, thread);
@@ -563,6 +568,13 @@ pub fn nativeCallInfo(thread: *Thread, resolved: bytecode.Call, outer: ?types.Na
 
 pub fn invokeValue(self: *State, thread: *Thread, resolved: bytecode.Call, depth: usize) anyerror!void {
     if (depth > max_metamethod_depth) return self.fail("'__call' chain too long");
+    if (self.native_invoke_depth != 0) {
+        if (self.native_stack.exceeded()) return self.fail("C stack overflow");
+    } else if (self.execution_depth == 0) {
+        self.native_stack = self.entryStackGuard();
+    }
+    self.native_invoke_depth += 1;
+    defer self.native_invoke_depth -= 1;
     const callee = vm_mod.get(self, thread, resolved.base);
     if (callee == .coroutine_wrapper) {
         const previous_native_call = thread.native_call;
@@ -632,6 +644,7 @@ pub fn invokeValue(self: *State, thread: *Thread, resolved: bytecode.Call, depth
         .native_setmetatable => {
             const table_value = argValue(self, thread, resolved, 0);
             if (table_value != .table) return self.failArgumentType("setmetatable", 1, "table", table_value);
+            if (resolved.arg_count < 2) return self.failArgumentMessage("setmetatable", 2, "nil or table expected, got no value");
             const metatable_value = argValue(self, thread, resolved, 1);
             if (metatable_value != .nil and metatable_value != .table) return self.failArgumentType("setmetatable", 2, "nil or table", metatable_value);
             try metatable_mod.setMetatableValue(self, table_value, argValue(self, thread, resolved, 1));
@@ -687,6 +700,9 @@ pub fn invokeValue(self: *State, thread: *Thread, resolved: bytecode.Call, depth
         .native_table_create => {
             const array_hint, const hash_hint = try tableCreateHints(self, thread, resolved);
             if (hash_hint > 1 << 30) return self.fail("table overflow");
+            const hinted = @as(usize, array_hint) +| hash_hint;
+            try self.budget.charge(budget_mod.cost.registers(hinted));
+            try self.gc.reserve(thread, hinted *| @sizeOf(Value));
             try self.returnValues(thread, resolved.base, resolved.return_count, &.{try self.newTableWithHints(array_hint, hash_hint)});
         },
         .native_select => try selectValues(self, thread, resolved),
@@ -907,6 +923,7 @@ pub fn returnFromFrame(self: *State, thread: *Thread, first: u32, count: u16) !v
     if (thread.frameExtra(frame_index).pending_returns == null and !pending_close and (!thread.hook_return or thread.hook_running)) {
         const source_start = frame.base + first;
         const source_count = try resolveResultCount(self, thread, source_start, count);
+        self.budget.note(budget_mod.cost.registers(source_count));
         upvalue_mod.closeUpvalues(self, thread, frame.base);
         if (thread.frames.items.len == 1) {
             thread.last_result_base = source_start;
@@ -1032,6 +1049,7 @@ pub fn loadVarargs(self: *State, thread: *Thread, op: bytecode.Vararg) !void {
     const frame = thread.frames.items[thread.frames.items.len - 1];
     if (frame.closure.proto.named_vararg and !frame.named_vararg_readonly) return loadNamedVarargs(self, thread, frame, op);
     const actual_count = try resolveReturnCount(self, op.count, frame.vararg_count);
+    self.budget.note(budget_mod.cost.registers(actual_count));
     const dest = frame.base + op.dest;
     try thread.ensureStack(self.allocator, dest + actual_count, callStackValueLimit(self, thread));
     const copied = @min(actual_count, frame.vararg_count);
@@ -1073,7 +1091,7 @@ fn selectValues(self: *State, thread: *Thread, op: bytecode.Call) !void {
     var index = try self.argumentInteger(thread, op, "select", 0);
     const count: i64 = @intCast(op.arg_count - 1);
     if (index < 0) index = count + index + 1;
-    if (index < 1 or index > count + 1) return self.failArgumentMessage("select", 1, "index out of range");
+    if (index < 1) return self.failArgumentMessage("select", 1, "index out of range");
 
     var values = std.ArrayList(Value).empty;
     defer values.deinit(self.allocator);
@@ -1103,7 +1121,7 @@ fn assertValues(self: *State, thread: *Thread, op: bytecode.Call) !void {
 
 fn errorValue(self: *State, thread: *Thread, op: bytecode.Call) !void {
     const value = argValue(self, thread, op, 0);
-    const level = if (op.arg_count >= 2) toInteger(argValue(self, thread, op, 1)) orelse 1 else 1;
+    const level = try self.optionalArgumentInteger(thread, op, "error", 1, 1);
     if (level <= 0 or value != .string) return self.throwValue(value);
 
     const level_index = std.math.cast(usize, level) orelse return self.throwValue(value);

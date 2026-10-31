@@ -1,4 +1,5 @@
 const std = @import("std");
+const budget_mod = @import("budget.zig");
 const compile = @import("../compile.zig");
 const call_mod = @import("call.zig");
 const debug_mod = @import("debug.zig");
@@ -191,7 +192,7 @@ pub fn newCoroutineThread(self: *State, entry: Value) !*Thread {
 /// The running thread may close itself; hosts are rejected earlier by `State.closeCoroutine`.
 fn closeCoroutine(self: *State, target: *Thread, error_value: ?Value) !?Value {
     if (target.status == .normal) return self.fail("cannot close a normal coroutine");
-    if (target.is_main) return self.fail("cannot close main coroutine");
+    if (target.is_main) return self.fail("cannot close main thread");
     if (target.status == .running and target != self.current_thread) return self.fail("cannot close a running coroutine");
     try @import("rollback.zig").threadWritable(target);
     if (self.coroutine_close_depth >= State.max_c_calls) return .{ .string = try self.strings.intern("C stack overflow") };
@@ -378,6 +379,7 @@ fn copyValues(self: *State, values: []const Value) ![]Value {
 }
 
 pub fn copyStackSlice(self: *State, thread: *Thread, base: usize, count: usize) ![]Value {
+    self.budget.note(budget_mod.cost.registers(count));
     const values = try self.allocator.alloc(Value, count);
     for (values, 0..) |*value, index| value.* = thread.stack.items[base + index];
     return values;

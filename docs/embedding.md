@@ -210,9 +210,15 @@ var lua = try zlua.State.init(allocator, .{
 | Limit | Scope |
 | --- | --- |
 | `max_memory` | Every allocation through the state: parsing, compilation, runtime objects, API conversion, and memory-file copies. Initialization returns `error.OutOfMemory` if the requested libraries don't fit. Afterward, running Lua returns `error.LuaError` with `memory limit exceeded`, and direct API calls return `error.OutOfMemory`. |
-| `max_instructions` | Cumulative across all calls and coroutine resumes. `instructionBudget` reads it and `resetInstructionBudget` restarts it. |
+| `max_instructions` | Cumulative across all calls and coroutine resumes, counting VM instructions and native work charged by its size. `instructionBudget` reads it and `resetInstructionBudget` restarts it. |
 | `max_stack_values`, `max_call_frames` | Overflow raises a catchable `stack overflow` error. |
+| `max_native_stack` | Native stack bytes one host call may use. Overflow raises a catchable `C stack overflow` error. Defaults to 6 MiB, or 14 MiB in Debug builds; lower it on smaller threads. |
+| `max_finalizer_instructions` | Lua `__gc` run by each `deinit`, `collect`, or `stepGc`. Later finalizers then fail with a warning, and host finalizers still run. Defaults to 1,000,000. |
+| `max_output_bytes` | Bytes Lua writes to stdout and stderr, and warnings. Exceeding it raises `output limit exceeded`, which `pcall` cannot catch, until `resetOutputLimit`. `outputBytes` reads the count. |
 | `max_file_bytes` | Each file read, each write through an `io` file handle, and each `fs.write`. Defaults to 256 MiB. |
+
+`Limits.untrusted` is a starting point for running code you don't trust. See
+[Running Untrusted Lua](security.md).
 
 `CallOptions.max_instructions` limits one `Function.callWith` or
 `Function.protectedCallWith`, and `ResumeOptions.max_instructions` limits one
@@ -349,8 +355,8 @@ defer cached.deinit();
 
 The format is internal to zlua, can change between versions, and is not
 compatible with PUC Lua `luac` chunks. Loading verifies a chunk's structure,
-which stops it indexing outside its registers, constants, or code. Run untrusted
-chunks under the limits you would use for untrusted source.
+which stops it indexing outside its registers, constants, or code. Lua's `load`
+rejects binary chunks unless `Options.binary_chunks` is set.
 
 ## Values and Handles
 
@@ -767,10 +773,15 @@ type and returns another rooted handle.
 | `.metatable` | Uses your own metatable. Install its methods before sharing it. If construction fails, the host still finalizes the value. |
 | `.snapshot` | Copy hooks; see [Userdata Payloads](snapshots.md#userdata-payloads). |
 
-A `__gc` metamethod runs before the host finalizer and the deinit hook. Equality
-uses `__eq`, and `rawequal` compares wrapper identity. Zig fields are not
-enumerated automatically; define `__pairs` for custom iteration, or `__index`
-for `ipairs`.
+A `__gc` metamethod runs before the host finalizer and the deinit hook. A `__gc`
+bound through `metamethod`, `bindMethods`, or `defineUserdata` runs at most once
+per object, after which typed access to the object fails with `userdata is
+closed` in Lua and `error.UserdataClosed` in Zig. Equality uses `__eq`, and
+`rawequal` compares wrapper identity. Zig fields are not enumerated
+automatically; define `__pairs` for custom iteration, or `__index` for `ipairs`.
+
+`getmetatable` returns false for userdata whose metatable zlua created. Set
+`UserdataType.expose_metatable` to return the metatable instead.
 
 ### Shared Metatables
 

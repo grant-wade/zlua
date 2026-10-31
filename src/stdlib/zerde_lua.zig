@@ -1,4 +1,5 @@
 const std = @import("std");
+const cost = @import("../runtime/budget.zig").cost;
 const zerde = @import("zerde");
 const runtime = @import("../runtime.zig");
 const io = @import("io.zig");
@@ -29,6 +30,12 @@ pub fn nullValue(state: *State) !Value {
 }
 
 pub fn inputBytes(state: *State, value: Value, function_name: []const u8) ![]const u8 {
+    const bytes = try readInput(state, value, function_name);
+    try state.budget.charge(cost.scanned(bytes.len));
+    return bytes;
+}
+
+fn readInput(state: *State, value: Value, function_name: []const u8) ![]const u8 {
     return switch (value) {
         .string => |string| string.bytes(),
         else => if (io.checkedFile(state, value) != null) {
@@ -134,6 +141,7 @@ pub const LuaSink = struct {
     }
 
     fn appendValue(self: *LuaSink, value: Value) !void {
+        try self.state.budget.charge(4);
         if (self.stack.items.len == 0) {
             if (self.has_root) return error.InvalidZerdeSinkState;
             self.root = value;
@@ -206,6 +214,7 @@ pub fn LuaSource(comptime Encoder: type, comptime emit_float: anytype) type {
         }
 
         pub fn emit(self: *Self, value: Value) anyerror!void {
+            try self.state.budget.charge(4);
             switch (value) {
                 .nil => try self.encoder.emitNull(),
                 .boolean => |boolean| try self.encoder.emitBool(boolean),

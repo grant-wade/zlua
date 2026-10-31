@@ -1,4 +1,5 @@
 const std = @import("std");
+const cost = @import("../../runtime/budget.zig").cost;
 const compile = @import("../../compile.zig");
 const runtime = @import("../../runtime.zig");
 const call_mod = @import("../../runtime/call.zig");
@@ -9,7 +10,8 @@ const Thread = runtime.Thread;
 const Value = runtime.Value;
 
 pub fn pack(state: *State, thread: *Thread, op: bytecode.Call) !void {
-    const pack_format = try state.expectArgumentString(thread, op, "string.pack", 0);
+    try chargeFormat(state, thread, op, "string.pack");
+    const pack_format = std.mem.sliceTo(try state.expectArgumentString(thread, op, "string.pack", 0), 0);
     var out = std.ArrayList(u8).empty;
     defer out.deinit(state.allocator);
     var arg: u32 = 1;
@@ -89,11 +91,12 @@ pub fn pack(state: *State, thread: *Thread, op: bytecode.Call) !void {
             .integer => {
                 const value = runtime.argValue(state, thread, op, arg);
                 arg += 1;
-                try appendPackedInteger(state, &out, value, item, config.endian);
+                try appendPackedInteger(state, &out, value, arg, item, config.endian);
             },
             .float => {
                 const value = runtime.argValue(state, thread, op, arg);
                 arg += 1;
+                _ = runtime.toNumber(value) catch return packNumberExpected(state, arg, value);
                 try appendPackedFloat(state, &out, value, item, config.endian);
             },
         }
@@ -102,13 +105,20 @@ pub fn pack(state: *State, thread: *Thread, op: bytecode.Call) !void {
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(out.items) }});
 }
 
+fn chargeFormat(state: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8) !void {
+    const format = try state.expectArgumentString(thread, op, function_name, 0);
+    try state.budget.charge(cost.elements(format.len));
+}
+
 pub fn packsize(state: *State, thread: *Thread, op: bytecode.Call) !void {
-    const pack_format = try state.expectArgumentString(thread, op, "string.packsize", 0);
+    try chargeFormat(state, thread, op, "string.packsize");
+    const pack_format = std.mem.sliceTo(try state.expectArgumentString(thread, op, "string.packsize", 0), 0);
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .integer = @intCast(try packFormatSize(state, pack_format)) }});
 }
 
 pub fn unpack(state: *State, thread: *Thread, op: bytecode.Call) !void {
-    const pack_format = try state.expectArgumentString(thread, op, "string.unpack", 0);
+    try chargeFormat(state, thread, op, "string.unpack");
+    const pack_format = std.mem.sliceTo(try state.expectArgumentString(thread, op, "string.unpack", 0), 0);
     const data = try state.expectArgumentString(thread, op, "string.unpack", 1);
     var pos = try unpackInitialPosition(state, data.len, try state.optionalArgumentInteger(thread, op, "string.unpack", 2, 1));
     var config = PackConfig{};
@@ -258,7 +268,7 @@ fn packFormatSize(state: *State, pack_format: []const u8) !usize {
         }
 
         const item = try parsePackOption(state, pack_format, &index, false);
-        if (item.kind == .zero_string or item.kind == .size_string) return state.fail("variable-length format");
+        if (item.kind == .zero_string or item.kind == .size_string) return state.failArgumentMessage("string.packsize", 1, "variable-length format");
         if (item.kind != .fixed_string and item.kind != .padding) total = try addPackSize(state, total, try packAlignmentPadding(state, total, item, config.max_align));
         total = try addPackSize(state, total, item.size);
         index += 1;
@@ -386,12 +396,21 @@ fn isPowerOfTwo(value: usize) bool {
     return value != 0 and (value & (value - 1)) == 0;
 }
 
-fn appendPackedInteger(state: *State, out: *std.ArrayList(u8), value: Value, item: PackItem, endian: Endian) !void {
-    const integer = runtime.toInteger(value) orelse return state.fail("number has no integer representation");
+fn packNumberExpected(state: *State, argument: u32, value: Value) runtime.RuntimeError {
+    if (value == .nil) return state.failArgumentMessage("string.pack", argument, "number expected, got nil");
+    return state.failArgumentType("string.pack", argument, "number", value);
+}
+
+/// `argument` is the one-based position of `value` among the function's arguments.
+fn appendPackedInteger(state: *State, out: *std.ArrayList(u8), value: Value, argument: u32, item: PackItem, endian: Endian) !void {
+    const integer = runtime.toInteger(value) orelse {
+        _ = runtime.toNumber(value) catch return packNumberExpected(state, argument, value);
+        return state.failArgumentMessage("string.pack", argument, "number has no integer representation");
+    };
     if (item.signed) {
-        if (!packSignedFits(integer, item.size)) return state.fail("integer overflow");
+        if (!packSignedFits(integer, item.size)) return state.failArgumentMessage("string.pack", argument, "integer overflow");
     } else if (!packUnsignedFits(integer, item.size)) {
-        return state.fail("unsigned overflow");
+        return state.failArgumentMessage("string.pack", argument, "unsigned overflow");
     }
     try appendPackedIntegerBits(state, out, @bitCast(integer), item.size, item.signed and integer < 0, endian);
 }

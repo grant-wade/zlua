@@ -3,6 +3,8 @@ const errors = @import("../errors.zig");
 const frontend = @import("../frontend.zig");
 const ast = frontend.ast;
 const source = frontend.source;
+const stack_guard = frontend.stack_guard;
+const StackGuard = stack_guard.StackGuard;
 
 pub const Error = error{ResolveError};
 
@@ -63,7 +65,7 @@ const Lookup = union(enum) {
 };
 
 pub fn resolve(allocator: std.mem.Allocator, tree: *const ast.Ast) !void {
-    var context = FunctionContext.init(allocator, null, null);
+    var context = FunctionContext.init(allocator, null, null, .start(stack_guard.default_max_bytes));
     defer context.deinit();
 
     try context.enterScope();
@@ -73,7 +75,12 @@ pub fn resolve(allocator: std.mem.Allocator, tree: *const ast.Ast) !void {
 }
 
 pub fn resolveWithDiagnostic(allocator: std.mem.Allocator, tree: *const ast.Ast, error_diagnostic: *?errors.Diagnostic) !void {
-    var context = FunctionContext.init(allocator, null, error_diagnostic);
+    return resolveGuarded(allocator, tree, error_diagnostic, .start(stack_guard.default_max_bytes));
+}
+
+/// Like `resolveWithDiagnostic`, failing with a diagnostic when `stack` runs out.
+pub fn resolveGuarded(allocator: std.mem.Allocator, tree: *const ast.Ast, error_diagnostic: *?errors.Diagnostic, stack: StackGuard) !void {
+    var context = FunctionContext.init(allocator, null, error_diagnostic, stack);
     defer context.deinit();
 
     try context.enterScope();
@@ -84,7 +91,7 @@ pub fn resolveWithDiagnostic(allocator: std.mem.Allocator, tree: *const ast.Ast,
 
 /// Resolves `tree`, appending each use of a global through the chunk's own `_ENV` to `uses`.
 pub fn collectGlobals(allocator: std.mem.Allocator, tree: *const ast.Ast, uses: *std.ArrayList(GlobalUseSite)) !void {
-    var context = FunctionContext.init(allocator, null, null);
+    var context = FunctionContext.init(allocator, null, null, .start(stack_guard.default_max_bytes));
     defer context.deinit();
     context.global_uses = uses;
 
@@ -105,9 +112,10 @@ const FunctionContext = struct {
     gotos: std.ArrayList(PendingGoto) = .empty,
     loop_depth: usize = 0,
     upvalues: std.ArrayList([]const u8) = .empty,
+    stack: StackGuard,
 
-    fn init(allocator: std.mem.Allocator, parent: ?*FunctionContext, error_diagnostic: ?*?errors.Diagnostic) FunctionContext {
-        return .{ .allocator = allocator, .parent = parent, .error_diagnostic = error_diagnostic };
+    fn init(allocator: std.mem.Allocator, parent: ?*FunctionContext, error_diagnostic: ?*?errors.Diagnostic, stack: StackGuard) FunctionContext {
+        return .{ .allocator = allocator, .parent = parent, .error_diagnostic = error_diagnostic, .stack = stack };
     }
 
     fn deinit(self: *FunctionContext) void {
@@ -144,6 +152,7 @@ const FunctionContext = struct {
     }
 
     fn resolveBlock(self: *FunctionContext, block: ast.Block, allow_trailing_label_scope_reset: bool) anyerror!void {
+        if (self.stack.exceeded()) return self.fail(.native_stack_overflow);
         for (block, 0..) |statement, index| {
             try self.resolveStatement(statement, allow_trailing_label_scope_reset and labelIsLastNoOp(block, index));
         }
@@ -156,6 +165,7 @@ const FunctionContext = struct {
     }
 
     fn resolveStatement(self: *FunctionContext, statement: ast.Stmt, label_last_noop: bool) anyerror!void {
+        if (self.stack.interrupted()) return error.Interrupted;
         switch (statement) {
             .empty => {},
             .assignment => |assignment| {
@@ -271,7 +281,7 @@ const FunctionContext = struct {
     }
 
     fn resolveFunctionBody(self: *FunctionContext, body: ast.FunctionBody, method: bool) anyerror!void {
-        var child = FunctionContext.init(self.allocator, self, self.error_diagnostic);
+        var child = FunctionContext.init(self.allocator, self, self.error_diagnostic, self.stack);
         child.global_uses = self.global_uses;
         defer child.deinit();
 
@@ -295,6 +305,28 @@ const FunctionContext = struct {
     }
 
     fn resolveExpr(self: *FunctionContext, expr: *const ast.Expr) anyerror!void {
+        if (self.stack.exceeded()) return self.fail(.native_stack_overflow);
+        if (self.stack.interrupted()) return error.Interrupted;
+        if (leftOperand(expr)) |first_left| {
+            if (leftOperand(first_left) == null) {
+                try self.resolveExpr(first_left);
+                return self.resolveRightOperands(expr);
+            }
+            var spine = std.ArrayList(*const ast.Expr).empty;
+            defer spine.deinit(self.allocator);
+            var node = expr;
+            while (leftOperand(node)) |left| {
+                try spine.append(self.allocator, node);
+                node = left;
+            }
+            try self.resolveExpr(node);
+            var index = spine.items.len;
+            while (index > 0) {
+                index -= 1;
+                try self.resolveRightOperands(spine.items[index]);
+            }
+            return;
+        }
         switch (expr.*) {
             .nil, .boolean, .integer, .float, .string, .vararg => {},
             .identifier => |name| {
@@ -320,24 +352,19 @@ const FunctionContext = struct {
             },
             .function_literal => |body| try self.resolveFunctionBody(body, false),
             .grouped => |inner| try self.resolveExpr(inner),
-            .index => |index| {
-                try self.resolveExpr(index.receiver);
-                try self.resolveExpr(index.key);
-            },
-            .field => |field| try self.resolveExpr(field.receiver),
-            .call => |call| {
-                try self.resolveExpr(call.callee);
-                for (call.args) |arg| try self.resolveExpr(arg);
-            },
-            .method_call => |call| {
-                try self.resolveExpr(call.receiver);
-                for (call.args) |arg| try self.resolveExpr(arg);
-            },
             .unary => |unary| try self.resolveExpr(unary.operand),
-            .binary => |binary| {
-                try self.resolveExpr(binary.left);
-                try self.resolveExpr(binary.right);
-            },
+            .index, .field, .call, .method_call, .binary => unreachable,
+        }
+    }
+
+    /// Resolves the operands of a left-recursive expression other than `leftOperand`.
+    fn resolveRightOperands(self: *FunctionContext, expr: *const ast.Expr) anyerror!void {
+        switch (expr.*) {
+            .index => |index| try self.resolveExpr(index.key),
+            .call => |call| for (call.args) |arg| try self.resolveExpr(arg),
+            .method_call => |call| for (call.args) |arg| try self.resolveExpr(arg),
+            .binary => |binary| try self.resolveExpr(binary.right),
+            else => {},
         }
     }
 
@@ -535,25 +562,40 @@ fn labelIsLastNoOp(block: ast.Block, index: usize) bool {
     return true;
 }
 
-fn exprSpan(expr: *const ast.Expr) source.Span {
+/// The operand a chain of this expression grows through, or null for other expressions.
+fn leftOperand(expr: *const ast.Expr) ?*const ast.Expr {
     return switch (expr.*) {
-        .nil => |span| span,
-        .boolean => |value| value.span,
-        .integer => |value| value.span,
-        .float => |value| value.span,
-        .string => |value| value.span,
-        .vararg => |span| span,
-        .identifier => |name| name.span,
-        .table_constructor => |constructor| if (constructor.fields.len > 0) fieldSpan(constructor.fields[0]) else zero_span,
-        .function_literal => |body| .{ .start = .{ .line = body.defined_line }, .end = .{ .line = body.defined_line } },
-        .grouped => |inner| exprSpan(inner),
-        .index => |index| exprSpan(index.receiver),
-        .field => |field| field.name.span,
-        .call => |call| exprSpan(call.callee),
-        .method_call => |call| call.method.span,
-        .unary => |unary| exprSpan(unary.operand),
-        .binary => |binary| exprSpan(binary.left),
+        .index => |index| index.receiver,
+        .field => |field| field.receiver,
+        .call => |call| call.callee,
+        .method_call => |call| call.receiver,
+        .binary => |binary| binary.left,
+        else => null,
     };
+}
+
+fn exprSpan(expr: *const ast.Expr) source.Span {
+    var current = expr;
+    while (true) {
+        switch (current.*) {
+            .nil => |span| return span,
+            .boolean => |value| return value.span,
+            .integer => |value| return value.span,
+            .float => |value| return value.span,
+            .string => |value| return value.span,
+            .vararg => |span| return span,
+            .identifier => |name| return name.span,
+            .table_constructor => |constructor| return if (constructor.fields.len > 0) fieldSpan(constructor.fields[0]) else zero_span,
+            .function_literal => |body| return .{ .start = .{ .line = body.defined_line }, .end = .{ .line = body.defined_line } },
+            .grouped => |inner| current = inner,
+            .index => |index| current = index.receiver,
+            .field => |field| return field.name.span,
+            .call => |call| current = call.callee,
+            .method_call => |call| return call.method.span,
+            .unary => |unary| current = unary.operand,
+            .binary => |binary| current = binary.left,
+        }
+    }
 }
 
 fn fieldSpan(field: ast.TableField) source.Span {

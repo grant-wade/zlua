@@ -12,6 +12,8 @@ pub const Lexer = lexer.Lexer;
 pub const Token = token.Token;
 pub const TokenTag = token.Tag;
 pub const Ast = ast.Ast;
+pub const stack_guard = @import("stack_guard.zig");
+pub const StackGuard = stack_guard.StackGuard;
 
 pub fn lex(allocator: std.mem.Allocator, source_text: []const u8) ![]Token {
     return lexer.lex(allocator, source_text);
@@ -25,6 +27,10 @@ pub fn parseWithDiagnostic(allocator: std.mem.Allocator, source_text: []const u8
     return parser.parseWithDiagnostic(allocator, source_text, error_diagnostic);
 }
 
+pub fn parseGuarded(allocator: std.mem.Allocator, source_text: []const u8, error_diagnostic: *?errors.Diagnostic, stack: StackGuard) !Ast {
+    return parser.parseGuarded(allocator, source_text, error_diagnostic, stack);
+}
+
 test {
     _ = source;
     _ = diagnostic;
@@ -32,4 +38,5 @@ test {
     _ = lexer;
     _ = ast;
     _ = parser;
+    _ = stack_guard;
 }

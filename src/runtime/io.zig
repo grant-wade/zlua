@@ -41,7 +41,14 @@ fn failFileOperation(self: *State, path: []const u8, err: anyerror) anyerror {
     return self.fail(message);
 }
 
+fn countOutput(self: *State, bytes: usize) !void {
+    const limit = self.options.max_output_bytes orelse return;
+    if (bytes > limit -| self.output_bytes) return self.budget.stop("output limit exceeded");
+    self.output_bytes += bytes;
+}
+
 pub fn writeStdout(self: *State, bytes: []const u8) !void {
+    try countOutput(self, bytes.len);
     if (self.options.capture_output) {
         if (self.rollback) |journal| try journal.outputWritable(self);
         try self.stdout.appendSlice(self.allocator, bytes);
@@ -62,6 +69,7 @@ pub fn warn(self: *State, parts: []const []const u8) !void {
     if (self.options.warning_handler) |handler| {
         const message = try std.mem.concat(self.allocator, u8, parts);
         defer self.allocator.free(message);
+        try countOutput(self, message.len);
         handler.emit(handler.context, message);
         return;
     }
@@ -81,6 +89,7 @@ pub fn warnError(self: *State, where: []const u8, error_value: Value) void {
 }
 
 pub fn writeStderr(self: *State, bytes: []const u8) !void {
+    try countOutput(self, bytes.len);
     if (self.options.capture_output) {
         if (self.rollback) |journal| try journal.outputWritable(self);
         try self.stderr.appendSlice(self.allocator, bytes);
@@ -500,9 +509,34 @@ pub fn fsCopyFile(self: *State, source: []const u8, destination: []const u8, ove
     }
 }
 
+/// True for a path Windows would resolve outside its directory.
+pub fn escapesWindowsDirectory(path: []const u8) bool {
+    if (std.mem.indexOfScalar(u8, path, ':') != null) return true;
+    var components = std.mem.tokenizeScalar(u8, path, '/');
+    while (components.next()) |component| {
+        const stem = component[0 .. std.mem.indexOfScalar(u8, component, '.') orelse component.len];
+        const trimmed = std.mem.trimEnd(u8, stem, " ");
+        for ([_][]const u8{ "con", "prn", "aux", "nul", "conin$", "conout$" }) |device| {
+            if (std.ascii.eqlIgnoreCase(trimmed, device)) return true;
+        }
+        if (trimmed.len == 4 and (std.ascii.startsWithIgnoreCase(trimmed, "com") or std.ascii.startsWithIgnoreCase(trimmed, "lpt")) and std.ascii.isDigit(trimmed[3])) return true;
+    }
+    return false;
+}
+
+test "windows device names and streams are outside a directory" {
+    for ([_][]const u8{ "C:evil", "a.txt::$DATA", "nul", "sub/CON.txt", "lpt1", "Com9.log", "aux ", "conin$" }) |path| {
+        try std.testing.expect(escapesWindowsDirectory(path));
+    }
+    for ([_][]const u8{ "plain.txt", "sub/dir/file", "console", "com", "lpt10", "nullable.txt", "auxiliary" }) |path| {
+        try std.testing.expect(!escapesWindowsDirectory(path));
+    }
+}
+
 fn hostDirPath(self: *State, io: std.Io, root: Dir, path: []const u8, follow_last: bool) anyerror![]u8 {
     const normalized = try host.MemoryFilesystem.normalizePathAlloc(self.allocator, path, host.MemoryFilesystem.default_max_path_len);
     errdefer self.allocator.free(normalized);
+    if (builtin.os.tag == .windows and escapesWindowsDirectory(normalized)) return error.AccessDenied;
     try checkHostDirSymlinks(self, io, root, normalized, follow_last);
     return normalized;
 }

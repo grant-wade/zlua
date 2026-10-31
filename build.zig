@@ -124,6 +124,9 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(extensions_exe);
 
+    const sandbox_exe = addSandboxExe(b, "zlua-test-sandbox", target, optimize, mod);
+    b.installArtifact(sandbox_exe);
+
     const official_exe = b.addExecutable(.{
         .name = "zlua-test-official",
         .root_module = b.createModule(.{
@@ -203,6 +206,11 @@ pub fn build(b: *std.Build) void {
     run_extensions_cmd.addArtifactArg(exe);
     addPassthruArgs(b, run_extensions_cmd);
     run_extensions_step.dependOn(&run_extensions_cmd.step);
+
+    const run_sandbox_step = b.step("run-test-sandbox", "Run the sandbox attack fixtures in the current optimize mode");
+    const run_sandbox_cmd = b.addRunArtifact(sandbox_exe);
+    addPassthruArgs(b, run_sandbox_cmd);
+    run_sandbox_step.dependOn(&run_sandbox_cmd.step);
 
     const run_official_step = b.step("run-test-official", "Run official Lua 5.5 suite harness");
     const run_official_cmd = b.addRunArtifact(official_exe);
@@ -310,6 +318,20 @@ pub fn build(b: *std.Build) void {
     addPassthruArgs(b, extensions_cmd);
     extensions_step.dependOn(&extensions_cmd.step);
 
+    const sandbox_step = b.step("test-sandbox", "Run the sandbox attack fixtures in every optimize mode");
+    inline for (.{ std.builtin.OptimizeMode.Debug, std.builtin.OptimizeMode.ReleaseSafe, bench_optimize }) |mode| {
+        const mode_zerde = b.dependency("zerde", .{ .target = target, .optimize = mode });
+        const mode_mod = b.createModule(.{
+            .root_source_file = b.path("src/root.zig"),
+            .target = target,
+            .optimize = mode,
+            .imports = &.{.{ .name = "zerde", .module = mode_zerde.module("zerde") }},
+        });
+        const run_mode = b.addRunArtifact(addSandboxExe(b, "zlua-test-sandbox-" ++ @tagName(mode), target, mode, mode_mod));
+        addPassthruArgs(b, run_mode);
+        sandbox_step.dependOn(&run_mode.step);
+    }
+
     const official_step = b.step("test-official", "Run full official Lua 5.5 suite dashboard under a memory cap");
     const official_cmd = b.addRunArtifact(official_exe);
     official_cmd.step.dependOn(b.getInstallStep());
@@ -346,6 +368,26 @@ pub fn build(b: *std.Build) void {
         gc_stress_cmd.addArg(mode);
         gc_stress_step.dependOn(&gc_stress_cmd.step);
     }
+
+    const stack_stress_step = b.step("test-stack-stress", "Run CLua differential tests moving the Lua stack on every growth check");
+    const stack_stress_cmd = b.addRunArtifact(diff_exe);
+    stack_stress_cmd.step.dependOn(b.getInstallStep());
+    stack_stress_cmd.addArg("--clua");
+    stack_stress_cmd.addArtifactArg(clua_exe);
+    stack_stress_cmd.addArg("--stack-stress");
+    stack_stress_step.dependOn(&stack_stress_cmd.step);
+
+    const generated_diff_step = b.step("test-diff-generated", "Compare generated programs under CLua and zlua");
+    const generate_programs = b.addRunArtifact(sandbox_exe);
+    generate_programs.addArgs(&.{"--generate"});
+    const generated_directory = generate_programs.addOutputDirectoryArg("generated");
+    generate_programs.addArgs(&.{ "500", "1" });
+    const generated_diff_cmd = b.addRunArtifact(diff_exe);
+    generated_diff_cmd.step.dependOn(b.getInstallStep());
+    generated_diff_cmd.addArg("--clua");
+    generated_diff_cmd.addArtifactArg(clua_exe);
+    generated_diff_cmd.addDirectoryArg(generated_directory);
+    generated_diff_step.dependOn(&generated_diff_cmd.step);
 
     const ci_step = b.step("ci", "Run CI checks");
     ci_step.dependOn(test_step);
@@ -407,6 +449,24 @@ pub fn build(b: *std.Build) void {
     check_tools_step.dependOn(&doc_server.step);
     const md_docgen_tests = b.addTest(.{ .root_module = md_docgen.root_module });
     check_tools_step.dependOn(&b.addRunArtifact(md_docgen_tests).step);
+}
+
+fn addSandboxExe(
+    b: *std.Build,
+    name: []const u8,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    mod: *std.Build.Module,
+) *std.Build.Step.Compile {
+    return b.addExecutable(.{
+        .name = name,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/test_sandbox_main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "zlua", .module = mod }},
+        }),
+    });
 }
 
 fn addFetchLuaStep(b: *std.Build) *std.Build.Step {

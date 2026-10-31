@@ -20,18 +20,24 @@ The Full check row lists what `zig build ci` runs.
 | Official suite | `zig build test-official` | Runs downloaded Lua 5.5 tests under both interpreters. |
 | Complete official suite | `zig build test-official-complete` | Runs the same tests with their full-size and non-portable sections enabled. |
 | GC stress | `zig build test-gc-stress` | Runs the differential fixtures under both GC stress modes. |
+| Stack stress | `zig build test-stack-stress` | Runs the differential fixtures, moving the Lua stack on every growth check. |
+| Sandbox attacks | `zig build test-sandbox` | Runs `tests/sandbox/**/*.lua` as hostile scripts in Debug, ReleaseSafe, and ReleaseFast. |
+| Generated differential | `zig build test-diff-generated` | Compares generated programs under Lua 5.5 and zlua. |
 | Full check | `zig build ci` | Unit tests, freestanding smoke builds, examples, differential fixtures, extension fixtures, and official suite. |
 
 `just test` and `just ci` wrap the same steps. `just diff`, `just extensions`,
 and `just official` wrap the `run-test-*` steps. `zig build ci` does not include
-the WASM smoke test, which CI adds to the same command, or the complete official
-suite and GC stress runs, which belong to the extended CI job.
+the WASM smoke test or sandbox attacks, which CI adds to the same command, or
+the complete official suite, GC and stack stress, generated differential, and
+ReleaseSafe runs, which belong to the extended CI job.
 
-The unit tests include fuzz targets for source loading, binary chunk
-verification, and string library inputs (patterns, `string.format`, and
-`string.pack`). A normal test run only checks their seed inputs. To search for
-crashes, run the fuzzer with an optional iteration limit. Fuzzing requires Zig
-`0.17.0`; the command fails to compile on `0.16.0`.
+The unit tests include fuzz targets for source loading, generated programs,
+binary chunk verification, verifier-valid generated chunks, library calls with
+hostile arguments, data format readers, and string library inputs. A normal test
+run checks their seed inputs and a seeded sweep of each generator. To search for
+crashes, run the fuzzer with an optional iteration limit. Run one fuzzer at a
+time per cache directory. Fuzzing requires Zig `0.17.0`; the command fails to
+compile on `0.16.0`. The `Fuzz` workflow runs it on a schedule.
 
 ```sh
 zig build test --fuzz=100K
@@ -39,14 +45,16 @@ zig build test --fuzz=100K
 
 ## GitHub Actions
 
-Every push runs `zig build ci test-wasm check-tools` with Zig `0.16.0` and
-`0.17.0` on Linux and macOS (x64 and ARM64), plus Windows and FreeBSD x64. You
+Every push runs `zig build ci test-sandbox test-wasm check-tools` with Zig
+`0.16.0` and `0.17.0` on Linux and macOS (x64 and ARM64), plus Windows and
+FreeBSD x64. You
 can also start the full matrix manually. Each job then builds, runs, and tests
 the downstream embedding project in `examples/project` against the current
 checkout.
 
-An extended job on Linux runs `zig build test-official-complete test-gc-stress`
-with both Zig versions.
+An extended job on Linux runs `zig build test-official-complete test-gc-stress
+test-stack-stress test-diff-generated` and `zig build test test-diff
+-Doptimize=ReleaseSafe` with both Zig versions.
 
 The `PR checks` job passes only when every full-suite and extended job passes. A
 failed, cancelled, or skipped job makes it fail. That makes `PR checks` the one
@@ -162,6 +170,49 @@ When you have changed output on purpose, `--bless` rewrites the expected `.out`,
 
 ```sh
 just extensions --bless tests/extensions/string/split_edges.lua
+```
+
+## Sandbox Attacks
+
+Sandbox fixtures are Lua scripts under `tests/sandbox/` that try to break the
+[sandbox guarantees](security.md). The runner runs each one in a child process
+on each stack size, with these checks:
+
+- The child exits without a signal or timeout.
+- The outcome and error message match the fixture's metadata.
+- Host allocations stay within `max_memory`, and none remain after `deinit`.
+- Output stays within `max_output_bytes`.
+- Each host finalizer runs once, and a bound `__gc` runs at most once.
+
+A fixture's leading comments set its expectations and limits:
+
+```lua
+-- outcome: error
+-- message: instruction limit exceeded
+-- max-instructions: 1000000
+
+return ("a"):rep(32):find(("a-"):rep(12) .. "b")
+```
+
+| Key | Values | Default |
+| --- | --- | --- |
+| `outcome` | `ok`, `error`, `interrupted`, `any` | `ok` |
+| `message` | Text the error must contain | empty |
+| `stdlib` | `safe`, `full` | `safe` |
+| `max-memory`, `max-instructions` | Number or `none` | 64 MiB, 1,000,000 |
+| `call-instructions`, `max-output` | Number | none, 16 MiB |
+| `interrupt-ms`, `latency-ms` | Delay before an interrupt, and the longest allowed response | none |
+| `binary-chunks` | `true` | off |
+| `min-stack` | Skips smaller stacks | 0 |
+| `fault-sweep` | `true` runs the fixture failing each allocation in turn, and under GC stress | off |
+
+Fixtures see the globals `res` and `res2` (userdata with a finalizer and
+`__gc`), `other` (another userdata type), `host_call(f)`, and
+`host_load(source)`.
+
+```sh
+zig build run-test-sandbox -- tests/sandbox/budget
+zig build run-test-sandbox -Doptimize=ReleaseFast -- --stacks=1048576 --show-output
 ```
 
 ## Official Suite

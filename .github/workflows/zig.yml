@@ -15,7 +15,7 @@ jobs:
   test:
     name: Full suite (${{ matrix.os }}, Zig ${{ matrix.zig }})
     runs-on: ${{ matrix.runner || matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -35,12 +35,6 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v7.0.1
-      - name: Verify FreeBSD jail
-        if: matrix.os == 'freebsd-15.1'
-        run: |
-          test "$(uname -s)" = FreeBSD
-          test "$(sysctl -n security.jail.jailed)" = 1
-          test "$(id -u)" != 0
       - uses: grant-wade/zig-setup@v1.0.1
         with:
           version: ${{ matrix.zig }}
@@ -50,8 +44,8 @@ jobs:
         with:
           path: .zlua-deps
           key: ${{ runner.os }}-lua-${{ hashFiles('tools/fetch-lua.sh') }}
-      - name: Full test suite and WASM smoke test
-        run: zig build ci test-wasm check-tools --summary all
+      - name: Full test suite, sandbox attacks, and WASM smoke test
+        run: zig build ci test-sandbox test-wasm check-tools --summary all
       - name: Downstream embedding project
         working-directory: examples/project
         run: zig build run test --summary all
@@ -59,7 +53,7 @@ jobs:
   extended:
     name: Extended checks (Zig ${{ matrix.zig }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -75,8 +69,10 @@ jobs:
         with:
           path: .zlua-deps
           key: ${{ runner.os }}-lua-${{ hashFiles('tools/fetch-lua.sh') }}
-      - name: Complete official suite and GC stress
-        run: zig build test-official-complete test-gc-stress --summary all
+      - name: Complete official suite, stress modes, and generated differential
+        run: zig build test-official-complete test-gc-stress test-stack-stress test-diff-generated --summary all
+      - name: Unit and differential tests in ReleaseSafe
+        run: zig build test test-diff -Doptimize=ReleaseSafe --summary all
 
   pr-check:
     name: PR checks

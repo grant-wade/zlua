@@ -34,9 +34,9 @@ pub fn getTableToRegister(self: *State, thread: *Thread, dest: bytecode.Register
 
 fn getTableDepthContinuable(self: *State, thread: *Thread, dest: usize, table_value: Value, key_value: Value, depth: usize) !Value {
     if (depth > max_metamethod_depth) return self.fail("'__index' chain too long");
-    const key = try readableTableKey(self, key_value) orelse return .nil;
+    const key = try readableTableKey(self, key_value) orelse key_value;
 
-    if (table_value == .table) {
+    if (table_value == .table and key != .nil) {
         const value = table_value.table.get(key);
         if (value != .nil) return value;
     }
@@ -47,9 +47,9 @@ fn getTableDepthContinuable(self: *State, thread: *Thread, dest: usize, table_va
     };
 
     return switch (metamethod) {
-        .table => getTableDepthContinuable(self, thread, dest, metamethod, key, depth + 1),
+        .table => getTableDepthContinuable(self, thread, dest, metamethod, key_value, depth + 1),
         else => if (functionLike(metamethod))
-            try call_mod.callOneMetamethodWithContinuation(self, thread, "__index", metamethod, &.{ table_value, key }, .{ .value = dest })
+            try call_mod.callOneMetamethodWithContinuation(self, thread, "__index", metamethod, &.{ table_value, key_value }, .{ .value = dest })
         else
             failure_mod.failRuntimeDetail(self, thread, indexErrorMessage(metamethod)),
     };
@@ -57,9 +57,9 @@ fn getTableDepthContinuable(self: *State, thread: *Thread, dest: usize, table_va
 
 fn getTableDepth(self: *State, thread: ?*Thread, table_value: Value, key_value: Value, depth: usize) !Value {
     if (depth > max_metamethod_depth) return self.fail("'__index' chain too long");
-    const key = try readableTableKey(self, key_value) orelse return .nil;
+    const key = try readableTableKey(self, key_value) orelse key_value;
 
-    if (table_value == .table) {
+    if (table_value == .table and key != .nil) {
         const value = table_value.table.get(key);
         if (value != .nil) return value;
     }
@@ -70,11 +70,11 @@ fn getTableDepth(self: *State, thread: ?*Thread, table_value: Value, key_value: 
     };
 
     return switch (metamethod) {
-        .table => getTableDepth(self, thread, metamethod, key, depth + 1),
+        .table => getTableDepth(self, thread, metamethod, key_value, depth + 1),
         else => if (!functionLike(metamethod))
             failure_mod.failRuntimeDetail(self, thread, indexErrorMessage(metamethod))
         else if (thread) |active_thread|
-            try call_mod.callOneMetamethod(self, active_thread, "__index", metamethod, &.{ table_value, key })
+            try call_mod.callOneMetamethod(self, active_thread, "__index", metamethod, &.{ table_value, key_value })
         else
             self.fail(callErrorMessage(metamethod)),
     };

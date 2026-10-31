@@ -10,6 +10,8 @@ pub const HashPart = struct {
     len: u32 align(@alignOf(TableEntry)) = 0,
     capacity: u32,
     slot_count: u32,
+    /// Nonzero after a long probe chain; mixed into slot positions.
+    salt: u32 = 0,
 
     pub const Slot = struct {
         hash: u32,
@@ -81,7 +83,7 @@ pub const HashPart = struct {
         const hash = hashKey(key);
         const table_slots = self.slots();
         const mask = table_slots.len - 1;
-        var position = hash & mask;
+        var position = homePosition(hash, self.salt) & mask;
         while (true) : (position = (position + 1) & mask) {
             const slot = table_slots[position];
             if (slot.entry == 0) return null;
@@ -98,7 +100,7 @@ pub const HashPart = struct {
         }
         const table_slots = self.slots();
         const mask = table_slots.len - 1;
-        var position = hash & mask;
+        var position = homePosition(hash, self.salt) & mask;
         while (true) : (position = (position + 1) & mask) {
             const slot = table_slots[position];
             if (slot.entry == 0) return null;
@@ -113,24 +115,57 @@ pub const HashPart = struct {
         std.debug.assert(self.len < self.capacity);
         self.storage()[self.len] = .{ .key = key, .value = value };
         self.len += 1;
-        if (self.slot_count != 0) self.place(.{ .hash = hashKey(key), .entry = self.len });
+        if (self.slot_count != 0 and self.place(.{ .hash = hashKey(key), .entry = self.len }) and self.salt == 0) {
+            self.salt = newHashSalt(@intFromPtr(self));
+            self.reindex();
+        }
     }
 
     /// Restores the index after entries were removed, moved, or copied in.
     pub fn reindex(self: *HashPart) void {
         if (self.slot_count == 0) return;
         @memset(self.slots(), .{ .hash = 0, .entry = 0 });
-        for (self.entries(), 1..) |entry, position| self.place(.{ .hash = hashKey(entry.key), .entry = @intCast(position) });
+        for (self.entries(), 1..) |entry, position| {
+            if (self.place(.{ .hash = hashKey(entry.key), .entry = @intCast(position) }) and self.salt == 0) {
+                self.salt = newHashSalt(@intFromPtr(self));
+                return self.reindex();
+            }
+        }
     }
 
-    fn place(self: *HashPart, slot: Slot) void {
+    /// Returns true when the probe chain was long.
+    fn place(self: *HashPart, slot: Slot) bool {
         const table_slots = self.slots();
         const mask = table_slots.len - 1;
-        var position = slot.hash & mask;
-        while (table_slots[position].entry != 0) position = (position + 1) & mask;
+        var position = homePosition(slot.hash, self.salt) & mask;
+        var probes: u32 = 0;
+        while (table_slots[position].entry != 0) : (probes += 1) position = (position + 1) & mask;
         table_slots[position] = slot;
+        return probes > long_probe_chain;
     }
 };
+
+/// Probes beyond which a table or the intern set assumes its keys were chosen to collide.
+pub const long_probe_chain = 128;
+
+/// The value whose low bits pick the first slot for `hash`.
+pub inline fn homePosition(hash: u32, salt: u32) u32 {
+    if (salt == 0) return hash;
+    return hash ^ ((hash *% salt) >> 11);
+}
+
+var hash_secret: std.atomic.Value(usize) = .init(0);
+
+/// An odd multiplier a script can't predict. `seed` adds an address to the process's secret.
+pub fn newHashSalt(seed: usize) u32 {
+    var secret = hash_secret.load(.monotonic);
+    if (secret == 0) {
+        secret = @frameAddress() ^ @intFromPtr(&hash_secret);
+        hash_secret.store(secret, .monotonic);
+    }
+    const mixed = std.hash.Wyhash.hash(secret, std.mem.asBytes(&seed));
+    return @truncate(mixed | 1);
+}
 
 pub inline fn hashKey(key: Value) u32 {
     if (key == .string) return key.string.tableHash();

@@ -15,6 +15,7 @@
 - [frontend.token](../frontend/token.md)
 - [frontend.diagnostic](../frontend/diagnostic.md)
 - [frontend.lexer](../frontend/lexer.md)
+- [stack_guard](../stack_guard.md)
 - [frontend.ast](../frontend/ast.md)
 - [frontend.parser](../frontend/parser.md)
 - [compile](../compile.md)
@@ -29,26 +30,27 @@
 - [stdlib](../stdlib.md)
 - [stdlib.base](../stdlib/base.md)
 - [runtime.call](../runtime/call.md)
-- [stdlib.static_strings](../stdlib/static_strings.md)
-- [runtime.table_index](../runtime/table_index.md)
-- [runtime.value](../runtime/value.md)
-- [runtime.number_format](../runtime/number_format.md)
-- [runtime.coroutine](../runtime/coroutine.md)
+- [runtime.budget](../runtime/budget.md)
+- [runtime.failure](../runtime/failure.md)
 - [runtime.debug](../runtime/debug.md)
 - [runtime.io](../runtime/io.md)
 - [runtime.host](../runtime/host.md)
+- [runtime.value](../runtime/value.md)
+- [runtime.number_format](../runtime/number_format.md)
+- [stdlib.static_strings](../stdlib/static_strings.md)
+- [runtime.table_index](../runtime/table_index.md)
 - [runtime.metatable](../runtime/metatable.md)
 - [runtime.rollback](../runtime/rollback.md)
 - [runtime.strings](../runtime/strings.md)
 - [runtime.operators](../runtime/operators.md)
-- [runtime.failure](../runtime/failure.md)
-- [runtime.load](../runtime/load.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.gc](../runtime/gc.md)
 - [runtime.entry](../runtime/entry.md)
+- [runtime.coroutine](../runtime/coroutine.md)
+- [runtime.load](../runtime/load.md)
+- [runtime.upvalue](../runtime/upvalue.md)
 - [runtime.system](../runtime/system.md)
 - [runtime.timezone](../runtime/timezone.md)
-- [runtime.upvalue](../runtime/upvalue.md)
 - [runtime.index](../runtime/index.md)
 - [stdlib.table](../stdlib/table.md)
 - [stdlib.string](../stdlib/string.md)
@@ -68,7 +70,6 @@
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
-- [runtime.budget](../runtime/budget.md)
 - [runtime.object_pool](../runtime/object_pool.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
@@ -121,6 +122,8 @@
 - [testing.parallel](../testing/parallel.md)
 - [testing.extension_runner](../testing/extension_runner.md)
 - [testing.official_suite](../testing/official_suite.md)
+- [testing.sandbox_runner](../testing/sandbox_runner.md)
+- [testing.generators](../testing/generators.md)
 
 </details>
 
@@ -240,6 +243,8 @@ pub const State = struct {
 | [host](#fn-state-host) | `self: *const State, comptime T: type` | `?*T` | The pointer given to &#96;setHost&#96; when it points to a &#96;T&#96;, or null. |
 | [allocator](#fn-state-allocator) | `self: *State` | `std.mem.Allocator` | Allocator for API-owned allocations returned to the host. |
 | [instructionBudget](#fn-state-instructionbudget) | `self: *const State` | `InstructionBudget` |  |
+| [outputBytes](#fn-state-outputbytes) | `self: *const State` | `u64` | Output bytes written since state creation or the last &#96;resetOutputLimit&#96;. |
+| [resetOutputLimit](#fn-state-resetoutputlimit) | `self: *State` | `void` | Restarts &#96;Limits.max_output_bytes&#96; and clears its error. |
 | [resetInstructionBudget](#fn-state-resetinstructionbudget) | `self: *State` | `void` |  |
 | [interruptHandle](#fn-state-interrupthandle) | `self: *State` | `!InterruptHandle` | Returns a thread-safe &#96;InterruptHandle&#96;; handles share one flag that stays valid across &#96;reset&#96; until &#96;deinit&#96;. While one exists, dispatch polls the flag periodically. |
 | [clearInterrupt](#fn-state-clearinterrupt) | `self: *State` | `void` |  |
@@ -393,6 +398,30 @@ References: [`State`](#type-state)
 
 ```zig
 pub fn instructionBudget(self: *const State) InstructionBudget
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-outputbytes"></a>
+
+### State.outputBytes
+
+Output bytes written since state creation or the last `resetOutputLimit`.
+
+```zig
+pub fn outputBytes(self: *const State) u64
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-resetoutputlimit"></a>
+
+### State.resetOutputLimit
+
+Restarts `Limits.max_output_bytes` and clears its error.
+
+```zig
+pub fn resetOutputLimit(self: *State) void
 ```
 
 References: [`State`](#type-state)

@@ -15,6 +15,7 @@
 - [frontend.token](../frontend/token.md)
 - [frontend.diagnostic](../frontend/diagnostic.md)
 - [frontend.lexer](../frontend/lexer.md)
+- [stack_guard](../stack_guard.md)
 - [frontend.ast](../frontend/ast.md)
 - [frontend.parser](../frontend/parser.md)
 - [compile](../compile.md)
@@ -29,26 +30,27 @@
 - [stdlib](../stdlib.md)
 - [stdlib.base](../stdlib/base.md)
 - [runtime.call](../runtime/call.md)
-- [stdlib.static_strings](../stdlib/static_strings.md)
-- [runtime.table_index](../runtime/table_index.md)
-- [runtime.value](../runtime/value.md)
-- [runtime.number_format](../runtime/number_format.md)
-- [runtime.coroutine](../runtime/coroutine.md)
+- [runtime.budget](../runtime/budget.md)
+- [runtime.failure](../runtime/failure.md)
 - [runtime.debug](../runtime/debug.md)
 - [runtime.io](../runtime/io.md)
 - [runtime.host](../runtime/host.md)
+- [runtime.value](../runtime/value.md)
+- [runtime.number_format](../runtime/number_format.md)
+- [stdlib.static_strings](../stdlib/static_strings.md)
+- [runtime.table_index](../runtime/table_index.md)
 - [runtime.metatable](../runtime/metatable.md)
 - [runtime.rollback](../runtime/rollback.md)
 - [runtime.strings](../runtime/strings.md)
 - [runtime.operators](../runtime/operators.md)
-- [runtime.failure](../runtime/failure.md)
-- [runtime.load](../runtime/load.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.gc](../runtime/gc.md)
 - [runtime.entry](../runtime/entry.md)
+- [runtime.coroutine](../runtime/coroutine.md)
+- [runtime.load](../runtime/load.md)
+- [runtime.upvalue](../runtime/upvalue.md)
 - [runtime.system](../runtime/system.md)
 - [runtime.timezone](../runtime/timezone.md)
-- [runtime.upvalue](../runtime/upvalue.md)
 - [runtime.index](../runtime/index.md)
 - [stdlib.table](../stdlib/table.md)
 - [stdlib.string](../stdlib/string.md)
@@ -68,7 +70,6 @@
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
-- [runtime.budget](../runtime/budget.md)
 - [runtime.object_pool](../runtime/object_pool.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
@@ -121,6 +122,8 @@
 - [testing.parallel](../testing/parallel.md)
 - [testing.extension_runner](../testing/extension_runner.md)
 - [testing.official_suite](../testing/official_suite.md)
+- [testing.sandbox_runner](../testing/sandbox_runner.md)
+- [testing.generators](../testing/generators.md)
 
 </details>
 
@@ -196,11 +199,37 @@ pub const Limits = struct {
     max_call_frames: ?usize = null,
     /// Instructions since the last budget reset; null is unlimited.
     max_instructions: ?u64 = null,
+    /// Native stack bytes a host call may use before Lua sees `C stack overflow`. Must leave room
+    /// on the thread for the deepest native call.
+    max_native_stack: usize = stack_guard.default_max_bytes,
+    /// Instructions for finalizers run by each `deinit`, `collect`, or `stepGc`; later ones then
+    /// fail with a warning, while host finalizers still run. Null is unlimited.
+    max_finalizer_instructions: ?u64 = 1_000_000,
+    /// Bytes Lua may write to stdout and stderr; see `State.resetOutputLimit`. Null is unlimited.
+    max_output_bytes: ?u64 = null,
     /// Largest single file read by `io`, `loadfile`, `dofile`, `require`, `fs`, and `loadFile`.
     /// Reads also count against `max_memory`.
     max_file_bytes: usize = runtime.default_max_file_bytes,
 };
 ```
+
+### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [untrusted](#const-limits-untrusted) |  |  | Starting limits for code you don't trust. |
+
+<a id="const-limits-untrusted"></a>
+
+### Limits.untrusted
+
+Starting limits for code you don't trust.
+
+```zig
+pub const untrusted: Limits =...;
+```
+
+References: [`Limits`](#type-limits)
 
 <a id="type-calloptions"></a>
 
@@ -311,6 +340,8 @@ pub const Options = struct {
     stdlib: Stdlib = .safe,
     capabilities: Capabilities = .sandboxed,
     limits: Limits = .{},
+    /// Lets Lua's `load` accept binary chunks. Host calls to `State.loadBytecode` always can.
+    binary_chunks: bool = false,
     gc: GcOptions = .{},
     debug: DebugOptions = .{},
 };
