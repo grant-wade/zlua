@@ -21,6 +21,7 @@
 - Conversions to Lua turn enums into names, follow `lua` field options, and handle vectors, `std.EnumArray`, `std.EnumSet`, and `toLua` hooks.
 - Typed callbacks and userdata methods release handle parameters when they return.
 - `State.handleScope` releases the handles created until its `end`.
+- `analyze` lists a chunk's global reads and writes without running it.
 - `Coroutine.protectedResumeWith` takes `ResumeOptions` for a traceback and a per-resume instruction budget.
 
 ### Performance

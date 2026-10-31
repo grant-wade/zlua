@@ -75,6 +75,7 @@ Generated Markdown API documentation.
 - [compile.fold](compile/fold.md)
 - [compile.disasm](compile/disasm.md)
 - [api](api.md)
+- [api.analyze](api/analyze.md)
 - [api.callbacks](api/callbacks.md)
 - [api.convert](api/convert.md)
 - [api.errors](api/errors.md)

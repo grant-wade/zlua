@@ -47,6 +47,15 @@ const Attribute = enum {
 
 const zero_span: source.Span = .{ .start = .{}, .end = .{} };
 
+pub const GlobalAccess = enum { read, write };
+
+/// A use of a global variable, its name borrowed from the syntax tree.
+pub const GlobalUseSite = struct {
+    name: []const u8,
+    line: usize,
+    access: GlobalAccess,
+};
+
 const Lookup = union(enum) {
     local: Decl,
     global: Decl,
@@ -73,10 +82,23 @@ pub fn resolveWithDiagnostic(allocator: std.mem.Allocator, tree: *const ast.Ast,
     try context.leaveScope();
 }
 
+/// Resolves `tree`, appending each use of a global through the chunk's own `_ENV` to `uses`.
+pub fn collectGlobals(allocator: std.mem.Allocator, tree: *const ast.Ast, uses: *std.ArrayList(GlobalUseSite)) !void {
+    var context = FunctionContext.init(allocator, null, null);
+    defer context.deinit();
+    context.global_uses = uses;
+
+    try context.enterScope();
+    try context.declareLocal(.{ .name = "_ENV", .span = zero_span }, .regular, false);
+    try context.resolveBlock(tree.statements, true);
+    try context.leaveScope();
+}
+
 const FunctionContext = struct {
     allocator: std.mem.Allocator,
     parent: ?*FunctionContext,
     error_diagnostic: ?*?errors.Diagnostic = null,
+    global_uses: ?*std.ArrayList(GlobalUseSite) = null,
     decls: std.ArrayList(Decl) = .empty,
     scopes: std.ArrayList(Scope) = .empty,
     labels: std.ArrayList(Label) = .empty,
@@ -226,6 +248,7 @@ const FunctionContext = struct {
         }
 
         for (decl.values) |value| try self.resolveExpr(value);
+        if (decl.values.len > 0) for (decl.names) |binding| try self.noteGlobal(binding.name, .write);
         for (decl.names) |binding| {
             const attr = if (binding.attribute) |_| try self.parseAttribute(binding.attribute) else default_attr;
             if (attr == .to_close) return self.fail(.{ .invalid_close = .{ .span = binding.name.span, .global = true } });
@@ -242,13 +265,14 @@ const FunctionContext = struct {
         if (decl.name.fields.len == 0 and decl.name.method == null) {
             try self.resolveNameAssignment(decl.name.root);
         } else {
-            _ = try self.lookupName(decl.name.root.name, true);
+            if (try self.lookupName(decl.name.root.name, true) == .global) try self.noteGlobal(decl.name.root, .read);
         }
         try self.resolveFunctionBody(decl.body, decl.name.method != null);
     }
 
     fn resolveFunctionBody(self: *FunctionContext, body: ast.FunctionBody, method: bool) anyerror!void {
         var child = FunctionContext.init(self.allocator, self, self.error_diagnostic);
+        child.global_uses = self.global_uses;
         defer child.deinit();
 
         try child.enterScope();
@@ -276,7 +300,10 @@ const FunctionContext = struct {
             .identifier => |name| {
                 const lookup = try self.lookupName(name.name, true);
                 switch (lookup) {
-                    .global => try self.ensureEnvironmentIsLocal(name.name, name.span),
+                    .global => {
+                        try self.ensureEnvironmentIsLocal(name.name, name.span);
+                        try self.noteGlobal(name, .read);
+                    },
                     .local => {},
                     .undeclared => return self.fail(.{ .undeclared_global = .{ .name = name.name, .span = name.span } }),
                 }
@@ -333,6 +360,7 @@ const FunctionContext = struct {
             .global => |decl| {
                 try self.ensureEnvironmentIsLocal(name.name, name.span);
                 if (decl.read_only) return self.fail(.{ .assign_const = .{ .name = name.name, .span = name.span } });
+                try self.noteGlobal(name, .write);
             },
             .undeclared => return self.fail(.{ .undeclared_global = .{ .name = name.name, .span = name.span } }),
         }
@@ -395,6 +423,15 @@ const FunctionContext = struct {
 
         if (star) |decl| return .{ .lookup = .{ .global = decl } };
         return result;
+    }
+
+    fn noteGlobal(self: *FunctionContext, name: ast.Identifier, access: GlobalAccess) !void {
+        const uses = self.global_uses orelse return;
+        switch (try self.lookupName("_ENV", false)) {
+            .local => |env| if (!std.meta.eql(env.span, zero_span)) return,
+            .global, .undeclared => return,
+        }
+        try uses.append(self.allocator, .{ .name = name.name, .line = name.span.start.line, .access = access });
     }
 
     fn ensureEnvironmentIsLocal(self: *FunctionContext, name: []const u8, span: source.Span) anyerror!void {

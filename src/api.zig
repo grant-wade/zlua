@@ -6,6 +6,7 @@
 //! invalidates prior handles and borrowed VM slices. The `runtime` module is internal.
 //! See `docs/embedding.md` for capabilities, error handling, snapshots, and ownership.
 
+const analysis = @import("api/analyze.zig");
 const callbacks = @import("api/callbacks.zig");
 const capabilities = @import("api/capabilities.zig");
 const context = @import("api/context.zig");
@@ -96,6 +97,10 @@ pub const UserdataType = userdata.UserdataType;
 pub const UserdataPtrOptions = userdata.UserdataPtrOptions;
 pub const UserdataSnapshotHooks = userdata.UserdataSnapshotHooks;
 
+pub const Analysis = analysis.Analysis;
+pub const GlobalUse = analysis.GlobalUse;
+pub const analyze = analysis.analyze;
+
 pub const Decoder = decoding.Decoder;
 pub const DecodeError = decoding.DecodeError;
 pub const DecodeOptions = decoding.DecodeOptions;
@@ -114,6 +119,7 @@ pub const Caller = context.Caller;
 test {
     _ = @import("api/memory_limit.zig");
     _ = @import("testing/api_state_tests.zig");
+    _ = @import("testing/api_analyze_tests.zig");
     _ = @import("testing/api_callback_tests.zig");
     _ = @import("testing/api_userdata_tests.zig");
     _ = @import("testing/api_capability_tests.zig");

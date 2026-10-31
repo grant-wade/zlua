@@ -285,6 +285,23 @@ defer chunk.deinit();
 
 The load modes are `.source_only`, `.binary_only`, and `.source_or_binary`.
 
+### Finding Globals
+
+`zlua.analyze(allocator, source)` parses a chunk without running it and lists its global reads and writes with their lines:
+
+```zig
+var analysis = zlua.analyze(allocator, source) catch |err| switch (err) {
+    error.SyntaxError => return fail("does not compile"),
+    else => return err,
+};
+defer analysis.deinit();
+for (analysis.globals) |use| {
+    if (use.access == .read and !known(use.name)) warn(use.line, use.name);
+}
+```
+
+It lists uses through the chunk's own `_ENV`, not those under a `local _ENV` or an `_ENV` parameter. `_G.x` is a read of `_G`, and `_ENV.x` is not a use. A plain `global x` declaration is not a use. `error.SyntaxError` has no message; `State.loadString` gives it.
+
 ### Binary Chunks
 
 You can dump a loaded function to bytecode and load it back later, for example to cache compiled chunks. zlua bytecode is meant only for zlua-to-zlua use:

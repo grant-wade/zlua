@@ -3,7 +3,7 @@
 ## Navigation
 
 - [API Index](README.md)
-- Submodules: [api.callbacks](api/callbacks.md), [api.convert](api/convert.md), [api.errors](api/errors.md), [api.handle](api/handle.md), [api.state](api/state.md), [api.capabilities](api/capabilities.md), [api.options](api/options.md), [api.function](api/function.md), [api.table](api/table.md), [api.value](api/value.md), [api.userdata](api/userdata.md), [api.context](api/context.md), [api.decode](api/decode.md), [api.coroutine](api/coroutine.md), [api.snapshot](api/snapshot.md), [api.memory_limit](api/memory_limit.md)
+- Submodules: [api.analyze](api/analyze.md), [api.callbacks](api/callbacks.md), [api.convert](api/convert.md), [api.errors](api/errors.md), [api.handle](api/handle.md), [api.state](api/state.md), [api.capabilities](api/capabilities.md), [api.options](api/options.md), [api.function](api/function.md), [api.table](api/table.md), [api.value](api/value.md), [api.userdata](api/userdata.md), [api.context](api/context.md), [api.decode](api/decode.md), [api.coroutine](api/coroutine.md), [api.snapshot](api/snapshot.md), [api.memory_limit](api/memory_limit.md)
 
 <details>
 <summary>All documents</summary>
@@ -79,6 +79,7 @@
 - [compile.fold](compile/fold.md)
 - [compile.disasm](compile/disasm.md)
 - [api](api.md)
+- [api.analyze](api/analyze.md)
 - [api.callbacks](api/callbacks.md)
 - [api.convert](api/convert.md)
 - [api.errors](api/errors.md)
@@ -204,6 +205,9 @@ See `docs/embedding.md` for capabilities, error handling, snapshots, and ownersh
 - [UserdataType](#alias-userdatatype)
 - [UserdataPtrOptions](#alias-userdataptroptions)
 - [UserdataSnapshotHooks](#alias-userdatasnapshothooks)
+- [Analysis](#alias-analysis)
+- [GlobalUse](#alias-globaluse)
+- [analyze](#alias-analyze)
 - [Decoder](#alias-decoder)
 - [DecodeError](#alias-decodeerror)
 - [DecodeOptions](#alias-decodeoptions)
@@ -907,6 +911,30 @@ pub const UserdataSnapshotHooks = userdata.UserdataSnapshotHooks;
 ```
 
 References: [`userdata.UserdataSnapshotHooks`](api/userdata.md#fn-userdatasnapshothooks)
+
+<a id="alias-analysis"></a>
+
+## Analysis
+
+```zig
+pub const Analysis = analysis.Analysis;
+```
+
+<a id="alias-globaluse"></a>
+
+## GlobalUse
+
+```zig
+pub const GlobalUse = analysis.GlobalUse;
+```
+
+<a id="alias-analyze"></a>
+
+## analyze
+
+```zig
+pub const analyze = analysis.analyze;
+```
 
 <a id="alias-decoder"></a>
 

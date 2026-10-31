@@ -78,6 +78,7 @@
 - [compile.fold](compile/fold.md)
 - [compile.disasm](compile/disasm.md)
 - [api](api.md)
+- [api.analyze](api/analyze.md)
 - [api.callbacks](api/callbacks.md)
 - [api.convert](api/convert.md)
 - [api.errors](api/errors.md)
@@ -162,6 +163,9 @@
 - [BytecodeDumpOptions](#alias-bytecodedumpoptions)
 - [Tuple](#alias-tuple)
 - [HostFn](#alias-hostfn)
+- [Analysis](#alias-analysis)
+- [GlobalUse](#alias-globaluse)
+- [analyze](#alias-analyze)
 - [Decoder](#alias-decoder)
 - [DecodeError](#alias-decodeerror)
 - [DecodeOptions](#alias-decodeoptions)
@@ -604,6 +608,36 @@ pub const HostFn = api.HostFn;
 ```
 
 References: [`api.HostFn`](api.md#alias-hostfn)
+
+<a id="alias-analysis"></a>
+
+## Analysis
+
+```zig
+pub const Analysis = api.Analysis;
+```
+
+References: [`api.Analysis`](api.md#alias-analysis)
+
+<a id="alias-globaluse"></a>
+
+## GlobalUse
+
+```zig
+pub const GlobalUse = api.GlobalUse;
+```
+
+References: [`api.GlobalUse`](api.md#alias-globaluse)
+
+<a id="alias-analyze"></a>
+
+## analyze
+
+```zig
+pub const analyze = api.analyze;
+```
+
+References: [`api.analyze`](api.md#alias-analyze)
 
 <a id="alias-decoder"></a>
 

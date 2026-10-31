@@ -79,6 +79,7 @@
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
 - [api](../api.md)
+- [api.analyze](../api/analyze.md)
 - [api.callbacks](../api/callbacks.md)
 - [api.convert](../api/convert.md)
 - [api.errors](../api/errors.md)
@@ -127,10 +128,13 @@
 
 - [resolve](#fn-resolve)
 - [resolveWithDiagnostic](#fn-resolvewithdiagnostic)
+- [collectGlobals](#fn-collectglobals)
 
 ## Types
 
 - [Error](#type-error)
+- [GlobalAccess](#type-globalaccess)
+- [GlobalUseSite](#type-globalusesite)
 
 <a id="type-error"></a>
 
@@ -139,6 +143,31 @@
 ```zig
 pub const Error = error{
     ResolveError,
+};
+```
+
+<a id="type-globalaccess"></a>
+
+## GlobalAccess
+
+```zig
+pub const GlobalAccess = enum {
+    read,
+    write,
+};
+```
+
+<a id="type-globalusesite"></a>
+
+## GlobalUseSite
+
+A use of a global variable, its name borrowed from the syntax tree.
+
+```zig
+pub const GlobalUseSite = struct {
+    name: []const u8,
+    line: usize,
+    access: GlobalAccess,
 };
 ```
 
@@ -159,4 +188,16 @@ pub fn resolveWithDiagnostic(allocator: std.mem.Allocator, tree: *const ast.Ast,
 ```
 
 References: [`errors.Diagnostic`](../errors.md#type-diagnostic)
+
+<a id="fn-collectglobals"></a>
+
+## collectGlobals
+
+Resolves `tree`, appending each use of a global through the chunk's own `_ENV` to `uses`.
+
+```zig
+pub fn collectGlobals(allocator: std.mem.Allocator, tree: *const ast.Ast, uses: *std.ArrayList(GlobalUseSite)) !void
+```
+
+References: [`GlobalUseSite`](#type-globalusesite)
 
