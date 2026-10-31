@@ -13,13 +13,16 @@
 - `Limits.max_output_bytes` limits Lua output, with `State.outputBytes` and `State.resetOutputLimit`.
 - `Limits.untrusted` is a preset for code you don't trust.
 - Garbage is collected before `max_memory` fails an allocation.
-- `load` rejects binary chunks in embedded states unless `Options.binary_chunks` is set.
+- `load`, `loadfile`, `dofile`, and `require` reject binary chunks in embedded states unless `Options.binary_chunks` is set.
 - `getmetatable` returns false for userdata metatables zlua creates, unless `UserdataType.expose_metatable` is set.
 - A bound `__gc` runs at most once per object, and typed access afterward fails with `error.UserdataClosed`.
 - `decode` rejects values nested more than 200 levels deep.
 - A numeric `for` over non-numbers in a binary chunk raises an error message.
 - Strings chosen to collide no longer make table and string interning operations slow.
 - A crafted TZif file no longer overflows an integer in the timezone parser.
+- `utf8.offset` with `math.mininteger` aborted the process.
+- `tonumber` with a base aborted the process when the value overflowed an integer.
+- Converting the float `2^63` to a Zig integer aborted the process.
 - `host_dir` filesystems reject drive-relative paths, alternate data streams, and device names on Windows.
 
 ### Lua Compatibility

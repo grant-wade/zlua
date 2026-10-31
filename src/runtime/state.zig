@@ -856,6 +856,7 @@ pub const State = struct {
 
     pub fn argumentNumber(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) !f64 {
         const value = argValue(self, thread, op, index);
+        self.budget.noteLongString(value);
         return toNumberMaybe(value) orelse self.failArgumentType(function_name, index + 1, "number", value);
     }
 
@@ -866,6 +867,7 @@ pub const State = struct {
 
     pub fn argumentInteger(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) !i64 {
         const value = argValue(self, thread, op, index);
+        self.budget.noteLongString(value);
         if (toInteger(value)) |integer| return integer;
         const number = toNumberMaybe(value) orelse return self.failArgumentType(function_name, index + 1, "number", value);
         return floatToInteger(number) orelse self.failArgumentMessage(function_name, index + 1, "number has no integer representation");

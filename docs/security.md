@@ -64,7 +64,8 @@ Budgets count work, not time. Use an
 wall-clock deadline. Interrupts are polled by the VM, native loops, and the compiler. A
 collection cycle or a TOML parse finishes before the interrupt takes effect.
 
-`load` rejects binary chunks unless `Options.binary_chunks` is set.
+`load`, `loadfile`, `dofile`, and `require` reject binary chunks unless
+`Options.binary_chunks` is set.
 `State.loadBytecode` always accepts them. Binary chunks pass a structural
 verifier, and you should only enable them for chunks you trust.
 

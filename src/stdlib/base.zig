@@ -141,6 +141,7 @@ pub fn tonumber(state: *State, thread: *Thread, op: bytecode.Call) !void {
     if (op.arg_count == 0) return state.failArgumentMessage("tonumber", 1, "value expected");
 
     const value = runtime.argValue(state, thread, op, 0);
+    state.budget.noteLongString(value);
     if (op.arg_count >= 2 and runtime.argValue(state, thread, op, 1) != .nil) {
         const base = try state.argumentInteger(thread, op, "tonumber", 1);
         const string = switch (value) {
@@ -198,9 +199,9 @@ fn parseIntegerBase(text: []const u8, base: u8) ?Value {
     while (index < text.len) : (index += 1) {
         const digit = digitValue(text[index]) orelse return null;
         if (digit >= base) return null;
-        value = value * base + digit;
+        value = value *% base +% digit;
     }
-    return .{ .integer = value * sign };
+    return .{ .integer = value *% sign };
 }
 
 fn digitValue(byte: u8) ?i64 {

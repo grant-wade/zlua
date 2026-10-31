@@ -141,7 +141,7 @@ pub fn offset(state: *State, thread: *Thread, op: bytecode.Call) !void {
     };
     if (n < 0 and byte_pos < source.len and isContinuation(source[byte_pos])) return state.failLibrary("initial position is a continuation byte");
 
-    var remaining = if (n > 0) n - 1 else -n - 1;
+    var remaining: u64 = @abs(n) - 1;
     while (remaining > 0) : (remaining -= 1) {
         if (n > 0) {
             if (byte_pos >= source.len) {

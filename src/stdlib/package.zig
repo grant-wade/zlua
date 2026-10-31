@@ -50,7 +50,10 @@ fn loadChunkFile(state: *State, path: ?[]const u8, mode: []const u8, environment
     const binary = looksLikeBinaryChunk(chunk);
     if (binary and std.mem.indexOfScalar(u8, mode, 'b') == null) return state.fail("attempt to load a binary chunk");
     if (!binary and std.mem.indexOfScalar(u8, mode, 't') == null) return state.fail("attempt to load a text chunk");
-    if (binary) return load_mod.loadBinaryDump(state, chunk, environment);
+    if (binary) {
+        if (!state.options.binary_chunks) return state.fail("binary chunks are disabled");
+        return load_mod.loadBinaryDump(state, chunk, environment);
+    }
 
     prepareTextFileSource(@constCast(source));
     const source_name = if (path) |name| try std.fmt.allocPrint(state.allocator, "@{s}", .{name}) else try state.allocator.dupe(u8, "=stdin");

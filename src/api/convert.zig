@@ -275,10 +275,10 @@ fn rooted(comptime H: type, state: *State, raw: runtime.Value) !H {
     return .{ .ref = try handle.fromRuntime(state, raw) };
 }
 
-fn integerFromFloat(value: f64) ?i64 {
+pub fn integerFromFloat(value: f64) ?i64 {
     if (!std.math.isFinite(value)) return null;
     if (@trunc(value) != value) return null;
-    if (value < @as(f64, @floatFromInt(std.math.minInt(i64))) or value > @as(f64, @floatFromInt(std.math.maxInt(i64)))) return null;
+    if (value < @as(f64, @floatFromInt(std.math.minInt(i64))) or value >= @as(f64, @floatFromInt(std.math.maxInt(i64)))) return null;
     return @intFromFloat(value);
 }
 

@@ -116,6 +116,11 @@ pub const Budget = struct {
         budget.instructions +|= instructions;
     }
 
+    /// Counts a read of every byte of `value` when it is a long string.
+    pub inline fn noteLongString(budget: *Budget, value: types.Value) void {
+        if (value == .string and !value.string.isShort()) budget.note(cost.scanned(value.string.len));
+    }
+
     /// Makes `message` the error every later safepoint raises, starting with this call.
     pub fn stop(budget: *Budget, message: []const u8) types.RuntimeError {
         budget.stop_message = message;

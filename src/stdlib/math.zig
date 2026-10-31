@@ -80,6 +80,8 @@ pub fn floor(state: *State, thread: *Thread, op: bytecode.Call) !void {
 pub fn fmod(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const lhs = runtime.argValue(state, thread, op, 0);
     const rhs = runtime.argValue(state, thread, op, 1);
+    state.budget.noteLongString(lhs);
+    state.budget.noteLongString(rhs);
     if (runtime.toInteger(lhs)) |left| if (runtime.toInteger(rhs)) |right| {
         if (right == 0) return state.failArgumentMessage("math.fmod", 2, "zero");
         if (left == std.math.minInt(i64) and right == -1) {
@@ -185,6 +187,7 @@ pub fn tan(state: *State, thread: *Thread, op: bytecode.Call) !void {
 pub fn tointeger(state: *State, thread: *Thread, op: bytecode.Call) !void {
     if (op.arg_count == 0) return state.failArgumentMessage("math.tointeger", 1, "value expected");
     const value = runtime.argValue(state, thread, op, 0);
+    state.budget.noteLongString(value);
     const result: Value = if (runtime.coerceToInteger(value)) |integer| .{ .integer = integer } else .nil;
     try state.returnValues(thread, op.base, op.return_count, &.{result});
 }
@@ -271,6 +274,7 @@ fn minMax(state: *State, thread: *Thread, op: bytecode.Call, choose_min: bool) !
 
 fn numberArgument(state: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) !f64 {
     const value = runtime.argValue(state, thread, op, index);
+    state.budget.noteLongString(value);
     return runtime.toNumber(value) catch state.failArgumentType(function_name, index + 1, "number", value);
 }
 

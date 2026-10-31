@@ -350,12 +350,9 @@ pub fn Decoder(comptime Context: type) type {
         fn decodeInt(self: *Self, comptime T: type, value: Value) DecodeError!T {
             const integer = switch (value) {
                 .integer => |integer| integer,
-                .number => |number| std.math.lossyCast(i64, number),
+                .number => |number| convert.integerFromFloat(number) orelse return self.fail("number has no integer representation", .{}),
                 else => return self.fail("expected an integer, got {s}", .{value.typeName()}),
             };
-            if (value == .number and @as(f64, @floatFromInt(integer)) != value.number) {
-                return self.fail("number has no integer representation", .{});
-            }
             return std.math.cast(T, integer) orelse self.fail("{d} is out of range", .{integer});
         }
 

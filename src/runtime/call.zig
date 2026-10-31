@@ -652,6 +652,7 @@ pub fn invokeValue(self: *State, thread: *Thread, resolved: bytecode.Call, depth
         },
         .native_rawequal => {
             if (resolved.arg_count < 2) return self.failArgumentMessage("rawequal", resolved.arg_count + 1, "value expected");
+            operators_mod.noteStringComparison(self, argValue(self, thread, resolved, 0), argValue(self, thread, resolved, 1));
             try self.returnValues(thread, resolved.base, resolved.return_count, &.{.{ .boolean = valuesEqual(argValue(self, thread, resolved, 0), argValue(self, thread, resolved, 1)) }});
         },
         .native_rawget => {

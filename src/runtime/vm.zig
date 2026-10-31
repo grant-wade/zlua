@@ -237,6 +237,7 @@ fn executeInstruction(self: *State, thread: *Thread, proto: *const proto_mod.Pro
         .lt => |op| {
             const lhs = stack[base + op.left];
             const rhs = stack[base + op.right];
+            operators_mod.noteStringComparison(self, lhs, rhs);
             if (operators_mod.rawCompare(lhs, rhs, .lt)) |result| {
                 stack[base + op.dest] = .{ .boolean = result };
             } else {
@@ -246,6 +247,7 @@ fn executeInstruction(self: *State, thread: *Thread, proto: *const proto_mod.Pro
         .le => |op| {
             const lhs = stack[base + op.left];
             const rhs = stack[base + op.right];
+            operators_mod.noteStringComparison(self, lhs, rhs);
             if (operators_mod.rawCompare(lhs, rhs, .le)) |result| {
                 stack[base + op.dest] = .{ .boolean = result };
             } else {
@@ -314,6 +316,7 @@ fn executeInstruction(self: *State, thread: *Thread, proto: *const proto_mod.Pro
         .compare_branch => |op| {
             const lhs = stack[base + op.left];
             const rhs = stack[base + op.right];
+            operators_mod.noteStringComparison(self, lhs, rhs);
             if (operators_mod.rawCompareBranchResult(lhs, rhs, op.op)) |result| {
                 if (result == op.jump_if_truthy) try jumpThreadMaybeFast(self, thread, op.offset, true);
             } else {
@@ -357,6 +360,7 @@ fn executeInstruction(self: *State, thread: *Thread, proto: *const proto_mod.Pro
         },
         .compare_branch_k => |op| {
             const constant = proto.constant_values[op.constant];
+            operators_mod.noteStringComparison(self, stack[base + op.register], constant);
             if (operators_mod.rawCompareConstantResult(stack[base + op.register], constant, op.op)) |result| {
                 if (result == op.jump_if_truthy) try jumpThreadMaybeFast(self, thread, op.offset, true);
             } else {
@@ -698,6 +702,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 const op = instructions[pc].compare_branch_k;
                 const value = stack[op.register];
                 const constant = proto.constant_values[op.constant];
+                if (operators_mod.comparesLongStrings(value, constant)) break :fast_loop;
                 const result = if (value == .integer and constant == .integer) switch (op.op) {
                     .eq => value.integer == constant.integer,
                     .lt => value.integer < constant.integer,
@@ -1099,6 +1104,7 @@ inline fn fieldEntry(part: *const HashPart, key: *const String) ?*TableEntry {
         const entry = &entries[key.field_hint];
         if (entry.key == .string and entry.key.string == key) return entry;
     }
+    if (!key.isShort()) return null;
     const index = part.find(.{ .string = key }) orelse return null;
     if (index < String.no_field_hint and !key.static) @constCast(key).field_hint = @intCast(index);
     return &entries[index];
@@ -1182,7 +1188,7 @@ noinline fn fastTableDynamicKeySetNoAlloc(self: *State, table_value: Value, key:
 
 /// `key` must be a string.
 fn fastTableKnownKeySetExistingNoAlloc(self: *State, table_value: Value, key: Value, value: Value) bool {
-    if (table_value != .table) return false;
+    if (table_value != .table or !key.string.isShort()) return false;
     const table = table_value.table;
     if (table.rollback) |record| if (!record.header.detached) return false;
     if (table.findStringKey(key.string)) |index| {
@@ -1273,7 +1279,7 @@ fn setTableArrayRawIndex(self: *State, table: *Table, index_u32: u32, value: Val
 }
 
 fn fastTableKnownKeySet(self: *State, table_value: Value, key: Value, value: Value) !bool {
-    if (table_value != .table) return false;
+    if (table_value != .table or !key.string.isShort()) return false;
     const table = table_value.table;
     if (table.rollback != null and table.get(key) != .nil) try rollback_mod.tableWritable(table);
     if (table.setExistingNonNil(key, value)) {
@@ -1340,6 +1346,9 @@ fn forPrep(self: *State, thread: *Thread, op: bytecode.ForLoop) !void {
     const initial = get(self, thread, op.base);
     const limit = get(self, thread, op.base + 1);
     const step = get(self, thread, op.base + 2);
+    self.budget.noteLongString(initial);
+    self.budget.noteLongString(limit);
+    self.budget.noteLongString(step);
     if (toInteger(initial)) |initial_integer| {
         if (toInteger(step)) |step_integer| {
             if (step_integer == 0) return failure_mod.failRuntimeDetail(self, thread, "'for' step is zero");
@@ -1607,6 +1616,7 @@ fn fastGlobalSetExisting(self: *State, key: *const String, value: Value) bool {
 
 /// A string's method through its metatable's `__index` table, when that needs no metamethod call.
 fn stringMethod(self: *State, key: *const String) ?Value {
+    if (!key.isShort()) return null;
     const metatable = self.string_metatable orelse return null;
     const handler = metatable.metaEvent(.__index);
     if (handler != .table) return null;
@@ -1616,7 +1626,7 @@ fn stringMethod(self: *State, key: *const String) ?Value {
 }
 
 fn fastTableFieldGet(table_value: Value, key: *const String) ?Value {
-    if (table_value != .table) return null;
+    if (table_value != .table or !key.isShort()) return null;
     const table = table_value.table;
     const value = table.getString(key);
     if (value != .nil) return value;
@@ -1634,6 +1644,7 @@ fn fastTableRawGet(table_value: Value, key_value: Value) ?Value {
     if (fastTableArrayGet(table_value, key_value)) |value| return value;
     // Float keys need normalization to integers first.
     if (table_value != .table or key_value == .number) return null;
+    if (key_value == .string and !key_value.string.isShort()) return null;
     const table = table_value.table;
     const value = table.get(key_value);
     if (value != .nil) return value;

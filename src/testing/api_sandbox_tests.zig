@@ -49,6 +49,44 @@ test "load rejects binary chunks unless the state allows them" {
     }
 }
 
+test "file loaders reject binary chunks unless the state allows them" {
+    var dumper = try api.State.init(a, .{});
+    defer dumper.deinit();
+    var chunk = try dumper.loadString("return 8", .{});
+    defer chunk.deinit();
+    const bytes = try chunk.dumpBytecode(.{});
+    defer dumper.allocator().free(bytes);
+    const files = [_]api.MemoryFile{
+        .{ .path = "evil.luac", .contents = bytes },
+        .{ .path = "text.lua", .contents = "return 5" },
+    };
+    {
+        var lua = try api.State.init(a, .{ .stdlib = .full, .capabilities = .{ .filesystem = .{ .memory = &files } } });
+        defer lua.deinit();
+        try lua.doString(
+            \\local disabled = "binary chunks are disabled"
+            \\local f, err = loadfile("evil.luac")
+            \\assert(f == nil and err:find(disabled, 1, true), err)
+            \\local ok, message = pcall(dofile, "evil.luac")
+            \\assert(not ok and message:find(disabled, 1, true), message)
+            \\package.path = "?.luac"
+            \\ok, message = pcall(require, "evil")
+            \\assert(not ok and message:find(disabled, 1, true), message)
+            \\assert(loadfile("text.lua")() == 5)
+        , .{});
+    }
+    {
+        var lua = try api.State.init(a, .{ .stdlib = .full, .binary_chunks = true, .capabilities = .{ .filesystem = .{ .memory = &files } } });
+        defer lua.deinit();
+        try lua.doString(
+            \\assert(loadfile("evil.luac")() == 8)
+            \\assert(dofile("evil.luac") == 8)
+            \\package.path = "?.luac"
+            \\assert(require("evil") == 8)
+        , .{});
+    }
+}
+
 test "output limit counts every stream, survives pcall, and can be reset" {
     var buffer: [64]u8 = undefined;
     var sink: std.Io.Writer.Discarding = .init(&buffer);
@@ -87,6 +125,58 @@ const Handle = struct {
         finalized += 1;
     }
 };
+
+test "snapshot workers keep closed userdata closed" {
+    const Hooks = struct {
+        fn copy(allocator: std.mem.Allocator, handle: *const Handle) anyerror!*Handle {
+            const copied = try allocator.create(Handle);
+            copied.* = handle.*;
+            return copied;
+        }
+
+        fn dispose(allocator: std.mem.Allocator, handle: *Handle) void {
+            allocator.destroy(handle);
+        }
+    };
+    Handle.gc_runs = 0;
+    var lua = try api.State.init(a, .{ .stdlib = .full });
+    defer lua.deinit();
+    var handle = try lua.newUserdataAuto(Handle, .{}, .{ .snapshot = .{ .copy = Hooks.copy, .dispose = Hooks.dispose } });
+    defer handle.deinit();
+    try lua.setGlobal("handle", handle);
+    try lua.doString("debug.getmetatable(handle).__gc(handle)", .{});
+    try std.testing.expectEqual(@as(usize, 1), Handle.gc_runs);
+
+    var snapshot = try lua.snapshot(a);
+    defer snapshot.deinit();
+    var worker = try snapshot.newState(a);
+    defer worker.deinit();
+    try worker.doString(
+        \\debug.getmetatable(handle).__gc(handle)
+        \\local ok, message = pcall(function() return handle:value() end)
+        \\assert(not ok and message:find("closed", 1, true), message)
+    , .{});
+    try std.testing.expectEqual(@as(usize, 1), Handle.gc_runs);
+}
+
+test "snapshot workers inherit the output count" {
+    var buffer: [64]u8 = undefined;
+    var sink: std.Io.Writer.Discarding = .init(&buffer);
+    var lua = try api.State.init(a, .{
+        .capabilities = .{ .io = .{ .stdout = &sink.writer, .stderr = &sink.writer } },
+        .limits = .{ .max_output_bytes = 16 },
+    });
+    defer lua.deinit();
+    try lua.doString("print('12345678')", .{});
+    try std.testing.expectEqual(@as(u64, 9), lua.outputBytes());
+
+    var snapshot = try lua.snapshot(a);
+    defer snapshot.deinit();
+    var worker = try snapshot.newState(a);
+    defer worker.deinit();
+    try std.testing.expectEqual(@as(u64, 9), worker.outputBytes());
+    try expectErrorMessage(&worker, "print('12345678')", "output limit exceeded");
+}
 
 test "finalizer budget bounds deinit and collect and host finalizers still run" {
     Handle.finalized = 0;

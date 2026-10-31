@@ -72,6 +72,7 @@ fn writeOptions(state: *State, thread: *Thread, op: bytecode.Call) !zerde.json.W
 
     const indent = table.getLiteral("indent");
     if (indent != .nil) {
+        state.budget.noteLongString(indent);
         const integer = runtime.toInteger(indent) orelse return state.failArgumentType("json.write", 2, "table with numeric indent", indent);
         if (integer < 0) return state.failArgumentMessage("json.write", 2, "indent out of range");
         options.indent = std.math.cast(usize, integer) orelse return state.failArgumentMessage("json.write", 2, "indent out of range");

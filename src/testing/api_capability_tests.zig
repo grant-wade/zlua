@@ -87,6 +87,32 @@ test "api host-backed capabilities require explicit I/O access" {
     , .{ .name = "=api-host-backed-capabilities-need-io" });
 }
 
+test "host_dir stat and list reject windows paths outside the directory" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    const io = std.testing.io;
+    try temporary.dir.writeFile(io, .{ .sub_path = "plain.txt", .data = "data" });
+    var root = try temporary.dir.openDir(io, ".", .{});
+    defer root.close(io);
+    var lua = try State.init(std.testing.allocator, .{
+        .stdlib = .full,
+        .capabilities = .{ .io = .{ .runtime = io }, .filesystem = .{ .host_dir = .{ .dir = root } } },
+    });
+    defer lua.deinit();
+    try lua.doString(
+        \\for _, path in ipairs({"C:/Windows", "C:/", "C:evil", "nul", "sub/CON.txt", "plain.txt::$DATA"}) do
+        \\  local stat, stat_err = fs.stat(path)
+        \\  assert(stat == nil and stat_err.code == "access_denied", path)
+        \\  local list, list_err = fs.list(path)
+        \\  assert(list == nil and list_err.code == "access_denied", path)
+        \\end
+        \\assert(fs.stat("plain.txt"))
+        \\assert(fs.stat("."))
+        \\assert(fs.list("."))
+    , .{});
+}
+
 test "api os filesystem mutations respect filesystem capability" {
     const files = [_]MemoryFile{
         .{ .path = "keep.lua", .contents = "return 42" },

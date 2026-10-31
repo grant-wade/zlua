@@ -332,9 +332,8 @@ pub fn fsStat(self: *State, path: []const u8, follow_symlinks: bool) anyerror!ho
         },
         .host_dir => |root| if (comptime builtin.os.tag == .freestanding) return error.OperationUnsupported else {
             const io = self.options.io orelse return error.IoUnavailable;
-            const normalized = try host.MemoryFilesystem.normalizeRootPathAlloc(self.allocator, path, host.MemoryFilesystem.default_max_path_len);
+            const normalized = try hostDirRootPath(self, io, root.dir, path, follow_symlinks);
             defer self.allocator.free(normalized);
-            try checkHostDirSymlinks(self, io, root.dir, normalized, follow_symlinks);
             if (normalized.len == 0) return .fromStd(try root.dir.stat(io));
             return .fromStd(try root.dir.statFile(io, normalized, .{ .follow_symlinks = follow_symlinks }));
         },
@@ -363,11 +362,10 @@ pub fn fsReadDirAlloc(self: *State, path: []const u8) anyerror![]host.DirectoryE
                 else => unreachable,
             };
             const owned_path = if (self.options.filesystem == .host_dir)
-                try host.MemoryFilesystem.normalizeRootPathAlloc(self.allocator, path, host.MemoryFilesystem.default_max_path_len)
+                try hostDirRootPath(self, io, base, path, true)
             else
                 null;
             defer if (owned_path) |normalized| self.allocator.free(normalized);
-            if (owned_path) |normalized| try checkHostDirSymlinks(self, io, base, normalized, true);
             const open_path = if (owned_path) |normalized| if (normalized.len == 0) "." else normalized else path;
             var dir = try base.openDir(io, open_path, .{ .iterate = true });
             defer dir.close(io);
@@ -534,7 +532,17 @@ test "windows device names and streams are outside a directory" {
 }
 
 fn hostDirPath(self: *State, io: std.Io, root: Dir, path: []const u8, follow_last: bool) anyerror![]u8 {
-    const normalized = try host.MemoryFilesystem.normalizePathAlloc(self.allocator, path, host.MemoryFilesystem.default_max_path_len);
+    const normalized = try hostDirRootPath(self, io, root, path, follow_last);
+    if (normalized.len == 0) {
+        self.allocator.free(normalized);
+        return error.InvalidPath;
+    }
+    return normalized;
+}
+
+/// Like `hostDirPath`, and an empty result names `root` itself.
+fn hostDirRootPath(self: *State, io: std.Io, root: Dir, path: []const u8, follow_last: bool) anyerror![]u8 {
+    const normalized = try host.MemoryFilesystem.normalizeRootPathAlloc(self.allocator, path, host.MemoryFilesystem.default_max_path_len);
     errdefer self.allocator.free(normalized);
     if (builtin.os.tag == .windows and escapesWindowsDirectory(normalized)) return error.AccessDenied;
     try checkHostDirSymlinks(self, io, root, normalized, follow_last);

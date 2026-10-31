@@ -124,6 +124,22 @@ test "decode reports the first failure with its path" {
     try d.expectFailure(Weapon, "return { name = 'x', flags = 'bow' }", "flags: expected a list, got string");
 }
 
+test "decode rejects floats outside the integer range" {
+    var d = try Decoded.init();
+    defer d.deinit();
+    try d.expectFailure(i64, "return 2^63", "number has no integer representation");
+    try d.expectFailure(i64, "return -2^64", "number has no integer representation");
+    try std.testing.expectEqual(std.math.minInt(i64), try d.decode(i64, "return -2^63"));
+}
+
+test "converted results reject floats outside the integer range" {
+    var lua = try api.State.init(a, .{});
+    defer lua.deinit();
+    var function = try lua.loadString("return 2^63", .{});
+    defer function.deinit();
+    try std.testing.expectError(error.TypeMismatch, function.call(.{}, i64));
+}
+
 test "decode strict levels require every field" {
     var d = try Decoded.init();
     defer d.deinit();

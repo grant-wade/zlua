@@ -134,6 +134,7 @@
 - [toRuntimeValue](#fn-toruntimevalue)
 - [fromRuntimeResults](#fn-fromruntimeresults)
 - [fromRuntimeValue](#fn-fromruntimevalue)
+- [integerFromFloat](#fn-integerfromfloat)
 - [isOwnedApiValue](#fn-isownedapivalue)
 - [deinitIfOwned](#fn-deinitifowned)
 
@@ -184,6 +185,14 @@ pub fn fromRuntimeValue(state: *State, raw: runtime.Value, comptime T: type) !T
 ```
 
 References: [`runtime.Value`](../runtime.md#alias-value)
+
+<a id="fn-integerfromfloat"></a>
+
+## integerFromFloat
+
+```zig
+pub fn integerFromFloat(value: f64) ?i64
+```
 
 <a id="fn-isownedapivalue"></a>
 

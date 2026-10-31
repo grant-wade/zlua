@@ -96,6 +96,7 @@ pub fn pack(state: *State, thread: *Thread, op: bytecode.Call) !void {
             .float => {
                 const value = runtime.argValue(state, thread, op, arg);
                 arg += 1;
+                state.budget.noteLongString(value);
                 _ = runtime.toNumber(value) catch return packNumberExpected(state, arg, value);
                 try appendPackedFloat(state, &out, value, item, config.endian);
             },
@@ -403,6 +404,7 @@ fn packNumberExpected(state: *State, argument: u32, value: Value) runtime.Runtim
 
 /// `argument` is the one-based position of `value` among the function's arguments.
 fn appendPackedInteger(state: *State, out: *std.ArrayList(u8), value: Value, argument: u32, item: PackItem, endian: Endian) !void {
+    state.budget.noteLongString(value);
     const integer = runtime.toInteger(value) orelse {
         _ = runtime.toNumber(value) catch return packNumberExpected(state, argument, value);
         return state.failArgumentMessage("string.pack", argument, "number has no integer representation");

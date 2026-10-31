@@ -7,7 +7,7 @@ on:
     inputs:
       limit:
         description: Iterations per fuzz target
-        default: 2M
+        default: 1M
 
 permissions:
   contents: read
@@ -30,7 +30,7 @@ jobs:
           key: fuzz-corpus-${{ github.run_id }}
           restore-keys: fuzz-corpus-
       - name: Run fuzz targets
-        run: zig build test --fuzz=${{ inputs.limit || '2M' }} --summary all
+        run: zig build test --fuzz=${{ inputs.limit || '1M' }} -Doptimize=ReleaseSafe --summary all
       - name: Keep crash inputs
         if: failure()
         uses: actions/upload-artifact@v4

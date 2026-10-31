@@ -282,6 +282,7 @@ pub const Budget = struct {
 | [checkLimits](#fn-budget-checklimits) | `budget: *Budget, thread: *Thread` | `!void` | Per-instruction safepoint; the hot path is one comparison against &#96;checkpoint&#96;. |
 | [charge](#fn-budget-charge) | `budget: *Budget, instructions: u64` | `!void` | Counts native work and raises when it ends the budget. |
 | [note](#fn-budget-note) | `budget: *Budget, instructions: u64` | `void` | Counts native work on a path that must not fail; the next safepoint enforces the budget. |
+| [noteLongString](#fn-budget-notelongstring) | `budget: *Budget, value: types.Value` | `void` | Counts a read of every byte of &#96;value&#96; when it is a long string. |
 | [stop](#fn-budget-stop) | `budget: *Budget, message: []const u8` | `types.RuntimeError` | Makes &#96;message&#96; the error every later safepoint raises, starting with this call. |
 | [clearStop](#fn-budget-clearstop) | `budget: *Budget` | `void` |  |
 | [checkInterrupt](#fn-budget-checkinterrupt) | `budget: *Budget` | `!void` | Polled periodically by long-running native functions. |
@@ -329,6 +330,18 @@ References: [`Budget`](#type-budget)
 
 ```zig
 pub inline fn note(budget: *Budget, instructions: u64) void
+```
+
+References: [`Budget`](#type-budget)
+
+<a id="fn-budget-notelongstring"></a>
+
+### Budget.noteLongString
+
+[Counts](../testing/bench/legacy_process.md#type-counts) a read of every byte of `value` when it is a long string.
+
+```zig
+pub inline fn noteLongString(budget: *Budget, value: types.Value) void
 ```
 
 References: [`Budget`](#type-budget)

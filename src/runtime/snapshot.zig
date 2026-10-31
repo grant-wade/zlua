@@ -250,7 +250,7 @@ const Copier = struct {
         }
         for (source.thread_allocations.items, d.thread_allocations.items) |old, new| try self.thread(old, new);
         for (source.userdata_allocations.items, d.userdata_allocations.items) |old, new| try self.userdata(old, new);
-        inline for (.{ "opened_libraries", "global_table", "userdata_pending_finalizer_head", "userdata_lua_pending_head", "table_finalizer_serial", "stdin_pos", "file_generation", "last_error", "error_handled", "warnings_on", "string_metatable", "number_metatable", "boolean_metatable", "nil_metatable", "file_metatable", "fs_file_metatable", "io_input", "io_output", "random_state" }) |name| @field(d, name) = try self.remap(@field(source, name));
+        inline for (.{ "output_bytes", "opened_libraries", "global_table", "userdata_pending_finalizer_head", "userdata_lua_pending_head", "table_finalizer_serial", "stdin_pos", "file_generation", "last_error", "error_handled", "warnings_on", "string_metatable", "number_metatable", "boolean_metatable", "nil_metatable", "file_metatable", "fs_file_metatable", "io_input", "io_output", "random_state" }) |name| @field(d, name) = try self.remap(@field(source, name));
         inline for (.{ "running", "mode", "params" }) |name| @field(d.gc, name) = @field(source.gc, name);
         inline for (.{ "instructions", "base" }) |name| @field(d.budget, name) = @field(source.budget, name);
         for (&d.library_tables.values, source.library_tables.values) |*slot, table| slot.* = try self.remap(table);
@@ -338,6 +338,7 @@ const Copier = struct {
         new.lua_finalizer_order = old.lua_finalizer_order;
         new.finalization_pending = old.finalization_pending;
         new.finalized = old.finalized;
+        new.closed = old.closed;
         new.finalizer = old.finalizer;
         new.finalizer_data = old.finalizer_data;
         if (p.snapshot_copy) |f| {

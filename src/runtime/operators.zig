@@ -137,6 +137,8 @@ pub fn binaryValuesToRegister(self: *State, thread: *Thread, dest: bytecode.Regi
         vm_mod.set(self, thread, dest, try concatValues(self, lhs, rhs));
         return;
     }
+    self.budget.noteLongString(lhs);
+    self.budget.noteLongString(rhs);
     const raw = rawBinaryOp(lhs, rhs, kind) catch |err| switch (err) {
         error.RuntimeError => if ((kind == .idiv or kind == .mod) and (toInteger(rhs) orelse 1) == 0) return failure_mod.failDivisionByZero(self, thread, lhs, rhs, kind) else return err,
     };
@@ -155,6 +157,7 @@ pub fn binaryValuesToRegister(self: *State, thread: *Thread, dest: bytecode.Regi
 
 pub fn unaryOpToRegister(self: *State, thread: *Thread, op: bytecode.Unary, kind: UnaryMetamethodOp) !void {
     const value = vm_mod.get(self, thread, op.source);
+    self.budget.noteLongString(value);
     if (rawUnaryOp(value, kind)) |result| {
         vm_mod.set(self, thread, op.dest, result);
         return;

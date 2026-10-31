@@ -572,6 +572,9 @@ test "api integer arguments report numbers without an integer representation" {
     var optional_fraction = try lua.loadString("return optional(1.5)", .{});
     defer optional_fraction.deinit();
     try expectProtectedErrorContains(&lua, optional_fraction, "number has no integer representation");
+    var too_large = try lua.loadString("return integer(2^63)", .{});
+    defer too_large.deinit();
+    try expectProtectedErrorContains(&lua, too_large, "number has no integer representation");
     var text = try lua.loadString("return integer('x')", .{});
     defer text.deinit();
     try expectProtectedErrorContains(&lua, text, "number expected, got string");

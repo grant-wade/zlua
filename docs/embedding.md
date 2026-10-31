@@ -355,8 +355,9 @@ defer cached.deinit();
 
 The format is internal to zlua, can change between versions, and is not
 compatible with PUC Lua `luac` chunks. Loading verifies a chunk's structure,
-which stops it indexing outside its registers, constants, or code. Lua's `load`
-rejects binary chunks unless `Options.binary_chunks` is set.
+which stops it indexing outside its registers, constants, or code. Lua's `load`,
+`loadfile`, `dofile`, and `require` reject binary chunks unless
+`Options.binary_chunks` is set.
 
 ## Values and Handles
 

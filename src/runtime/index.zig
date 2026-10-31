@@ -35,6 +35,7 @@ pub fn getTableToRegister(self: *State, thread: *Thread, dest: bytecode.Register
 fn getTableDepthContinuable(self: *State, thread: *Thread, dest: usize, table_value: Value, key_value: Value, depth: usize) !Value {
     if (depth > max_metamethod_depth) return self.fail("'__index' chain too long");
     const key = try readableTableKey(self, key_value) orelse key_value;
+    self.budget.noteLongString(key);
 
     if (table_value == .table and key != .nil) {
         const value = table_value.table.get(key);
@@ -58,6 +59,7 @@ fn getTableDepthContinuable(self: *State, thread: *Thread, dest: usize, table_va
 fn getTableDepth(self: *State, thread: ?*Thread, table_value: Value, key_value: Value, depth: usize) !Value {
     if (depth > max_metamethod_depth) return self.fail("'__index' chain too long");
     const key = try readableTableKey(self, key_value) orelse key_value;
+    self.budget.noteLongString(key);
 
     if (table_value == .table and key != .nil) {
         const value = table_value.table.get(key);
@@ -86,6 +88,7 @@ pub fn rawGet(self: *State, table_value: Value, key_value: Value) !Value {
         else => return self.fail(indexErrorMessage(table_value)),
     };
     const key = try readableTableKey(self, key_value) orelse return .nil;
+    self.budget.noteLongString(key);
     return table.get(key);
 }
 
@@ -108,6 +111,7 @@ pub fn setTableFromThreadContinuable(self: *State, thread: *Thread, table_value:
 fn setTableDepthContinuable(self: *State, thread: *Thread, table_value: Value, key_value: Value, value: Value, depth: usize) !void {
     if (depth > max_metamethod_depth) return self.fail("'__newindex' chain too long");
     const key = try writableTableKey(self, key_value);
+    self.budget.noteLongString(key);
 
     if (table_value == .table) {
         const table = table_value.table;
@@ -139,6 +143,7 @@ fn setTableDepthContinuable(self: *State, thread: *Thread, table_value: Value, k
 fn setTableDepth(self: *State, thread: ?*Thread, table_value: Value, key_value: Value, value: Value, depth: usize) !void {
     if (depth > max_metamethod_depth) return self.fail("'__newindex' chain too long");
     const key = try writableTableKey(self, key_value);
+    self.budget.noteLongString(key);
 
     if (table_value == .table) {
         const table = table_value.table;
@@ -197,12 +202,14 @@ pub fn rawLen(self: *State, value: Value) !Value {
 pub fn rawSet(self: *State, table_value: Value, key_value: Value, value: Value) !void {
     const table = try self.expectTable(table_value);
     const key = try writableTableKey(self, key_value);
+    self.budget.noteLongString(key);
     try self.setTableRaw(table, key, value);
 }
 
 pub fn nextValues(self: *State, table_value: Value, key_value: Value) ![2]Value {
     const table = try self.expectTable(table_value);
     const key = try readableTableKey(self, key_value) orelse Value.nil;
+    self.budget.noteLongString(key);
     return table.next(key) catch return self.fail("invalid key to 'next'");
 }
 
