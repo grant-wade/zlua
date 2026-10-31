@@ -477,6 +477,8 @@ A callback can call back into Lua with `Context.callNonYielding(function, args, 
 
 `ctx.caller(level)` describes a Lua function on the callback's coroutine, with its `source`, `shortSource()`, and `line`. Level 0 is the innermost one, usually the function that called the callback, and native functions are not counted. It returns null past the last function.
 
+`ctx.currentLine()` returns the line of the Lua function running on the callback's coroutine, including the function that called the callback through `pcall` or a metamethod. It returns null when the coroutine has no running Lua function, such as when the host calls the callback directly, and when that function's debug info is stripped.
+
 ## Decoding Tables
 
 `zlua.decode` reads a Lua value into a Zig value by its type, checking every key. It handles integers, floats, booleans, strings, enums by name, optionals, arrays, slices, structs, `std.EnumArray`, and `std.EnumSet`. Absent keys keep the struct's defaults:

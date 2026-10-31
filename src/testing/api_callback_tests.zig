@@ -783,3 +783,141 @@ test "api describeError gives the lua message or the error name" {
     defer lua.allocator().free(name);
     try std.testing.expectEqualStrings("TypeMismatch", name);
 }
+
+const LineCallbacks = struct {
+    fn currentLine(ctx: *Context) !void {
+        try ctx.returnValues(.{ctx.currentLine()});
+    }
+
+    fn currentLineTyped(ctx: *Context) ?usize {
+        return ctx.currentLine();
+    }
+
+    fn callThrough(ctx: *Context) !void {
+        var function = try ctx.arg(0, Function);
+        defer function.deinit();
+        const line = try ctx.callNonYielding(function, .{}, ?i64);
+        try ctx.returnValues(.{line});
+    }
+};
+
+fn installLineCallbacks(lua: *State) !void {
+    var line = try lua.register("line", LineCallbacks.currentLine);
+    defer line.deinit();
+    try lua.setGlobal("line", line);
+    var line_typed = try lua.registerTyped("line_typed", LineCallbacks.currentLineTyped);
+    defer line_typed.deinit();
+    try lua.setGlobal("line_typed", line_typed);
+    var call_through = try lua.register("call_through", LineCallbacks.callThrough);
+    defer call_through.deinit();
+    try lua.setGlobal("call_through", call_through);
+}
+
+test "api callback context currentLine reports the calling Lua line" {
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    try installLineCallbacks(&lua);
+    try lua.doString(
+        \\assert(line() == 1)
+        \\
+        \\assert(line_typed() == 3)
+        \\local function nested()
+        \\  return (line())
+        \\end
+        \\assert(nested() == 5)
+        \\local function tail() return line() end
+        \\assert(tail() == 8)
+        \\local ok, value = pcall(line)
+        \\assert(ok and value == 10)
+        \\ok, value = xpcall(line, print)
+        \\assert(ok and value == 12)
+    , .{ .name = "=line-calls" });
+}
+
+test "api callback context currentLine tracks each line within a function" {
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    try installLineCallbacks(&lua);
+    try lua.doString(
+        \\local seen = {}
+        \\for i = 1, 3 do
+        \\  seen[#seen + 1] = line()
+        \\  local x = i * 2
+        \\  seen[#seen + 1] = line() + x - x
+        \\end
+        \\assert(table.concat(seen, ",") == "3,5,3,5,3,5")
+    , .{ .name = "=line-loop" });
+}
+
+test "api callback context currentLine works from metamethods and iterators" {
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    try installLineCallbacks(&lua);
+    try lua.doString(
+        \\local t = setmetatable({}, { __index = line, __add = line, __call = line })
+        \\local a = t.x
+        \\local b = t + 1
+        \\local c = t()
+        \\assert(a == 2 and b == 3 and c == 4)
+        \\local seen
+        \\for v in line do
+        \\  seen = v
+        \\  break
+        \\end
+        \\assert(seen == 7)
+    , .{ .name = "=line-meta" });
+}
+
+test "api callback context currentLine follows the running coroutine" {
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    try installLineCallbacks(&lua);
+    try lua.doString(
+        \\local co = coroutine.wrap(function()
+        \\  coroutine.yield(line())
+        \\  return line()
+        \\end)
+        \\assert(co() == 2)
+        \\assert(line() == 6)
+        \\assert(co() == 3)
+    , .{ .name = "=line-coroutine" });
+}
+
+test "api callback context currentLine is null without a Lua frame" {
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    try installLineCallbacks(&lua);
+
+    var line = try lua.getGlobal("line", Function);
+    defer line.deinit();
+    try std.testing.expectEqual(@as(?i64, null), try line.call(.{}, ?i64));
+
+    try lua.doString(
+        \\assert(coroutine.wrap(line)() == nil)
+    , .{ .name = "=line-no-frame" });
+}
+
+test "api callback context currentLine reports the nearest Lua frame through nested callbacks" {
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    try installLineCallbacks(&lua);
+    try lua.doString(
+        \\local function inner()
+        \\  return (line())
+        \\end
+        \\assert(call_through(inner) == 2)
+        \\assert(call_through(line) == 5)
+    , .{ .name = "=line-nested" });
+}
+
+test "api callback context currentLine is null for stripped functions" {
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    try installLineCallbacks(&lua);
+    try lua.doString(
+        \\local function f() return (line()) end
+        \\assert(f() == 1)
+        \\local stripped = load(string.dump(f, true), "stripped", "b")
+        \\assert(stripped() == nil)
+    , .{ .name = "=line-stripped" });
+}

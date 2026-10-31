@@ -87,6 +87,16 @@ pub const Context = struct {
         return null;
     }
 
+    /// Line of the Lua function running on this callback's coroutine, or null when there is
+    /// none or its debug info is stripped.
+    pub fn currentLine(self: *Context) ?usize {
+        const frames = self.raw.thread.frames.items;
+        if (frames.len == 0) return null;
+        const frame = frames[frames.len - 1];
+        if (frame.closure.stripped_debug) return null;
+        return debug_runtime.lineForFrame(frame);
+    }
+
     pub fn argCount(self: *Context) usize {
         return self.raw.argCount();
     }

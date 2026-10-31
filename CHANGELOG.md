@@ -4,6 +4,7 @@
 
 ### Embedding API
 
+- `Context.currentLine` returns the line of the running Lua function.
 - `Function` and `Value.function` accept standard library functions and their iterators, and `Value.unsupported` is removed.
 - `Value.typeName` returns the name Lua's `type` gives a value.
 - Userdata finalizers receive the state's allocator.

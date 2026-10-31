@@ -207,6 +207,7 @@ pub const Context = struct {
 | [host](#fn-context-host) | `self: *Context, comptime T: type` | `?*T` | The pointer given to &#96;State.setHost&#96; when it points to a &#96;T&#96;, or null. |
 | [functionName](#fn-context-functionname) | `self: *Context` | `[]const u8` | The name this callback was registered under. |
 | [caller](#fn-context-caller) | `self: *Context, level: usize` | `?Caller` | The Lua function &#96;level&#96; calls up this callback's coroutine, not counting native functions; level 0 is the innermost one. |
+| [currentLine](#fn-context-currentline) | `self: *Context` | `?usize` | Line of the Lua function running on this callback's coroutine, or null when there is none or its debug info is stripped. |
 | [argCount](#fn-context-argcount) | `self: *Context` | `usize` |  |
 | [arg](#fn-context-arg) | `self: *Context, index: usize, comptime T: type` | `!T` | A &#96;[]const u8&#96; argument borrows VM memory until the callback returns. |
 | [decodeArg](#fn-context-decodearg) | `self: *Context, index: usize, comptime T: type, allocator: std.mem.Allocator` | `!T` | Decodes an argument by type like &#96;decode&#96;, allocating strings and slices with &#96;allocator&#96;; a value that doesn't fit raises a &#96;bad argument&#96; error. |
@@ -280,6 +281,19 @@ pub fn caller(self: *Context, level: usize) ?Caller
 ```
 
 References: [`Context`](#type-context), [`Caller`](#type-caller)
+
+<a id="fn-context-currentline"></a>
+
+### Context.currentLine
+
+Line of the Lua function running on this callback's coroutine, or null when there is
+none or its debug info is stripped.
+
+```zig
+pub fn currentLine(self: *Context) ?usize
+```
+
+References: [`Context`](#type-context)
 
 <a id="fn-context-argcount"></a>
 
