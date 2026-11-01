@@ -62,7 +62,7 @@ builds.
 Budgets count work, not time. Use an
 [`InterruptHandle`](embedding.md#interrupts) from another thread for a
 wall-clock deadline. Interrupts are polled by the VM, native loops, and the compiler. A
-collection cycle or a TOML parse finishes before the interrupt takes effect.
+collection cycle or a TOML or CSV parse finishes before the interrupt takes effect.
 
 `load`, `loadfile`, `dofile`, and `require` reject binary chunks unless
 `Options.binary_chunks` is set.
