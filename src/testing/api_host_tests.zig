@@ -196,7 +196,7 @@ fn runLua(lua: *api.State, source: []const u8) !void {
 test "failed userdata construction never takes the host finalizer obligation" {
     const Payload = struct {
         finalized: *usize,
-        fn release(self: *@This()) void {
+        fn release(self: *@This(), _: std.mem.Allocator) void {
             self.finalized.* += 1;
         }
     };
@@ -260,7 +260,7 @@ test "userdata __gc metamethods run before host finalizers" {
     const Item = struct {
         log: *std.ArrayList(u8),
 
-        fn finalize(self: *@This()) void {
+        fn finalize(self: *@This(), _: std.mem.Allocator) void {
             self.log.appendSlice(std.testing.allocator, "host;") catch {};
         }
     };
@@ -306,7 +306,7 @@ test "userdata __gc metamethods run before host finalizers" {
     try std.testing.expectEqual(@as(usize, 2), hits);
 }
 
-test "os.exit in a finalizer stops deinit finalizers and reaches the exit callback" {
+test "os.exit in a finalizer reaches the exit callback and deinit runs the rest" {
     const Host = struct {
         exit_code: ?i32 = null,
 
@@ -333,12 +333,16 @@ test "os.exit in a finalizer stops deinit finalizers and reaches the exit callba
         defer lua.deinit();
         try lua.doString(
             \\A = setmetatable({}, { __gc = function() print("older") end })
-            \\B = setmetatable({}, { __gc = function() print("exit") os.exit(7) end })
+            \\B = setmetatable({}, { __gc = function()
+            \\    print("exit")
+            \\    local closing <close> = setmetatable({}, { __close = function() print("closed") end })
+            \\    os.exit(7, true)
+            \\end })
             \\C = setmetatable({}, { __gc = function() print("newest") end })
         , .{});
     }
     try std.testing.expectEqual(@as(?i32, 7), host.exit_code);
-    try std.testing.expectEqualStrings("newest\nexit\n", stdout.buffered());
+    try std.testing.expectEqualStrings("newest\nexit\nclosed\nolder\n", stdout.buffered());
 }
 
 test "deinit calls each queued userdata __gc once" {
@@ -418,4 +422,30 @@ test "thread frame storage stays current while frames hold pending returns" {
         \\probe()
     );
     try std.testing.expectEqualSlices(usize, &.{ 0, 0, 0, 0, 2, 0 }, Host.seen[0..Host.count]);
+}
+
+test "states keep no copy of output sent to writers" {
+    var output = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer output.deinit();
+    var lua = try api.State.init(std.testing.allocator, .{
+        .limits = .{ .max_memory = 1024 * 1024 },
+        .capabilities = .{ .io = .{ .stdout = &output.writer } },
+    });
+    defer lua.deinit();
+    try lua.doString("for _ = 1, 20000 do print(string.rep('x', 100)) end", .{});
+    try std.testing.expectEqual(@as(usize, 20000 * 101), output.written().len);
+    try std.testing.expectEqual(@as(usize, 0), lua.raw_state.stdout.items.len);
+}
+
+test "trace and debug output reach the stderr writer" {
+    var output = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer output.deinit();
+    var lua = try api.State.init(std.testing.allocator, .{
+        .debug = .{ .trace_vm = true, .errors = true },
+        .capabilities = .{ .io = .{ .stderr = &output.writer } },
+    });
+    defer lua.deinit();
+    try std.testing.expectError(error.LuaError, lua.doString("error('boom')", .{}));
+    try std.testing.expect(std.mem.indexOf(u8, output.written(), "[trace-vm]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.written(), "[zlua debug]") != null);
 }

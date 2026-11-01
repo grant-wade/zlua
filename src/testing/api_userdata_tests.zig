@@ -462,7 +462,7 @@ test "api userdata finalizers run under forced GC" {
     const Tracker = struct {
         finalized: *usize,
 
-        fn finalize(self: *@This()) void {
+        fn finalize(self: *@This(), _: std.mem.Allocator) void {
             self.finalized.* += 1;
         }
     };
@@ -592,7 +592,7 @@ test "api userdata table index and Lua iteration metamethods" {
     defer userdata.deinit();
     try lua.setGlobal("userdata", userdata);
     try lua.doString(
-        \\local mt = getmetatable(userdata)
+        \\local mt = debug.getmetatable(userdata)
         \\mt.__index = {false, 22, [4] = 44}
         \\local count = 0
         \\for k, v in ipairs(userdata) do count = count + 1; assert(v == mt.__index[k]) end
@@ -625,6 +625,245 @@ test "api userdata table index and Lua iteration metamethods" {
         \\  assert(not ok and type(value) == 'string')
         \\end
     , .{});
+}
+
+test "api finalizers receive the state allocator and external bytes keep garbage bounded" {
+    const Buffer = struct {
+        bytes: []u8,
+
+        var live: usize = 0;
+        var peak: usize = 0;
+
+        fn finalize(self: *@This(), allocator: std.mem.Allocator) void {
+            allocator.free(self.bytes);
+            live -= 1;
+        }
+
+        fn create(ctx: *Context) !void {
+            const lua = ctx.state();
+            const bytes = try lua.allocator().alloc(u8, 16);
+            var ud = try lua.newUserdata(@This(), .{ .bytes = bytes }, .{ .finalizer = finalize, .external_bytes = 1024 * 1024 });
+            defer ud.deinit();
+            live += 1;
+            peak = @max(peak, live);
+            try ctx.returnValues(.{ud});
+        }
+    };
+    Buffer.live = 0;
+    Buffer.peak = 0;
+
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    var create = try lua.register("create", Buffer.create);
+    defer create.deinit();
+    try lua.setGlobal("create", create);
+
+    try lua.doString("for _ = 1, 2000 do create() end", .{});
+    try std.testing.expect(Buffer.peak < 64);
+    const before = lua.raw_state.gc.known_total;
+    try lua.collect();
+    try lua.collect();
+    try std.testing.expectEqual(@as(usize, 0), Buffer.live);
+    try std.testing.expect(lua.raw_state.gc.known_total < before + 1024);
+    try std.testing.expect(lua.raw_state.gc.known_total < 1024 * 1024);
+}
+
+test "api external bytes keep garbage bounded while a large heap collects" {
+    const Buffer = struct {
+        var live: usize = 0;
+        var peak: usize = 0;
+
+        pad: u8 = 0,
+
+        fn finalize(_: *@This(), _: std.mem.Allocator) void {
+            live -= 1;
+        }
+
+        fn create(ctx: *Context) !void {
+            var ud = try ctx.state().newUserdata(@This(), .{}, .{ .finalizer = finalize, .external_bytes = 256 * 1024 });
+            defer ud.deinit();
+            live += 1;
+            peak = @max(peak, live);
+            try ctx.returnValues(.{ud});
+        }
+    };
+    Buffer.live = 0;
+    Buffer.peak = 0;
+
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    var create = try lua.register("create", Buffer.create);
+    defer create.deinit();
+    try lua.setGlobal("create", create);
+
+    try lua.doString(
+        \\keep = {}
+        \\for i = 1, 200000 do keep[i] = { i } end
+        \\for _ = 1, 4000 do create() end
+    , .{});
+    try std.testing.expect(Buffer.peak < 800);
+}
+
+test "api setExternalBytes replaces the reported amount" {
+    const Blob = struct { size: usize };
+
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    var blob = try lua.newUserdata(Blob, .{ .size = 1 }, .{});
+    defer blob.deinit();
+
+    const before = lua.raw_state.gc.known_total;
+    try blob.setExternalBytes(4096);
+    try std.testing.expectEqual(before + 4096, lua.raw_state.gc.known_total);
+    try blob.setExternalBytes(1024);
+    try std.testing.expectEqual(before + 1024, lua.raw_state.gc.known_total);
+}
+
+const DefinedCanvas = struct {
+    width: i64,
+
+    pub fn getWidth(self: *const @This()) i64 {
+        return self.width;
+    }
+
+    pub fn setWidth(self: *@This(), width: i64) void {
+        self.width = width;
+    }
+
+    pub fn copyFrom(self: *@This(), other: *const DefinedCanvas) void {
+        self.width = other.width;
+    }
+
+    pub fn __tostring(self: *const @This()) []const u8 {
+        return if (self.width > 0) "wide" else "empty";
+    }
+};
+
+const DefinedMesh = struct {
+    faces: i64,
+
+    pub fn __len(self: *const @This()) i64 {
+        return self.faces;
+    }
+};
+
+test "api defined userdata share one metatable and one set of callbacks" {
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+
+    try lua.defineUserdata(DefinedCanvas, .{ .name = "canvas", .expose_metatable = true });
+    const callbacks = lua.callbacks.items.len;
+    var a = try lua.newUserdata(DefinedCanvas, .{ .width = 1 }, .{});
+    defer a.deinit();
+    var b = try lua.newUserdata(DefinedCanvas, .{ .width = 2 }, .{});
+    defer b.deinit();
+    try std.testing.expectEqual(callbacks, lua.callbacks.items.len);
+
+    try lua.setGlobal("a", a);
+    try lua.setGlobal("b", b);
+    try lua.doString(
+        \\assert(getmetatable(a) == getmetatable(b))
+        \\assert(getmetatable(a).__name == "canvas")
+        \\assert(a:getWidth() == 1)
+        \\b:setWidth(9)
+        \\a:copyFrom(b)
+        \\assert(a:getWidth() == 9)
+        \\assert(tostring(a) == "wide")
+    , .{});
+    try std.testing.expectEqual(error.UserdataTypeDefined, lua.defineUserdata(DefinedCanvas, .{}));
+}
+
+test "api defined userdata names appear in argument errors" {
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+
+    try lua.defineUserdata(DefinedCanvas, .{ .name = "canvas" });
+    try lua.defineUserdata(DefinedMesh, .{ .name = "mesh" });
+    var canvas = try lua.newUserdata(DefinedCanvas, .{ .width = 1 }, .{});
+    defer canvas.deinit();
+    try lua.setGlobal("canvas", canvas);
+    var mesh = try lua.newUserdata(DefinedMesh, .{ .faces = 3 }, .{});
+    defer mesh.deinit();
+    try lua.setGlobal("mesh", mesh);
+
+    try lua.doString(
+        \\assert(#mesh == 3)
+        \\local ok, message = pcall(canvas.copyFrom, canvas, mesh)
+        \\assert(not ok and message:find("canvas expected, got mesh", 1, true), message)
+        \\ok, message = pcall(canvas.copyFrom, canvas, {})
+        \\assert(not ok and message:find("canvas expected, got table", 1, true), message)
+        \\ok, message = pcall(canvas.getWidth, mesh)
+        \\assert(not ok and message:find("canvas expected, got mesh", 1, true), message)
+    , .{});
+}
+
+test "api defined userdata can take methods from another struct and a default name" {
+    const Payload = struct { value: i64 };
+    const Methods = struct {
+        pub fn value(self: *const Payload) i64 {
+            return self.value;
+        }
+    };
+
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    try lua.defineUserdata(Payload, .{ .methods = Methods, .expose_metatable = true });
+    var payload = try lua.newUserdata(Payload, .{ .value = 4 }, .{});
+    defer payload.deinit();
+    try lua.setGlobal("payload", payload);
+    try lua.doString(
+        \\assert(payload:value() == 4)
+        \\assert(getmetatable(payload).__name:find("Payload", 1, true))
+    , .{});
+}
+
+test "api auto userdata define their type once" {
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+
+    var first = try lua.newUserdataAuto(DefinedCanvas, .{ .width = 1 }, .{});
+    defer first.deinit();
+    const callbacks = lua.callbacks.items.len;
+    for (0..8) |_| {
+        var more = try lua.newUserdataAuto(DefinedCanvas, .{ .width = 2 }, .{});
+        more.deinit();
+    }
+    var backing = DefinedCanvas{ .width = 3 };
+    var pointer = try lua.newUserdataPtrAuto(DefinedCanvas, &backing, .{});
+    defer pointer.deinit();
+    try std.testing.expectEqual(callbacks, lua.callbacks.items.len);
+    try lua.setGlobal("pointer", pointer);
+    try lua.doString("assert(pointer:getWidth() == 3)", .{});
+}
+
+test "api userdata definitions follow snapshots and reset" {
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    try lua.defineUserdata(DefinedCanvas, .{ .name = "canvas" });
+
+    var snapshot = try lua.snapshot(std.testing.allocator);
+    defer snapshot.deinit();
+    var worker = try snapshot.newState(std.testing.allocator);
+    defer worker.deinit();
+
+    var canvas = try worker.newUserdata(DefinedCanvas, .{ .width = 5 }, .{});
+    try worker.setGlobal("canvas", canvas);
+    canvas.deinit();
+    try worker.doString("assert(canvas:getWidth() == 5)", .{});
+
+    try worker.defineUserdata(DefinedMesh, .{ .name = "mesh" });
+    var mesh = try worker.newUserdata(DefinedMesh, .{ .faces = 2 }, .{});
+    try worker.setGlobal("mesh", mesh);
+    mesh.deinit();
+    try worker.doString("assert(#mesh == 2)", .{});
+
+    try worker.reset();
+    try worker.defineUserdata(DefinedMesh, .{ .name = "mesh" });
+    try std.testing.expectEqual(error.UserdataTypeDefined, worker.defineUserdata(DefinedCanvas, .{}));
+    var again = try worker.newUserdata(DefinedCanvas, .{ .width = 6 }, .{});
+    defer again.deinit();
+    try worker.setGlobal("canvas", again);
+    try worker.doString("assert(canvas:getWidth() == 6)", .{});
 }
 
 test "api userdata method raises an error naming the current Lua line" {

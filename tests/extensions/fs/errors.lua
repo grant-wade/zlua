@@ -19,3 +19,23 @@ print(portable(fs.path.normalize("a/./b/../c")))
 print(fs.path.basename("a/b/c.txt"), fs.path.dirname("a/b/c.txt"))
 print(fs.path.extension("a/b/c.txt"), fs.path.stem("a/b/c.txt"))
 print(fs.path.is_absolute("a/b"), portable(fs.path.relative("a/b", "a/c/d")))
+
+for _, paths in ipairs({
+  { "a", "b" },
+  { "a", "a" },
+  { "a/b", "a" },
+  { "a", "a/b" },
+  { "a", "../b" },
+  { "../a", "../b" },
+  { "./a/", "b" },
+  { "", "a" },
+  { "a", "" },
+  { "/a/b", "/a/c/d" },
+  { "/", "/" },
+  { "/a", "/../b" },
+}) do
+  print(paths[1], paths[2], portable(fs.path.relative(paths[1], paths[2])))
+end
+print(pcall(fs.path.relative, "/a", "b"))
+print(pcall(fs.path.relative, "a", "/b"))
+print(pcall(fs.path.relative, "../a", "b"))

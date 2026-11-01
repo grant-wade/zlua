@@ -30,6 +30,7 @@ pub const ApiCallbackContext = types.ApiCallbackContext;
 pub const RuntimeErrorPayload = types.RuntimeErrorPayload;
 
 pub const appendBinaryChunkHeader = chunk_mod.appendBinaryChunkHeader;
+pub const appendBinaryChunk = chunk_mod.appendBinaryChunk;
 pub const dumpClosureBinary = chunk_mod.dumpClosureBinary;
 
 pub const Closure = types.Closure;

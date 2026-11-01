@@ -54,7 +54,7 @@ const Run = struct {
     out: *std.Io.Writer,
     paths: []const []u8,
     results: []FixtureResult,
-    clua_exe: ?[]const u8,
+    clua_exe: []const u8,
     registry: expected_failures.Registry,
     options: Options,
     cwd: []const u8,
@@ -106,11 +106,12 @@ pub fn runCli(
     const cwd = try std.process.currentPathAlloc(io, allocator);
     defer allocator.free(cwd);
 
-    const clua_exe: ?[]const u8 = switch (discovery) {
+    const clua_exe: []const u8 = switch (discovery) {
         .found => |path| path,
-        .missing => |message| blk: {
+        .missing => |message| {
             try out.print("clua: missing ({s})\n", .{message});
-            break :blk null;
+            try out.flush();
+            return 1;
         },
     };
 
@@ -150,6 +151,8 @@ fn parseArgs(args: []const []const u8) !Options {
             options.show_zlua = true;
         } else if (std.mem.eql(u8, arg, "--gc-step-stress")) {
             options.gc_step_stress = true;
+        } else if (std.mem.eql(u8, arg, "--stack-stress")) {
+            @import("../runtime/types.zig").stress_stack_moves = true;
         } else if (std.mem.eql(u8, arg, "--gc-stress")) {
             options.gc_stress = true;
         } else if (std.mem.eql(u8, arg, "--debug-errors")) {
@@ -182,7 +185,7 @@ fn runOne(
     io: std.Io,
     out: anytype,
     path: []const u8,
-    clua_exe: ?[]const u8,
+    clua_exe: []const u8,
     registry: expected_failures.Registry,
     options: Options,
     cwd: []const u8,
@@ -219,13 +222,7 @@ fn runOne(
     const expected_failure = meta.expect == .fail or registry.contains(path);
     const expected_reason = if (meta.reason.len > 0) meta.reason else registry.reason(path) orelse "expected failure";
 
-    const exe = clua_exe orelse {
-        counts.skipped += 1;
-        try out.print("skip {s} (missing clua)\n", .{path});
-        return;
-    };
-
-    var clua_result = try runCluaForStage(allocator, io, exe, path, meta.stage, options.timeout_ms);
+    var clua_result = try runCluaForStage(allocator, io, clua_exe, path, meta.stage, options.timeout_ms);
     defer clua_result.deinit(allocator);
     var zlua_result = try runZluaForStage(allocator, io, source, meta.stage, options, environ_map);
     defer zlua_result.deinit(allocator);

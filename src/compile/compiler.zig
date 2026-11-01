@@ -17,22 +17,23 @@ pub const CompileError = error{
     TooManyReturns,
     TooManyLocalVariables,
     TooManyUpvalues,
+    NativeStackOverflow,
 };
 
 pub fn compile(allocator: std.mem.Allocator, tree: *const ast.Ast) !proto_mod.Proto {
     var root = proto_mod.Proto.init(allocator);
     errdefer root.deinit();
 
-    var context = FunctionCompiler.init(allocator, &root, null, null);
+    var context = FunctionCompiler.init(allocator, &root, null, null, .start(frontend.stack_guard.default_max_bytes));
     try context.compileChunk(tree.statements);
     return root;
 }
 
-pub fn compileWithDiagnostic(allocator: std.mem.Allocator, tree: *const ast.Ast, error_diagnostic: *?errors.Diagnostic) !proto_mod.Proto {
+pub fn compileGuarded(allocator: std.mem.Allocator, tree: *const ast.Ast, error_diagnostic: *?errors.Diagnostic, stack: frontend.StackGuard) !proto_mod.Proto {
     var root = proto_mod.Proto.init(allocator);
     errdefer root.deinit();
 
-    var context = FunctionCompiler.init(allocator, &root, null, error_diagnostic);
+    var context = FunctionCompiler.init(allocator, &root, null, error_diagnostic, stack);
     try context.compileChunk(tree.statements);
     return root;
 }
@@ -140,9 +141,10 @@ const FunctionCompiler = struct {
     next_register: bytecode.Register = 0,
     current_line: usize = 1,
     forced_line: ?usize = null,
+    stack: frontend.StackGuard,
 
-    fn init(allocator: std.mem.Allocator, proto: *proto_mod.Proto, parent: ?*FunctionCompiler, error_diagnostic: ?*?errors.Diagnostic) FunctionCompiler {
-        return .{ .allocator = allocator, .proto = proto, .parent = parent, .error_diagnostic = error_diagnostic };
+    fn init(allocator: std.mem.Allocator, proto: *proto_mod.Proto, parent: ?*FunctionCompiler, error_diagnostic: ?*?errors.Diagnostic, stack: frontend.StackGuard) FunctionCompiler {
+        return .{ .allocator = allocator, .proto = proto, .parent = parent, .error_diagnostic = error_diagnostic, .stack = stack };
     }
 
     fn deinit(self: *FunctionCompiler) void {
@@ -183,7 +185,7 @@ const FunctionCompiler = struct {
         child.defined_line = body.defined_line;
         child.last_defined_line = body.end_line;
 
-        var child_context = FunctionCompiler.init(self.allocator, child, self, self.error_diagnostic);
+        var child_context = FunctionCompiler.init(self.allocator, child, self, self.error_diagnostic, self.stack);
         errdefer child_context.deinit();
         try child_context.enterScope();
         if (method) _ = try child_context.declareLocal("self");
@@ -226,6 +228,8 @@ const FunctionCompiler = struct {
     }
 
     fn compileStatement(self: *FunctionCompiler, statement: ast.Stmt) anyerror!void {
+        if (self.stack.exceeded()) return error.NativeStackOverflow;
+        if (self.stack.interrupted()) return error.Interrupted;
         self.current_line = stmtLine(statement);
         switch (statement) {
             .empty => {},
@@ -641,6 +645,8 @@ const FunctionCompiler = struct {
     }
 
     fn compileExpr(self: *FunctionCompiler, expr: *const ast.Expr, dest: bytecode.Register) anyerror!void {
+        if (self.stack.exceeded()) return error.NativeStackOverflow;
+        if (self.stack.interrupted()) return error.Interrupted;
         self.current_line = exprLine(expr.*);
         switch (expr.*) {
             .nil => _ = try self.emit(.{ .load_nil = dest }),
@@ -718,7 +724,7 @@ const FunctionCompiler = struct {
         }
     }
 
-    fn foldConstant(self: *FunctionCompiler, expr: *const ast.Expr) !?fold.Numeral {
+    fn foldConstant(self: *FunctionCompiler, expr: *const ast.Expr) anyerror!?fold.Numeral {
         switch (expr.*) {
             .integer, .float => return fold.literal(expr),
             .grouped => |inner| return self.foldConstant(inner),
@@ -729,12 +735,40 @@ const FunctionCompiler = struct {
             },
             .binary => |binary| {
                 if (!fold.foldsBinary(binary.op) or self.fold_failures.contains(expr)) return null;
-                const lhs = (try self.foldConstant(binary.left)) orelse return self.noteFoldFailure(expr, binary.left);
-                const rhs = (try self.foldConstant(binary.right)) orelse return self.noteFoldFailure(expr, binary.right);
-                return fold.binary(binary.op, lhs, rhs);
+                return self.foldBinaryChain(expr);
             },
             else => return null,
         }
+    }
+
+    fn foldBinaryChain(self: *FunctionCompiler, expr: *const ast.Expr) anyerror!?fold.Numeral {
+        if (self.stack.exceeded()) return error.NativeStackOverflow;
+        var spine = std.ArrayList(*const ast.Expr).empty;
+        defer spine.deinit(self.allocator);
+        var node = expr;
+        while (true) {
+            try spine.append(self.allocator, node);
+            const left = node.binary.left;
+            if (left.* != .binary or !fold.foldsBinary(left.binary.op) or self.fold_failures.contains(left)) break;
+            node = left;
+        }
+        var value = try self.foldConstant(node.binary.left);
+        var index = spine.items.len;
+        while (index > 0) {
+            index -= 1;
+            const current = spine.items[index];
+            const binary = current.binary;
+            const lhs = value orelse {
+                value = try self.noteFoldFailure(current, binary.left);
+                continue;
+            };
+            const rhs = (try self.foldConstant(binary.right)) orelse {
+                value = try self.noteFoldFailure(current, binary.right);
+                continue;
+            };
+            value = fold.binary(binary.op, lhs, rhs);
+        }
+        return value;
     }
 
     fn noteFoldFailure(self: *FunctionCompiler, expr: *const ast.Expr, operand: *const ast.Expr) !?fold.Numeral {
@@ -833,17 +867,85 @@ const FunctionCompiler = struct {
         self.release(mark);
     }
 
+    /// A binary expression waiting for its left operand to be compiled into `dest`.
+    const BinaryStep = struct {
+        binary: ast.BinaryExpr,
+        previous_forced_line: ?usize,
+        compiles_left: bool,
+        forces_line: bool,
+        form: union(enum) {
+            logical,
+            constant: struct {
+                constant: bytecode.ConstantIndex,
+                left: bytecode.Register,
+                mark: bytecode.Register,
+                left_origin: proto_mod.OperandOrigin,
+                right_origin: proto_mod.OperandOrigin,
+            },
+            registers: struct {
+                left: bytecode.Register,
+                right: bytecode.Register,
+                compiles_right: bool,
+                mark: bytecode.Register,
+                left_origin: proto_mod.OperandOrigin,
+                right_origin: proto_mod.OperandOrigin,
+            },
+        },
+    };
+
     fn compileBinary(self: *FunctionCompiler, binary: ast.BinaryExpr, dest: bytecode.Register) anyerror!void {
+        var steps = std.ArrayList(BinaryStep).empty;
+        defer steps.deinit(self.allocator);
+        var current = binary;
+        while (try self.beginBinaryStep(current, dest)) |step| {
+            try steps.append(self.allocator, step);
+            if (!step.compiles_left) break;
+            if (step.forces_line) self.forced_line = current.op_line;
+            const left = current.left;
+            self.current_line = exprLine(left.*);
+            if (left.* != .binary) {
+                try self.compileExpr(left, dest);
+                break;
+            }
+            if (try self.foldConstant(left)) |value| {
+                try self.emitFoldedConstant(left, value, dest);
+                break;
+            }
+            current = left.binary;
+        }
+        var index = steps.items.len;
+        while (index > 0) {
+            index -= 1;
+            self.forced_line = steps.items[index].previous_forced_line;
+            try self.finishBinaryStep(steps.items[index], dest);
+        }
+    }
+
+    /// Does the work that precedes compiling the left operand, or compiles all of `binary` and
+    /// returns null when it needs no step.
+    fn beginBinaryStep(self: *FunctionCompiler, binary: ast.BinaryExpr, dest: bytecode.Register) anyerror!?BinaryStep {
+        const previous_forced_line = self.forced_line;
         if (binary.op == .or_op or binary.op == .and_op) {
-            try self.compileExpr(binary.left, dest);
-            const skip = try self.emit(.{ .test_set = .{ .dest = dest, .source = dest, .jump_if_truthy = binary.op == .or_op, .offset = 0 } });
-            try self.compileExpr(binary.right, dest);
-            try self.proto.patchJump(skip, self.proto.pc());
-            return;
+            return .{ .binary = binary, .previous_forced_line = previous_forced_line, .compiles_left = true, .forces_line = false, .form = .logical };
         }
 
-        if (binary.op == .concat and try self.compileConcatChain(binary, dest)) return;
-        if (try self.compileBinaryConstant(binary, dest)) return;
+        if (binary.op == .concat and try self.compileConcatChain(binary, dest)) return null;
+
+        if (constantBinaryInstruction(binary.op, .{ .dest = 0, .left = 0, .constant = 0 }) != null) {
+            if (try self.numericConstant(binary.right)) |constant| {
+                const mark = self.registerMark();
+                const left_origin = try self.exprOrigin(binary.left);
+                const right_origin = try self.exprOrigin(binary.right);
+                const direct_left = self.sourceRegister(binary.left);
+                return .{
+                    .binary = binary,
+                    .previous_forced_line = previous_forced_line,
+                    .compiles_left = direct_left == null,
+                    .forces_line = true,
+                    .form = .{ .constant = .{ .constant = constant, .left = direct_left orelse dest, .mark = mark, .left_origin = left_origin, .right_origin = right_origin } },
+                };
+            }
+        }
 
         const mark = self.registerMark();
         const direct_left = self.sourceRegister(binary.left);
@@ -852,40 +954,49 @@ const FunctionCompiler = struct {
         const use_direct_left = direct_left != null and (binary.op != .concat or self.evaluationIsInert(binary.right));
         const use_direct_right = direct_right != null and direct_right.? != dest;
         const right = if (use_direct_right) direct_right.? else try self.allocReg();
-        var left_origin = try self.exprOrigin(binary.left);
-        var right_origin = try self.exprOrigin(binary.right);
-        const left = if (use_direct_left) direct_left.? else dest;
-        if (!use_direct_left) try self.compileExprForcedLine(binary.left, dest, binary.op_line);
-        if (!use_direct_right) try self.compileExpr(binary.right, right);
-        const right_line = exprLine(binary.right.*);
-        self.current_line = binary.op_line;
-        if (binary.op == .ne) {
-            _ = try self.emitWithErrorSite(.{ .eq = .{ .dest = dest, .left = left, .right = right } }, .compare, &.{ left_origin, right_origin }, null);
-            _ = try self.emit(.{ .not = .{ .dest = dest, .source = dest } });
-        } else {
-            if (binary.op == .gt or binary.op == .ge) std.mem.swap(proto_mod.OperandOrigin, &left_origin, &right_origin);
-            _ = try self.emitWithErrorSite(binaryInstruction(binary.op, dest, left, right), binaryErrorOp(binary.op), &.{ left_origin, right_origin }, null);
-        }
-        self.current_line = right_line;
-        self.release(mark);
-    }
-
-    fn compileBinaryConstant(self: *FunctionCompiler, binary: ast.BinaryExpr, dest: bytecode.Register) anyerror!bool {
-        if (constantBinaryInstruction(binary.op, .{ .dest = 0, .left = 0, .constant = 0 }) == null) return false;
-        const constant = (try self.numericConstant(binary.right)) orelse return false;
-        const mark = self.registerMark();
         const left_origin = try self.exprOrigin(binary.left);
         const right_origin = try self.exprOrigin(binary.right);
-        const left = self.sourceRegister(binary.left) orelse left: {
-            try self.compileExprForcedLine(binary.left, dest, binary.op_line);
-            break :left dest;
+        return .{
+            .binary = binary,
+            .previous_forced_line = previous_forced_line,
+            .compiles_left = !use_direct_left,
+            .forces_line = true,
+            .form = .{ .registers = .{ .left = if (use_direct_left) direct_left.? else dest, .right = right, .compiles_right = !use_direct_right, .mark = mark, .left_origin = left_origin, .right_origin = right_origin } },
         };
-        self.current_line = binary.op_line;
-        const instruction = constantBinaryInstruction(binary.op, .{ .dest = dest, .left = left, .constant = constant }).?;
-        _ = try self.emitWithErrorSite(instruction, binaryErrorOp(binary.op), &.{ left_origin, right_origin }, null);
-        self.current_line = exprLine(binary.right.*);
-        self.release(mark);
-        return true;
+    }
+
+    fn finishBinaryStep(self: *FunctionCompiler, step: BinaryStep, dest: bytecode.Register) anyerror!void {
+        const binary = step.binary;
+        switch (step.form) {
+            .logical => {
+                const skip = try self.emit(.{ .test_set = .{ .dest = dest, .source = dest, .jump_if_truthy = binary.op == .or_op, .offset = 0 } });
+                try self.compileExpr(binary.right, dest);
+                try self.proto.patchJump(skip, self.proto.pc());
+            },
+            .constant => |form| {
+                self.current_line = binary.op_line;
+                const instruction = constantBinaryInstruction(binary.op, .{ .dest = dest, .left = form.left, .constant = form.constant }).?;
+                _ = try self.emitWithErrorSite(instruction, binaryErrorOp(binary.op), &.{ form.left_origin, form.right_origin }, null);
+                self.current_line = exprLine(binary.right.*);
+                self.release(form.mark);
+            },
+            .registers => |form| {
+                if (form.compiles_right) try self.compileExpr(binary.right, form.right);
+                const right_line = exprLine(binary.right.*);
+                self.current_line = binary.op_line;
+                var left_origin = form.left_origin;
+                var right_origin = form.right_origin;
+                if (binary.op == .ne) {
+                    _ = try self.emitWithErrorSite(.{ .eq = .{ .dest = dest, .left = form.left, .right = form.right } }, .compare, &.{ left_origin, right_origin }, null);
+                    _ = try self.emit(.{ .not = .{ .dest = dest, .source = dest } });
+                } else {
+                    if (binary.op == .gt or binary.op == .ge) std.mem.swap(proto_mod.OperandOrigin, &left_origin, &right_origin);
+                    _ = try self.emitWithErrorSite(binaryInstruction(binary.op, dest, form.left, form.right), binaryErrorOp(binary.op), &.{ left_origin, right_origin }, null);
+                }
+                self.current_line = right_line;
+                self.release(form.mark);
+            },
+        }
     }
 
     fn numericConstant(self: *FunctionCompiler, expr: *const ast.Expr) !?bytecode.ConstantIndex {
@@ -1087,14 +1198,37 @@ const FunctionCompiler = struct {
 
     fn compileCallInto(self: *FunctionCompiler, expr: *const ast.Expr, returns: u16, dest: bytecode.Register, tail: bool) anyerror!bytecode.Register {
         switch (expr.*) {
-            .call => |call| {
+            .call => {
                 try self.reserveRegistersUntil(dest + 1);
-                const call_name = try self.callOrigin(expr);
-                try self.compileExpr(call.callee, dest);
-                const arg_count = try self.compileCallArgs(call.args, dest + 1, 0);
-                self.current_line = call.call_line;
-                _ = try self.emitWithErrorSite(if (tail) .{ .tail_call = .{ .base = dest, .arg_count = callArgCount(arg_count), .return_count = returns } } else .{ .call = .{ .base = dest, .arg_count = callArgCount(arg_count), .return_count = returns } }, .call, &.{call_name}, call_name);
-                self.release(callReleaseMark(dest, returns));
+                const Link = struct { call: ast.CallExpr, name: proto_mod.OperandOrigin };
+                var links = std.ArrayList(Link).empty;
+                defer links.deinit(self.allocator);
+                var node = expr;
+                while (true) {
+                    const callee = node.call.callee;
+                    try links.append(self.allocator, .{ .call = node.call, .name = try self.callOrigin(node) });
+                    if (callee.* != .call or dest + 1 != self.registerMark()) {
+                        try self.compileExpr(callee, dest);
+                        break;
+                    }
+                    self.current_line = exprLine(callee.*);
+                    node = callee;
+                }
+                var index = links.items.len;
+                while (index > 0) {
+                    index -= 1;
+                    const link = links.items[index];
+                    const outermost = index == 0;
+                    const link_returns = if (outermost) returns else 1;
+                    const arg_count = try self.compileCallArgs(link.call.args, dest + 1, 0);
+                    self.current_line = link.call.call_line;
+                    const instruction: bytecode.Instruction = if (outermost and tail)
+                        .{ .tail_call = .{ .base = dest, .arg_count = callArgCount(arg_count), .return_count = link_returns } }
+                    else
+                        .{ .call = .{ .base = dest, .arg_count = callArgCount(arg_count), .return_count = link_returns } };
+                    _ = try self.emitWithErrorSite(instruction, .call, &.{link.name}, link.name);
+                    self.release(callReleaseMark(dest, link_returns));
+                }
                 return dest;
             },
             .method_call => |call| {
@@ -1808,24 +1942,27 @@ fn stmtApproxEndLine(statement: ast.Stmt) usize {
 }
 
 fn exprLine(expr: ast.Expr) usize {
-    return switch (expr) {
-        .nil => |span| span.start.line,
-        .boolean => |literal| literal.span.start.line,
-        .integer => |literal| literal.span.start.line,
-        .float => |literal| literal.span.start.line,
-        .string => |literal| literal.span.start.line,
-        .vararg => |span| span.start.line,
-        .identifier => |identifier| identifier.span.start.line,
-        .table_constructor => 1,
-        .function_literal => |body| body.end_line,
-        .grouped => |inner| exprLine(inner.*),
-        .index => |index| exprLine(index.receiver.*),
-        .field => |field| exprLine(field.receiver.*),
-        .call => |call| call.call_line,
-        .method_call => |call| call.call_line,
-        .unary => |unary| unary.op_line,
-        .binary => |binary| binary.op_line,
-    };
+    var current = expr;
+    while (true) {
+        switch (current) {
+            .nil => |span| return span.start.line,
+            .boolean => |literal| return literal.span.start.line,
+            .integer => |literal| return literal.span.start.line,
+            .float => |literal| return literal.span.start.line,
+            .string => |literal| return literal.span.start.line,
+            .vararg => |span| return span.start.line,
+            .identifier => |identifier| return identifier.span.start.line,
+            .table_constructor => return 1,
+            .function_literal => |body| return body.end_line,
+            .grouped => |inner| current = inner.*,
+            .index => |index| current = index.receiver.*,
+            .field => |field| current = field.receiver.*,
+            .call => |call| return call.call_line,
+            .method_call => |call| return call.call_line,
+            .unary => |unary| return unary.op_line,
+            .binary => |binary| return binary.op_line,
+        }
+    }
 }
 
 test "compiles a simple chunk" {

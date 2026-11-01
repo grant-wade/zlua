@@ -15,6 +15,7 @@
 - [frontend.token](../frontend/token.md)
 - [frontend.diagnostic](../frontend/diagnostic.md)
 - [frontend.lexer](../frontend/lexer.md)
+- [stack_guard](../stack_guard.md)
 - [frontend.ast](../frontend/ast.md)
 - [frontend.parser](../frontend/parser.md)
 - [compile](../compile.md)
@@ -29,26 +30,27 @@
 - [stdlib](../stdlib.md)
 - [stdlib.base](../stdlib/base.md)
 - [runtime.call](../runtime/call.md)
-- [stdlib.static_strings](../stdlib/static_strings.md)
-- [runtime.table_index](../runtime/table_index.md)
+- [runtime.budget](../runtime/budget.md)
+- [runtime.failure](../runtime/failure.md)
+- [runtime.debug](../runtime/debug.md)
+- [runtime.io](../runtime/io.md)
+- [runtime.host](../runtime/host.md)
 - [runtime.value](../runtime/value.md)
 - [runtime.number_format](../runtime/number_format.md)
-- [runtime.coroutine](../runtime/coroutine.md)
-- [runtime.debug](../runtime/debug.md)
+- [stdlib.static_strings](../stdlib/static_strings.md)
+- [runtime.table_index](../runtime/table_index.md)
 - [runtime.metatable](../runtime/metatable.md)
 - [runtime.rollback](../runtime/rollback.md)
 - [runtime.strings](../runtime/strings.md)
 - [runtime.operators](../runtime/operators.md)
-- [runtime.failure](../runtime/failure.md)
-- [runtime.io](../runtime/io.md)
-- [runtime.host](../runtime/host.md)
-- [runtime.load](../runtime/load.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.gc](../runtime/gc.md)
 - [runtime.entry](../runtime/entry.md)
+- [runtime.coroutine](../runtime/coroutine.md)
+- [runtime.load](../runtime/load.md)
+- [runtime.upvalue](../runtime/upvalue.md)
 - [runtime.system](../runtime/system.md)
 - [runtime.timezone](../runtime/timezone.md)
-- [runtime.upvalue](../runtime/upvalue.md)
 - [runtime.index](../runtime/index.md)
 - [stdlib.table](../stdlib/table.md)
 - [stdlib.string](../stdlib/string.md)
@@ -68,7 +70,6 @@
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
-- [runtime.budget](../runtime/budget.md)
 - [runtime.object_pool](../runtime/object_pool.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
@@ -79,6 +80,7 @@
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
 - [api](../api.md)
+- [api.analyze](../api/analyze.md)
 - [api.callbacks](../api/callbacks.md)
 - [api.convert](../api/convert.md)
 - [api.errors](../api/errors.md)
@@ -92,6 +94,7 @@
 - [api.value](../api/value.md)
 - [api.userdata](../api/userdata.md)
 - [api.context](../api/context.md)
+- [api.decode](../api/decode.md)
 - [api.coroutine](../api/coroutine.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
@@ -119,6 +122,8 @@
 - [testing.parallel](../testing/parallel.md)
 - [testing.extension_runner](../testing/extension_runner.md)
 - [testing.official_suite](../testing/official_suite.md)
+- [testing.sandbox_runner](../testing/sandbox_runner.md)
+- [testing.generators](../testing/generators.md)
 
 </details>
 
@@ -136,6 +141,7 @@
 - [stack_error_frames](#const-stack_error_frames)
 - [stack_error_values](#const-stack_error_values)
 - [max_metamethod_depth](#const-max_metamethod_depth)
+- [nil_root](#const-nil_root)
 
 ## Aliases
 
@@ -312,6 +318,16 @@ pub const FilesystemCapability = host.FilesystemCapability;
 
 ```zig
 pub const HostDirectory = host.HostDirectory;
+```
+
+<a id="const-nil_root"></a>
+
+## nil_root
+
+Root index of a rooted nil, which takes no slot in `api_roots`.
+
+```zig
+pub const nil_root = std.math.maxInt(usize);
 ```
 
 <a id="alias-filesystemfilekind"></a>
@@ -492,6 +508,14 @@ pub const StateOptions = struct {
     max_stack_values: ?usize = null,
     max_call_frames: ?usize = null,
     max_instructions: ?u64 = null,
+    /// Native stack bytes a host call may use before Lua sees `C stack overflow`.
+    max_native_stack: usize = stack_guard.default_max_bytes,
+    /// Instructions for finalizers run by each `deinit` or host-driven collection; null is unlimited.
+    max_finalizer_instructions: ?u64 = null,
+    /// Bytes written to stdout and stderr; null is unlimited.
+    max_output_bytes: ?u64 = null,
+    /// Lets `load` accept binary chunks.
+    binary_chunks: bool = true,
     debug_errors: bool = false,
     trace_vm: bool = false,
 };
@@ -526,6 +550,12 @@ pub const State = struct {
     value_roots: ?*types.ValueRoots = null,
     /// Includes direct interpreter entry, nested calls, and suspended host callbacks.
     execution_depth: usize = 0,
+    /// Callables invoked from native code that have not returned.
+    native_invoke_depth: usize = 0,
+    /// Valid while `execution_depth` or `native_invoke_depth` is nonzero.
+    native_stack: stack_guard.StackGuard = .{},
+    /// Bytes counted against `max_output_bytes`.
+    output_bytes: u64 = 0,
     allocator_lifetime: ?*types.AllocatorLifetime = null,
     snapshot_busy: bool = false,
     discarding: bool = false,
@@ -580,6 +610,7 @@ pub const State = struct {
     io_input: ?*Userdata = null,
     io_output: ?*Userdata = null,
     library_tables: std.EnumArray(stdlib.LibraryTable, ?*Table) = .initFill(null),
+    opened_libraries: stdlib.LibrarySet = .{},
     gc: gc_mod.Gc = .{},
     random_state: [4]u64 = .{ 0x123456789abcdef0, 0xff, 0xfedcba9876543210, 0 },
     budget: budget_mod.Budget = .{},
@@ -591,6 +622,7 @@ pub const State = struct {
 | Name | Parameters | Return Type | Description |
 | --- | --- | --- | --- |
 | [max_c_calls](#alias-state-max_c_calls) |  |  |  |
+| [entryStackGuard](#fn-state-entrystackguard) | `self: *const State` | `stack_guard.StackGuard` | The guard of the running host call, or a new one when no call is active. |
 | [registerAllocation](#fn-state-registerallocation) | `self: *State, comptime field: []const u8, item: anytype` | `!void` |  |
 | [init](#fn-state-init) | `allocator: std.mem.Allocator` | `!State` |  |
 | [objects](#fn-state-objects) | `self: *const State` | `std.mem.Allocator` |  |
@@ -659,6 +691,18 @@ pub const State = struct {
 ```zig
 pub const max_c_calls = lua_max_c_calls;
 ```
+
+<a id="fn-state-entrystackguard"></a>
+
+### State.entryStackGuard
+
+The guard of the running host call, or a new one when no call is active.
+
+```zig
+pub inline fn entryStackGuard(self: *const State) stack_guard.StackGuard
+```
+
+References: [`State`](#type-state), [`stack_guard.StackGuard`](../stack_guard.md#type-stackguard)
 
 <a id="fn-state-registerallocation"></a>
 

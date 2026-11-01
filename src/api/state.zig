@@ -18,6 +18,8 @@ const ErrorRef = errors.ErrorRef;
 const ExitRequest = capabilities.ExitRequest;
 const Function = @import("function.zig").Function;
 const GcBudget = options_mod.GcBudget;
+const handle_mod = @import("handle.zig");
+const HandleScope = handle_mod.HandleScope;
 const GcMode = options_mod.GcMode;
 const GcParam = options_mod.GcParam;
 const GcStepResult = options_mod.GcStepResult;
@@ -39,6 +41,7 @@ const TableOptions = options_mod.TableOptions;
 const Userdata = userdata_mod.Userdata;
 const UserdataOptions = userdata_mod.UserdataOptions;
 const UserdataPtrOptions = userdata_mod.UserdataPtrOptions;
+const UserdataType = userdata_mod.UserdataType;
 const Value = @import("value.zig").Value;
 const coroutine_mod = @import("../runtime/coroutine.zig");
 const entry_mod = @import("../runtime/entry.zig");
@@ -58,6 +61,12 @@ pub const InterruptHandle = struct {
     pub fn isPending(self: InterruptHandle) bool {
         return self.control.isRequested();
     }
+};
+
+/// A typed pointer the host attaches to a state with `State.setHost`.
+pub const HostData = struct {
+    ptr: *anyopaque,
+    type_id: usize,
 };
 
 /// Owns a Lua VM and its host-facing API state.
@@ -82,6 +91,12 @@ pub const State = struct {
     /// Whether each memory-file entry owns its contents slice.
     memory_file_owned_contents: std.ArrayList(bool) = .empty,
     callbacks: std.ArrayList(RegisteredCallback) = .empty,
+    host_data: ?HostData = null,
+    /// Root indices of the handles created in open handle scopes.
+    scoped_roots: std.ArrayList(usize) = .empty,
+    /// Where the innermost open handle scope starts in `scoped_roots`.
+    handle_scope_start: usize = 0,
+    open_handle_scopes: usize = 0,
 
     /// `state_allocator` must remain valid until `deinit`.
     pub fn init(state_allocator: std.mem.Allocator, options: Options) !State {
@@ -131,6 +146,7 @@ pub const State = struct {
         self.memory_file_owned_contents.deinit(state_allocator);
         callbacks.deinitNames(self, state_allocator);
         self.callbacks.deinit(state_allocator);
+        self.scoped_roots.deinit(state_allocator);
         self.destroyMemoryLimitAllocator();
         if (self.baseline) |baseline| baseline.release();
         if (self.immutable_owner) |owner| owner.release();
@@ -150,6 +166,25 @@ pub const State = struct {
         return snapshot_mod.reset(self);
     }
 
+    /// Attaches a host pointer for `host` and `Context.host`, replacing any earlier one. Snapshots
+    /// and their workers keep the pointer, and `reset` restores the baseline's.
+    pub fn setHost(self: *State, ptr: anytype) !void {
+        try snapshot_mod.writableBindings(self);
+        self.host_data = .{ .ptr = @ptrCast(@constCast(ptr)), .type_id = userdata_mod.typeId(@typeInfo(@TypeOf(ptr)).pointer.child) };
+    }
+
+    pub fn clearHost(self: *State) !void {
+        try snapshot_mod.writableBindings(self);
+        self.host_data = null;
+    }
+
+    /// The pointer given to `setHost` when it points to a `T`, or null.
+    pub fn host(self: *const State, comptime T: type) ?*T {
+        const data = self.host_data orelse return null;
+        if (data.type_id != userdata_mod.typeId(T)) return null;
+        return @ptrCast(@alignCast(data.ptr));
+    }
+
     /// Allocator for API-owned allocations returned to the host.
     pub fn allocator(self: *State) std.mem.Allocator {
         return self.raw_state.allocator;
@@ -166,6 +201,17 @@ pub const State = struct {
             .used = used,
             .remaining = remaining,
         };
+    }
+
+    /// Output bytes written since state creation or the last `resetOutputLimit`.
+    pub fn outputBytes(self: *const State) u64 {
+        return self.raw_state.output_bytes;
+    }
+
+    /// Restarts `Limits.max_output_bytes` and clears its error.
+    pub fn resetOutputLimit(self: *State) void {
+        self.raw_state.output_bytes = 0;
+        self.raw_state.budget.clearStop();
     }
 
     pub fn resetInstructionBudget(self: *State) void {
@@ -236,6 +282,12 @@ pub const State = struct {
 
     pub fn isGcRunning(self: *const State) bool {
         return self.raw_state.gc.running;
+    }
+
+    /// Starts a scope that releases the handles created until its `end`, except those given to
+    /// its `keep`: `var scope = lua.handleScope(); defer scope.end();`.
+    pub fn handleScope(self: *State) HandleScope {
+        return handle_mod.beginScope(self);
     }
 
     /// Converts a Zig value into a rooted `Value`.
@@ -309,14 +361,24 @@ pub const State = struct {
         return result;
     }
 
+    /// Gives every later `T` userdata one metatable holding `options.methods`, unless it passes its
+    /// own `metatable`. Returns `error.UserdataTypeDefined` when `T` already has a definition.
+    pub fn defineUserdata(self: *State, comptime T: type, comptime options: UserdataType) !void {
+        return userdata_mod.define(self, T, options);
+    }
+
     /// Allocates Lua-owned userdata initialized with `value`.
     pub fn newUserdata(self: *State, comptime T: type, value: T, options: UserdataOptions(T)) !Userdata(T) {
         return userdata_mod.create(self, T, value, options);
     }
 
-    /// Like `newUserdata`, also installing `T`'s methods whose receiver is `*T` or `*const T`;
-    /// names starting with `__` become metamethods.
+    /// Like `newUserdata`, defining `T` with `defineUserdata` on first use. With an explicit
+    /// `metatable`, installs `T`'s methods on it instead.
     pub fn newUserdataAuto(self: *State, comptime T: type, value: T, options: UserdataOptions(T)) !Userdata(T) {
+        if (options.metatable == null) {
+            if (!userdata_mod.isDefined(self, T)) try userdata_mod.define(self, T, .{});
+            return self.newUserdata(T, value, options);
+        }
         var userdata = try self.newUserdata(T, value, options);
         errdefer userdata.deinit();
         try userdata.bindMethods(T);
@@ -330,6 +392,10 @@ pub const State = struct {
 
     /// Like `newUserdataPtr`, also installing `T`'s methods as in `newUserdataAuto`.
     pub fn newUserdataPtrAuto(self: *State, comptime T: type, ptr: *T, options: UserdataPtrOptions(T)) !Userdata(T) {
+        if (options.metatable == null) {
+            if (!userdata_mod.isDefined(self, T)) try userdata_mod.define(self, T, .{});
+            return self.newUserdataPtr(T, ptr, options);
+        }
         var userdata = try self.newUserdataPtr(T, ptr, options);
         errdefer userdata.deinit();
         try userdata.bindMethods(T);
@@ -469,6 +535,13 @@ pub const State = struct {
         return self.allocator().dupe(u8, out.items);
     }
 
+    /// The last Lua error's message for `error.LuaError`, otherwise the name of `err`; the caller
+    /// frees the result with `allocator()`.
+    pub fn describeError(self: *State, err: anyerror) ![]const u8 {
+        if (err == error.LuaError) return self.errorMessage();
+        return self.allocator().dupe(u8, @errorName(err));
+    }
+
     /// Takes ownership of the last Lua error value; the caller must `deinit` it.
     pub fn takeErrorValue(self: *State) ?ErrorRef {
         const index = self.last_error_root orelse return null;
@@ -517,7 +590,7 @@ pub const State = struct {
 // Called after embedding writes have installed all temporary values in roots.
 pub fn gcBoundary(state: *State) !void {
     if (state.raw_state.gc.running and state.raw_state.gc.shouldRunAuto()) {
-        _ = try state.raw_state.gc.runSteps(1);
+        try state.raw_state.gc.autoStep(state.raw_state.current_thread);
     }
 }
 
@@ -551,11 +624,11 @@ comptime {
     @setEvalBranchQuota(1000000);
     snapshot_runtime.review(State, .{
         .external = "base_allocator memory_limit_allocator baseline immutable_owner rollback_metadata",
-        .rebuilt = "generation last_error_root last_error_traceback",
-        .copied = "raw_state memory_files memory_file_owned_contents callbacks",
+        .rebuilt = "generation last_error_root last_error_traceback scoped_roots handle_scope_start open_handle_scopes",
+        .copied = "raw_state memory_files memory_file_owned_contents callbacks host_data",
     });
     snapshot_runtime.review(runtime.StateOptions, .{
-        .copied = "stdlib stdin stdout_flush stderr_flush capture_output warnings max_file_bytes max_memory max_stack_values max_call_frames max_instructions debug_errors trace_vm",
+        .copied = "stdlib stdin stdout_flush stderr_flush capture_output warnings max_file_bytes max_memory max_stack_values max_call_frames max_instructions max_native_stack max_finalizer_instructions max_output_bytes binary_chunks debug_errors trace_vm",
         .external = "io stdout stderr stdin_reader warning_handler filesystem environment clock process",
     });
 }

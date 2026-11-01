@@ -24,6 +24,10 @@ pub fn read(state: *State, thread: *Thread, op: bytecode.Call) !void {
     try state.returnValues(thread, op.base, op.return_count, &.{sink.root});
 }
 
+fn emitFloatText(encoder: anytype, value: f64) anyerror!void {
+    try encoder.emitFloat(zerde_lua.FloatText{ .value = value });
+}
+
 pub fn write(state: *State, thread: *Thread, op: bytecode.Call) !void {
     if (op.arg_count == 0) return state.failArgumentMessage("toml.write", 1, "value expected");
 
@@ -33,7 +37,7 @@ pub fn write(state: *State, thread: *Thread, op: bytecode.Call) !void {
     errdefer out.deinit();
     var encoder = zerde.toml.encoderWithOptions(state.allocator, &out.writer, options);
     defer encoder.deinit();
-    var source = zerde_lua.source(state, &encoder, "toml.write");
+    var source = zerde_lua.sourceWithFloats(state, &encoder, "toml.write", emitFloatText);
     defer source.deinit();
 
     source.emit(value) catch |err| return failTomlError(state, "toml.write", err);
@@ -73,8 +77,8 @@ fn writeOptions(state: *State, thread: *Thread, op: bytecode.Call) !zerde.toml.W
 }
 
 fn failTomlError(state: *State, operation: []const u8, err: anyerror) !void {
-    if (err == error.OutOfMemory) return err;
-    if (err == error.RuntimeError or err == error.StackOverflow or err == error.UnsupportedOpcode) return err;
+    if (err == error.OutOfMemory or err == error.WriteFailed) return error.OutOfMemory;
+    if (err == error.RuntimeError or err == error.StackOverflow or err == error.UnsupportedOpcode or err == error.Interrupted) return err;
 
     var message: std.ArrayList(u8) = .empty;
     defer message.deinit(state.allocator);

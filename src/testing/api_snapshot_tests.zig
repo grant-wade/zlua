@@ -234,7 +234,7 @@ test "snapshot preserves suspended coroutine continuations hooks and open upvalu
 }
 
 test "snapshot survives origin and restores modules files iterators streams errors and random state" {
-    var lua = try api.State.init(a, .{ .stdlib = .full, .capabilities = .{ .io = .{ .stdin = "first\nsecond\n" } } });
+    var lua = try api.State.init(a, .{ .stdlib = .full, .debug = .{ .capture_output = true }, .capabilities = .{ .io = .{ .stdin = "first\nsecond\n" } } });
     try lua.addMemoryFile("m.lua", "return {value = 23}");
     try lua.addMemoryFile("data", "abc\ndef\n");
     try lua.doString(
@@ -316,7 +316,7 @@ const Payload = struct {
     finalizers: *usize,
     disposals: *usize,
     fail: *bool,
-    fn finalize(self: *Payload) void {
+    fn finalize(self: *Payload, _: std.mem.Allocator) void {
         self.finalizers.* += 1;
     }
     fn copy(allocator: std.mem.Allocator, self: *const Payload) !*Payload {
@@ -783,7 +783,7 @@ test "snapshot using the state allocator retains its accounting infrastructure" 
 }
 
 test "shared bytecode newState agrees with independent graph copy" {
-    var source = try api.State.init(a, .{ .stdlib = .full });
+    var source = try api.State.init(a, .{ .stdlib = .full, .debug = .{ .capture_output = true } });
     defer source.deinit();
     try source.doString(
         \\collectgarbage('stop')
@@ -939,7 +939,7 @@ const ScopedPayload = struct {
         self.disposals.* += 1;
         allocator.destroy(self);
     }
-    fn finalize(self: *@This()) void {
+    fn finalize(self: *@This(), _: std.mem.Allocator) void {
         self.finals.* += 1;
         self.value = -100;
     }
@@ -1120,7 +1120,7 @@ test "scoped borrowed pointers are rejected and active scopes remain GC roots" {
 }
 
 test "incremental reset agrees with graph copy across weak GC and debug vararg writes" {
-    var lua = try api.State.init(a, .{ .stdlib = .full });
+    var lua = try api.State.init(a, .{ .stdlib = .full, .debug = .{ .capture_output = true } });
     defer lua.deinit();
     try lua.doString(
         \\collectgarbage('stop'); weak=setmetatable({}, {__mode='kv'})
@@ -1215,7 +1215,7 @@ const ConcurrentPayload = struct {
     counters: *ConcurrentCounters,
     value: usize = 17,
 
-    fn finalize(self: *@This()) void {
+    fn finalize(self: *@This(), _: std.mem.Allocator) void {
         _ = self.counters.finals.fetchAdd(1, .monotonic);
     }
 
@@ -1385,8 +1385,8 @@ test "simultaneous final hookless payload releases finalize dispose and destroy 
         }
     };
     const Worker = struct {
-        fn finalize(ptr: *anyopaque, _: ?*const anyopaque) void {
-            ConcurrentPayload.finalize(@ptrCast(@alignCast(ptr)));
+        fn finalize(ptr: *anyopaque, _: ?*const anyopaque, allocator: std.mem.Allocator) void {
+            ConcurrentPayload.finalize(@ptrCast(@alignCast(ptr)), allocator);
         }
         fn dispose(allocator: std.mem.Allocator, ptr: *anyopaque) void {
             ConcurrentPayload.dispose(allocator, @ptrCast(@alignCast(ptr)));
@@ -1446,7 +1446,7 @@ test "snapshot and reset preserve suspended userdata pairs normalization and clo
     try lua.setGlobal("userdata", userdata);
     try lua.doString(
         \\closed = 0
-        \\getmetatable(userdata).__pairs = function(self)
+        \\debug.getmetatable(userdata).__pairs = function(self)
         \\  local closer <close> = setmetatable({}, {__close = function() closed = closed + 1 end})
         \\  local value = coroutine.yield('setup')
         \\  assert(self == userdata)
@@ -1607,7 +1607,7 @@ test "snapshot preserves pending userdata finalizers without running them" {
     var lua = try api.State.init(a, .{ .gc = .{ .running = false, .mode = .incremental } });
     defer lua.deinit();
     const finalizer = struct {
-        fn run(ptr: *anyopaque, _: ?*const anyopaque) void {
+        fn run(ptr: *anyopaque, _: ?*const anyopaque, _: std.mem.Allocator) void {
             const counter: *usize = @ptrCast(@alignCast(ptr));
             counter.* += 1;
         }
@@ -1886,4 +1886,42 @@ test "api snapshot graph rollback and newState" {
     try another.doString("assert(get() == 4); assert(inc() == 5)", .{});
     try lua.reset();
     try lua.doString("assert(get() == 4)", .{});
+}
+
+test "a nil last error stays out of root slots across capture and reset" {
+    var lua = try api.State.init(a, .{});
+    defer lua.deinit();
+    try std.testing.expectError(error.LuaError, lua.doString("error(nil)", .{}));
+    var snapshot = try lua.snapshot(a);
+    defer snapshot.deinit();
+    var worker = try snapshot.newState(a);
+    defer worker.deinit();
+    for ([_]*api.State{ &lua, &worker }) |state| {
+        try state.reset();
+        var table = try state.createTable(.{});
+        defer table.deinit();
+        try table.set("x", 1);
+        try std.testing.expectError(error.LuaError, state.doString("error('next')", .{}));
+        try std.testing.expectEqual(@as(i64, 1), try table.get("x", i64));
+    }
+}
+
+test "reset frees a time zone loaded after the baseline" {
+    var lua = try api.State.init(a, .{
+        .stdlib = .full,
+        .capabilities = .{ .io = .{ .runtime = std.testing.io }, .clock = .system },
+    });
+    defer lua.deinit();
+    var snapshot = try lua.snapshot(a);
+    defer snapshot.deinit();
+    var worker = try snapshot.newState(a);
+    defer worker.deinit();
+    for ([_]*api.State{ &lua, &worker }) |state| {
+        for (0..2) |_| {
+            try state.doString("assert(os.date('%H'))", .{});
+            try state.reset();
+            try std.testing.expect(state.raw_state.local_zone == null);
+        }
+        try state.doString("assert(os.date('%H'))", .{});
+    }
 }

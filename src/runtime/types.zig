@@ -119,7 +119,7 @@ pub const String = extern struct {
     }
 };
 
-pub const UserdataFinalizer = *const fn (*anyopaque, ?*const anyopaque) void;
+pub const UserdataFinalizer = *const fn (*anyopaque, ?*const anyopaque, std.mem.Allocator) void;
 pub const UserdataDeinit = *const fn (std.mem.Allocator, *anyopaque) void;
 
 /// Keeps allocator infrastructure alive while shared userdata outlives its State.
@@ -149,6 +149,8 @@ pub const UserdataPayload = struct {
     ptr: *anyopaque,
     /// Inline storage owned by this payload; nested storage is accounted by the host allocator.
     managed_bytes: usize = 0,
+    /// Host storage the payload keeps alive, reported to the collector.
+    external_bytes: usize = 0,
     finalizer: ?UserdataFinalizer,
     finalizer_data: ?*const anyopaque,
     dispose: ?UserdataDeinit,
@@ -172,7 +174,7 @@ pub const UserdataPayload = struct {
     fn finalizeOwned(self: *UserdataPayload) void {
         if (self.finalized) return;
         self.finalized = true;
-        if (self.finalizer) |f| f(self.ptr, self.finalizer_data);
+        if (self.finalizer) |f| f(self.ptr, self.finalizer_data, self.allocator);
     }
 
     pub fn release(self: *UserdataPayload, discard: bool) void {
@@ -637,6 +639,7 @@ pub const Table = struct {
     fn growHash(self: *Table, allocator: std.mem.Allocator, count: usize) !void {
         const part = try TableHashPart.create(allocator, try TableHashPart.capacityFor(count));
         if (self.hash) |old| {
+            part.salt = old.salt;
             for (old.entries()) |entry| part.appendAssumeCapacity(entry.key, entry.value);
             old.destroy(allocator);
         }
@@ -887,6 +890,8 @@ pub const Userdata = struct {
     finalizer_data: ?*const anyopaque = null,
     deinit_fn: ?UserdataDeinit = null,
     finalized: bool = false,
+    /// An auto-bound `__gc` ran; typed access to the payload now fails.
+    closed: bool = false,
     finalization_pending: bool = false,
     finalizer_next: ?*Userdata = null,
     /// Registered for its metatable's `__gc`, like `Table.finalizer_registered`.
@@ -1068,10 +1073,19 @@ pub const Thread = struct {
 
     pub fn ensureStack(self: *Thread, allocator: std.mem.Allocator, size: usize, limit: usize) !void {
         if (size > limit) return error.StackOverflow;
+        if (stress_stack_moves and self.stack.items.len <= stress_stack_limit) try self.moveStack(allocator);
         const old_len = self.stack.items.len;
         if (size <= old_len) return;
         try self.stack.resize(allocator, size);
         @memset(self.stack.items[old_len..], .nil);
+    }
+
+    fn moveStack(self: *Thread, allocator: std.mem.Allocator) !void {
+        var moved = try std.ArrayList(Value).initCapacity(allocator, self.stack.items.len);
+        moved.appendSliceAssumeCapacity(self.stack.items);
+        @memset(std.mem.sliceAsBytes(self.stack.allocatedSlice()), 0xaa);
+        self.stack.deinit(allocator);
+        self.stack = moved;
     }
 
     /// Register, relative to the top frame, for calls the runtime makes itself: above
@@ -1084,6 +1098,10 @@ pub const Thread = struct {
         return @max(registers, call.base + 1 + call.arg_count);
     }
 };
+
+/// Test switch: every `ensureStack` moves the stack and poisons the old block.
+pub var stress_stack_moves: bool = false;
+const stress_stack_limit = 4096;
 
 pub const ThreadStatus = enum {
     suspended,

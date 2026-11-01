@@ -9,6 +9,23 @@ const Value = api.Value;
 
 const memory_limit_error_message = "memory limit exceeded";
 
+fn expectProtectedErrorContains(lua: *State, function: Function, needle: []const u8) !void {
+    const result = try function.protectedCall(.{}, void);
+    switch (result) {
+        .ok => return error.TestExpectedLuaError,
+        .lua_error => |err_ref| {
+            var err = err_ref;
+            defer err.deinit();
+            const message = try err.message();
+            defer lua.allocator().free(message);
+            if (std.mem.indexOf(u8, message, needle) == null) {
+                std.debug.print("expected \"{s}\" in \"{s}\"\n", .{ needle, message });
+                return error.TestUnexpectedMessage;
+            }
+        },
+    }
+}
+
 test "api host callbacks read arguments and return multiple values" {
     const Callbacks = struct {
         fn add(ctx: *Context) !void {
@@ -489,6 +506,287 @@ test "api callback context io stays null across snapshot states and reset" {
     try worker.doString(expect_no_io, .{ .name = "=worker-reset" });
 }
 
+test "api function handles accept every callable lua value" {
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+
+    var chunk = try lua.loadString(
+        \\return tostring, coroutine.wrap(function() return 1 end), ("a"):gmatch("a"), coroutine.yield
+    , .{});
+    defer chunk.deinit();
+    var values = try chunk.call(.{}, Tuple(&.{ Function, Function, Function, api.Value }));
+    defer values.deinit();
+
+    try std.testing.expectEqualStrings("7", try values.get(0).call(.{@as(i64, 7)}, []const u8));
+    try std.testing.expectEqual(@as(i64, 1), try values.get(1).call(.{}, i64));
+    try std.testing.expectEqualStrings("a", try values.get(2).call(.{}, []const u8));
+    try std.testing.expect(values.get(3) == .function);
+}
+
+test "api value type names match lua" {
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+
+    var chunk = try lua.loadString(
+        \\local names = {}
+        \\for _, v in ipairs(...) do names[#names + 1] = type(v) end
+        \\return names
+    , .{});
+    defer chunk.deinit();
+    var source = try lua.loadString("return {true, 1, 1.5, 's', {}, print, coroutine.create(print)}", .{});
+    defer source.deinit();
+    var list = try source.call(.{}, Table);
+    defer list.deinit();
+    var expected = try chunk.call(.{list}, Table);
+    defer expected.deinit();
+    for (1..8) |index| {
+        var value = try list.rawGet(@as(i64, @intCast(index)), api.Value);
+        defer value.deinit();
+        try std.testing.expectEqualStrings(try expected.rawGet(@as(i64, @intCast(index)), []const u8), value.typeName());
+    }
+}
+
+test "api integer arguments report numbers without an integer representation" {
+    const Host = struct {
+        fn takesInteger(ctx: *Context) !void {
+            try ctx.returnValues(.{try ctx.arg(0, i64)});
+        }
+
+        fn takesOptional(ctx: *Context) !void {
+            try ctx.returnValues(.{try ctx.optionalArg(0, i32)});
+        }
+    };
+
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    var integer = try lua.register("integer", Host.takesInteger);
+    defer integer.deinit();
+    try lua.setGlobal("integer", integer);
+    var optional = try lua.register("optional", Host.takesOptional);
+    defer optional.deinit();
+    try lua.setGlobal("optional", optional);
+
+    var fraction = try lua.loadString("return integer(1.5)", .{});
+    defer fraction.deinit();
+    try expectProtectedErrorContains(&lua, fraction, "bad argument #1 to 'integer' (number has no integer representation)");
+    var optional_fraction = try lua.loadString("return optional(1.5)", .{});
+    defer optional_fraction.deinit();
+    try expectProtectedErrorContains(&lua, optional_fraction, "number has no integer representation");
+    var too_large = try lua.loadString("return integer(2^63)", .{});
+    defer too_large.deinit();
+    try expectProtectedErrorContains(&lua, too_large, "number has no integer representation");
+    var text = try lua.loadString("return integer('x')", .{});
+    defer text.deinit();
+    try expectProtectedErrorContains(&lua, text, "number expected, got string");
+    var whole = try lua.loadString("return integer(2.0)", .{});
+    defer whole.deinit();
+    try std.testing.expectEqual(@as(i64, 2), try whole.call(.{}, i64));
+}
+
+test "api callbacks reach host data through the context and typed parameters" {
+    const Game = struct {
+        gold: i64,
+
+        fn readGold(ctx: *Context) !void {
+            const game = ctx.host(@This()) orelse return ctx.raise("no game");
+            try ctx.returnValues(.{game.gold});
+        }
+
+        fn give(host: api.Host(@This()), amount: i64) i64 {
+            host.ptr.gold += amount;
+            return host.ptr.gold;
+        }
+
+        fn named(ctx: *Context) !void {
+            try ctx.returnValues(.{ctx.functionName()});
+        }
+    };
+    const Other = struct { unused: u8 };
+
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    var game = Game{ .gold = 5 };
+
+    var gold = try lua.register("gold", Game.readGold);
+    defer gold.deinit();
+    try lua.setGlobal("gold", gold);
+    var give = try lua.registerTyped("give", Game.give);
+    defer give.deinit();
+    try lua.setGlobal("give", give);
+    var named = try lua.register("the_name", Game.named);
+    defer named.deinit();
+    try lua.setGlobal("named", named);
+
+    var unset = try lua.loadString("return give(1)", .{});
+    defer unset.deinit();
+    try expectProtectedErrorContains(&lua, unset, "no host");
+
+    try lua.setHost(&game);
+    try std.testing.expect(lua.host(Other) == null);
+    try std.testing.expectEqual(&game, lua.host(Game).?);
+    try lua.doString(
+        \\assert(gold() == 5)
+        \\assert(give(3) == 8)
+        \\assert(give(2) == 10)
+        \\assert(named() == "the_name")
+    , .{});
+    try std.testing.expectEqual(@as(i64, 10), game.gold);
+
+    try lua.clearHost();
+    try std.testing.expect(lua.host(Game) == null);
+}
+
+test "api host data follows snapshots and reset" {
+    const Game = struct {
+        id: i64,
+
+        fn readId(host: api.Host(@This())) i64 {
+            return host.ptr.id;
+        }
+    };
+
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    var original = Game{ .id = 1 };
+    var replacement = Game{ .id = 2 };
+    try lua.setHost(&original);
+    var id = try lua.registerTyped("id", Game.readId);
+    try lua.setGlobal("id", id);
+    id.deinit();
+
+    var snapshot = try lua.snapshot(std.testing.allocator);
+    defer snapshot.deinit();
+    var worker = try snapshot.newState(std.testing.allocator);
+    defer worker.deinit();
+    try worker.doString("assert(id() == 1)", .{});
+    try worker.setHost(&replacement);
+    try worker.doString("assert(id() == 2)", .{});
+    try worker.reset();
+    try worker.doString("assert(id() == 1)", .{});
+    try std.testing.expectEqual(&original, lua.host(Game).?);
+}
+
+test "api raisef prefixes the lua position and argError names the argument" {
+    const Host = struct {
+        fn fail(ctx: *Context) !void {
+            return ctx.raisef("bad value {d}", .{try ctx.arg(0, i64)});
+        }
+
+        fn badArgument(ctx: *Context) !void {
+            return ctx.argError(1, "not a color");
+        }
+    };
+
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    var fail = try lua.register("fail", Host.fail);
+    defer fail.deinit();
+    try lua.setGlobal("fail", fail);
+    var bad = try lua.register("bad", Host.badArgument);
+    defer bad.deinit();
+    try lua.setGlobal("bad", bad);
+
+    var chunk = try lua.loadString("\nfail(7)", .{ .name = "@scripts/thing.lua" });
+    defer chunk.deinit();
+    try expectProtectedErrorContains(&lua, chunk, "scripts/thing.lua:2: bad value 7");
+
+    var long = try lua.loadString("fail(1)", .{ .name = "@a/long/directory/path/that/does/not/fit/in/a/chunk/id/at/all/end.lua" });
+    defer long.deinit();
+    try expectProtectedErrorContains(&lua, long, "...");
+    try expectProtectedErrorContains(&lua, long, "end.lua:1: bad value 1");
+
+    const direct = try fail.protectedCall(.{@as(i64, 3)}, void);
+    switch (direct) {
+        .ok => return error.TestExpectedLuaError,
+        .lua_error => |failure| {
+            var err = failure;
+            defer err.deinit();
+            const message = try err.message();
+            defer lua.allocator().free(message);
+            try std.testing.expectEqualStrings("bad value 3", message);
+        },
+    }
+
+    var argument = try lua.loadString("bad(1, 2)", .{});
+    defer argument.deinit();
+    try expectProtectedErrorContains(&lua, argument, "bad argument #2 to 'bad' (not a color)");
+}
+
+test "api caller walks the lua functions of a coroutine" {
+    const Host = struct {
+        var sources: [3][64]u8 = undefined;
+        var lines: [3]?usize = undefined;
+        var count: usize = 0;
+
+        fn record(ctx: *Context) !void {
+            count = 0;
+            while (ctx.caller(count)) |at| : (count += 1) {
+                if (count == sources.len) return error.TestTooManyCallers;
+                @memcpy(sources[count][0..at.source.len], at.source);
+                sources[count][at.source.len] = 0;
+                lines[count] = at.line;
+            }
+        }
+    };
+
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    var record = try lua.register("record", Host.record);
+    defer record.deinit();
+    try lua.setGlobal("record", record);
+
+    try record.call(.{}, void);
+    try std.testing.expectEqual(@as(usize, 0), Host.count);
+
+    var chunk = try lua.loadString(
+        \\local function inner()
+        \\  record()
+        \\end
+        \\pcall(inner)
+    , .{ .name = "@walk.lua" });
+    defer chunk.deinit();
+    try chunk.call(.{}, void);
+    try std.testing.expectEqual(@as(usize, 2), Host.count);
+    try std.testing.expectEqualStrings("@walk.lua", std.mem.sliceTo(&Host.sources[0], 0));
+    try std.testing.expectEqual(@as(?usize, 2), Host.lines[0]);
+    try std.testing.expectEqual(@as(?usize, 4), Host.lines[1]);
+
+    var in_coroutine = try lua.loadString("\n\nrecord()", .{ .name = "=co" });
+    defer in_coroutine.deinit();
+    var co = try lua.newCoroutine(in_coroutine);
+    defer co.deinit();
+    var resumed = try co.resumeCoroutine(.{}, void, void);
+    resumed.deinit();
+    try std.testing.expectEqual(@as(usize, 1), Host.count);
+    try std.testing.expectEqualStrings("=co", std.mem.sliceTo(&Host.sources[0], 0));
+    try std.testing.expectEqual(@as(?usize, 3), Host.lines[0]);
+
+    const stripped_bytes = try chunk.dumpBytecode(.{ .strip_debug = true });
+    defer lua.allocator().free(stripped_bytes);
+    var stripped = try lua.loadBytecode(stripped_bytes, .{});
+    defer stripped.deinit();
+    try stripped.call(.{}, void);
+    try std.testing.expectEqual(@as(?usize, null), Host.lines[0]);
+}
+
+test "api describeError gives the lua message or the error name" {
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+
+    var chunk = try lua.loadString("return setmetatable({}, { __index = function() error('boom', 0) end })", .{});
+    defer chunk.deinit();
+    var table = try chunk.call(.{}, Table);
+    defer table.deinit();
+    const failure = if (table.get("x", Value)) |_| error.TestExpectedLuaError else |err| err;
+    const message = try lua.describeError(failure);
+    defer lua.allocator().free(message);
+    try std.testing.expectEqualStrings("boom", message);
+
+    const name = try lua.describeError(error.TypeMismatch);
+    defer lua.allocator().free(name);
+    try std.testing.expectEqualStrings("TypeMismatch", name);
+}
+
 const LineCallbacks = struct {
     fn currentLine(ctx: *Context) !void {
         try ctx.returnValues(.{ctx.currentLine()});
@@ -616,7 +914,7 @@ test "api callback context currentLine reports the nearest Lua frame through nes
 }
 
 test "api callback context currentLine is null for stripped functions" {
-    var lua = try State.init(std.testing.allocator, .{});
+    var lua = try State.init(std.testing.allocator, .{ .binary_chunks = true });
     defer lua.deinit();
     try installLineCallbacks(&lua);
     try lua.doString(
@@ -625,4 +923,146 @@ test "api callback context currentLine is null for stripped functions" {
         \\local stripped = load(string.dump(f, true), "stripped", "b")
         \\assert(stripped() == nil)
     , .{ .name = "=line-stripped" });
+}
+
+fn liveRoots(lua: *State) usize {
+    var count: usize = 0;
+    for (lua.raw_state.api_roots.items) |root| {
+        if (root != .nil) count += 1;
+    }
+    return count;
+}
+
+test "api typed callbacks release handle parameters" {
+    const Host = struct {
+        var kept: ?Function = null;
+
+        fn size(table: Table, value: Value, function: ?Function) !i64 {
+            _ = value;
+            _ = function;
+            return table.rawLen();
+        }
+
+        fn same(table: Table) Table {
+            return table;
+        }
+
+        fn keep(ctx: *Context, value: Value) !void {
+            kept = try ctx.state().read(value, Function);
+        }
+    };
+
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    var size = try lua.registerTyped("size", Host.size);
+    defer size.deinit();
+    try lua.setGlobal("size", size);
+    var same = try lua.registerTyped("same", Host.same);
+    defer same.deinit();
+    try lua.setGlobal("same", same);
+    var keep = try lua.registerTyped("keep", Host.keep);
+    defer keep.deinit();
+    try lua.setGlobal("keep", keep);
+
+    const before = liveRoots(&lua);
+    try lua.doString(
+        \\local t = { 1, 2 }
+        \\for _ = 1, 100 do
+        \\  assert(size(t, {}, print) == 2)
+        \\  assert(size(t, "x") == 2)
+        \\  assert(same(t) == t)
+        \\  assert(not pcall(size, t, {}, 1))
+        \\  assert(not pcall(size, 1))
+        \\end
+        \\keep(function() return 7 end)
+    , .{});
+    collectLast: {
+        var kept = Host.kept orelse break :collectLast;
+        defer kept.deinit();
+        try lua.collect();
+        try std.testing.expectEqual(@as(i64, 7), try kept.call(.{}, i64));
+    }
+    Host.kept = null;
+    try std.testing.expectEqual(before, liveRoots(&lua));
+}
+
+test "api handle scopes release handles and keep what they are told to" {
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    const before = liveRoots(&lua);
+
+    var outer = try lua.createTable(.{});
+    defer outer.deinit();
+    const kept = blk: {
+        var scope = lua.handleScope();
+        defer scope.end();
+        var a = try lua.createTable(.{});
+        var dropped = try lua.createTable(.{});
+        dropped.deinit();
+        var reused = try lua.createTable(.{});
+        try reused.rawSet("n", 1);
+        try a.rawSet("reused", reused);
+        var value = try a.rawGet("reused", Value);
+        _ = &value;
+        {
+            var inner = lua.handleScope();
+            defer inner.end();
+            _ = try lua.createTable(.{});
+            _ = try lua.createTable(.{});
+            outer.deinit();
+            outer = try lua.createTable(.{});
+            try std.testing.expectEqual(before + 6, liveRoots(&lua));
+            outer = inner.keep(outer);
+        }
+        try std.testing.expectEqual(before + 4, liveRoots(&lua));
+        break :blk scope.keep(a);
+    };
+    try std.testing.expectEqual(before + 2, liveRoots(&lua));
+    var table = kept;
+    defer table.deinit();
+    var reused = try table.rawGet("reused", Table);
+    defer reused.deinit();
+    try std.testing.expectEqual(@as(i64, 1), try reused.rawGet("n", i64));
+}
+
+test "api handle scopes leave roots outside handles alone" {
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    var t = try lua.createTable(.{});
+    defer t.deinit();
+    try t.rawSet("a", 1);
+    try t.rawSet("b", 2);
+
+    var scope = lua.handleScope();
+    defer scope.end();
+    var freed = try lua.createTable(.{});
+    freed.deinit();
+    var it = try t.rawIterator();
+    defer it.deinit();
+    var count: i64 = 0;
+    while (try it.next()) |_| count += 1;
+    try std.testing.expectEqual(@as(i64, 2), count);
+    for (0..1000) |_| {
+        var loop = try lua.createTable(.{});
+        loop.deinit();
+    }
+    try std.testing.expect(lua.scoped_roots.items.len < 16);
+}
+
+test "api handle scopes end quietly after a reset" {
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    var snapshot = try lua.snapshot(std.testing.allocator);
+    defer snapshot.deinit();
+    {
+        var scope = lua.handleScope();
+        defer scope.end();
+        _ = try lua.createTable(.{});
+        try lua.reset();
+        try std.testing.expectEqual(@as(usize, 0), lua.open_handle_scopes);
+    }
+    var scope = lua.handleScope();
+    defer scope.end();
+    _ = try lua.createTable(.{});
+    try std.testing.expectEqual(@as(usize, 1), lua.scoped_roots.items.len);
 }

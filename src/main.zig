@@ -185,7 +185,7 @@ fn closeState(state: *zlua.runtime.State) ?u8 {
         return null;
     }
     state.exit_request = null;
-    state.gc.runCloseFinalizers();
+    state.gc.runCloseFinalizers(.stop);
     const finalizer_exit: ?u8 = if (state.exit_request != null) exitCode(state) else null;
     state.deinitWithoutFinalizers();
     return finalizer_exit;

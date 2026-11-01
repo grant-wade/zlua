@@ -32,6 +32,10 @@ pub fn load(state: *State, thread: *Thread, op: bytecode.Call) !void {
     else
         null;
     if (looksLikeBinaryChunk(source)) {
+        if (!state.options.binary_chunks) {
+            try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .string = try state.strings.intern("binary chunks are disabled") } });
+            return;
+        }
         const environment = loadEnvironment(state, thread, op);
         const closure = load_mod.loadBinaryDump(state, source, environment) catch {
             const error_value = state.currentErrorValue();
@@ -43,7 +47,8 @@ pub fn load(state: *State, thread: *Thread, op: bytecode.Call) !void {
         return;
     }
 
-    const closure = load_mod.loadSourceAsClosureNamedEnv(state, source, source_name, loadEnvironment(state, thread, op)) catch {
+    const closure = load_mod.loadSourceAsClosureNamedEnv(state, source, source_name, loadEnvironment(state, thread, op)) catch |err| {
+        if (err == error.Interrupted or state.budget.isStopping()) return err;
         const error_value = state.currentErrorValue();
         const message = if (error_value == .string) error_value else Value{ .string = try state.strings.intern("cannot load source") };
         try state.returnValues(thread, op.base, op.return_count, &.{ .nil, message });
@@ -136,13 +141,14 @@ pub fn tonumber(state: *State, thread: *Thread, op: bytecode.Call) !void {
     if (op.arg_count == 0) return state.failArgumentMessage("tonumber", 1, "value expected");
 
     const value = runtime.argValue(state, thread, op, 0);
+    state.budget.noteLongString(value);
     if (op.arg_count >= 2 and runtime.argValue(state, thread, op, 1) != .nil) {
-        const base = runtime.toInteger(runtime.argValue(state, thread, op, 1)) orelse return state.failArgumentMessage("tonumber", 2, "base out of range");
-        if (base < 2 or base > 36) return state.failArgumentMessage("tonumber", 2, "base out of range");
+        const base = try state.argumentInteger(thread, op, "tonumber", 1);
         const string = switch (value) {
             .string => |string| string.bytes(),
             else => return state.failArgumentType("tonumber", 1, "string", value),
         };
+        if (base < 2 or base > 36) return state.failArgumentMessage("tonumber", 2, "base out of range");
         const parsed = parseIntegerBase(runtime.trimAscii(string), @intCast(base)) orelse Value.nil;
         try state.returnValues(thread, op.base, op.return_count, &.{parsed});
         return;
@@ -193,9 +199,9 @@ fn parseIntegerBase(text: []const u8, base: u8) ?Value {
     while (index < text.len) : (index += 1) {
         const digit = digitValue(text[index]) orelse return null;
         if (digit >= base) return null;
-        value = value * base + digit;
+        value = value *% base +% digit;
     }
-    return .{ .integer = value * sign };
+    return .{ .integer = value *% sign };
 }
 
 fn digitValue(byte: u8) ?i64 {

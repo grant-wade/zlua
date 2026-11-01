@@ -19,9 +19,11 @@ pub fn UserdataOptions(comptime T: type) type {
     return struct {
         /// Shared metatable used instead of allocating one; install methods before sharing it.
         metatable: ?Table = null,
-        /// Runs before Lua-owned storage is destroyed.
-        finalizer: ?*const fn (*T) void = null,
+        /// Runs before Lua-owned storage is destroyed, with the state's allocator.
+        finalizer: ?*const fn (*T, std.mem.Allocator) void = null,
         snapshot: ?UserdataSnapshotHooks(T) = null,
+        /// Host storage the payload keeps alive, reported to the collector.
+        external_bytes: usize = 0,
     };
 }
 
@@ -29,11 +31,24 @@ pub fn UserdataPtrOptions(comptime T: type) type {
     return struct {
         /// Shared metatable used instead of allocating one.
         metatable: ?Table = null,
-        /// Runs when the Lua userdata wrapper is finalized.
-        finalizer: ?*const fn (*T) void = null,
+        /// Runs when the Lua userdata wrapper is finalized, with the state's allocator.
+        finalizer: ?*const fn (*T, std.mem.Allocator) void = null,
         snapshot: ?UserdataSnapshotHooks(T) = null,
+        /// Host storage the payload keeps alive, reported to the collector.
+        external_bytes: usize = 0,
     };
 }
+
+/// Options for `State.defineUserdata`.
+pub const UserdataType = struct {
+    /// Name for `__name` and argument errors; the Zig type name by default.
+    name: ?[]const u8 = null,
+    /// Struct whose public functions with a `*T` or `*const T` receiver become methods; `T` by
+    /// default. Names starting with `__` become metamethods.
+    methods: ?type = null,
+    /// Lets `getmetatable` return the metatable instead of false.
+    expose_metatable: bool = false,
+};
 
 /// Snapshot copy/dispose hooks for userdata payloads. Copies must own all nested storage and
 /// must not retain VM pointers or reenter snapshot operations. Hooks must be thread-safe:
@@ -65,10 +80,18 @@ pub fn Userdata(comptime T: type) type {
             return payloadPtr(T, try self.rawUserdata());
         }
 
+        /// Reports host storage the payload keeps alive to the collector, replacing the previous
+        /// amount. It does not count against `Limits.max_memory`.
+        pub fn setExternalBytes(self: @This(), bytes: usize) !void {
+            reportExternalBytes(self.ref.state, try self.rawUserdata(), bytes);
+            try state_mod.gcBoundary(self.ref.state);
+        }
+
         /// Scoped read-only access; the payload and nested pointers must not escape or be mutated.
         pub fn withRead(self: @This(), context: anytype, comptime callback: anytype) !ScopeResult(@TypeOf(callback)) {
             comptime checkScopeResult(ScopeResult(@TypeOf(callback)));
             const raw = try self.rawUserdata();
+            if (raw.closed) return error.UserdataClosed;
             var scope: runtime_types.UserdataScope = undefined;
             try beginScope(&self.ref.state.raw_state, &scope, raw, true);
             defer endScope(&self.ref.state.raw_state, &scope);
@@ -80,6 +103,7 @@ pub fn Userdata(comptime T: type) type {
         pub fn withMut(self: @This(), context: anytype, comptime callback: anytype) !ScopeResult(@TypeOf(callback)) {
             comptime checkScopeResult(ScopeResult(@TypeOf(callback)));
             const raw = try self.rawUserdata();
+            if (raw.closed) return error.UserdataClosed;
             var scope: runtime_types.UserdataScope = undefined;
             try beginScope(&self.ref.state.raw_state, &scope, raw, false);
             defer endScope(&self.ref.state.raw_state, &scope);
@@ -138,12 +162,16 @@ pub fn Userdata(comptime T: type) type {
                 fn call(ctx: *Context) !void {
                     try callbacks.callUserdataMethod(T, function, ctx);
                 }
+
+                fn callFinalizer(ctx: *Context) !void {
+                    try callbacks.callUserdataFinalizer(T, function, ctx);
+                }
             };
 
             const callback_name = try std.fmt.allocPrint(self.ref.state.allocator(), "{s}.{s}", .{ @typeName(T), name });
             defer self.ref.state.allocator().free(callback_name);
 
-            var metamethod_function = try callbacks.create(self.ref.state, callback_name, Wrapper.call);
+            var metamethod_function = try callbacks.create(self.ref.state, callback_name, if (std.mem.eql(u8, name, "__gc")) Wrapper.callFinalizer else Wrapper.call);
             defer metamethod_function.deinit();
 
             const metatable = try self.metatableValue();
@@ -154,8 +182,9 @@ pub fn Userdata(comptime T: type) type {
         fn initMetatable(self: @This()) !void {
             const raw = try self.rawUserdata();
             if (raw.metatable != null) return;
-            const metatable = self.ref.state.raw_state.newTableWithHints(0, 3) catch |err| return errors.captureLuaError(self.ref.state, err);
+            const metatable = self.ref.state.raw_state.newTableWithHints(0, 4) catch |err| return errors.captureLuaError(self.ref.state, err);
             const index = self.ref.state.raw_state.newTableWithHints(0, 4) catch |err| return errors.captureLuaError(self.ref.state, err);
+            try self.ref.state.raw_state.setTableRaw(metatable.table, .{ .string = try self.ref.state.raw_state.strings.intern("__metatable") }, .{ .boolean = false });
             try self.ref.state.raw_state.setTableRaw(metatable.table, .{ .string = try self.ref.state.raw_state.strings.intern("__name") }, .{ .string = try self.ref.state.raw_state.strings.intern(@typeName(T)) });
             try self.ref.state.raw_state.setTableRaw(metatable.table, .{ .string = try self.ref.state.raw_state.strings.intern("__index") }, index);
             rollback_runtime.touch(raw);
@@ -198,8 +227,70 @@ pub const AnyUserdata = struct {
     }
 };
 
+pub fn define(state: *State, comptime T: type, comptime options: UserdataType) !void {
+    if (definedMetatable(state, T) != null) return error.UserdataTypeDefined;
+    const raw = &state.raw_state;
+    const name = options.name orelse @typeName(T);
+    const metatable = raw.newTableWithHints(0, 4) catch |err| return errors.captureLuaError(state, err);
+    const index = raw.newTableWithHints(0, 4) catch |err| return errors.captureLuaError(state, err);
+    if (!options.expose_metatable) try raw.setTableRaw(metatable.table, .{ .string = try raw.strings.intern("__metatable") }, .{ .boolean = false });
+    try raw.setTableRaw(metatable.table, .{ .string = try raw.strings.intern("__name") }, .{ .string = try raw.strings.intern(name) });
+    try raw.setTableRaw(metatable.table, .{ .string = try raw.strings.intern("__index") }, index);
+    const types = raw.library_tables.get(.userdata_types) orelse blk: {
+        const created = raw.newTableWithHints(0, 4) catch |err| return errors.captureLuaError(state, err);
+        raw.library_tables.set(.userdata_types, created.table);
+        break :blk created.table;
+    };
+    try raw.setTableRaw(types, typeKey(T), metatable);
+
+    const Source = options.methods orelse T;
+    if (@typeInfo(Source) != .@"struct") @compileError("userdata methods must come from a struct type");
+    inline for (reflection.declarationNames(Source)) |decl| {
+        const member = @field(Source, decl);
+        if (comptime isMethod(T, @TypeOf(member))) {
+            const Wrapper = struct {
+                fn call(ctx: *Context) !void {
+                    if (comptime std.mem.eql(u8, decl, "__gc")) return callbacks.callUserdataFinalizer(T, member, ctx);
+                    try callbacks.callUserdataMethod(T, member, ctx);
+                }
+            };
+            const callback_name = try std.fmt.allocPrint(state.allocator(), "{s}.{s}", .{ name, decl });
+            defer state.allocator().free(callback_name);
+            var function = try callbacks.create(state, callback_name, Wrapper.call);
+            defer function.deinit();
+            const target = if (comptime isMetamethodName(decl)) metatable else index;
+            try index_mod.setTableValue(raw, target, .{ .string = try raw.strings.intern(decl) }, try handle.rawValue(function.ref));
+        }
+    }
+}
+
+pub fn isDefined(state: *State, comptime T: type) bool {
+    return definedMetatable(state, T) != null;
+}
+
+/// The `__name` of `T` when it has been defined, borrowed from the VM.
+pub fn definedName(state: *State, comptime T: type) ?[]const u8 {
+    const metatable = definedMetatable(state, T) orelse return null;
+    return switch (metatable.getLiteral("__name")) {
+        .string => |name| name.bytes(),
+        else => null,
+    };
+}
+
+fn definedMetatable(state: *State, comptime T: type) ?*runtime.Table {
+    const types = state.raw_state.library_tables.get(.userdata_types) orelse return null;
+    return switch (types.get(typeKey(T))) {
+        .table => |metatable| metatable,
+        else => null,
+    };
+}
+
+fn typeKey(comptime T: type) runtime.Value {
+    return .{ .integer = @bitCast(@as(u64, typeId(T))) };
+}
+
 pub fn create(state: *State, comptime T: type, value: T, options: UserdataOptions(T)) !Userdata(T) {
-    const metatable = try sharedMetatable(state, options.metatable);
+    const metatable = try sharedMetatable(state, options.metatable) orelse definedMetatable(state, T);
     const ptr = try state.allocator().create(T);
     ptr.* = value;
     const raw = state.raw_state.newUserdata(ptr, typeId(T), @typeName(T), null, null, userdataDestroy(T)) catch |err| {
@@ -216,13 +307,14 @@ pub fn create(state: *State, comptime T: type, value: T, options: UserdataOption
     raw.userdata.payload.?.finalizer = raw.userdata.finalizer;
     raw.userdata.payload.?.finalizer_data = raw.userdata.finalizer_data;
     setSnapshotHooks(T, raw.userdata, options.snapshot);
+    reportExternalBytes(state, raw.userdata, options.external_bytes);
     try state_mod.gcBoundary(state);
     return userdata;
 }
 
 pub fn wrapPtr(state: *State, comptime T: type, ptr: *T, options: UserdataPtrOptions(T)) !Userdata(T) {
     if (options.snapshot) |hooks| if (hooks.tracking == .scoped) return error.ScopedAccessRequiresOwnedUserdata;
-    const metatable = try sharedMetatable(state, options.metatable);
+    const metatable = try sharedMetatable(state, options.metatable) orelse definedMetatable(state, T);
     const raw = try state.raw_state.newUserdata(ptr, typeId(T), @typeName(T), null, null, null);
     var userdata = try convert.fromRuntimeValue(state, raw, Userdata(T));
     errdefer userdata.deinit();
@@ -232,8 +324,17 @@ pub fn wrapPtr(state: *State, comptime T: type, ptr: *T, options: UserdataPtrOpt
     raw.userdata.payload.?.finalizer = raw.userdata.finalizer;
     raw.userdata.payload.?.finalizer_data = raw.userdata.finalizer_data;
     setSnapshotHooks(T, raw.userdata, options.snapshot);
+    reportExternalBytes(state, raw.userdata, options.external_bytes);
     try state_mod.gcBoundary(state);
     return userdata;
+}
+
+fn reportExternalBytes(state: *State, raw: *runtime.Userdata, bytes: usize) void {
+    const payload = raw.payload orelse return;
+    rollback_runtime.touch(raw);
+    state.raw_state.gc.noteAllocationFreed(payload.external_bytes);
+    state.raw_state.gc.noteAllocation(bytes);
+    payload.external_bytes = bytes;
 }
 
 fn sharedMetatable(state: *State, metatable: ?Table) !?*runtime.Table {
@@ -325,21 +426,22 @@ fn setSnapshotHooks(comptime T: type, raw: *runtime.Userdata, hooks: ?UserdataSn
 
 pub fn payloadPtr(comptime T: type, raw: *runtime.Userdata) !*T {
     if (raw.type_id != typeId(T)) return error.TypeMismatch;
+    if (raw.closed) return error.UserdataClosed;
     if (raw.payload) |p| if (p.snapshot_tracking == .scoped) return error.ScopedAccessRequired;
     return @ptrCast(@alignCast(raw.ptr));
 }
 
-fn userdataFinalizer(comptime T: type, finalizer: ?*const fn (*T) void) ?runtime.UserdataFinalizer {
+fn userdataFinalizer(comptime T: type, finalizer: ?*const fn (*T, std.mem.Allocator) void) ?runtime.UserdataFinalizer {
     if (finalizer == null) return null;
     return struct {
-        fn call(ptr: *anyopaque, data: ?*const anyopaque) void {
-            const typed_finalizer: *const fn (*T) void = @ptrCast(@alignCast(data.?));
-            typed_finalizer(@ptrCast(@alignCast(ptr)));
+        fn call(ptr: *anyopaque, data: ?*const anyopaque, allocator: std.mem.Allocator) void {
+            const typed_finalizer: *const fn (*T, std.mem.Allocator) void = @ptrCast(@alignCast(data.?));
+            typed_finalizer(@ptrCast(@alignCast(ptr)), allocator);
         }
     }.call;
 }
 
-fn userdataFinalizerData(comptime T: type, finalizer: ?*const fn (*T) void) ?*const anyopaque {
+fn userdataFinalizerData(comptime T: type, finalizer: ?*const fn (*T, std.mem.Allocator) void) ?*const anyopaque {
     return if (finalizer) |active| @ptrCast(active) else null;
 }
 
@@ -349,6 +451,16 @@ fn userdataDestroy(comptime T: type) runtime.UserdataDeinit {
             allocator.destroy(@as(*T, @ptrCast(@alignCast(ptr))));
         }
     }.destroy;
+}
+
+/// The payload type of a typed userdata argument `T`, or null for any other type.
+pub fn PayloadOf(comptime T: type) ?type {
+    if (comptime isHandle(T)) return T.ValueType;
+    return switch (@typeInfo(T)) {
+        .optional => |optional| PayloadOf(optional.child),
+        .pointer => |pointer| if (pointer.size == .one and @typeInfo(pointer.child) == .@"struct") pointer.child else null,
+        else => null,
+    };
 }
 
 pub fn isHandle(comptime T: type) bool {

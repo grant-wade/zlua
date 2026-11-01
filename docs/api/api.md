@@ -3,7 +3,7 @@
 ## Navigation
 
 - [API Index](README.md)
-- Submodules: [api.callbacks](api/callbacks.md), [api.convert](api/convert.md), [api.errors](api/errors.md), [api.handle](api/handle.md), [api.state](api/state.md), [api.capabilities](api/capabilities.md), [api.options](api/options.md), [api.function](api/function.md), [api.table](api/table.md), [api.value](api/value.md), [api.userdata](api/userdata.md), [api.context](api/context.md), [api.coroutine](api/coroutine.md), [api.snapshot](api/snapshot.md), [api.memory_limit](api/memory_limit.md)
+- Submodules: [api.analyze](api/analyze.md), [api.callbacks](api/callbacks.md), [api.convert](api/convert.md), [api.errors](api/errors.md), [api.handle](api/handle.md), [api.state](api/state.md), [api.capabilities](api/capabilities.md), [api.options](api/options.md), [api.function](api/function.md), [api.table](api/table.md), [api.value](api/value.md), [api.userdata](api/userdata.md), [api.context](api/context.md), [api.decode](api/decode.md), [api.coroutine](api/coroutine.md), [api.snapshot](api/snapshot.md), [api.memory_limit](api/memory_limit.md)
 
 <details>
 <summary>All documents</summary>
@@ -15,6 +15,7 @@
 - [frontend.token](frontend/token.md)
 - [frontend.diagnostic](frontend/diagnostic.md)
 - [frontend.lexer](frontend/lexer.md)
+- [stack_guard](stack_guard.md)
 - [frontend.ast](frontend/ast.md)
 - [frontend.parser](frontend/parser.md)
 - [compile](compile.md)
@@ -29,26 +30,27 @@
 - [stdlib](stdlib.md)
 - [stdlib.base](stdlib/base.md)
 - [runtime.call](runtime/call.md)
-- [stdlib.static_strings](stdlib/static_strings.md)
-- [runtime.table_index](runtime/table_index.md)
+- [runtime.budget](runtime/budget.md)
+- [runtime.failure](runtime/failure.md)
+- [runtime.debug](runtime/debug.md)
+- [runtime.io](runtime/io.md)
+- [runtime.host](runtime/host.md)
 - [runtime.value](runtime/value.md)
 - [runtime.number_format](runtime/number_format.md)
-- [runtime.coroutine](runtime/coroutine.md)
-- [runtime.debug](runtime/debug.md)
+- [stdlib.static_strings](stdlib/static_strings.md)
+- [runtime.table_index](runtime/table_index.md)
 - [runtime.metatable](runtime/metatable.md)
 - [runtime.rollback](runtime/rollback.md)
 - [runtime.strings](runtime/strings.md)
 - [runtime.operators](runtime/operators.md)
-- [runtime.failure](runtime/failure.md)
-- [runtime.io](runtime/io.md)
-- [runtime.host](runtime/host.md)
-- [runtime.load](runtime/load.md)
 - [runtime.vm](runtime/vm.md)
 - [runtime.gc](runtime/gc.md)
 - [runtime.entry](runtime/entry.md)
+- [runtime.coroutine](runtime/coroutine.md)
+- [runtime.load](runtime/load.md)
+- [runtime.upvalue](runtime/upvalue.md)
 - [runtime.system](runtime/system.md)
 - [runtime.timezone](runtime/timezone.md)
-- [runtime.upvalue](runtime/upvalue.md)
 - [runtime.index](runtime/index.md)
 - [stdlib.table](stdlib/table.md)
 - [stdlib.string](stdlib/string.md)
@@ -68,7 +70,6 @@
 - [stdlib.msgpack](stdlib/msgpack.md)
 - [stdlib.csv](stdlib/csv.md)
 - [stdlib.fs](stdlib/fs.md)
-- [runtime.budget](runtime/budget.md)
 - [runtime.object_pool](runtime/object_pool.md)
 - [runtime.execute](runtime/execute.md)
 - [testing.process](testing/process.md)
@@ -79,6 +80,7 @@
 - [compile.fold](compile/fold.md)
 - [compile.disasm](compile/disasm.md)
 - [api](api.md)
+- [api.analyze](api/analyze.md)
 - [api.callbacks](api/callbacks.md)
 - [api.convert](api/convert.md)
 - [api.errors](api/errors.md)
@@ -92,6 +94,7 @@
 - [api.value](api/value.md)
 - [api.userdata](api/userdata.md)
 - [api.context](api/context.md)
+- [api.decode](api/decode.md)
 - [api.coroutine](api/coroutine.md)
 - [api.snapshot](api/snapshot.md)
 - [api.memory_limit](api/memory_limit.md)
@@ -119,6 +122,8 @@
 - [testing.parallel](testing/parallel.md)
 - [testing.extension_runner](testing/extension_runner.md)
 - [testing.official_suite](testing/official_suite.md)
+- [testing.sandbox_runner](testing/sandbox_runner.md)
+- [testing.generators](testing/generators.md)
 
 </details>
 
@@ -140,12 +145,14 @@ See `docs/embedding.md` for capabilities, error handling, snapshots, and ownersh
 - [CallResult](#alias-callresult)
 - [ErrorRef](#alias-errorref)
 - [State](#alias-state)
+- [HostData](#alias-hostdata)
 - [InterruptHandle](#alias-interrupthandle)
 - [Snapshot](#alias-snapshot)
 - [LibrarySet](#alias-libraryset)
 - [Stdlib](#alias-stdlib)
 - [Limits](#alias-limits)
 - [CallOptions](#alias-calloptions)
+- [ResumeOptions](#alias-resumeoptions)
 - [InstructionBudget](#alias-instructionbudget)
 - [GcMode](#alias-gcmode)
 - [GcParam](#alias-gcparam)
@@ -189,6 +196,7 @@ See `docs/embedding.md` for capabilities, error handling, snapshots, and ownersh
 - [Value](#alias-value)
 - [Tuple](#alias-tuple)
 - [Ref](#alias-ref)
+- [HandleScope](#alias-handlescope)
 - [Table](#alias-table)
 - [Function](#alias-function)
 - [Coroutine](#alias-coroutine)
@@ -197,10 +205,25 @@ See `docs/embedding.md` for capabilities, error handling, snapshots, and ownersh
 - [Userdata](#alias-userdata)
 - [AnyUserdata](#alias-anyuserdata)
 - [UserdataOptions](#alias-userdataoptions)
+- [UserdataType](#alias-userdatatype)
 - [UserdataPtrOptions](#alias-userdataptroptions)
 - [UserdataSnapshotHooks](#alias-userdatasnapshothooks)
+- [Analysis](#alias-analysis)
+- [GlobalUse](#alias-globaluse)
+- [analyze](#alias-analyze)
+- [Decoder](#alias-decoder)
+- [DecodeError](#alias-decodeerror)
+- [DecodeOptions](#alias-decodeoptions)
+- [Diagnostic](#alias-diagnostic)
+- [FieldOptions](#alias-fieldoptions)
+- [decode](#alias-decode)
+- [defaultValue](#alias-defaultvalue)
+- [fieldKeys](#alias-fieldkeys)
+- [fieldOptions](#alias-fieldoptions)
 - [HostFn](#alias-hostfn)
 - [Context](#alias-context)
+- [Host](#alias-host)
+- [Caller](#alias-caller)
 
 <a id="alias-error"></a>
 
@@ -262,6 +285,16 @@ pub const State = state.State;
 
 References: [`state.State`](api/state.md#type-state)
 
+<a id="alias-hostdata"></a>
+
+## HostData
+
+```zig
+pub const HostData = state.HostData;
+```
+
+References: [`state.HostData`](api/state.md#type-hostdata)
+
 <a id="alias-interrupthandle"></a>
 
 ## InterruptHandle
@@ -321,6 +354,16 @@ pub const CallOptions = options.CallOptions;
 ```
 
 References: [`options.CallOptions`](api/options.md#type-calloptions)
+
+<a id="alias-resumeoptions"></a>
+
+## ResumeOptions
+
+```zig
+pub const ResumeOptions = options.ResumeOptions;
+```
+
+References: [`options.ResumeOptions`](api/options.md#type-resumeoptions)
 
 <a id="alias-instructionbudget"></a>
 
@@ -752,6 +795,16 @@ pub const Ref = handle.Ref;
 
 References: [`handle.Ref`](api/handle.md#type-ref)
 
+<a id="alias-handlescope"></a>
+
+## HandleScope
+
+```zig
+pub const HandleScope = handle.HandleScope;
+```
+
+References: [`handle.HandleScope`](api/handle.md#type-handlescope)
+
 <a id="alias-table"></a>
 
 ## Table
@@ -832,6 +885,16 @@ pub const UserdataOptions = userdata.UserdataOptions;
 
 References: [`userdata.UserdataOptions`](api/userdata.md#fn-userdataoptions)
 
+<a id="alias-userdatatype"></a>
+
+## UserdataType
+
+```zig
+pub const UserdataType = userdata.UserdataType;
+```
+
+References: [`userdata.UserdataType`](api/userdata.md#type-userdatatype)
+
 <a id="alias-userdataptroptions"></a>
 
 ## UserdataPtrOptions
@@ -852,6 +915,102 @@ pub const UserdataSnapshotHooks = userdata.UserdataSnapshotHooks;
 
 References: [`userdata.UserdataSnapshotHooks`](api/userdata.md#fn-userdatasnapshothooks)
 
+<a id="alias-analysis"></a>
+
+## Analysis
+
+```zig
+pub const Analysis = analysis.Analysis;
+```
+
+<a id="alias-globaluse"></a>
+
+## GlobalUse
+
+```zig
+pub const GlobalUse = analysis.GlobalUse;
+```
+
+<a id="alias-analyze"></a>
+
+## analyze
+
+```zig
+pub const analyze = analysis.analyze;
+```
+
+<a id="alias-decoder"></a>
+
+## Decoder
+
+```zig
+pub const Decoder = decoding.Decoder;
+```
+
+<a id="alias-decodeerror"></a>
+
+## DecodeError
+
+```zig
+pub const DecodeError = decoding.DecodeError;
+```
+
+<a id="alias-decodeoptions"></a>
+
+## DecodeOptions
+
+```zig
+pub const DecodeOptions = decoding.DecodeOptions;
+```
+
+<a id="alias-diagnostic"></a>
+
+## Diagnostic
+
+```zig
+pub const Diagnostic = decoding.Diagnostic;
+```
+
+<a id="alias-fieldoptions"></a>
+
+## FieldOptions
+
+```zig
+pub const FieldOptions = decoding.FieldOptions;
+```
+
+<a id="alias-decode"></a>
+
+## decode
+
+```zig
+pub const decode = decoding.decode;
+```
+
+<a id="alias-defaultvalue"></a>
+
+## defaultValue
+
+```zig
+pub const defaultValue = decoding.defaultValue;
+```
+
+<a id="alias-fieldkeys"></a>
+
+## fieldKeys
+
+```zig
+pub const fieldKeys = decoding.fieldKeys;
+```
+
+<a id="alias-fieldoptions"></a>
+
+## fieldOptions
+
+```zig
+pub const fieldOptions = decoding.fieldOptions;
+```
+
 <a id="alias-hostfn"></a>
 
 ## HostFn
@@ -871,4 +1030,24 @@ pub const Context = context.Context;
 ```
 
 References: [`context.Context`](api/context.md#type-context)
+
+<a id="alias-host"></a>
+
+## Host
+
+```zig
+pub const Host = context.Host;
+```
+
+References: [`context.Host`](api/context.md#fn-host)
+
+<a id="alias-caller"></a>
+
+## Caller
+
+```zig
+pub const Caller = context.Caller;
+```
+
+References: [`context.Caller`](api/context.md#type-caller)
 

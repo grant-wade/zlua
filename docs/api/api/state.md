@@ -15,6 +15,7 @@
 - [frontend.token](../frontend/token.md)
 - [frontend.diagnostic](../frontend/diagnostic.md)
 - [frontend.lexer](../frontend/lexer.md)
+- [stack_guard](../stack_guard.md)
 - [frontend.ast](../frontend/ast.md)
 - [frontend.parser](../frontend/parser.md)
 - [compile](../compile.md)
@@ -29,26 +30,27 @@
 - [stdlib](../stdlib.md)
 - [stdlib.base](../stdlib/base.md)
 - [runtime.call](../runtime/call.md)
-- [stdlib.static_strings](../stdlib/static_strings.md)
-- [runtime.table_index](../runtime/table_index.md)
+- [runtime.budget](../runtime/budget.md)
+- [runtime.failure](../runtime/failure.md)
+- [runtime.debug](../runtime/debug.md)
+- [runtime.io](../runtime/io.md)
+- [runtime.host](../runtime/host.md)
 - [runtime.value](../runtime/value.md)
 - [runtime.number_format](../runtime/number_format.md)
-- [runtime.coroutine](../runtime/coroutine.md)
-- [runtime.debug](../runtime/debug.md)
+- [stdlib.static_strings](../stdlib/static_strings.md)
+- [runtime.table_index](../runtime/table_index.md)
 - [runtime.metatable](../runtime/metatable.md)
 - [runtime.rollback](../runtime/rollback.md)
 - [runtime.strings](../runtime/strings.md)
 - [runtime.operators](../runtime/operators.md)
-- [runtime.failure](../runtime/failure.md)
-- [runtime.io](../runtime/io.md)
-- [runtime.host](../runtime/host.md)
-- [runtime.load](../runtime/load.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.gc](../runtime/gc.md)
 - [runtime.entry](../runtime/entry.md)
+- [runtime.coroutine](../runtime/coroutine.md)
+- [runtime.load](../runtime/load.md)
+- [runtime.upvalue](../runtime/upvalue.md)
 - [runtime.system](../runtime/system.md)
 - [runtime.timezone](../runtime/timezone.md)
-- [runtime.upvalue](../runtime/upvalue.md)
 - [runtime.index](../runtime/index.md)
 - [stdlib.table](../stdlib/table.md)
 - [stdlib.string](../stdlib/string.md)
@@ -68,7 +70,6 @@
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
-- [runtime.budget](../runtime/budget.md)
 - [runtime.object_pool](../runtime/object_pool.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
@@ -79,6 +80,7 @@
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
 - [api](../api.md)
+- [api.analyze](../api/analyze.md)
 - [api.callbacks](../api/callbacks.md)
 - [api.convert](../api/convert.md)
 - [api.errors](../api/errors.md)
@@ -92,6 +94,7 @@
 - [api.value](../api/value.md)
 - [api.userdata](../api/userdata.md)
 - [api.context](../api/context.md)
+- [api.decode](../api/decode.md)
 - [api.coroutine](../api/coroutine.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
@@ -119,6 +122,8 @@
 - [testing.parallel](../testing/parallel.md)
 - [testing.extension_runner](../testing/extension_runner.md)
 - [testing.official_suite](../testing/official_suite.md)
+- [testing.sandbox_runner](../testing/sandbox_runner.md)
+- [testing.generators](../testing/generators.md)
 
 </details>
 
@@ -131,6 +136,7 @@
 ## Types
 
 - [InterruptHandle](#type-interrupthandle)
+- [HostData](#type-hostdata)
 - [State](#type-state)
 
 <a id="type-interrupthandle"></a>
@@ -174,6 +180,19 @@ pub fn isPending(self: InterruptHandle) bool
 
 References: [`InterruptHandle`](#type-interrupthandle)
 
+<a id="type-hostdata"></a>
+
+## HostData
+
+A typed pointer the host attaches to a state with `State.setHost`.
+
+```zig
+pub const HostData = struct {
+    ptr: *anyopaque,
+    type_id: usize,
+};
+```
+
 <a id="type-state"></a>
 
 ## State
@@ -202,6 +221,12 @@ pub const State = struct {
     /// Whether each memory-file entry owns its contents slice.
     memory_file_owned_contents: std.ArrayList(bool) = .empty,
     callbacks: std.ArrayList(RegisteredCallback) = .empty,
+    host_data: ?HostData = null,
+    /// Root indices of the handles created in open handle scopes.
+    scoped_roots: std.ArrayList(usize) = .empty,
+    /// Where the innermost open handle scope starts in `scoped_roots`.
+    handle_scope_start: usize = 0,
+    open_handle_scopes: usize = 0,
 };
 ```
 
@@ -213,8 +238,13 @@ pub const State = struct {
 | [deinit](#fn-state-deinit) | `self: *State` | `void` | Runs pending finalizers like &#96;lua_close&#96; (errors ignored, open files flushed), then frees the state and invalidates all handles. &#96;reset&#96; runs no finalizers. |
 | [snapshot](#fn-state-snapshot) | `self: *State, snapshot_allocator: std.mem.Allocator` | `!Snapshot` | Captures an idle VM, including suspended coroutines, as the new reset baseline. Borrowed capabilities and &#96;snapshot_allocator&#96; must outlive every state retaining it. |
 | [reset](#fn-state-reset) | `self: *State` | `!void` | Restores the active baseline and invalidates prior handles; &#96;error.NoSnapshot&#96; without one. Fails atomically. Skips Lua &#96;__gc&#96; and &#96;__close&#96; handlers and discards file handles opened since the baseline without flushing them. |
+| [setHost](#fn-state-sethost) | `self: *State, ptr: anytype` | `!void` | Attaches a host pointer for &#96;host&#96; and &#96;Context.host&#96;, replacing any earlier one. Snapshots and their workers keep the pointer, and &#96;reset&#96; restores the baseline's. |
+| [clearHost](#fn-state-clearhost) | `self: *State` | `!void` |  |
+| [host](#fn-state-host) | `self: *const State, comptime T: type` | `?*T` | The pointer given to &#96;setHost&#96; when it points to a &#96;T&#96;, or null. |
 | [allocator](#fn-state-allocator) | `self: *State` | `std.mem.Allocator` | Allocator for API-owned allocations returned to the host. |
 | [instructionBudget](#fn-state-instructionbudget) | `self: *const State` | `InstructionBudget` |  |
+| [outputBytes](#fn-state-outputbytes) | `self: *const State` | `u64` | Output bytes written since state creation or the last &#96;resetOutputLimit&#96;. |
+| [resetOutputLimit](#fn-state-resetoutputlimit) | `self: *State` | `void` | Restarts &#96;Limits.max_output_bytes&#96; and clears its error. |
 | [resetInstructionBudget](#fn-state-resetinstructionbudget) | `self: *State` | `void` |  |
 | [interruptHandle](#fn-state-interrupthandle) | `self: *State` | `!InterruptHandle` | Returns a thread-safe &#96;InterruptHandle&#96;; handles share one flag that stays valid across &#96;reset&#96; until &#96;deinit&#96;. While one exists, dispatch polls the flag periodically. |
 | [clearInterrupt](#fn-state-clearinterrupt) | `self: *State` | `void` |  |
@@ -229,6 +259,7 @@ pub const State = struct {
 | [stopGc](#fn-state-stopgc) | `self: *State` | `void` |  |
 | [restartGc](#fn-state-restartgc) | `self: *State` | `void` |  |
 | [isGcRunning](#fn-state-isgcrunning) | `self: *const State` | `bool` |  |
+| [handleScope](#fn-state-handlescope) | `self: *State` | `HandleScope` | Starts a scope that releases the handles created until its &#96;end&#96;, except those given to its &#96;keep&#96;: &#96;var scope = lua.handleScope(); defer scope.end();&#96;. |
 | [push](#fn-state-push) | `self: *State, value: anytype` | `!Value` | Converts a Zig value into a rooted &#96;Value&#96;. |
 | [read](#fn-state-read) | `self: *State, value: Value, comptime T: type` | `!T` | A &#96;[]const u8&#96; result borrows VM memory; see &#96;Value.string&#96;. |
 | [setGlobal](#fn-state-setglobal) | `self: *State, name: []const u8, value: anytype` | `!void` |  |
@@ -238,8 +269,9 @@ pub const State = struct {
 | [registerUserdataInitializerWith](#fn-state-registeruserdatainitializerwith) | `self: *State, comptime T: type, name: []const u8, comptime initializer: anytype, comptime options: UserdataOptions(T)` | `!Function` | Registers a Lua constructor that reads &#96;initializer&#96;'s arguments by type (&#96;*Context&#96; is injected) and wraps its &#96;T&#96; or &#96;!T&#96; result with &#96;newUserdataAuto&#96;. |
 | [createTable](#fn-state-createtable) | `self: *State, options: TableOptions` | `!Table` |  |
 | [newCoroutine](#fn-state-newcoroutine) | `self: *State, entry: Function` | `!Coroutine` | Creates a suspended coroutine; first resume arguments become &#96;entry&#96;'s arguments. |
+| [defineUserdata](#fn-state-defineuserdata) | `self: *State, comptime T: type, comptime options: UserdataType` | `!void` | Gives every later &#96;T&#96; userdata one metatable holding &#96;options.methods&#96;, unless it passes its own &#96;metatable&#96;. Returns &#96;error.UserdataTypeDefined&#96; when &#96;T&#96; already has a definition. |
 | [newUserdata](#fn-state-newuserdata) | `self: *State, comptime T: type, value: T, options: UserdataOptions(T)` | `!Userdata(T)` | Allocates Lua-owned userdata initialized with &#96;value&#96;. |
-| [newUserdataAuto](#fn-state-newuserdataauto) | `self: *State, comptime T: type, value: T, options: UserdataOptions(T)` | `!Userdata(T)` | Like &#96;newUserdata&#96;, also installing &#96;T&#96;'s methods whose receiver is &#96;*T&#96; or &#96;*const T&#96;; names starting with &#96;__&#96; become metamethods. |
+| [newUserdataAuto](#fn-state-newuserdataauto) | `self: *State, comptime T: type, value: T, options: UserdataOptions(T)` | `!Userdata(T)` | Like &#96;newUserdata&#96;, defining &#96;T&#96; with &#96;defineUserdata&#96; on first use. With an explicit &#96;metatable&#96;, installs &#96;T&#96;'s methods on it instead. |
 | [newUserdataPtr](#fn-state-newuserdataptr) | `self: *State, comptime T: type, ptr: *T, options: UserdataPtrOptions(T)` | `!Userdata(T)` | Wraps host-owned &#96;ptr&#96; as userdata without taking ownership. |
 | [newUserdataPtrAuto](#fn-state-newuserdataptrauto) | `self: *State, comptime T: type, ptr: *T, options: UserdataPtrOptions(T)` | `!Userdata(T)` | Like &#96;newUserdataPtr&#96;, also installing &#96;T&#96;'s methods as in &#96;newUserdataAuto&#96;. |
 | [createModule](#fn-state-createmodule) | `self: *State, name: []const u8` | `!Table` | Creates a module table; it is not installed (see &#96;setLoadedModule&#96;). |
@@ -258,6 +290,7 @@ pub const State = struct {
 | [clearExitRequest](#fn-state-clearexitrequest) | `self: *State` | `void` |  |
 | [setWarnings](#fn-state-setwarnings) | `self: *State, on: bool` | `void` |  |
 | [errorMessage](#fn-state-errormessage) | `self: *State` | `![]const u8` | Formats the last Lua error; the caller frees the result with &#96;allocator()&#96;. |
+| [describeError](#fn-state-describeerror) | `self: *State, err: anyerror` | `![]const u8` | The last Lua error's message for &#96;error.LuaError&#96;, otherwise the name of &#96;err&#96;; the caller frees the result with &#96;allocator()&#96;. |
 | [takeErrorValue](#fn-state-takeerrorvalue) | `self: *State` | `?ErrorRef` | Takes ownership of the last Lua error value; the caller must &#96;deinit&#96; it. |
 
 <a id="fn-state-init"></a>
@@ -312,6 +345,41 @@ pub fn reset(self: *State) !void
 
 References: [`State`](#type-state)
 
+<a id="fn-state-sethost"></a>
+
+### State.setHost
+
+Attaches a host pointer for `host` and `Context.host`, replacing any earlier one. Snapshots
+and their workers keep the pointer, and `reset` restores the baseline's.
+
+```zig
+pub fn setHost(self: *State, ptr: anytype) !void
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-clearhost"></a>
+
+### State.clearHost
+
+```zig
+pub fn clearHost(self: *State) !void
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-host"></a>
+
+### State.host
+
+The pointer given to `setHost` when it points to a `T`, or null.
+
+```zig
+pub fn host(self: *const State, comptime T: type) ?*T
+```
+
+References: [`State`](#type-state)
+
 <a id="fn-state-allocator"></a>
 
 ### State.allocator
@@ -330,6 +398,30 @@ References: [`State`](#type-state)
 
 ```zig
 pub fn instructionBudget(self: *const State) InstructionBudget
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-outputbytes"></a>
+
+### State.outputBytes
+
+Output bytes written since state creation or the last `resetOutputLimit`.
+
+```zig
+pub fn outputBytes(self: *const State) u64
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-resetoutputlimit"></a>
+
+### State.resetOutputLimit
+
+Restarts `Limits.max_output_bytes` and clears its error.
+
+```zig
+pub fn resetOutputLimit(self: *State) void
 ```
 
 References: [`State`](#type-state)
@@ -485,6 +577,19 @@ pub fn isGcRunning(self: *const State) bool
 
 References: [`State`](#type-state)
 
+<a id="fn-state-handlescope"></a>
+
+### State.handleScope
+
+Starts a scope that releases the handles created until its `end`, except those given to
+its `keep`: `var scope = lua.handleScope(); defer scope.end();`.
+
+```zig
+pub fn handleScope(self: *State) HandleScope
+```
+
+References: [`State`](#type-state)
+
 <a id="fn-state-push"></a>
 
 ### State.push
@@ -590,6 +695,19 @@ pub fn newCoroutine(self: *State, entry: Function) !Coroutine
 
 References: [`State`](#type-state)
 
+<a id="fn-state-defineuserdata"></a>
+
+### State.defineUserdata
+
+Gives every later `T` userdata one metatable holding `options.methods`, unless it passes its
+own `metatable`. Returns `error.UserdataTypeDefined` when `T` already has a definition.
+
+```zig
+pub fn defineUserdata(self: *State, comptime T: type, comptime options: UserdataType) !void
+```
+
+References: [`State`](#type-state)
+
 <a id="fn-state-newuserdata"></a>
 
 ### State.newUserdata
@@ -606,8 +724,8 @@ References: [`State`](#type-state)
 
 ### State.newUserdataAuto
 
-Like `newUserdata`, also installing `T`'s methods whose receiver is `*T` or `*const T`;
-names starting with `__` become metamethods.
+Like `newUserdata`, defining `T` with `defineUserdata` on first use. With an explicit
+`metatable`, installs `T`'s methods on it instead.
 
 ```zig
 pub fn newUserdataAuto(self: *State, comptime T: type, value: T, options: UserdataOptions(T)) !Userdata(T)
@@ -818,6 +936,19 @@ Formats the last Lua error; the caller frees the result with `allocator()`.
 
 ```zig
 pub fn errorMessage(self: *State) ![]const u8
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-describeerror"></a>
+
+### State.describeError
+
+The last Lua error's message for `error.LuaError`, otherwise the name of `err`; the caller
+frees the result with `allocator()`.
+
+```zig
+pub fn describeError(self: *State, err: anyerror) ![]const u8
 ```
 
 References: [`State`](#type-state)

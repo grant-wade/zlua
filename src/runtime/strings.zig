@@ -1,5 +1,6 @@
 const std = @import("std");
 const static_strings = @import("../stdlib/static_strings.zig");
+const budget_mod = @import("budget.zig");
 const State = @import("state.zig").State;
 const table_index = @import("table_index.zig");
 const types = @import("types.zig");
@@ -14,6 +15,10 @@ pub const InternSet = struct {
     hashes: []u32 = &.{},
     entries: []?*const String = &.{},
     count: usize = 0,
+    /// Nonzero after a long probe chain; `hashes` are then keyed with it.
+    salt: u32 = 0,
+    /// A long probe chain was seen; the next `ensureUnusedCapacity` picks a salt.
+    needs_salt: bool = false,
 
     const static_capacity = std.math.ceilPowerOfTwoAssert(usize, static_strings.strings.len * 2);
     const StaticImage = struct {
@@ -53,12 +58,14 @@ pub const InternSet = struct {
     pub fn clone(self: *const InternSet, allocator: std.mem.Allocator) !InternSet {
         const hashes = try allocator.dupe(u32, self.hashes);
         errdefer allocator.free(hashes);
-        return .{ .hashes = hashes, .entries = try allocator.dupe(?*const String, self.entries), .count = self.count };
+        return .{ .hashes = hashes, .entries = try allocator.dupe(?*const String, self.entries), .count = self.count, .salt = self.salt, .needs_salt = self.needs_salt };
     }
 
-    pub inline fn find(self: *const InternSet, bytes: []const u8, hash: u32) ?*const String {
+    /// `bytes_hash` is `hashStringKey(bytes)`.
+    pub inline fn find(self: *const InternSet, bytes: []const u8, bytes_hash: u32) ?*const String {
         if (self.entries.len == 0) return null;
         const mask = self.entries.len - 1;
+        const hash = self.slotHash(bytes, bytes_hash);
         var position = hash & mask;
         while (self.entries[position]) |string| : (position = (position + 1) & mask) {
             if (self.hashes[position] == hash and string.eqlBytes(bytes)) return string;
@@ -68,8 +75,9 @@ pub const InternSet = struct {
 
     pub fn ensureUnusedCapacity(self: *InternSet, allocator: std.mem.Allocator, extra: usize) !void {
         const needed = self.count + extra;
-        if (needed + needed / 3 <= self.entries.len) return;
-        const capacity = std.math.ceilPowerOfTwoAssert(usize, @max(16, needed * 2));
+        const rehash = self.needs_salt and self.salt == 0;
+        if (needed + needed / 3 <= self.entries.len and !rehash) return;
+        const capacity = if (rehash) @max(self.entries.len, std.math.ceilPowerOfTwoAssert(usize, @max(16, needed * 2))) else std.math.ceilPowerOfTwoAssert(usize, @max(16, needed * 2));
         const hashes = try allocator.alloc(u32, capacity);
         errdefer allocator.free(hashes);
         const entries = try allocator.alloc(?*const String, capacity);
@@ -78,7 +86,8 @@ pub const InternSet = struct {
         const old_entries = self.entries;
         self.hashes = hashes;
         self.entries = entries;
-        for (old_hashes, old_entries) |hash, entry| if (entry) |string| self.place(string, hash);
+        if (rehash) self.salt = table_index.newHashSalt(@intFromPtr(hashes.ptr));
+        for (old_entries) |entry| if (entry) |string| self.place(string, self.slotHash(string.bytes(), string.hash));
         allocator.free(old_hashes);
         allocator.free(old_entries);
     }
@@ -86,21 +95,27 @@ pub const InternSet = struct {
     /// The string must be absent and capacity reserved.
     pub fn insertAssumeCapacity(self: *InternSet, string: *const String) void {
         std.debug.assert(self.count + 1 + (self.count + 1) / 3 <= self.entries.len);
-        self.place(string, string.hash);
+        self.place(string, self.slotHash(string.bytes(), string.hash));
         self.count += 1;
+    }
+
+    inline fn slotHash(self: *const InternSet, bytes: []const u8, bytes_hash: u32) u32 {
+        return table_index.slotHashOfBytes(bytes, bytes_hash, self.salt);
     }
 
     fn place(self: *InternSet, string: *const String, hash: u32) void {
         const mask = self.entries.len - 1;
         var position = hash & mask;
-        while (self.entries[position] != null) position = (position + 1) & mask;
+        var chain: table_index.ChainLength = .{};
+        while (self.entries[position] != null) : (position = (position + 1) & mask) chain.add(self.hashes[position] == hash);
+        if (chain.isLong()) self.needs_salt = true;
         self.hashes[position] = hash;
         self.entries[position] = string;
     }
 
     pub fn remove(self: *InternSet, string: *const String) void {
         const mask = self.entries.len - 1;
-        var hole = string.hash & mask;
+        var hole = self.slotHash(string.bytes(), string.hash) & mask;
         while (self.entries[hole] != string) hole = (hole + 1) & mask;
         var next = (hole + 1) & mask;
         while (self.entries[next] != null) : (next = (next + 1) & mask) {
@@ -204,6 +219,7 @@ pub const Strings = struct {
         errdefer state.objects().free(memory);
         const string: *String = @ptrCast(memory.ptr);
         string.* = .{ .len = len };
+        state.budget.note(budget_mod.cost.copied(len));
         try state.registerAllocation("string_allocations", string);
         state.gc.noteAllocation(string.gcBytes());
         return string;
@@ -260,6 +276,7 @@ pub const Builder = struct {
 
     pub fn finish(self: *Builder) !*const String {
         defer self.deinit();
+        if (self.buffer.items.len > short_string_limit) self.buffer.shrinkAndFree(self.allocator(), self.buffer.items.len);
         return self.strings.intern(self.buffer.items);
     }
 };

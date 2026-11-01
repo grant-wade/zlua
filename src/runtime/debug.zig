@@ -1,6 +1,7 @@
 const std = @import("std");
 const compile = @import("../compile.zig");
 const call_mod = @import("call.zig");
+const io_mod = @import("io.zig");
 const metatable_mod = @import("metatable.zig");
 const operators_mod = @import("operators.zig");
 const rollback_mod = @import("rollback.zig");
@@ -51,7 +52,9 @@ fn debugValueTypeName(value: Value) []const u8 {
 }
 
 pub fn appendUnhandledErrorDebugDump(self: *State, thread: *Thread, err: anyerror) !void {
-    const out = &self.stderr;
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(self.allocator);
+    const out = &text;
     const stats = self.gc.allocationStats();
     try out.appendSlice(self.allocator, "\n[zlua debug] unhandled runtime exception\n");
     try appendFmt(self.allocator, out, "error={s}\n", .{@errorName(err)});
@@ -68,6 +71,7 @@ pub fn appendUnhandledErrorDebugDump(self: *State, thread: *Thread, err: anyerro
     try appendDebugFrames(self, out, thread);
     try appendDebugStack(self, out, thread);
     try out.appendSlice(self.allocator, "[/zlua debug]\n");
+    try io_mod.writeStderr(self, text.items);
 }
 
 fn appendDebugFrames(self: *State, out: *std.ArrayList(u8), thread: *Thread) !void {
@@ -158,7 +162,7 @@ fn appendDebugValue(self: *State, out: *std.ArrayList(u8), value: Value) !void {
 
 const traceback_levels_head = 10;
 const traceback_levels_tail = 11;
-const chunk_id_size = 60;
+pub const chunk_id_size = 60;
 
 const TracebackEntry = union(enum) {
     /// Index into `thread.frames`.
@@ -434,7 +438,7 @@ fn originName(origin: proto_mod.OperandOrigin) []const u8 {
 }
 
 /// Formats a chunk name for messages, as `luaO_chunkid` does.
-fn chunkId(buffer: *[chunk_id_size]u8, source: []const u8) []const u8 {
+pub fn chunkId(buffer: *[chunk_id_size]u8, source: []const u8) []const u8 {
     const max = chunk_id_size - 1;
     if (source.len > 0 and source[0] == '=') {
         const rest = source[1..];

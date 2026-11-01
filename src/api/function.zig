@@ -11,7 +11,7 @@ const Ref = handle.Ref;
 const State = @import("state.zig").State;
 const entry_mod = @import("../runtime/entry.zig");
 
-/// Rooted handle to a Lua function or loaded chunk.
+/// Rooted handle to any Lua function: a closure, host callback, or standard library function.
 pub const Function = struct {
     ref: Ref,
 
@@ -38,7 +38,7 @@ pub const Function = struct {
         var traceback: ?[]u8 = null;
         defer if (traceback) |text| state.allocator().free(text);
         const handler = try hostErrorHandler(state, options, &traceback);
-        const budget = CallBudget.begin(state, options);
+        const budget = CallBudget.begin(state, options.max_instructions);
         defer budget.end(state);
         const results = entry_mod.callFunctionHandled(&state.raw_state, try handle.rawValue(self.ref), raw_args, handler) catch |err| {
             const captured = errors.captureLuaError(state, err);
@@ -68,7 +68,7 @@ pub const Function = struct {
         var traceback: ?[]u8 = null;
         defer if (traceback) |text| state.allocator().free(text);
         const handler = try hostErrorHandler(state, options, &traceback);
-        const budget = CallBudget.begin(state, options);
+        const budget = CallBudget.begin(state, options.max_instructions);
         defer budget.end(state);
         const result = entry_mod.protectedCallFunctionHandled(&state.raw_state, try handle.rawValue(self.ref), raw_args, handler) catch |err| {
             if (err == error.OutOfMemory and errors.takeMemoryLimitExceeded(state)) {
@@ -108,16 +108,16 @@ pub const Function = struct {
     }
 };
 
-const CallBudget = struct {
+pub const CallBudget = struct {
     active: bool,
     previous: ?u64,
 
-    fn begin(state: *State, options: CallOptions) CallBudget {
-        const max = options.max_instructions orelse return .{ .active = false, .previous = null };
+    pub fn begin(state: *State, max_instructions: ?u64) CallBudget {
+        const max = max_instructions orelse return .{ .active = false, .previous = null };
         return .{ .active = true, .previous = state.raw_state.budget.beginCall(max) };
     }
 
-    fn end(self: CallBudget, state: *State) void {
+    pub fn end(self: CallBudget, state: *State) void {
         if (self.active) state.raw_state.budget.endCall(self.previous);
     }
 };

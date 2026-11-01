@@ -141,6 +141,7 @@ pub fn copyPayload(a: std.mem.Allocator, lifetime: ?*types.AllocatorLifetime, p:
         .dispose = p.snapshot_dispose,
         .finalized = p.finalized,
         .managed_bytes = p.managed_bytes,
+        .external_bytes = p.external_bytes,
         .snapshot_copy = p.snapshot_copy,
         .snapshot_dispose = p.snapshot_dispose,
         .snapshot_tracking = p.snapshot_tracking,
@@ -327,6 +328,10 @@ pub const Journal = struct {
         const string_scratch = state.strings.scratch;
         const epoch = state.gc.epoch;
         const generation = state.gc.generation;
+        if (state.local_zone != self.saved.local_zone) if (state.local_zone) |zone| {
+            zone.deinit();
+            state.allocator.destroy(zone);
+        };
         state.* = self.saved;
         state.gc.work = gc_work;
         state.gc.remembered = gc_remembered;

@@ -116,9 +116,9 @@ pub const PosixRule = struct {
     pub fn offsetAt(self: *const PosixRule, timestamp: i64) LocalOffset {
         const standard: LocalOffset = .{ .offset = self.std_offset, .name = self.std_name.slice() };
         if (self.dst) |*dst| {
-            const year = civilFromDays(@divFloor(timestamp + self.std_offset, seconds_per_day)).year;
-            const start = dst.start.localSeconds(year) - self.std_offset;
-            const end = dst.end.localSeconds(year) - dst.offset;
+            const year = civilFromDays(@divFloor(timestamp +| self.std_offset, seconds_per_day)).year;
+            const start = dst.start.localSeconds(year) -| self.std_offset;
+            const end = dst.end.localSeconds(year) -| dst.offset;
             const in_dst = if (start < end) timestamp >= start and timestamp < end else !(timestamp >= end and timestamp < start);
             if (in_dst) return .{ .offset = dst.offset, .is_dst = true, .name = dst.name.slice() };
         }
@@ -265,6 +265,7 @@ pub const Zone = struct {
     }
 
     pub fn parseTzif(allocator: std.mem.Allocator, bytes: []const u8) !Zone {
+        if (!tzifCountsFit(bytes)) return error.Malformed;
         var reader: std.Io.Reader = .fixed(bytes);
         var tz = try std.tz.Tz.parse(allocator, &reader);
         defer tz.deinit();
@@ -327,6 +328,25 @@ pub const Zone = struct {
         return .{ .offset = entry.offset, .is_dst = entry.is_dst, .name = entry.name[0..entry.name_len] };
     }
 };
+
+/// True when the sizes in both TZif headers fit in `bytes`.
+fn tzifCountsFit(bytes: []const u8) bool {
+    const header_len = 44;
+    var position: usize = 0;
+    for ([_]u64{ 4, 8 }) |time_size| {
+        if (bytes.len - position < header_len) return false;
+        const header = bytes[position..][0..header_len];
+        const version = header[4];
+        var counts: [6]u64 = undefined;
+        for (&counts, 0..) |*count, index| count.* = std.mem.readInt(u32, header[20 + index * 4 ..][0..4], .big);
+        const isut, const isstd, const leap, const time, const types, const chars = counts;
+        const data_len = isut + isstd + leap * (time_size + 4) + time * (time_size + 1) + types * 6 + chars;
+        if (data_len > bytes.len - position - header_len) return false;
+        position += header_len + @as(usize, @intCast(data_len));
+        if (version == 0) return true;
+    }
+    return true;
+}
 
 /// Converts local wall-clock seconds to a Unix timestamp like `mktime`;
 /// a non-null `is_dst` prefers an offset with that daylight-saving state.

@@ -356,7 +356,7 @@ test "api userdata handles root weak values until finalizers can run" {
     const Tracker = struct {
         finalized: *usize,
 
-        fn finalize(self: *@This()) void {
+        fn finalize(self: *@This(), _: std.mem.Allocator) void {
             self.finalized.* += 1;
         }
     };
@@ -632,4 +632,48 @@ test "fast field stores keep their keys after the chunk prototype is freed" {
         \\  assert(found and t["name" .. i] == 2)
         \\end
     , .{});
+}
+
+test "rooted nil values leave other handles intact" {
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+
+    var missing = try lua.getGlobal("missing", api.Ref);
+    var table = try lua.createTable(.{});
+    defer table.deinit();
+    try table.set("x", 1);
+    missing.deinit();
+    try std.testing.expectEqual(@as(i64, 1), try table.get("x", i64));
+
+    try std.testing.expectError(error.LuaError, lua.doString("error(nil)", .{}));
+    var kept = try lua.createTable(.{});
+    defer kept.deinit();
+    try kept.set("x", 2);
+    try std.testing.expectError(error.LuaError, lua.doString("error('next')", .{}));
+    try std.testing.expectEqual(@as(i64, 2), try kept.get("x", i64));
+
+    {
+        var scope = lua.handleScope();
+        defer scope.end();
+        _ = try lua.getGlobal("missing", api.Ref);
+    }
+    try std.testing.expectEqual(@as(i64, 2), try kept.get("x", i64));
+}
+
+test "later openLibs calls register libraries in package.loaded" {
+    var package_first = try State.init(std.testing.allocator, .{ .stdlib = .{ .custom = .{ .base = true, .package = true } } });
+    defer package_first.deinit();
+    try package_first.openLibs(.{ .custom = .{ .json = true } });
+    try package_first.doString("assert(require('json') == json and package.loaded._G == _G)", .{});
+
+    var package_last = try State.init(std.testing.allocator, .{ .stdlib = .{ .custom = .{ .base = true, .json = true } } });
+    defer package_last.deinit();
+    try package_last.openLibs(.{ .custom = .{ .package = true } });
+    try package_last.doString("assert(require('json') == json and require('_G') == _G)", .{});
+
+    var no_base = try State.init(std.testing.allocator, .{ .stdlib = .{ .custom = .{ .package = true } } });
+    defer no_base.deinit();
+    var check = try no_base.loadString("return package.loaded._G == nil", .{});
+    defer check.deinit();
+    try std.testing.expect(try check.call(.{}, bool));
 }

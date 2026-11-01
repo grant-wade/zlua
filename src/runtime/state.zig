@@ -22,6 +22,7 @@ const upvalue_mod = @import("upvalue.zig");
 const value_mod = @import("value.zig");
 const vm_mod = @import("vm.zig");
 
+const stack_guard = @import("../stack_guard.zig");
 const bytecode = compile.bytecode;
 const proto_mod = compile.proto;
 pub const RuntimeError = types.RuntimeError;
@@ -54,6 +55,8 @@ pub const MemoryFile = host.MemoryFile;
 pub const MemoryFilesystem = host.MemoryFilesystem;
 pub const FilesystemCapability = host.FilesystemCapability;
 pub const HostDirectory = host.HostDirectory;
+/// Root index of a rooted nil, which takes no slot in `api_roots`.
+pub const nil_root = std.math.maxInt(usize);
 pub const FilesystemFileKind = host.FileKind;
 pub const FilesystemFileStat = host.FileStat;
 pub const FilesystemDirectoryEntry = host.DirectoryEntry;
@@ -118,6 +121,14 @@ pub const StateOptions = struct {
     max_stack_values: ?usize = null,
     max_call_frames: ?usize = null,
     max_instructions: ?u64 = null,
+    /// Native stack bytes a host call may use before Lua sees `C stack overflow`.
+    max_native_stack: usize = stack_guard.default_max_bytes,
+    /// Instructions for finalizers run by each `deinit` or host-driven collection; null is unlimited.
+    max_finalizer_instructions: ?u64 = null,
+    /// Bytes written to stdout and stderr; null is unlimited.
+    max_output_bytes: ?u64 = null,
+    /// Lets `load` accept binary chunks.
+    binary_chunks: bool = true,
     debug_errors: bool = false,
     trace_vm: bool = false,
 };
@@ -135,11 +146,25 @@ pub const HostErrorHandler = struct {
 
 pub const State = struct {
     pub const max_c_calls = lua_max_c_calls;
+
+    /// The guard of the running host call, or a new one when no call is active.
+    pub inline fn entryStackGuard(self: *const State) stack_guard.StackGuard {
+        var guard = if (self.execution_depth == 0 and self.native_invoke_depth == 0) stack_guard.StackGuard.start(self.options.max_native_stack) else self.native_stack;
+        if (self.budget.interrupt) |control| guard.interrupt = &control.requested;
+        return guard;
+    }
+
     rollback: ?*rollback_mod.Journal = null,
     userdata_scope: ?*types.UserdataScope = null,
     value_roots: ?*types.ValueRoots = null,
     /// Includes direct interpreter entry, nested calls, and suspended host callbacks.
     execution_depth: usize = 0,
+    /// Callables invoked from native code that have not returned.
+    native_invoke_depth: usize = 0,
+    /// Valid while `execution_depth` or `native_invoke_depth` is nonzero.
+    native_stack: stack_guard.StackGuard = .{},
+    /// Bytes counted against `max_output_bytes`.
+    output_bytes: u64 = 0,
     allocator_lifetime: ?*types.AllocatorLifetime = null,
     snapshot_busy: bool = false,
     discarding: bool = false,
@@ -194,6 +219,7 @@ pub const State = struct {
     io_input: ?*Userdata = null,
     io_output: ?*Userdata = null,
     library_tables: std.EnumArray(stdlib.LibraryTable, ?*Table) = .initFill(null),
+    opened_libraries: stdlib.LibrarySet = .{},
     gc: gc_mod.Gc = .{},
 
     random_state: [4]u64 = .{ 0x123456789abcdef0, 0xff, 0xfedcba9876543210, 0 },
@@ -354,7 +380,7 @@ pub const State = struct {
     fn deinitClosing(self: *State, run_finalizers: bool) void {
         if (self.rollback) |journal| journal.abandon(self);
         if (!self.discarding) {
-            if (run_finalizers) self.gc.runCloseFinalizers();
+            if (run_finalizers) self.gc.runCloseFinalizers(.proceed);
             stdlib.io.closeOpenFiles(self);
         }
         self.snapshot_busy = true;
@@ -442,6 +468,7 @@ pub const State = struct {
     }
 
     pub fn rootValue(self: *State, value: Value) !usize {
+        if (value == .nil) return nil_root;
         for (self.api_roots.items, 0..) |root, index| {
             if (root == .nil) {
                 self.api_roots.items[index] = value;
@@ -829,6 +856,7 @@ pub const State = struct {
 
     pub fn argumentNumber(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) !f64 {
         const value = argValue(self, thread, op, index);
+        self.budget.noteLongString(value);
         return toNumberMaybe(value) orelse self.failArgumentType(function_name, index + 1, "number", value);
     }
 
@@ -839,6 +867,7 @@ pub const State = struct {
 
     pub fn argumentInteger(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) !i64 {
         const value = argValue(self, thread, op, index);
+        self.budget.noteLongString(value);
         if (toInteger(value)) |integer| return integer;
         const number = toNumberMaybe(value) orelse return self.failArgumentType(function_name, index + 1, "number", value);
         return floatToInteger(number) orelse self.failArgumentMessage(function_name, index + 1, "number has no integer representation");

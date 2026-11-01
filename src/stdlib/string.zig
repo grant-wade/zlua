@@ -1,4 +1,5 @@
 const std = @import("std");
+const cost = @import("../runtime/budget.zig").cost;
 const compile = @import("../compile.zig");
 const runtime = @import("../runtime.zig");
 const call_mod = @import("../runtime/call.zig");
@@ -32,6 +33,7 @@ pub fn byte(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const last = @min(stop, source.len);
     if (first <= last) {
         if (!call_mod.nativeStackFits(state, thread, op, last - first + 1)) return state.failLibrary("stack overflow (string slice too long)");
+        try state.budget.charge(cost.elements(last - first + 1));
         var index = first;
         while (index <= last) : (index += 1) try values.append(state.allocator, .{ .integer = source[index - 1] });
     }
@@ -67,9 +69,9 @@ pub fn find(state: *State, thread: *Thread, op: bytecode.Call) !void {
 
 pub fn gmatch(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const source = try state.expectArgumentStringObject(thread, op, "string.gmatch", 0);
+    const pattern = try state.expectArgumentStringObject(thread, op, "string.gmatch", 1);
     const initial = normalizeIndex(try state.optionalArgumentInteger(thread, op, "string.gmatch", 2, 1), source.len);
     const start = if (initial <= 1) 0 else @min(initial - 1, source.len + 1);
-    const pattern = try state.expectArgumentStringObject(thread, op, "string.gmatch", 1);
     const state_value = try state.newTableWithHints(0, 3);
     const state_table = state_value.table;
     try state.setTableRaw(state_table, .{ .string = static_strings.get("s") }, .{ .string = source });
@@ -159,7 +161,8 @@ pub fn gsub(state: *State, thread: *Thread, op: bytecode.Call) !void {
     var changed = false;
     var previous_match_end: ?usize = null;
     while (pos <= source.len and count < max_count) {
-        try state.budget.checkInterrupt();
+        try state.budget.charge(2);
+        try state.gc.reserve(thread, out.buffer.items.len *| 2);
         const found = (try pattern_mod.simplePatternFind(state, source, pattern, pos)) orelse break;
         try out.appendSlice(source[pos..found.range.start]);
         if (found.range.start == found.range.end and previous_match_end != null and previous_match_end.? == found.range.start) {
@@ -330,6 +333,8 @@ pub fn rep(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const sep = try state.optionalArgumentString(thread, op, "string.rep", 2) orelse "";
     const total = if (count > 0) repeatedLength(source.len, sep.len, @intCast(count)) orelse return state.failLibrary("resulting string too large") else 0;
     if (count == 1) return state.returnValues(thread, op.base, op.return_count, &.{runtime.argValue(state, thread, op, 0)});
+    try state.budget.charge(cost.copied(total));
+    try state.gc.reserve(thread, total);
     var short: [strings_mod.short_string_limit]u8 = undefined;
     const long = if (total > short.len) try state.strings.createLong(total) else null;
     const out = if (long) |string| string.bytesMut() else short[0..total];
@@ -377,6 +382,7 @@ pub fn split(state: *State, thread: *Thread, op: bytecode.Call) !void {
 fn splitImpl(state: *State, thread: *Thread, op: bytecode.Call, from_right: bool) !void {
     const function_name = if (from_right) "string.rsplit" else "string.split";
     const source = try state.expectArgumentString(thread, op, function_name, 0);
+    try state.budget.charge(cost.scanned(source.len));
     const separator: ?[]const u8 = if (op.arg_count < 2 or runtime.argValue(state, thread, op, 1) == .nil)
         null
     else
@@ -470,6 +476,7 @@ fn splitWhitespaceFromRight(state: *State, pieces: *std.ArrayList([]const u8), s
 /// Trims ASCII whitespace, or bytes in the optional character set.
 pub fn strip(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const source = try state.expectArgumentString(thread, op, "string.strip", 0);
+    try state.budget.charge(cost.scanned(source.len));
     const chars: ?[]const u8 = if (op.arg_count < 2 or runtime.argValue(state, thread, op, 1) == .nil)
         null
     else
@@ -501,6 +508,7 @@ pub fn sub(state: *State, thread: *Thread, op: bytecode.Call) !void {
     }
     const first = @max(start, 1) - 1;
     const last = @min(stop, source.len);
+    try state.gc.reserve(thread, last - first);
     const result = if (first == 0 and last == source.len) runtime.argValue(state, thread, op, 0) else Value{ .string = try state.strings.intern(source[first..last]) };
     try state.returnValues(thread, op.base, op.return_count, &.{result});
 }
@@ -523,6 +531,8 @@ fn asciiMap(state: *State, thread: *Thread, op: bytecode.Call, comptime to_lower
 }
 
 fn returnMapped(state: *State, thread: *Thread, op: bytecode.Call, source: []const u8, comptime map: fn ([]u8, []const u8) void) !void {
+    try state.budget.charge(cost.scanned(source.len));
+    try state.gc.reserve(thread, source.len);
     if (source.len > strings_mod.short_string_limit) {
         const string = try state.strings.createLong(source.len);
         map(string.bytesMut(), source);
@@ -548,6 +558,10 @@ fn findImpl(state: *State, thread: *Thread, op: bytecode.Call, positions: bool) 
     }
     const start = if (initial <= 1) 0 else @min(initial - 1, source.len);
     const found = if (plain) pattern_mod.plainFind(source, pattern, start) else try pattern_mod.simplePatternFind(state, source, pattern, start);
+    if (plain) {
+        const scanned_to = if (found) |matched| matched.range.end else source.len;
+        state.budget.note(cost.scanned(scanned_to -| start));
+    }
     if (found) |range| {
         if (positions) {
             if (range.captures.count == 0) {

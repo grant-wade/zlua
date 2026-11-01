@@ -1,4 +1,5 @@
 const std = @import("std");
+const budget_mod = @import("budget.zig");
 const compile = @import("../compile.zig");
 const stdlib = @import("../stdlib.zig");
 const call_mod = @import("call.zig");
@@ -6,6 +7,7 @@ const debug_mod = @import("debug.zig");
 const failure_mod = @import("failure.zig");
 const gc_mod = @import("gc.zig");
 const index_mod = @import("index.zig");
+const io_mod = @import("io.zig");
 const metatable_mod = @import("metatable.zig");
 const operators_mod = @import("operators.zig");
 const rollback_mod = @import("rollback.zig");
@@ -45,9 +47,11 @@ pub fn runThreadUntil(self: *State, thread: *Thread, target_frame_count: usize) 
 fn runThreadLoop(self: *State, thread: *Thread, target_frame_count: usize) anyerror!void {
     defer self.gc.syncThreadStorage(thread);
     self.gc.rememberObject(.{ .thread = thread });
+    self.native_stack = self.entryStackGuard();
     self.execution_depth += 1;
     defer self.execution_depth -= 1;
     if (self.execution_depth >= lua_max_c_calls) try call_mod.checkCStack(self, thread);
+    if (self.native_stack.exceeded()) try call_mod.failCStackOverflow(self, thread);
     try rollback_mod.threadWritable(thread);
     while (thread.frames.items.len > target_frame_count) {
         if (thread.pending_unwind_error != null or thread.pending_yield_hook_return or call_mod.hasPendingContinuations(thread)) {
@@ -98,6 +102,9 @@ fn runThreadLoop(self: *State, thread: *Thread, target_frame_count: usize) anyer
         if (self.gc.running and (self.gc.shouldRunAuto() or self.stressPending())) try self.gc.autoStep(thread);
     }
 }
+
+/// Largest vararg copy the fast loop makes.
+const fast_vararg_limit = 32;
 
 fn executeInstruction(self: *State, thread: *Thread, proto: *const proto_mod.Proto, instruction: bytecode.Instruction) anyerror!void {
     const frame = &thread.frames.items[thread.frames.items.len - 1];
@@ -221,6 +228,7 @@ fn executeInstruction(self: *State, thread: *Thread, proto: *const proto_mod.Pro
             const lhs = stack[base + op.left];
             const rhs = stack[base + op.right];
             if (!operators_mod.equalityHasMetamethod(lhs, rhs)) {
+                operators_mod.noteStringComparison(self, lhs, rhs);
                 stack[base + op.dest] = .{ .boolean = valuesEqual(lhs, rhs) };
             } else {
                 try operators_mod.equalValuesToRegister(self, thread, op);
@@ -229,6 +237,7 @@ fn executeInstruction(self: *State, thread: *Thread, proto: *const proto_mod.Pro
         .lt => |op| {
             const lhs = stack[base + op.left];
             const rhs = stack[base + op.right];
+            operators_mod.noteStringComparison(self, lhs, rhs);
             if (operators_mod.rawCompare(lhs, rhs, .lt)) |result| {
                 stack[base + op.dest] = .{ .boolean = result };
             } else {
@@ -238,6 +247,7 @@ fn executeInstruction(self: *State, thread: *Thread, proto: *const proto_mod.Pro
         .le => |op| {
             const lhs = stack[base + op.left];
             const rhs = stack[base + op.right];
+            operators_mod.noteStringComparison(self, lhs, rhs);
             if (operators_mod.rawCompare(lhs, rhs, .le)) |result| {
                 stack[base + op.dest] = .{ .boolean = result };
             } else {
@@ -306,6 +316,7 @@ fn executeInstruction(self: *State, thread: *Thread, proto: *const proto_mod.Pro
         .compare_branch => |op| {
             const lhs = stack[base + op.left];
             const rhs = stack[base + op.right];
+            operators_mod.noteStringComparison(self, lhs, rhs);
             if (operators_mod.rawCompareBranchResult(lhs, rhs, op.op)) |result| {
                 if (result == op.jump_if_truthy) try jumpThreadMaybeFast(self, thread, op.offset, true);
             } else {
@@ -349,6 +360,7 @@ fn executeInstruction(self: *State, thread: *Thread, proto: *const proto_mod.Pro
         },
         .compare_branch_k => |op| {
             const constant = proto.constant_values[op.constant];
+            operators_mod.noteStringComparison(self, stack[base + op.register], constant);
             if (operators_mod.rawCompareConstantResult(stack[base + op.register], constant, op.op)) |result| {
                 if (result == op.jump_if_truthy) try jumpThreadMaybeFast(self, thread, op.offset, true);
             } else {
@@ -360,11 +372,13 @@ fn executeInstruction(self: *State, thread: *Thread, proto: *const proto_mod.Pro
 
 fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) anyerror!bool {
     if (thread.frames.items.len <= target_frame_count) return false;
-    if (self.budget.active() or self.options.trace_vm) return false;
+    if (self.options.trace_vm) return false;
     if (self.budget.fastLoopInterrupted()) return false;
     if (self.stressPending()) return false;
     if (thread.hook != .nil and (thread.hook_line or thread.hook_count != 0 or thread.hook_running)) return false;
     if (self.gc.running and self.gc.shouldRunAuto()) return false;
+    var allowance = self.budget.fastLoopAllowance();
+    if (allowance == 0) return false;
 
     var stack_limit = @min(thread.stack.items.len, self.stackValueLimit());
     var frame_limit = @min(thread.frames.capacity, self.callFrameLimit());
@@ -377,7 +391,9 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
     var base: usize = frame.base;
     // Widen before wrapping subtraction: program counters may be only 32 bits.
     var count_bias: u64 = 0 -% @as(u64, pc);
-    defer self.budget.instructions = self.budget.instructions +| (pc +% count_bias);
+    // Executed instructions already added to the budget, for Lua that general operations run.
+    var flushed: u64 = 0;
+    defer self.budget.instructions = self.budget.instructions +| ((pc +% count_bias) -% flushed);
     var segment_start: u64 = 0;
     // Executed-instruction total after a general operation, which may have changed frames.
     var resync: ?u64 = null;
@@ -385,12 +401,19 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
         if (resync) |executed| {
             @branchHint(.unlikely);
             resync = null;
-            if (!try fastLoopCanResume(self, thread, target_frame_count)) return true;
+            flushed = flushExecuted(self, executed, flushed);
+            if (!try fastLoopCanResume(self, thread, target_frame_count)) {
+                pc = 0;
+                count_bias = flushed;
+                return true;
+            }
+            allowance = flushed +| self.budget.fastLoopAllowance();
             frame_index = thread.frames.items.len - 1;
             frame = &thread.frames.items[frame_index];
             proto = frame.closure.proto;
             pc = frame.pc;
             count_bias = executed -% pc;
+            if (executed >= allowance) return true;
             base = frame.base;
             stack_limit = @min(thread.stack.items.len, self.stackValueLimit());
             frame_limit = @min(thread.frames.capacity, self.callFrameLimit());
@@ -534,6 +557,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 const op = instructions[pc].eq;
                 const lhs = stack[op.left];
                 const rhs = stack[op.right];
+                if (operators_mod.comparesLongStrings(lhs, rhs)) break :fast_loop;
                 if (operators_mod.equalityHasMetamethod(lhs, rhs) and !valuesEqual(lhs, rhs)) break :fast_loop;
                 stack[op.dest] = .{ .boolean = valuesEqual(lhs, rhs) };
                 pc += 1;
@@ -541,6 +565,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             },
             .lt => {
                 const op = instructions[pc].lt;
+                if (operators_mod.comparesLongStrings(stack[op.left], stack[op.right])) break :fast_loop;
                 const result = operators_mod.rawCompare(stack[op.left], stack[op.right], .lt) orelse break :fast_loop;
                 stack[op.dest] = .{ .boolean = result };
                 pc += 1;
@@ -548,6 +573,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             },
             .le => {
                 const op = instructions[pc].le;
+                if (operators_mod.comparesLongStrings(stack[op.left], stack[op.right])) break :fast_loop;
                 const result = operators_mod.rawCompare(stack[op.left], stack[op.right], .le) orelse break :fast_loop;
                 stack[op.dest] = .{ .boolean = result };
                 pc += 1;
@@ -676,6 +702,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 const op = instructions[pc].compare_branch_k;
                 const value = stack[op.register];
                 const constant = proto.constant_values[op.constant];
+                if (operators_mod.comparesLongStrings(value, constant)) break :fast_loop;
                 const result = if (value == .integer and constant == .integer) switch (op.op) {
                     .eq => value.integer == constant.integer,
                     .lt => value.integer < constant.integer,
@@ -690,7 +717,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                     if (pc < source_pc) {
                         if (frame.has_extra) thread.frame_extras.items[frame_index].last_hook_line = null;
-                        if (self.budget.fastLoopInterrupted()) break :fast_loop;
+                        if (pc +% count_bias >= allowance or self.budget.fastLoopInterrupted()) break :fast_loop;
                     }
                 }
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
@@ -700,6 +727,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 const op = instructions[pc].compare_branch;
                 const lhs = stack[op.left];
                 const rhs = stack[op.right];
+                if (operators_mod.comparesLongStrings(lhs, rhs)) break :fast_loop;
                 const result = if (lhs == .integer and rhs == .integer) switch (op.op) {
                     .eq => lhs.integer == rhs.integer,
                     .lt => lhs.integer < rhs.integer,
@@ -712,7 +740,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                     if (pc < source_pc) {
                         if (frame.has_extra) thread.frame_extras.items[frame_index].last_hook_line = null;
-                        if (self.budget.fastLoopInterrupted()) break :fast_loop;
+                        if (pc +% count_bias >= allowance or self.budget.fastLoopInterrupted()) break :fast_loop;
                     }
                 }
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
@@ -726,7 +754,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                 if (pc < source_pc) {
                     if (frame.has_extra) thread.frame_extras.items[frame_index].last_hook_line = null;
-                    if (self.budget.fastLoopInterrupted()) break :fast_loop;
+                    if (pc +% count_bias >= allowance or self.budget.fastLoopInterrupted()) break :fast_loop;
                 }
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
@@ -740,7 +768,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                     if (pc < source_pc) {
                         if (frame.has_extra) thread.frame_extras.items[frame_index].last_hook_line = null;
-                        if (self.budget.fastLoopInterrupted()) break :fast_loop;
+                        if (pc +% count_bias >= allowance or self.budget.fastLoopInterrupted()) break :fast_loop;
                     }
                 }
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
@@ -757,7 +785,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                     if (pc < source_pc) {
                         if (frame.has_extra) thread.frame_extras.items[frame_index].last_hook_line = null;
-                        if (self.budget.fastLoopInterrupted()) break :fast_loop;
+                        if (pc +% count_bias >= allowance or self.budget.fastLoopInterrupted()) break :fast_loop;
                     }
                 }
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
@@ -786,7 +814,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                     if (pc < source_pc) {
                         if (frame.has_extra) thread.frame_extras.items[frame_index].last_hook_line = null;
-                        if (self.budget.fastLoopInterrupted()) break :fast_loop;
+                        if (pc +% count_bias >= allowance or self.budget.fastLoopInterrupted()) break :fast_loop;
                     }
                 }
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
@@ -833,6 +861,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     pc += 1;
                     frame.pc = @intCast(pc);
                     segment_start = pc +% count_bias;
+                    flushed = flushExecuted(self, segment_start, flushed);
                     try call_mod.callValue(self, thread, op);
                     resync = segment_start;
                     continue :frames;
@@ -883,7 +912,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 count_bias = segment_start;
                 pc = 0;
                 base = callee_base;
-                if (self.budget.fastLoopInterrupted()) return true;
+                if (pc +% count_bias >= allowance or self.budget.fastLoopInterrupted()) return true;
                 continue :frames;
             },
             .vararg => {
@@ -891,7 +920,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 if (proto.named_vararg and !frame.named_vararg_readonly) break :fast_loop;
                 const available = frame.vararg_count;
                 const count: usize = if (op.count == bytecode.multret_count) available else op.count;
-                if (base + op.dest + count > stack_limit) break :fast_loop;
+                if (count > fast_vararg_limit or base + op.dest + count > stack_limit) break :fast_loop;
                 const copied = @min(count, available);
                 for (0..copied) |index| stack[op.dest + index] = thread.stack.items[frame.vararg_base + index];
                 clearRegisters(stack[op.dest + copied .. op.dest + count]);
@@ -935,6 +964,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 pc += 1;
                 frame.pc = @intCast(pc);
                 segment_start = pc +% count_bias;
+                flushed = flushExecuted(self, segment_start, flushed);
                 try call_mod.tailCallValue(self, thread, op);
                 resync = segment_start;
                 continue :frames;
@@ -956,6 +986,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     pc += 1;
                     frame.pc = @intCast(pc);
                     segment_start = pc +% count_bias;
+                    flushed = flushExecuted(self, segment_start, flushed);
                     try call_mod.returnFromFrame(self, thread, op.first, op.count);
                     resync = segment_start;
                     continue :frames;
@@ -978,7 +1009,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 pc = frame.pc;
                 count_bias = segment_start -% pc;
                 base = frame.base;
-                if (frame_index + 1 == return_floor or self.budget.fastLoopInterrupted()) return true;
+                if (frame_index + 1 == return_floor or pc +% count_bias >= allowance or self.budget.fastLoopInterrupted()) return true;
                 continue :frames;
             },
             .tfor_prep => {
@@ -998,7 +1029,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                 if (pc < source_pc) {
                     if (frame.has_extra) thread.frame_extras.items[frame_index].last_hook_line = null;
-                    if (self.budget.fastLoopInterrupted()) break :fast_loop;
+                    if (pc +% count_bias >= allowance or self.budget.fastLoopInterrupted()) break :fast_loop;
                 }
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
@@ -1073,6 +1104,7 @@ inline fn fieldEntry(part: *const HashPart, key: *const String) ?*TableEntry {
         const entry = &entries[key.field_hint];
         if (entry.key == .string and entry.key.string == key) return entry;
     }
+    if (!key.isShort()) return null;
     const index = part.find(.{ .string = key }) orelse return null;
     if (index < String.no_field_hint and !key.static) @constCast(key).field_hint = @intCast(index);
     return &entries[index];
@@ -1102,6 +1134,12 @@ fn fastReturnFloor(thread: *const Thread, target_frame_count: usize) usize {
     return target_frame_count;
 }
 
+/// Adds the instructions executed since the last flush to the budget; returns the new flush point.
+inline fn flushExecuted(self: *State, executed: u64, flushed: u64) u64 {
+    self.budget.instructions = self.budget.instructions +| (executed -% flushed);
+    return executed;
+}
+
 /// After a general call from the fast loop: runs a due collector step, then reports
 /// whether the fast loop may continue with the thread's new top frame.
 noinline fn fastLoopCanResume(self: *State, thread: *Thread, target_frame_count: usize) !bool {
@@ -1110,7 +1148,7 @@ noinline fn fastLoopCanResume(self: *State, thread: *Thread, target_frame_count:
     if (frame_count <= target_frame_count) return false;
     if (thread.pending_unwind_error != null or thread.pending_yield_hook_return) return false;
     if (call_mod.hasPendingContinuations(thread) and frame_count <= thread.continuation_frame_count) return false;
-    if (thread.hook != .nil or self.budget.active() or self.options.trace_vm or self.budget.fastLoopInterrupted() or self.stressPending()) return false;
+    if (thread.hook != .nil or self.options.trace_vm or self.budget.fastLoopInterrupted() or self.stressPending()) return false;
     return thread.frames.items[frame_count - 1].pc < thread.frames.items[frame_count - 1].closure.proto.instructions.items.len;
 }
 
@@ -1150,7 +1188,7 @@ noinline fn fastTableDynamicKeySetNoAlloc(self: *State, table_value: Value, key:
 
 /// `key` must be a string.
 fn fastTableKnownKeySetExistingNoAlloc(self: *State, table_value: Value, key: Value, value: Value) bool {
-    if (table_value != .table) return false;
+    if (table_value != .table or !key.string.isShort()) return false;
     const table = table_value.table;
     if (table.rollback) |record| if (!record.header.detached) return false;
     if (table.findStringKey(key.string)) |index| {
@@ -1241,7 +1279,7 @@ fn setTableArrayRawIndex(self: *State, table: *Table, index_u32: u32, value: Val
 }
 
 fn fastTableKnownKeySet(self: *State, table_value: Value, key: Value, value: Value) !bool {
-    if (table_value != .table) return false;
+    if (table_value != .table or !key.string.isShort()) return false;
     const table = table_value.table;
     if (table.rollback != null and table.get(key) != .nil) try rollback_mod.tableWritable(table);
     if (table.setExistingNonNil(key, value)) {
@@ -1256,7 +1294,10 @@ fn fastTableKnownKeySet(self: *State, table_value: Value, key: Value, value: Val
 
 fn traceInstruction(self: *State, frame: CallFrame, pc: usize, instruction: bytecode.Instruction) !void {
     const line = if (pc < frame.closure.proto.line_info.items.len) frame.closure.proto.line_info.items[pc].line else 0;
-    try appendFmt(self.allocator, &self.stderr, "[trace-vm] {s}:{d} pc={d} op={s}\n", .{ frame.closure.proto.source_name, line, pc, @tagName(instruction) });
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(self.allocator);
+    try appendFmt(self.allocator, &text, "[trace-vm] {s}:{d} pc={d} op={s}\n", .{ frame.closure.proto.source_name, line, pc, @tagName(instruction) });
+    try io_mod.writeStderr(self, text.items);
 }
 
 pub fn get(_: *State, thread: *Thread, register: usize) Value {
@@ -1305,6 +1346,9 @@ fn forPrep(self: *State, thread: *Thread, op: bytecode.ForLoop) !void {
     const initial = get(self, thread, op.base);
     const limit = get(self, thread, op.base + 1);
     const step = get(self, thread, op.base + 2);
+    self.budget.noteLongString(initial);
+    self.budget.noteLongString(limit);
+    self.budget.noteLongString(step);
     if (toInteger(initial)) |initial_integer| {
         if (toInteger(step)) |step_integer| {
             if (step_integer == 0) return failure_mod.failRuntimeDetail(self, thread, "'for' step is zero");
@@ -1361,9 +1405,12 @@ fn forLoop(self: *State, thread: *Thread, op: bytecode.ForLoop) !void {
         return;
     }
 
-    const next = (try toNumber(current)) + (try toNumber(step));
+    const current_number = toNumber(current) catch return failure_mod.failRuntimeDetail(self, thread, "'for' initial value must be a number");
+    const limit_number = toNumber(limit) catch return failure_mod.failRuntimeDetail(self, thread, "'for' limit must be a number");
+    const step_number = toNumber(step) catch return failure_mod.failRuntimeDetail(self, thread, "'for' step must be a number");
+    const next = current_number + step_number;
     stack[absolute_base] = .{ .number = next };
-    if (forLoopContinuesNumber(next, try toNumber(limit), try toNumber(step))) {
+    if (forLoopContinuesNumber(next, limit_number, step_number)) {
         if (frame.closure.proto.has_to_close_locals) {
             try jumpThread(self, thread, op.offset, false);
         } else {
@@ -1379,6 +1426,7 @@ fn setList(self: *State, thread: *Thread, op: bytecode.SetList) !void {
     const frame = thread.frames.items[thread.frames.items.len - 1];
     const source_start = frame.base + op.first;
     const count: usize = if (op.count == bytecode.multret_count) try call_mod.resolveResultCount(self, thread, source_start, bytecode.multret_count) else op.count;
+    self.budget.note(budget_mod.cost.registers(count));
     const table_value = get(self, thread, op.table);
     if (try fastSetListRaw(self, thread, table_value, source_start, count, op.start_index)) return;
     for (0..count) |index| {
@@ -1568,6 +1616,7 @@ fn fastGlobalSetExisting(self: *State, key: *const String, value: Value) bool {
 
 /// A string's method through its metatable's `__index` table, when that needs no metamethod call.
 fn stringMethod(self: *State, key: *const String) ?Value {
+    if (!key.isShort()) return null;
     const metatable = self.string_metatable orelse return null;
     const handler = metatable.metaEvent(.__index);
     if (handler != .table) return null;
@@ -1577,7 +1626,7 @@ fn stringMethod(self: *State, key: *const String) ?Value {
 }
 
 fn fastTableFieldGet(table_value: Value, key: *const String) ?Value {
-    if (table_value != .table) return null;
+    if (table_value != .table or !key.isShort()) return null;
     const table = table_value.table;
     const value = table.getString(key);
     if (value != .nil) return value;
@@ -1595,6 +1644,7 @@ fn fastTableRawGet(table_value: Value, key_value: Value) ?Value {
     if (fastTableArrayGet(table_value, key_value)) |value| return value;
     // Float keys need normalization to integers first.
     if (table_value != .table or key_value == .number) return null;
+    if (key_value == .string and !key_value.string.isShort()) return null;
     const table = table_value.table;
     const value = table.get(key_value);
     if (value != .nil) return value;

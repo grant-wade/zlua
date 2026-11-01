@@ -577,7 +577,7 @@ pub fn fileError(err: anyerror) FileError {
         error.ValueTooLarge => .{ .message = errno_values.overflow_message, .errno = errno_values.overflow },
         error.ProcessFdQuotaExceeded, error.SystemFdQuotaExceeded => .{ .message = "Too many open files", .errno = 24 },
         error.FileBusy, error.DeviceBusy => .{ .message = "Device or resource busy", .errno = 16 },
-        error.CrossDeviceLink, error.RenameAcrossMountPoints => .{ .message = "Cross-device link", .errno = 18 },
+        error.CrossDevice => .{ .message = "Cross-device link", .errno = 18 },
         error.IoUnavailable => .{ .message = "filesystem I/O unavailable", .errno = 5 },
         error.OperationUnsupported => .{ .message = "host filesystem unavailable", .errno = 5 },
         else => .{ .message = "Input/output error", .errno = 5 },

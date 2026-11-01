@@ -3,7 +3,7 @@
 ## Navigation
 
 - [API Index](README.md)
-- Submodules: [testing.process](testing/process.md), [testing.clua](testing/clua.md), [testing.bench_runner](testing/bench_runner.md), [testing.diff_runner](testing/diff_runner.md), [testing.fixtures](testing/fixtures.md), [testing.expected_failures](testing/expected_failures.md), [testing.metadata](testing/metadata.md), [testing.normalizer](testing/normalizer.md), [testing.parallel](testing/parallel.md), [testing.extension_runner](testing/extension_runner.md), [testing.official_suite](testing/official_suite.md)
+- Submodules: [testing.process](testing/process.md), [testing.clua](testing/clua.md), [testing.bench_runner](testing/bench_runner.md), [testing.diff_runner](testing/diff_runner.md), [testing.fixtures](testing/fixtures.md), [testing.expected_failures](testing/expected_failures.md), [testing.metadata](testing/metadata.md), [testing.normalizer](testing/normalizer.md), [testing.parallel](testing/parallel.md), [testing.extension_runner](testing/extension_runner.md), [testing.official_suite](testing/official_suite.md), [testing.sandbox_runner](testing/sandbox_runner.md), [testing.generators](testing/generators.md)
 
 <details>
 <summary>All documents</summary>
@@ -15,6 +15,7 @@
 - [frontend.token](frontend/token.md)
 - [frontend.diagnostic](frontend/diagnostic.md)
 - [frontend.lexer](frontend/lexer.md)
+- [stack_guard](stack_guard.md)
 - [frontend.ast](frontend/ast.md)
 - [frontend.parser](frontend/parser.md)
 - [compile](compile.md)
@@ -29,26 +30,27 @@
 - [stdlib](stdlib.md)
 - [stdlib.base](stdlib/base.md)
 - [runtime.call](runtime/call.md)
-- [stdlib.static_strings](stdlib/static_strings.md)
-- [runtime.table_index](runtime/table_index.md)
+- [runtime.budget](runtime/budget.md)
+- [runtime.failure](runtime/failure.md)
+- [runtime.debug](runtime/debug.md)
+- [runtime.io](runtime/io.md)
+- [runtime.host](runtime/host.md)
 - [runtime.value](runtime/value.md)
 - [runtime.number_format](runtime/number_format.md)
-- [runtime.coroutine](runtime/coroutine.md)
-- [runtime.debug](runtime/debug.md)
+- [stdlib.static_strings](stdlib/static_strings.md)
+- [runtime.table_index](runtime/table_index.md)
 - [runtime.metatable](runtime/metatable.md)
 - [runtime.rollback](runtime/rollback.md)
 - [runtime.strings](runtime/strings.md)
 - [runtime.operators](runtime/operators.md)
-- [runtime.failure](runtime/failure.md)
-- [runtime.io](runtime/io.md)
-- [runtime.host](runtime/host.md)
-- [runtime.load](runtime/load.md)
 - [runtime.vm](runtime/vm.md)
 - [runtime.gc](runtime/gc.md)
 - [runtime.entry](runtime/entry.md)
+- [runtime.coroutine](runtime/coroutine.md)
+- [runtime.load](runtime/load.md)
+- [runtime.upvalue](runtime/upvalue.md)
 - [runtime.system](runtime/system.md)
 - [runtime.timezone](runtime/timezone.md)
-- [runtime.upvalue](runtime/upvalue.md)
 - [runtime.index](runtime/index.md)
 - [stdlib.table](stdlib/table.md)
 - [stdlib.string](stdlib/string.md)
@@ -68,7 +70,6 @@
 - [stdlib.msgpack](stdlib/msgpack.md)
 - [stdlib.csv](stdlib/csv.md)
 - [stdlib.fs](stdlib/fs.md)
-- [runtime.budget](runtime/budget.md)
 - [runtime.object_pool](runtime/object_pool.md)
 - [runtime.execute](runtime/execute.md)
 - [testing.process](testing/process.md)
@@ -79,6 +80,7 @@
 - [compile.fold](compile/fold.md)
 - [compile.disasm](compile/disasm.md)
 - [api](api.md)
+- [api.analyze](api/analyze.md)
 - [api.callbacks](api/callbacks.md)
 - [api.convert](api/convert.md)
 - [api.errors](api/errors.md)
@@ -92,6 +94,7 @@
 - [api.value](api/value.md)
 - [api.userdata](api/userdata.md)
 - [api.context](api/context.md)
+- [api.decode](api/decode.md)
 - [api.coroutine](api/coroutine.md)
 - [api.snapshot](api/snapshot.md)
 - [api.memory_limit](api/memory_limit.md)
@@ -119,6 +122,8 @@
 - [testing.parallel](testing/parallel.md)
 - [testing.extension_runner](testing/extension_runner.md)
 - [testing.official_suite](testing/official_suite.md)
+- [testing.sandbox_runner](testing/sandbox_runner.md)
+- [testing.generators](testing/generators.md)
 
 </details>
 
@@ -134,6 +139,7 @@
 - [official_suite](#import-official_suite) `@import("testing/official_suite.zig")`
 - [parallel](#import-parallel) `@import("testing/parallel.zig")`
 - [process](#import-process) `@import("testing/process.zig")`
+- [sandbox_runner](#import-sandbox_runner) `@import("testing/sandbox_runner.zig")`
 
 <a id="import-clua"></a>
 
@@ -213,5 +219,13 @@ pub const parallel = @import("testing/parallel.zig");
 
 ```zig
 pub const process = @import("testing/process.zig");
+```
+
+<a id="import-sandbox_runner"></a>
+
+## sandbox_runner
+
+```zig
+pub const sandbox_runner = @import("testing/sandbox_runner.zig");
 ```
 

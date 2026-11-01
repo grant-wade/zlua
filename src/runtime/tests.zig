@@ -119,19 +119,23 @@ test "instruction accounting agrees across nested call dispatch paths" {
         \\  return 1 + f(n - 1)
         \\end
         \\local sum = 0
-        \\for i = 1, 20 do
+        \\for i = 1, 8 do
         \\  local t = { i, a = i }
         \\  sum = sum + f(i) + t[1] - t.a + math.floor(math.sqrt(i * i)) - i
         \\end
-        \\assert(sum == 270)
+        \\assert(sum == 60)
     ;
     var fast = try State.init(std.testing.allocator);
     defer fast.deinit();
     try entry_mod.executeSourceChunk(&fast, source);
-    var metered = try State.initWithOptions(std.testing.allocator, .{ .max_instructions = 100_000 });
+    var metered = try State.initWithOptions(std.testing.allocator, .{ .max_instructions = 1_000 });
     defer metered.deinit();
     try entry_mod.executeSourceChunk(&metered, source);
     try std.testing.expectEqual(metered.budget.instructions, fast.budget.instructions);
+    var budgeted = try State.initWithOptions(std.testing.allocator, .{ .max_instructions = 1_000_000 });
+    defer budgeted.deinit();
+    try entry_mod.executeSourceChunk(&budgeted, source);
+    try std.testing.expectEqual(metered.budget.instructions, budgeted.budget.instructions);
 }
 
 test "hand-built bytecode can fall through or jump past its final instruction" {
@@ -1290,7 +1294,7 @@ test "automatic finalization runs a bounded userdata batch" {
     state.gc.mode = .incremental;
     var calls: usize = 0;
     const finalizer = struct {
-        fn run(ptr: *anyopaque, _: ?*const anyopaque) void {
+        fn run(ptr: *anyopaque, _: ?*const anyopaque, _: std.mem.Allocator) void {
             const count: *usize = @ptrCast(@alignCast(ptr));
             count.* += 1;
         }
@@ -1553,5 +1557,198 @@ test "formatNumber fits extreme floats" {
     for ([_]f64{ -std.math.floatMax(f64), -std.math.floatTrueMin(f64), -2.2250738585072009e-308, -1.2345678901234567e-300 }) |number| {
         const text = value_mod.formatNumber(&buffer, .{ .number = number });
         try std.testing.expectEqual(number, try std.fmt.parseFloat(f64, text));
+    }
+}
+
+/// Strings, as little-endian bytes, that all have `colliding_strings_hash` as their full `hashStringKey`.
+const colliding_strings = [_]u64{
+    0x0800000019d24fcd, 0x0b000000217b96da, 0x060000004a2ba57c, 0x0d0000004fb8da66,
+    0x0d0000006619c5d0, 0x0600000071871418, 0x0800000095731d52, 0x0d0000008716ea1f,
+    0x0c000000af333ca3, 0x03000000aacfaf26, 0x0c000000c139d598, 0x0e000000adf88d42,
+    0x05000000b1a0afc0, 0x07000000c7ca791c, 0x07000000ddf4269f, 0x080000012169d1b7,
+    0x06000000eb4e524e, 0x0f0000014911ce99, 0x05000001287e1e44, 0x050000012d0d9b0b,
+    0x00000001181b0dfa, 0x040000011d4eaf38, 0x080000016888a933, 0x0300000165487994,
+    0x0500000169ae9c41, 0x00000001583fcde9, 0x0200000174657451, 0x0e00000185c567ab,
+    0x08000001c319e69c, 0x08000001cb8373e0, 0x020000019d3be609, 0x0e000001bc88df7a,
+    0x080000021cdc639b, 0x0e000001f1278bfb, 0x090000020bc1e2aa, 0x07000002111df4cd,
+    0x0700000211579a05, 0x0500000214bc795c, 0x0400000262c41dd7, 0x0400000272f69a4b,
+    0x0a0000025ed0e49d, 0x070000024df8e513, 0x0900000289116482, 0x0e000002639e5fa5,
+    0x0b00000286882d1d, 0x09000002bbc02ae4, 0x0f000002c41c1f89, 0x0c000002946fac54,
+    0x08000002c4eb4bb7, 0x09000002cd77d8e8, 0x0c000002a6e72717, 0x02000002b19be2ed,
+    0x05000002e03bb852, 0x06000003067e1325, 0x01000002d4ee7dfe, 0x0e000002ef903ae9,
+    0x0400000375b68381, 0x0f00000368b79f0e, 0x0b00000352178b64, 0x0d0000033924a526,
+    0x030000036df3c23c, 0x08000003a7d066d1, 0x0b000003b6912374, 0x07000003b2127977,
+    0x07000003bc7ea369, 0x07000003c5facd95, 0x03000003dc0923d2, 0x03000003e16b8f18,
+    0x02000003f4a00a15, 0x0b0000042170a3fb, 0x0f00000485180c60, 0x0d000003ebc63431,
+    0x060000045f4e3923, 0x0300000412d843df, 0x0e00000405ca9b12, 0x00000003f9a3c25e,
+    0x0c0000042c8fc894, 0x0800000496852563, 0x08000004c0325f3d, 0x0a00000479e7ad46,
+    0x0300000462ada907, 0x03000004766d967f, 0x0d0000046d4c62d6, 0x010000046a25bdd8,
+    0x0f00000530d7daf0, 0x060000052b55e254, 0x0f00000559b39696, 0x0f0000055fd40e19,
+    0x0c000004d878ee8b, 0x07000004d07a7c93, 0x03000004fd62b613, 0x08000005eed03a80,
+    0x0e00000515ee8bd0, 0x0900000552cd7fdb, 0x030000053456fdc6, 0x0100000524c6c704,
+    0x02000005788db4c6, 0x000000053095bc93, 0x04000005c2bf94a4, 0x0e0000053e6ac6b1,
+    0x0900000586daf21d, 0x0800000652f742b0, 0x00000005a2a1fd0b, 0x00000005aa08f64e,
+    0x060000062acee7de, 0x080000067ac74fce, 0x00000005cbf4ae83, 0x0e000005bb2206af,
+    0x0e000005c397cd30, 0x02000006054c1aa9, 0x020000060efad2e8, 0x00000005fc510c04,
+    0x0400000669d9cb37, 0x0500000649f0cda7, 0x04000006d36d4357, 0x0f000006f33463d5,
+    0x00000006a0abccb5, 0x03000006a7ac4a4c, 0x03000006a8f78d9c, 0x080000079d9c090d,
+    0x0e000006a5894f79, 0x0d000006a6bb32a0, 0x07000006d5e9da88, 0x08000007cd673458,
+    0x0e000006d2ae079b, 0x0c0000072b492ba9, 0x07000006f6c1ac0d, 0x0d000006e0718f8b,
+    0x0f00000782f7ee52, 0x0b0000073291954c, 0x0900000738094c0a, 0x01000006f1500899,
+    0x01000006f40f4dee, 0x0e00000717b16297, 0x090000075f2ca671, 0x0b00000767788be8,
+    0x090000076fba53e8, 0x0d000007340672ef, 0x0d000007548bd605, 0x070000079a5ba0ea,
+    0x01000007629f57e9, 0x0a0000082e0b1331, 0x00000007995860f4, 0x0c000007f5934355,
+    0x05000007a6d2be00, 0x0a00000882c1c3ce, 0x0b00000802cb0edc, 0x0a000008a400d276,
+    0x0e000007e51504c1, 0x09000008241ce309, 0x0f0000089f9d99fc, 0x0c0000086379d3e2,
+    0x070000085a31de96, 0x06000008b42179a0, 0x010000081c95dea2, 0x0e0000087e7951ea,
+    0x0900000879653576, 0x0000000865d2ea87, 0x0200000890692480, 0x0000000880e508dd,
+    0x080000096b42e2ec, 0x0d00000870a8926a, 0x07000008c865d291, 0x0800000988450b8d,
+    0x0e0000090af4ac46, 0x080000099cf00c21, 0x010000089699c0e1, 0x010000089d86fc3f,
+    0x0f000009458061f9, 0x03000008b642a8e2, 0x09000008e9f0b3d9, 0x0b00000923bd7a14,
+    0x0d0000091b779123, 0x0f000009b86cdfa0, 0x050000093cb80ef2, 0x05000009435fba82,
+    0x05000009bc570fa4, 0x0f00000a663fd393, 0x01000009b63e3fd0, 0x03000009e57b5da5,
+    0x0d00000a0ef7ed04, 0x0e00000aad7e45c0, 0x0200000a487f4e67, 0x0600000ac2791d2a,
+    0x0600000acfcd81da, 0x0a00000b351371b3, 0x0c00000ad3e4d498, 0x0500000a43ed67a0,
+    0x0f00000aebcb054f, 0x0a00000b6a6d3023, 0x0b00000ac009f409, 0x0f00000b2483c74e,
+    0x0c00000b24ff3a63, 0x0300000a96ff7538, 0x0100000a93761ef3, 0x0200000ae880ea02,
+    0x0100000ac4827f56, 0x0400000bdb2c197d, 0x0000000b64e1bf58, 0x0500000b434ec728,
+};
+const colliding_strings_hash: u32 = 0x5bd1e995;
+
+fn longestDisplacement(part: *const table_index.HashPart) usize {
+    const slots = part.slots();
+    const mask = slots.len - 1;
+    var longest: usize = 0;
+    for (slots, 0..) |slot, position| {
+        if (slot.entry != 0) longest = @max(longest, (position -% (slot.hash & mask)) & mask);
+    }
+    return longest;
+}
+
+fn unmix(input: u64) u64 {
+    var x = input;
+    x ^= (x >> 31) ^ (x >> 62);
+    x *%= 0x319642b2d24d8ec3;
+    x ^= (x >> 27) ^ (x >> 54);
+    x *%= 0x96de1b173f119089;
+    x ^= (x >> 30) ^ (x >> 60);
+    return x;
+}
+
+fn expectCollidingKeysStayFast(state: *State, keys: []const Value) !void {
+    const first_hash = table_index.hashKey(keys[0]);
+    for (keys) |key| try std.testing.expectEqual(first_hash, table_index.hashKey(key));
+
+    const table = (try state.newTableWithHints(0, 0)).table;
+    for (keys, 1..) |key, index| try state.setTableRaw(table, key, .{ .integer = @intCast(index) });
+    const part = table.hash.?;
+    try std.testing.expect(part.salt != 0);
+    try std.testing.expect(longestDisplacement(part) < keys.len / 2);
+    for (keys, 1..) |key, index| try std.testing.expectEqual(@as(i64, @intCast(index)), table.get(key).integer);
+
+    part.reindex();
+    try std.testing.expect(longestDisplacement(part) < keys.len / 2);
+    for (keys, 1..) |key, index| try std.testing.expectEqual(@as(i64, @intCast(index)), table.get(key).integer);
+    try std.testing.expectEqual(Value.nil, table.get(.{ .integer = std.math.minInt(i64) }));
+}
+
+test "ordinary keys in a large table keep an unkeyed index" {
+    const allocator = std.testing.allocator;
+    var state = try State.initWithOptions(allocator, .{ .stdlib = .none });
+    defer state.deinit();
+    const table = (try state.newTableWithHints(0, 0)).table;
+    var buffer: [24]u8 = undefined;
+    for (0..1 << 19) |index| {
+        const number: i64 = @intCast(index);
+        try state.setTableRaw(table, .{ .integer = number * 7 + 1_000_000 }, .{ .integer = number });
+        const text = try std.fmt.bufPrint(&buffer, "k{d}", .{index});
+        try state.setTableRaw(table, .{ .string = try state.strings.intern(text) }, .{ .integer = number });
+    }
+    try std.testing.expectEqual(@as(u32, 0), table.hash.?.salt);
+    try std.testing.expectEqual(@as(u32, 0), state.strings.set.salt);
+}
+
+test "integer keys with one full hash get a keyed index" {
+    const allocator = std.testing.allocator;
+    var state = try State.initWithOptions(allocator, .{ .stdlib = .none });
+    defer state.deinit();
+    var keys: [4096]Value = undefined;
+    for (&keys, 1..) |*key, index| {
+        const high: u64 = index;
+        key.* = .{ .integer = @bitCast(unmix(high << 32 | (high ^ 0x5bd1e995))) };
+    }
+    try expectCollidingKeysStayFast(&state, &keys);
+}
+
+test "float keys with one full hash get a keyed index" {
+    const allocator = std.testing.allocator;
+    var state = try State.initWithOptions(allocator, .{ .stdlib = .none });
+    defer state.deinit();
+    var keys: [4096]Value = undefined;
+    var count: usize = 0;
+    var candidate: u64 = 1;
+    while (count < keys.len) : (candidate += 1) {
+        const bits = unmix(candidate << 32 | (candidate ^ 0x5bd1e995)) ^ 0x3c6ef372fe94f82b;
+        const number: f64 = @bitCast(bits);
+        if (!std.math.isFinite(number) or @floor(number) == number) continue;
+        keys[count] = .{ .number = number };
+        count += 1;
+    }
+    try expectCollidingKeysStayFast(&state, &keys);
+}
+
+test "strings with one full hash get a keyed index and intern set" {
+    const allocator = std.testing.allocator;
+    var state = try State.initWithOptions(allocator, .{ .stdlib = .none });
+    defer state.deinit();
+    var keys: [colliding_strings.len]Value = undefined;
+    for (colliding_strings, &keys) |candidate, *key| {
+        const bytes = std.mem.asBytes(&std.mem.nativeToLittle(u64, candidate));
+        try std.testing.expectEqual(colliding_strings_hash, table_index.hashStringKey(bytes));
+        key.* = .{ .string = try state.strings.intern(bytes) };
+    }
+    try std.testing.expect(state.strings.set.salt != 0);
+    for (colliding_strings, keys) |candidate, key| {
+        const bytes = std.mem.asBytes(&std.mem.nativeToLittle(u64, candidate));
+        try std.testing.expectEqual(key.string, try state.strings.intern(bytes));
+    }
+    try expectCollidingKeysStayFast(&state, &keys);
+    for (keys) |key| state.strings.set.remove(key.string);
+    for (colliding_strings) |candidate| {
+        const bytes = std.mem.asBytes(&std.mem.nativeToLittle(u64, candidate));
+        try std.testing.expect(state.strings.set.find(bytes, colliding_strings_hash) == null);
+    }
+    for (keys) |key| state.strings.set.insertAssumeCapacity(key.string);
+}
+
+test "string keys chosen to collide get a salted index and stay readable" {
+    const allocator = std.testing.allocator;
+    var state = try State.initWithOptions(allocator, .{ .stdlib = .none });
+    defer state.deinit();
+
+    var keys = std.ArrayList(Value).empty;
+    defer keys.deinit(allocator);
+    var buffer: [24]u8 = undefined;
+    var candidate: usize = 0;
+    while (keys.items.len < 800) : (candidate += 1) {
+        const text = try std.fmt.bufPrint(&buffer, "k{x}", .{candidate});
+        if (table_index.hashStringKey(text) & 0x7ff != 0) continue;
+        try keys.append(allocator, .{ .string = try state.strings.intern(text) });
+    }
+    const table = (try state.newTableWithHints(0, 0)).table;
+    for (keys.items, 1..) |key, index| try state.setTableRaw(table, key, .{ .integer = @intCast(index) });
+
+    try std.testing.expect(table.hash.?.salt != 0);
+    try std.testing.expect(state.strings.set.salt != 0);
+    for (keys.items, 1..) |key, index| {
+        try std.testing.expectEqual(@as(i64, @intCast(index)), table.get(key).integer);
+    }
+    for (keys.items, 0..) |key, index| {
+        const text = try std.fmt.bufPrint(&buffer, "{s}", .{key.string.bytes()});
+        try std.testing.expectEqual(key.string, try state.strings.intern(text));
+        if (index % 2 == 0) try state.setTableRaw(table, key, .nil);
+    }
+    for (keys.items, 0..) |key, index| {
+        try std.testing.expect((table.get(key) == .nil) == (index % 2 == 0));
     }
 }

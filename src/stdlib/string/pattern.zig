@@ -1,4 +1,5 @@
 const std = @import("std");
+const budget_mod = @import("../../runtime/budget.zig");
 const runtime = @import("../../runtime.zig");
 
 const State = runtime.State;
@@ -56,6 +57,13 @@ pub fn plainFind(source: []const u8, pattern: []const u8, start: usize) ?Match {
 }
 
 pub fn simplePatternFind(state: *State, source: []const u8, pattern: []const u8, start: usize) !?Match {
+    const found = try simplePatternSearch(state, source, pattern, start);
+    const scanned_to = if (found) |matched| matched.range.end else source.len;
+    state.budget.note(budget_mod.cost.scanned(scanned_to -| start));
+    return found;
+}
+
+fn simplePatternSearch(state: *State, source: []const u8, pattern: []const u8, start: usize) !?Match {
     if (pattern.len > 0 and pattern[0] == '^') {
         const anchored_start = @min(start, source.len);
         const matched = (try matchSimplePatternAt(state, source, pattern[1..], anchored_start)) orelse return null;
@@ -75,7 +83,7 @@ pub fn unanchoredPatternFind(state: *State, source: []const u8, pattern: []const
     }
     var candidate = start;
     while (candidate <= source.len) : (candidate += 1) {
-        try state.budget.checkInterrupt();
+        try state.budget.charge(1);
         if (try matchSimplePatternAt(state, source, pattern, candidate)) |matched| return .{ .range = .{ .start = candidate, .end = matched.end }, .captures = matched.captures };
     }
     return null;
@@ -260,10 +268,11 @@ fn matchSimplePatternAt(state: *State, source: []const u8, pattern: []const u8, 
 
 /// Mirrors `match` in lstrlib.c; `depth` counts nested calls toward Lua's limit.
 fn matchPatternFrom(state: *State, source: []const u8, pattern: []const u8, source_start: usize, pattern_start: usize, depth: usize, captures: CaptureState) MatchError!?MatchResult {
-    if (depth >= pattern_match_max_depth) return state.failLibrary("pattern too complex");
+    if (depth >= pattern_match_max_depth or state.native_stack.exceeded()) return state.failLibrary("pattern too complex");
     var s = source_start;
     var p = pattern_start;
     while (true) {
+        try state.budget.charge(1);
         if (p >= pattern.len) {
             if (capturesHaveUnfinished(captures)) return state.failLibrary("unfinished capture");
             return .{ .end = s, .captures = captures };
@@ -336,8 +345,9 @@ fn matchPatternFrom(state: *State, source: []const u8, pattern: []const u8, sour
 fn maxExpand(state: *State, source: []const u8, pattern: []const u8, start: usize, item: []const u8, rest: usize, depth: usize, captures: CaptureState) MatchError!?MatchResult {
     var count: usize = 0;
     while (singleMatch(source, start + count, item)) count += 1;
+    try state.budget.charge(budget_mod.cost.scanned(count));
     while (true) {
-        try state.budget.checkInterrupt();
+        try state.budget.charge(1);
         if (try matchPatternFrom(state, source, pattern, start + count, rest, depth + 1, captures)) |matched| return matched;
         if (count == 0) return null;
         count -= 1;
@@ -347,7 +357,7 @@ fn maxExpand(state: *State, source: []const u8, pattern: []const u8, start: usiz
 fn minExpand(state: *State, source: []const u8, pattern: []const u8, start: usize, item: []const u8, rest: usize, depth: usize, captures: CaptureState) MatchError!?MatchResult {
     var s = start;
     while (true) {
-        try state.budget.checkInterrupt();
+        try state.budget.charge(1);
         if (try matchPatternFrom(state, source, pattern, s, rest, depth + 1, captures)) |matched| return matched;
         if (!singleMatch(source, s, item)) return null;
         s += 1;

@@ -15,6 +15,7 @@
 - [frontend.token](../frontend/token.md)
 - [frontend.diagnostic](../frontend/diagnostic.md)
 - [frontend.lexer](../frontend/lexer.md)
+- [stack_guard](../stack_guard.md)
 - [frontend.ast](../frontend/ast.md)
 - [frontend.parser](../frontend/parser.md)
 - [compile](../compile.md)
@@ -29,26 +30,27 @@
 - [stdlib](../stdlib.md)
 - [stdlib.base](../stdlib/base.md)
 - [runtime.call](../runtime/call.md)
-- [stdlib.static_strings](../stdlib/static_strings.md)
-- [runtime.table_index](../runtime/table_index.md)
+- [runtime.budget](../runtime/budget.md)
+- [runtime.failure](../runtime/failure.md)
+- [runtime.debug](../runtime/debug.md)
+- [runtime.io](../runtime/io.md)
+- [runtime.host](../runtime/host.md)
 - [runtime.value](../runtime/value.md)
 - [runtime.number_format](../runtime/number_format.md)
-- [runtime.coroutine](../runtime/coroutine.md)
-- [runtime.debug](../runtime/debug.md)
+- [stdlib.static_strings](../stdlib/static_strings.md)
+- [runtime.table_index](../runtime/table_index.md)
 - [runtime.metatable](../runtime/metatable.md)
 - [runtime.rollback](../runtime/rollback.md)
 - [runtime.strings](../runtime/strings.md)
 - [runtime.operators](../runtime/operators.md)
-- [runtime.failure](../runtime/failure.md)
-- [runtime.io](../runtime/io.md)
-- [runtime.host](../runtime/host.md)
-- [runtime.load](../runtime/load.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.gc](../runtime/gc.md)
 - [runtime.entry](../runtime/entry.md)
+- [runtime.coroutine](../runtime/coroutine.md)
+- [runtime.load](../runtime/load.md)
+- [runtime.upvalue](../runtime/upvalue.md)
 - [runtime.system](../runtime/system.md)
 - [runtime.timezone](../runtime/timezone.md)
-- [runtime.upvalue](../runtime/upvalue.md)
 - [runtime.index](../runtime/index.md)
 - [stdlib.table](../stdlib/table.md)
 - [stdlib.string](../stdlib/string.md)
@@ -68,7 +70,6 @@
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
-- [runtime.budget](../runtime/budget.md)
 - [runtime.object_pool](../runtime/object_pool.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
@@ -79,6 +80,7 @@
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
 - [api](../api.md)
+- [api.analyze](../api/analyze.md)
 - [api.callbacks](../api/callbacks.md)
 - [api.convert](../api/convert.md)
 - [api.errors](../api/errors.md)
@@ -92,6 +94,7 @@
 - [api.value](../api/value.md)
 - [api.userdata](../api/userdata.md)
 - [api.context](../api/context.md)
+- [api.decode](../api/decode.md)
 - [api.coroutine](../api/coroutine.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
@@ -119,13 +122,85 @@
 - [testing.parallel](../testing/parallel.md)
 - [testing.extension_runner](../testing/extension_runner.md)
 - [testing.official_suite](../testing/official_suite.md)
+- [testing.sandbox_runner](../testing/sandbox_runner.md)
+- [testing.generators](../testing/generators.md)
 
 </details>
 
 ## Types
 
+- [cost](#type-cost)
 - [InterruptControl](#type-interruptcontrol)
 - [Budget](#type-budget)
+
+<a id="type-cost"></a>
+
+## cost
+
+Instructions charged for native work.
+
+```zig
+pub const cost = struct { ... };
+```
+
+### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [copied](#fn-cost-copied) | `bytes: usize` | `u64` |  |
+| [scanned](#fn-cost-scanned) | `bytes: usize` | `u64` |  |
+| [compiled](#fn-cost-compiled) | `bytes: usize` | `u64` |  |
+| [elements](#fn-cost-elements) | `count: usize` | `u64` |  |
+| [registers](#fn-cost-registers) | `count: usize` | `u64` |  |
+| [collected](#fn-cost-collected) | `bytes: usize` | `u64` |  |
+
+<a id="fn-cost-copied"></a>
+
+### cost.copied
+
+```zig
+pub inline fn copied(bytes: usize) u64
+```
+
+<a id="fn-cost-scanned"></a>
+
+### cost.scanned
+
+```zig
+pub inline fn scanned(bytes: usize) u64
+```
+
+<a id="fn-cost-compiled"></a>
+
+### cost.compiled
+
+```zig
+pub inline fn compiled(bytes: usize) u64
+```
+
+<a id="fn-cost-elements"></a>
+
+### cost.elements
+
+```zig
+pub inline fn elements(count: usize) u64
+```
+
+<a id="fn-cost-registers"></a>
+
+### cost.registers
+
+```zig
+pub inline fn registers(count: usize) u64
+```
+
+<a id="fn-cost-collected"></a>
+
+### cost.collected
+
+```zig
+pub inline fn collected(bytes: usize) u64
+```
 
 <a id="type-interruptcontrol"></a>
 
@@ -195,6 +270,8 @@ pub const Budget = struct {
     checkpoint: u64 = 0,
     /// Allocated on first use.
     interrupt: ?*InterruptControl = null,
+    /// Error every later safepoint raises, until the host clears it.
+    stop_message: ?[]const u8 = null,
 };
 ```
 
@@ -203,12 +280,18 @@ pub const Budget = struct {
 | Name | Parameters | Return Type | Description |
 | --- | --- | --- | --- |
 | [checkLimits](#fn-budget-checklimits) | `budget: *Budget, thread: *Thread` | `!void` | Per-instruction safepoint; the hot path is one comparison against &#96;checkpoint&#96;. |
+| [charge](#fn-budget-charge) | `budget: *Budget, instructions: u64` | `!void` | Counts native work and raises when it ends the budget. |
+| [note](#fn-budget-note) | `budget: *Budget, instructions: u64` | `void` | Counts native work on a path that must not fail; the next safepoint enforces the budget. |
+| [noteLongString](#fn-budget-notelongstring) | `budget: *Budget, value: types.Value` | `void` | Counts a read of every byte of &#96;value&#96; when it is a long string. |
+| [stop](#fn-budget-stop) | `budget: *Budget, message: []const u8` | `types.RuntimeError` | Makes &#96;message&#96; the error every later safepoint raises, starting with this call. |
+| [clearStop](#fn-budget-clearstop) | `budget: *Budget` | `void` |  |
 | [checkInterrupt](#fn-budget-checkinterrupt) | `budget: *Budget` | `!void` | Polled periodically by long-running native functions. |
+| [isStopping](#fn-budget-isstopping) | `budget: *const Budget` | `bool` | True when the next safepoint raises an uncatchable error. |
 | [interruptControl](#fn-budget-interruptcontrol) | `budget: *Budget` | `!*InterruptControl` |  |
 | [interruptRequested](#fn-budget-interruptrequested) | `budget: *const Budget` | `bool` |  |
 | [clearInterrupt](#fn-budget-clearinterrupt) | `budget: *Budget` | `void` |  |
 | [fastLoopInterrupted](#fn-budget-fastloopinterrupted) | `budget: *Budget` | `bool` |  |
-| [active](#fn-budget-active) | `budget: *const Budget` | `bool` | The uncounted fast loop is disabled while any instruction budget applies. |
+| [fastLoopAllowance](#fn-budget-fastloopallowance) | `budget: *const Budget` | `u64` | Instructions the fast loop may run before leaving the rest of a budget to metered execution. |
 | [used](#fn-budget-used) | `budget: *const Budget` | `u64` |  |
 | [reset](#fn-budget-reset) | `budget: *Budget` | `void` | Restarts the cumulative &#96;max_instructions&#96; budget. |
 | [beginCall](#fn-budget-begincall) | `budget: *Budget, max: u64` | `?u64` | Limits a host call, including nested calls and coroutines, to &#96;max&#96; further instructions. Returns the enclosing deadline for &#96;endCall&#96;. |
@@ -227,6 +310,64 @@ pub inline fn checkLimits(budget: *Budget, thread: *Thread) !void
 
 References: [`Budget`](#type-budget)
 
+<a id="fn-budget-charge"></a>
+
+### Budget.charge
+
+[Counts](../testing/bench/legacy_process.md#type-counts) native work and raises when it ends the budget.
+
+```zig
+pub inline fn charge(budget: *Budget, instructions: u64) !void
+```
+
+References: [`Budget`](#type-budget)
+
+<a id="fn-budget-note"></a>
+
+### Budget.note
+
+[Counts](../testing/bench/legacy_process.md#type-counts) native work on a path that must not fail; the next safepoint enforces the budget.
+
+```zig
+pub inline fn note(budget: *Budget, instructions: u64) void
+```
+
+References: [`Budget`](#type-budget)
+
+<a id="fn-budget-notelongstring"></a>
+
+### Budget.noteLongString
+
+[Counts](../testing/bench/legacy_process.md#type-counts) a read of every byte of `value` when it is a long string.
+
+```zig
+pub inline fn noteLongString(budget: *Budget, value: types.Value) void
+```
+
+References: [`Budget`](#type-budget)
+
+<a id="fn-budget-stop"></a>
+
+### Budget.stop
+
+Makes `message` the error every later safepoint raises, starting with this call.
+
+```zig
+pub fn stop(budget: *Budget, message: []const u8) types.RuntimeError
+```
+
+References: [`Budget`](#type-budget)
+
+<a id="fn-budget-clearstop"></a>
+
+### Budget.clearStop
+
+```zig
+pub fn clearStop(budget: *Budget) void
+```
+
+References: [`Budget`](#type-budget)
+
 <a id="fn-budget-checkinterrupt"></a>
 
 ### Budget.checkInterrupt
@@ -235,6 +376,18 @@ Polled periodically by long-running native functions.
 
 ```zig
 pub fn checkInterrupt(budget: *Budget) !void
+```
+
+References: [`Budget`](#type-budget)
+
+<a id="fn-budget-isstopping"></a>
+
+### Budget.isStopping
+
+True when the next safepoint raises an uncatchable error.
+
+```zig
+pub fn isStopping(budget: *const Budget) bool
 ```
 
 References: [`Budget`](#type-budget)
@@ -279,14 +432,14 @@ pub inline fn fastLoopInterrupted(budget: *Budget) bool
 
 References: [`Budget`](#type-budget)
 
-<a id="fn-budget-active"></a>
+<a id="fn-budget-fastloopallowance"></a>
 
-### Budget.active
+### Budget.fastLoopAllowance
 
-The uncounted fast loop is disabled while any instruction budget applies.
+Instructions the fast loop may run before leaving the rest of a budget to metered execution.
 
 ```zig
-pub inline fn active(budget: *const Budget) bool
+pub fn fastLoopAllowance(budget: *const Budget) u64
 ```
 
 References: [`Budget`](#type-budget)

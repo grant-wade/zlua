@@ -1,9 +1,9 @@
-# runtime.address_index
+# api.analyze
 
 ## Navigation
 
 - [API Index](../README.md)
-- Parent: [runtime](../runtime.md)
+- Parent: [api](../api.md)
 
 <details>
 <summary>All documents</summary>
@@ -15,6 +15,7 @@
 - [frontend.token](../frontend/token.md)
 - [frontend.diagnostic](../frontend/diagnostic.md)
 - [frontend.lexer](../frontend/lexer.md)
+- [stack_guard](../stack_guard.md)
 - [frontend.ast](../frontend/ast.md)
 - [frontend.parser](../frontend/parser.md)
 - [compile](../compile.md)
@@ -29,25 +30,28 @@
 - [stdlib](../stdlib.md)
 - [stdlib.base](../stdlib/base.md)
 - [runtime.call](../runtime/call.md)
-- [runtime.coroutine](../runtime/coroutine.md)
+- [runtime.budget](../runtime/budget.md)
+- [runtime.failure](../runtime/failure.md)
 - [runtime.debug](../runtime/debug.md)
-- [runtime.metatable](../runtime/metatable.md)
-- [runtime.rollback](../runtime/rollback.md)
+- [runtime.io](../runtime/io.md)
+- [runtime.host](../runtime/host.md)
 - [runtime.value](../runtime/value.md)
 - [runtime.number_format](../runtime/number_format.md)
+- [stdlib.static_strings](../stdlib/static_strings.md)
 - [runtime.table_index](../runtime/table_index.md)
-- [runtime.host](../runtime/host.md)
-- [runtime.upvalue](../runtime/upvalue.md)
-- [runtime.failure](../runtime/failure.md)
-- [runtime.io](../runtime/io.md)
-- [runtime.load](../runtime/load.md)
+- [runtime.metatable](../runtime/metatable.md)
+- [runtime.rollback](../runtime/rollback.md)
+- [runtime.strings](../runtime/strings.md)
+- [runtime.operators](../runtime/operators.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.gc](../runtime/gc.md)
 - [runtime.entry](../runtime/entry.md)
+- [runtime.coroutine](../runtime/coroutine.md)
+- [runtime.load](../runtime/load.md)
+- [runtime.upvalue](../runtime/upvalue.md)
 - [runtime.system](../runtime/system.md)
 - [runtime.timezone](../runtime/timezone.md)
 - [runtime.index](../runtime/index.md)
-- [runtime.operators](../runtime/operators.md)
 - [stdlib.table](../stdlib/table.md)
 - [stdlib.string](../stdlib/string.md)
 - [stdlib.string.format](../stdlib/string/format.md)
@@ -58,7 +62,6 @@
 - [stdlib.coroutine](../stdlib/coroutine.md)
 - [stdlib.debug](../stdlib/debug.md)
 - [stdlib.io](../stdlib/io.md)
-- [stdlib.static_strings](../stdlib/static_strings.md)
 - [stdlib.os](../stdlib/os.md)
 - [stdlib.package](../stdlib/package.md)
 - [stdlib.json](../stdlib/json.md)
@@ -67,18 +70,17 @@
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
-- [runtime.budget](../runtime/budget.md)
-- [runtime.strings](../runtime/strings.md)
+- [runtime.object_pool](../runtime/object_pool.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
 - [runtime.tests](../runtime/tests.md)
 - [runtime.internal](../runtime/internal.md)
 - [runtime.native_fn](../runtime/native_fn.md)
-- [runtime.address_index](../runtime/address_index.md)
 - [compile.compiler](../compile/compiler.md)
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
 - [api](../api.md)
+- [api.analyze](../api/analyze.md)
 - [api.callbacks](../api/callbacks.md)
 - [api.convert](../api/convert.md)
 - [api.errors](../api/errors.md)
@@ -92,6 +94,7 @@
 - [api.value](../api/value.md)
 - [api.userdata](../api/userdata.md)
 - [api.context](../api/context.md)
+- [api.decode](../api/decode.md)
 - [api.coroutine](../api/coroutine.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
@@ -110,6 +113,7 @@
 - [testing.bench.c_startup](../testing/bench/c_startup.md)
 - [testing.bench.snapshots](../testing/bench/snapshots.md)
 - [testing.bench.gc](../testing/bench/gc.md)
+- [testing.bench.system](../testing/bench/system.md)
 - [testing.diff_runner](../testing/diff_runner.md)
 - [testing.fixtures](../testing/fixtures.md)
 - [testing.expected_failures](../testing/expected_failures.md)
@@ -118,62 +122,74 @@
 - [testing.parallel](../testing/parallel.md)
 - [testing.extension_runner](../testing/extension_runner.md)
 - [testing.official_suite](../testing/official_suite.md)
+- [testing.sandbox_runner](../testing/sandbox_runner.md)
+- [testing.generators](../testing/generators.md)
 
 </details>
 
 ## Functions
 
-- [AddressIndexWith](#fn-addressindexwith)
+- [analyze](#fn-analyze)
 
 ## Types
 
-- [Layout](#type-layout)
+- [GlobalUse](#type-globaluse)
+- [Analysis](#type-analysis)
 
-## Constants
+<a id="type-globaluse"></a>
 
-- [AddressIndex](#const-addressindex)
-- [ObjectAddressIndex](#const-objectaddressindex)
+## GlobalUse
 
-<a id="type-layout"></a>
-
-## Layout
+A read or write of a global variable in a chunk's source.
 
 ```zig
-pub const Layout = enum {
-    /// Addresses are mixed fully; safe for densely packed small allocations.
-    scattered,
-    /// Nearby addresses get nearby slots, so allocation-ordered work stays cache friendly.
-    /// Only for allocations of at least 64 bytes, which keep regions sparse.
-    clustered,
+pub const GlobalUse = struct {
+    name: []const u8,
+    line: usize,
+    access: resolver.GlobalAccess,
 };
 ```
 
-<a id="const-addressindex"></a>
+<a id="type-analysis"></a>
 
-## AddressIndex
+## Analysis
 
-```zig
-pub const AddressIndex = AddressIndexWith(.scattered);
-```
-
-<a id="const-objectaddressindex"></a>
-
-## ObjectAddressIndex
+What `analyze` found in a chunk.
 
 ```zig
-pub const ObjectAddressIndex = AddressIndexWith(.clustered);
+pub const Analysis = struct {
+    arena: std.heap.ArenaAllocator,
+    /// Every use of a global through the chunk's own `_ENV`, in source order.
+    globals: []const GlobalUse,
+};
 ```
 
-<a id="fn-addressindexwith"></a>
+### Nested Declarations
 
-## AddressIndexWith
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [deinit](#fn-analysis-deinit) | `self: *Analysis` | `void` |  |
 
-Map from nonzero object addresses to registry positions. Linear probing with
-backward-shift deletion keeps probe chains short under constant allocation churn.
+<a id="fn-analysis-deinit"></a>
+
+### Analysis.deinit
 
 ```zig
-pub fn AddressIndexWith(comptime layout: Layout) type
+pub fn deinit(self: *Analysis) void
 ```
 
-References: [`Layout`](#type-layout)
+References: [`Analysis`](#type-analysis)
+
+<a id="fn-analyze"></a>
+
+## analyze
+
+Parses `source` without running it. Returns `error.SyntaxError` for a chunk that doesn't compile;
+`State.loadString` gives the message.
+
+```zig
+pub fn analyze(allocator: std.mem.Allocator, source: []const u8) (std.mem.Allocator.Error || error{SyntaxError})!Analysis
+```
+
+References: [`SyntaxError`](../errors.md#type-syntaxerror), [`Analysis`](#type-analysis)
 

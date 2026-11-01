@@ -18,6 +18,18 @@ const RuntimeError = runtime.RuntimeError;
 
 pub const dir_separator = if (builtin.os.tag == .windows) "\\" else "/";
 
+/// True when the state's filesystem takes '/'-separated paths on every OS.
+pub fn usesPortablePaths(state: *const State) bool {
+    return switch (state.options.filesystem) {
+        .memory, .memory_rw, .host_dir => true,
+        else => false,
+    };
+}
+
+fn dirSeparator(state: *const State) []const u8 {
+    return if (usesPortablePaths(state)) "/" else dir_separator;
+}
+
 pub fn loadfile(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const path = try optionalPath(state, thread, op, "loadfile");
     const mode = if (op.arg_count >= 2 and runtime.argValue(state, thread, op, 1) == .string) runtime.argValue(state, thread, op, 1).string.bytes() else "bt";
@@ -50,7 +62,10 @@ fn loadChunkFile(state: *State, path: ?[]const u8, mode: []const u8, environment
     const binary = looksLikeBinaryChunk(chunk);
     if (binary and std.mem.indexOfScalar(u8, mode, 'b') == null) return state.fail("attempt to load a binary chunk");
     if (!binary and std.mem.indexOfScalar(u8, mode, 't') == null) return state.fail("attempt to load a text chunk");
-    if (binary) return load_mod.loadBinaryDump(state, chunk, environment);
+    if (binary) {
+        if (!state.options.binary_chunks) return state.fail("binary chunks are disabled");
+        return load_mod.loadBinaryDump(state, chunk, environment);
+    }
 
     prepareTextFileSource(@constCast(source));
     const source_name = if (path) |name| try std.fmt.allocPrint(state.allocator, "@{s}", .{name}) else try state.allocator.dupe(u8, "=stdin");
@@ -174,7 +189,7 @@ pub fn searchpath(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const sep_value = runtime.argValue(state, thread, op, 2);
     const rep_value = runtime.argValue(state, thread, op, 3);
     const sep = if (sep_value == .nil) "." else try state.expectArgumentString(thread, op, "package.searchpath", 2);
-    const rep = if (rep_value == .nil) dir_separator else try state.expectArgumentString(thread, op, "package.searchpath", 3);
+    const rep = if (rep_value == .nil) dirSeparator(state) else try state.expectArgumentString(thread, op, "package.searchpath", 3);
 
     if (try searchPath(state, name, path, sep, rep)) |found| {
         defer state.allocator.free(found);
@@ -253,8 +268,9 @@ fn findFile(state: *State, thread: *Thread, op: bytecode.Call, name: []const u8,
     defer path.deinit(state.allocator);
     try runtime.appendLuaString(state.allocator, &path, path_value);
 
-    if (try searchPath(state, name, path.items, ".", dir_separator)) |found| return found;
-    const message = try searchPathError(state, name, path.items, ".", dir_separator);
+    const separator = dirSeparator(state);
+    if (try searchPath(state, name, path.items, ".", separator)) |found| return found;
+    const message = try searchPathError(state, name, path.items, ".", separator);
     defer state.allocator.free(message);
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(message) }});
     return null;

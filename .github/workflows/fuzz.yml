@@ -1,0 +1,42 @@
+name: Fuzz
+
+on:
+  schedule:
+    - cron: "17 7 * * *"
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: Iterations per fuzz target
+        default: 1M
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: Fuzz targets
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: grant-wade/zig-setup@v1.0.1
+        with:
+          version: "0.17.0"
+          cache-key: fuzz-${{ runner.arch }}-${{ hashFiles('build.zig.zon') }}
+      - name: Cache fuzz corpus
+        uses: actions/cache@v6.1.0
+        with:
+          path: .zig-cache/f
+          key: fuzz-corpus-${{ github.run_id }}
+          restore-keys: fuzz-corpus-
+      - name: Run fuzz targets
+        run: |
+          rm -f .zig-cache/f/crash
+          zig build test --fuzz=${{ inputs.limit || '1M' }} -Doptimize=ReleaseSafe --summary all
+          test ! -e .zig-cache/f/crash
+      - name: Keep crash inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crash
+          path: .zig-cache/f/crash

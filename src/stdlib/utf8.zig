@@ -1,4 +1,5 @@
 const std = @import("std");
+const cost = @import("../runtime/budget.zig").cost;
 const compile = @import("../compile.zig");
 const runtime = @import("../runtime.zig");
 const call_mod = @import("../runtime/call.zig");
@@ -28,15 +29,16 @@ pub fn codepoint(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const strict = !(op.arg_count >= 4 and runtime.truthy(runtime.argValue(state, thread, op, 3)));
     var values = std.ArrayList(Value).empty;
     defer values.deinit(state.allocator);
+    if (start < 1) return state.failArgumentMessage("utf8.codepoint", 2, "out of bounds");
+    if (stop > source.len) return state.failArgumentMessage("utf8.codepoint", 3, "out of bounds");
     if (start > stop) {
         try state.returnValues(thread, op.base, op.return_count, values.items);
         return;
     }
-    if (start < 1) return state.failArgumentMessage("utf8.codepoint", 2, "out of bounds");
-    if (stop > source.len) return state.failArgumentMessage("utf8.codepoint", 3, "out of bounds");
     var pos = if (start <= 1) @as(usize, 0) else start - 1;
     const end = @min(stop, source.len);
     if (!call_mod.nativeStackFits(state, thread, op, end - pos)) return state.failLibrary("stack overflow (string slice too long)");
+    try state.budget.charge(cost.elements(end - pos));
     while (pos < end) {
         const decoded = decodeAt(source, pos, strict) orelse return state.failLibrary("invalid UTF-8 code");
         try values.append(state.allocator, .{ .integer = decoded.codepoint });
@@ -104,6 +106,7 @@ pub fn len(state: *State, thread: *Thread, op: bytecode.Call) !void {
     }
     var pos = if (start <= 1) @as(usize, 0) else start - 1;
     const end = @min(stop, source.len);
+    try state.budget.charge(cost.scanned(end - pos));
     while (pos < end) {
         const decoded = decodeAt(source, pos, strict) orelse {
             try state.returnValues(thread, op.base, op.return_count, &.{ .nil, .{ .integer = @intCast(pos + 1) } });
@@ -118,13 +121,9 @@ pub fn len(state: *State, thread: *Thread, op: bytecode.Call) !void {
 pub fn offset(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const source = try state.expectArgumentString(thread, op, "utf8.offset", 0);
     const n = try state.argumentInteger(thread, op, "utf8.offset", 1);
-    const explicit_pos = op.arg_count >= 3;
-    const pos = normalizeStringIndex(if (explicit_pos) runtime.toInteger(runtime.argValue(state, thread, op, 2)) orelse 1 else if (n >= 0) 1 else @as(i64, @intCast(source.len + 1)), source.len);
-    if (pos < 1 or pos > source.len + 1) {
-        if (explicit_pos) return state.failArgumentMessage("utf8.offset", 3, "position out of bounds");
-        try state.returnValues(thread, op.base, op.return_count, &.{.nil});
-        return;
-    }
+    const default_pos: i64 = if (n >= 0) 1 else @intCast(source.len + 1);
+    const pos = normalizeStringIndex(try state.optionalArgumentInteger(thread, op, "utf8.offset", 2, default_pos), source.len);
+    if (pos < 1 or pos > source.len + 1) return state.failArgumentMessage("utf8.offset", 3, "position out of bounds");
     if (n != 0 and pos <= source.len and isContinuation(source[pos - 1])) return state.failLibrary("initial position is a continuation byte");
 
     if (n == 0) {
@@ -142,7 +141,7 @@ pub fn offset(state: *State, thread: *Thread, op: bytecode.Call) !void {
     };
     if (n < 0 and byte_pos < source.len and isContinuation(source[byte_pos])) return state.failLibrary("initial position is a continuation byte");
 
-    var remaining = if (n > 0) n - 1 else -n - 1;
+    var remaining: u64 = @abs(n) - 1;
     while (remaining > 0) : (remaining -= 1) {
         if (n > 0) {
             if (byte_pos >= source.len) {

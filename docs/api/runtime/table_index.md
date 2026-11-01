@@ -15,6 +15,7 @@
 - [frontend.token](../frontend/token.md)
 - [frontend.diagnostic](../frontend/diagnostic.md)
 - [frontend.lexer](../frontend/lexer.md)
+- [stack_guard](../stack_guard.md)
 - [frontend.ast](../frontend/ast.md)
 - [frontend.parser](../frontend/parser.md)
 - [compile](../compile.md)
@@ -29,26 +30,27 @@
 - [stdlib](../stdlib.md)
 - [stdlib.base](../stdlib/base.md)
 - [runtime.call](../runtime/call.md)
-- [stdlib.static_strings](../stdlib/static_strings.md)
-- [runtime.table_index](../runtime/table_index.md)
+- [runtime.budget](../runtime/budget.md)
+- [runtime.failure](../runtime/failure.md)
+- [runtime.debug](../runtime/debug.md)
+- [runtime.io](../runtime/io.md)
+- [runtime.host](../runtime/host.md)
 - [runtime.value](../runtime/value.md)
 - [runtime.number_format](../runtime/number_format.md)
-- [runtime.coroutine](../runtime/coroutine.md)
-- [runtime.debug](../runtime/debug.md)
+- [stdlib.static_strings](../stdlib/static_strings.md)
+- [runtime.table_index](../runtime/table_index.md)
 - [runtime.metatable](../runtime/metatable.md)
 - [runtime.rollback](../runtime/rollback.md)
 - [runtime.strings](../runtime/strings.md)
 - [runtime.operators](../runtime/operators.md)
-- [runtime.failure](../runtime/failure.md)
-- [runtime.io](../runtime/io.md)
-- [runtime.host](../runtime/host.md)
-- [runtime.load](../runtime/load.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.gc](../runtime/gc.md)
 - [runtime.entry](../runtime/entry.md)
+- [runtime.coroutine](../runtime/coroutine.md)
+- [runtime.load](../runtime/load.md)
+- [runtime.upvalue](../runtime/upvalue.md)
 - [runtime.system](../runtime/system.md)
 - [runtime.timezone](../runtime/timezone.md)
-- [runtime.upvalue](../runtime/upvalue.md)
 - [runtime.index](../runtime/index.md)
 - [stdlib.table](../stdlib/table.md)
 - [stdlib.string](../stdlib/string.md)
@@ -68,7 +70,6 @@
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
-- [runtime.budget](../runtime/budget.md)
 - [runtime.object_pool](../runtime/object_pool.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
@@ -79,6 +80,7 @@
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
 - [api](../api.md)
+- [api.analyze](../api/analyze.md)
 - [api.callbacks](../api/callbacks.md)
 - [api.convert](../api/convert.md)
 - [api.errors](../api/errors.md)
@@ -92,6 +94,7 @@
 - [api.value](../api/value.md)
 - [api.userdata](../api/userdata.md)
 - [api.context](../api/context.md)
+- [api.decode](../api/decode.md)
 - [api.coroutine](../api/coroutine.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
@@ -119,11 +122,15 @@
 - [testing.parallel](../testing/parallel.md)
 - [testing.extension_runner](../testing/extension_runner.md)
 - [testing.official_suite](../testing/official_suite.md)
+- [testing.sandbox_runner](../testing/sandbox_runner.md)
+- [testing.generators](../testing/generators.md)
 
 </details>
 
 ## Functions
 
+- [newHashSalt](#fn-newhashsalt)
+- [slotHashOfBytes](#fn-slothashofbytes)
 - [hashKey](#fn-hashkey)
 - [foldHash](#fn-foldhash)
 - [hashStringKey](#fn-hashstringkey)
@@ -132,6 +139,7 @@
 ## Types
 
 - [HashPart](#type-hashpart)
+- [ChainLength](#type-chainlength)
 
 <a id="type-hashpart"></a>
 
@@ -144,6 +152,8 @@ pub const HashPart = struct {
     len: u32 align(@alignOf(TableEntry)) = 0,
     capacity: u32,
     slot_count: u32,
+    /// Nonzero after a long probe chain; slot hashes are then keyed with it.
+    salt: u32 = 0,
 };
 ```
 
@@ -161,7 +171,7 @@ pub const HashPart = struct {
 | [entries](#fn-hashpart-entries) | `self: *const HashPart` | `[]TableEntry` |  |
 | [slots](#fn-hashpart-slots) | `self: *const HashPart` | `[]Slot` |  |
 | [find](#fn-hashpart-find) | `self: *const HashPart, key: Value` | `?usize` |  |
-| [findBytes](#fn-hashpart-findbytes) | `self: *const HashPart, key: []const u8, hash: u32` | `?usize` |  |
+| [findBytes](#fn-hashpart-findbytes) | `self: *const HashPart, key: []const u8, key_hash: u32` | `?usize` | &#96;key_hash&#96; is &#96;hashStringKey(key)&#96;. |
 | [appendAssumeCapacity](#fn-hashpart-appendassumecapacity) | `self: *HashPart, key: Value, value: Value` | `void` | &#96;key&#96; must be absent and &#96;len&#96; below &#96;capacity&#96;. |
 | [reindex](#fn-hashpart-reindex) | `self: *HashPart` | `void` | Restores the index after entries were removed, moved, or copied in. |
 
@@ -267,8 +277,10 @@ References: [`HashPart`](#type-hashpart)
 
 ### HashPart.findBytes
 
+`key_hash` is `hashStringKey(key)`.
+
 ```zig
-pub inline fn findBytes(self: *const HashPart, key: []const u8, hash: u32) ?usize
+pub inline fn findBytes(self: *const HashPart, key: []const u8, key_hash: u32) ?usize
 ```
 
 References: [`HashPart`](#type-hashpart)
@@ -296,6 +308,68 @@ pub fn reindex(self: *HashPart) void
 ```
 
 References: [`HashPart`](#type-hashpart)
+
+<a id="type-chainlength"></a>
+
+## ChainLength
+
+Probes made placing a key in a table or the intern set.
+
+```zig
+pub const ChainLength = struct {
+    probes: u32 = 0,
+    same_hash: u32 = 0,
+};
+```
+
+### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [add](#fn-chainlength-add) | `self: *ChainLength, same_hash: bool` | `void` |  |
+| [isLong](#fn-chainlength-islong) | `self: ChainLength` | `bool` | True when the keys look chosen to collide. |
+
+<a id="fn-chainlength-add"></a>
+
+### ChainLength.add
+
+```zig
+pub inline fn add(self: *ChainLength, same_hash: bool) void
+```
+
+References: [`ChainLength`](#type-chainlength)
+
+<a id="fn-chainlength-islong"></a>
+
+### ChainLength.isLong
+
+True when the keys look chosen to collide.
+
+```zig
+pub inline fn isLong(self: ChainLength) bool
+```
+
+References: [`ChainLength`](#type-chainlength)
+
+<a id="fn-newhashsalt"></a>
+
+## newHashSalt
+
+A nonzero per-index key a script can't predict. `seed` distinguishes indexes.
+
+```zig
+pub fn newHashSalt(seed: usize) u32
+```
+
+<a id="fn-slothashofbytes"></a>
+
+## slotHashOfBytes
+
+The slot hash of `bytes`, whose `hashStringKey` is `bytes_hash`, in an index with `salt`.
+
+```zig
+pub inline fn slotHashOfBytes(bytes: []const u8, bytes_hash: u32, salt: u32) u32
+```
 
 <a id="fn-hashkey"></a>
 

@@ -25,6 +25,7 @@ pub fn main() !void {
         .limits = .{
             .max_memory = 16 * 1024 * 1024,
             .max_instructions = 1_000_000,
+            .max_output_bytes = 1024 * 1024,
         },
     });
     defer lua.deinit();

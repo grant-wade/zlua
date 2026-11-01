@@ -14,6 +14,7 @@
 - [frontend.token](frontend/token.md)
 - [frontend.diagnostic](frontend/diagnostic.md)
 - [frontend.lexer](frontend/lexer.md)
+- [stack_guard](stack_guard.md)
 - [frontend.ast](frontend/ast.md)
 - [frontend.parser](frontend/parser.md)
 - [compile](compile.md)
@@ -28,26 +29,27 @@
 - [stdlib](stdlib.md)
 - [stdlib.base](stdlib/base.md)
 - [runtime.call](runtime/call.md)
-- [stdlib.static_strings](stdlib/static_strings.md)
-- [runtime.table_index](runtime/table_index.md)
+- [runtime.budget](runtime/budget.md)
+- [runtime.failure](runtime/failure.md)
+- [runtime.debug](runtime/debug.md)
+- [runtime.io](runtime/io.md)
+- [runtime.host](runtime/host.md)
 - [runtime.value](runtime/value.md)
 - [runtime.number_format](runtime/number_format.md)
-- [runtime.coroutine](runtime/coroutine.md)
-- [runtime.debug](runtime/debug.md)
+- [stdlib.static_strings](stdlib/static_strings.md)
+- [runtime.table_index](runtime/table_index.md)
 - [runtime.metatable](runtime/metatable.md)
 - [runtime.rollback](runtime/rollback.md)
 - [runtime.strings](runtime/strings.md)
 - [runtime.operators](runtime/operators.md)
-- [runtime.failure](runtime/failure.md)
-- [runtime.io](runtime/io.md)
-- [runtime.host](runtime/host.md)
-- [runtime.load](runtime/load.md)
 - [runtime.vm](runtime/vm.md)
 - [runtime.gc](runtime/gc.md)
 - [runtime.entry](runtime/entry.md)
+- [runtime.coroutine](runtime/coroutine.md)
+- [runtime.load](runtime/load.md)
+- [runtime.upvalue](runtime/upvalue.md)
 - [runtime.system](runtime/system.md)
 - [runtime.timezone](runtime/timezone.md)
-- [runtime.upvalue](runtime/upvalue.md)
 - [runtime.index](runtime/index.md)
 - [stdlib.table](stdlib/table.md)
 - [stdlib.string](stdlib/string.md)
@@ -67,7 +69,6 @@
 - [stdlib.msgpack](stdlib/msgpack.md)
 - [stdlib.csv](stdlib/csv.md)
 - [stdlib.fs](stdlib/fs.md)
-- [runtime.budget](runtime/budget.md)
 - [runtime.object_pool](runtime/object_pool.md)
 - [runtime.execute](runtime/execute.md)
 - [testing.process](testing/process.md)
@@ -78,6 +79,7 @@
 - [compile.fold](compile/fold.md)
 - [compile.disasm](compile/disasm.md)
 - [api](api.md)
+- [api.analyze](api/analyze.md)
 - [api.callbacks](api/callbacks.md)
 - [api.convert](api/convert.md)
 - [api.errors](api/errors.md)
@@ -91,6 +93,7 @@
 - [api.value](api/value.md)
 - [api.userdata](api/userdata.md)
 - [api.context](api/context.md)
+- [api.decode](api/decode.md)
 - [api.coroutine](api/coroutine.md)
 - [api.snapshot](api/snapshot.md)
 - [api.memory_limit](api/memory_limit.md)
@@ -118,6 +121,8 @@
 - [testing.parallel](testing/parallel.md)
 - [testing.extension_runner](testing/extension_runner.md)
 - [testing.official_suite](testing/official_suite.md)
+- [testing.sandbox_runner](testing/sandbox_runner.md)
+- [testing.generators](testing/generators.md)
 
 </details>
 
@@ -142,6 +147,7 @@
 - [LibrarySet](#alias-libraryset)
 - [Value](#alias-value)
 - [Ref](#alias-ref)
+- [HandleScope](#alias-handlescope)
 - [Table](#alias-table)
 - [Function](#alias-function)
 - [Coroutine](#alias-coroutine)
@@ -150,15 +156,31 @@
 - [CallResult](#alias-callresult)
 - [ErrorRef](#alias-errorref)
 - [CallOptions](#alias-calloptions)
+- [ResumeOptions](#alias-resumeoptions)
 - [InterruptHandle](#alias-interrupthandle)
 - [Context](#alias-context)
+- [Host](#alias-host)
+- [Caller](#alias-caller)
 - [Error](#alias-error)
 - [BytecodeLoadOptions](#alias-bytecodeloadoptions)
 - [BytecodeDumpOptions](#alias-bytecodedumpoptions)
 - [Tuple](#alias-tuple)
 - [HostFn](#alias-hostfn)
+- [Analysis](#alias-analysis)
+- [GlobalUse](#alias-globaluse)
+- [analyze](#alias-analyze)
+- [Decoder](#alias-decoder)
+- [DecodeError](#alias-decodeerror)
+- [DecodeOptions](#alias-decodeoptions)
+- [Diagnostic](#alias-diagnostic)
+- [FieldOptions](#alias-fieldoptions)
+- [decode](#alias-decode)
+- [defaultValue](#alias-defaultvalue)
+- [fieldKeys](#alias-fieldkeys)
+- [fieldOptions](#alias-fieldoptions)
 - [Userdata](#alias-userdata)
 - [AnyUserdata](#alias-anyuserdata)
+- [UserdataType](#alias-userdatatype)
 - [MemoryFile](#alias-memoryfile)
 - [MemoryFilesystem](#alias-memoryfilesystem)
 - [FilesystemCapability](#alias-filesystemcapability)
@@ -177,6 +199,25 @@
 - [ProcessResult](#alias-processresult)
 - [ProcessStatus](#alias-processstatus)
 - [OutputFlush](#alias-outputflush)
+- [UnsupportedOption](#alias-unsupportedoption)
+- [ConversionError](#alias-conversionerror)
+- [HostData](#alias-hostdata)
+- [Limits](#alias-limits)
+- [InstructionBudget](#alias-instructionbudget)
+- [DebugOptions](#alias-debugoptions)
+- [LoadMode](#alias-loadmode)
+- [LoadOptions](#alias-loadoptions)
+- [DoOptions](#alias-dooptions)
+- [TableOptions](#alias-tableoptions)
+- [IoCapability](#alias-iocapability)
+- [FixedClock](#alias-fixedclock)
+- [UtcOffset](#alias-utcoffset)
+- [PopenResult](#alias-popenresult)
+- [ExitRequest](#alias-exitrequest)
+- [WarningHandler](#alias-warninghandler)
+- [Capabilities](#alias-capabilities)
+- [UserdataOptions](#alias-userdataoptions)
+- [UserdataPtrOptions](#alias-userdataptroptions)
 
 ## Imports
 
@@ -193,7 +234,7 @@
 ## version
 
 ```zig
-pub const version = "0.7.3";
+pub const version = "0.8.0";
 ```
 
 <a id="const-lua_target_version"></a>
@@ -400,6 +441,16 @@ pub const Ref = api.Ref;
 
 References: [`api.Ref`](api.md#alias-ref)
 
+<a id="alias-handlescope"></a>
+
+## HandleScope
+
+```zig
+pub const HandleScope = api.HandleScope;
+```
+
+References: [`api.HandleScope`](api.md#alias-handlescope)
+
 <a id="alias-table"></a>
 
 ## Table
@@ -480,6 +531,16 @@ pub const CallOptions = api.CallOptions;
 
 References: [`api.CallOptions`](api.md#alias-calloptions)
 
+<a id="alias-resumeoptions"></a>
+
+## ResumeOptions
+
+```zig
+pub const ResumeOptions = api.ResumeOptions;
+```
+
+References: [`api.ResumeOptions`](api.md#alias-resumeoptions)
+
 <a id="alias-interrupthandle"></a>
 
 ## InterruptHandle
@@ -499,6 +560,26 @@ pub const Context = api.Context;
 ```
 
 References: [`api.Context`](api.md#alias-context)
+
+<a id="alias-host"></a>
+
+## Host
+
+```zig
+pub const Host = api.Host;
+```
+
+References: [`api.Host`](api.md#alias-host)
+
+<a id="alias-caller"></a>
+
+## Caller
+
+```zig
+pub const Caller = api.Caller;
+```
+
+References: [`api.Caller`](api.md#alias-caller)
 
 <a id="alias-error"></a>
 
@@ -550,6 +631,126 @@ pub const HostFn = api.HostFn;
 
 References: [`api.HostFn`](api.md#alias-hostfn)
 
+<a id="alias-analysis"></a>
+
+## Analysis
+
+```zig
+pub const Analysis = api.Analysis;
+```
+
+References: [`api.Analysis`](api.md#alias-analysis)
+
+<a id="alias-globaluse"></a>
+
+## GlobalUse
+
+```zig
+pub const GlobalUse = api.GlobalUse;
+```
+
+References: [`api.GlobalUse`](api.md#alias-globaluse)
+
+<a id="alias-analyze"></a>
+
+## analyze
+
+```zig
+pub const analyze = api.analyze;
+```
+
+References: [`api.analyze`](api.md#alias-analyze)
+
+<a id="alias-decoder"></a>
+
+## Decoder
+
+```zig
+pub const Decoder = api.Decoder;
+```
+
+References: [`api.Decoder`](api.md#alias-decoder)
+
+<a id="alias-decodeerror"></a>
+
+## DecodeError
+
+```zig
+pub const DecodeError = api.DecodeError;
+```
+
+References: [`api.DecodeError`](api.md#alias-decodeerror)
+
+<a id="alias-decodeoptions"></a>
+
+## DecodeOptions
+
+```zig
+pub const DecodeOptions = api.DecodeOptions;
+```
+
+References: [`api.DecodeOptions`](api.md#alias-decodeoptions)
+
+<a id="alias-diagnostic"></a>
+
+## Diagnostic
+
+```zig
+pub const Diagnostic = api.Diagnostic;
+```
+
+References: [`api.Diagnostic`](api.md#alias-diagnostic)
+
+<a id="alias-fieldoptions"></a>
+
+## FieldOptions
+
+```zig
+pub const FieldOptions = api.FieldOptions;
+```
+
+References: [`api.FieldOptions`](api.md#alias-fieldoptions)
+
+<a id="alias-decode"></a>
+
+## decode
+
+```zig
+pub const decode = api.decode;
+```
+
+References: [`api.decode`](api.md#alias-decode)
+
+<a id="alias-defaultvalue"></a>
+
+## defaultValue
+
+```zig
+pub const defaultValue = api.defaultValue;
+```
+
+References: [`api.defaultValue`](api.md#alias-defaultvalue)
+
+<a id="alias-fieldkeys"></a>
+
+## fieldKeys
+
+```zig
+pub const fieldKeys = api.fieldKeys;
+```
+
+References: [`api.fieldKeys`](api.md#alias-fieldkeys)
+
+<a id="alias-fieldoptions"></a>
+
+## fieldOptions
+
+```zig
+pub const fieldOptions = api.fieldOptions;
+```
+
+References: [`api.fieldOptions`](api.md#alias-fieldoptions)
+
 <a id="alias-userdata"></a>
 
 ## Userdata
@@ -569,6 +770,16 @@ pub const AnyUserdata = api.AnyUserdata;
 ```
 
 References: [`api.AnyUserdata`](api.md#alias-anyuserdata)
+
+<a id="alias-userdatatype"></a>
+
+## UserdataType
+
+```zig
+pub const UserdataType = api.UserdataType;
+```
+
+References: [`api.UserdataType`](api.md#alias-userdatatype)
 
 <a id="alias-memoryfile"></a>
 
@@ -749,4 +960,194 @@ pub const OutputFlush = api.OutputFlush;
 ```
 
 References: [`api.OutputFlush`](api.md#alias-outputflush)
+
+<a id="alias-unsupportedoption"></a>
+
+## UnsupportedOption
+
+```zig
+pub const UnsupportedOption = api.UnsupportedOption;
+```
+
+References: [`api.UnsupportedOption`](api.md#alias-unsupportedoption)
+
+<a id="alias-conversionerror"></a>
+
+## ConversionError
+
+```zig
+pub const ConversionError = api.ConversionError;
+```
+
+References: [`api.ConversionError`](api.md#alias-conversionerror)
+
+<a id="alias-hostdata"></a>
+
+## HostData
+
+```zig
+pub const HostData = api.HostData;
+```
+
+References: [`api.HostData`](api.md#alias-hostdata)
+
+<a id="alias-limits"></a>
+
+## Limits
+
+```zig
+pub const Limits = api.Limits;
+```
+
+References: [`api.Limits`](api.md#alias-limits)
+
+<a id="alias-instructionbudget"></a>
+
+## InstructionBudget
+
+```zig
+pub const InstructionBudget = api.InstructionBudget;
+```
+
+References: [`api.InstructionBudget`](api.md#alias-instructionbudget)
+
+<a id="alias-debugoptions"></a>
+
+## DebugOptions
+
+```zig
+pub const DebugOptions = api.DebugOptions;
+```
+
+References: [`api.DebugOptions`](api.md#alias-debugoptions)
+
+<a id="alias-loadmode"></a>
+
+## LoadMode
+
+```zig
+pub const LoadMode = api.LoadMode;
+```
+
+References: [`api.LoadMode`](api.md#alias-loadmode)
+
+<a id="alias-loadoptions"></a>
+
+## LoadOptions
+
+```zig
+pub const LoadOptions = api.LoadOptions;
+```
+
+References: [`api.LoadOptions`](api.md#alias-loadoptions)
+
+<a id="alias-dooptions"></a>
+
+## DoOptions
+
+```zig
+pub const DoOptions = api.DoOptions;
+```
+
+References: [`api.DoOptions`](api.md#alias-dooptions)
+
+<a id="alias-tableoptions"></a>
+
+## TableOptions
+
+```zig
+pub const TableOptions = api.TableOptions;
+```
+
+References: [`api.TableOptions`](api.md#alias-tableoptions)
+
+<a id="alias-iocapability"></a>
+
+## IoCapability
+
+```zig
+pub const IoCapability = api.IoCapability;
+```
+
+References: [`api.IoCapability`](api.md#alias-iocapability)
+
+<a id="alias-fixedclock"></a>
+
+## FixedClock
+
+```zig
+pub const FixedClock = api.FixedClock;
+```
+
+References: [`api.FixedClock`](api.md#alias-fixedclock)
+
+<a id="alias-utcoffset"></a>
+
+## UtcOffset
+
+```zig
+pub const UtcOffset = api.UtcOffset;
+```
+
+References: [`api.UtcOffset`](api.md#alias-utcoffset)
+
+<a id="alias-popenresult"></a>
+
+## PopenResult
+
+```zig
+pub const PopenResult = api.PopenResult;
+```
+
+References: [`api.PopenResult`](api.md#alias-popenresult)
+
+<a id="alias-exitrequest"></a>
+
+## ExitRequest
+
+```zig
+pub const ExitRequest = api.ExitRequest;
+```
+
+References: [`api.ExitRequest`](api.md#alias-exitrequest)
+
+<a id="alias-warninghandler"></a>
+
+## WarningHandler
+
+```zig
+pub const WarningHandler = api.WarningHandler;
+```
+
+References: [`api.WarningHandler`](api.md#alias-warninghandler)
+
+<a id="alias-capabilities"></a>
+
+## Capabilities
+
+```zig
+pub const Capabilities = api.Capabilities;
+```
+
+References: [`api.Capabilities`](api.md#alias-capabilities)
+
+<a id="alias-userdataoptions"></a>
+
+## UserdataOptions
+
+```zig
+pub const UserdataOptions = api.UserdataOptions;
+```
+
+References: [`api.UserdataOptions`](api.md#alias-userdataoptions)
+
+<a id="alias-userdataptroptions"></a>
+
+## UserdataPtrOptions
+
+```zig
+pub const UserdataPtrOptions = api.UserdataPtrOptions;
+```
+
+References: [`api.UserdataPtrOptions`](api.md#alias-userdataptroptions)
 

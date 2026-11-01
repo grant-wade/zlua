@@ -5,6 +5,7 @@ const errors = @import("errors.zig");
 const handle = @import("handle.zig");
 const userdata_mod = @import("userdata.zig");
 const AnyUserdata = userdata_mod.AnyUserdata;
+const decode_mod = @import("decode.zig");
 const Coroutine = @import("coroutine.zig").Coroutine;
 const ErrorRef = errors.ErrorRef;
 const Function = @import("function.zig").Function;
@@ -58,7 +59,6 @@ pub fn toRuntimeValue(state: *State, value: anytype) !runtime.Value {
         .function => |v| toRuntimeValue(state, v),
         .coroutine => |v| toRuntimeValue(state, v),
         .userdata => |v| toRuntimeValue(state, v),
-        .unsupported => error.UnsupportedType,
     };
     if (T == Ref) {
         try handle.validate(value, state);
@@ -68,6 +68,9 @@ pub fn toRuntimeValue(state: *State, value: anytype) !runtime.Value {
         try handle.validate(value.ref, state);
         return handle.rawValue(value.ref);
     }
+    if (comptime decode_mod.hasToLua(T)) return toRuntimeValue(state, value.toLua());
+    if (comptime decode_mod.isEnumArray(T)) return enumArrayToRuntimeValue(state, value);
+    if (comptime decode_mod.isEnumSet(T)) return enumSetToRuntimeValue(state, value);
 
     return switch (@typeInfo(T)) {
         .null => .nil,
@@ -80,9 +83,37 @@ pub fn toRuntimeValue(state: *State, value: anytype) !runtime.Value {
             .{ .string = try state.raw_state.strings.intern(value[0..]) }
         else
             arrayToRuntimeValue(state, value[0..]),
+        .vector => |vector| arrayToRuntimeValue(state, @as([vector.len]vector.child, value)[0..]),
         .@"struct" => |info| structToRuntimeValue(state, value, info),
+        .@"enum" => .{ .string = try state.raw_state.strings.intern(std.enums.tagName(T, value) orelse return error.UnsupportedType) },
+        .enum_literal => .{ .string = try state.raw_state.strings.intern(@tagName(value)) },
         else => error.UnsupportedType,
     };
+}
+
+fn enumArrayToRuntimeValue(state: *State, value: anytype) !runtime.Value {
+    const T = @TypeOf(value);
+    const table = state.raw_state.newTableWithHints(0, T.len) catch |err| return errors.captureLuaError(state, err);
+    inline for (comptime reflection.fieldsOf(T.Key)) |name| {
+        const raw_key = runtime.Value{ .string = try state.raw_state.strings.intern(name) };
+        const raw_value = try toRuntimeValue(state, value.get(@field(T.Key, name)));
+        index_mod.setTableValue(&state.raw_state, table, raw_key, raw_value) catch |err| return errors.captureLuaError(state, err);
+    }
+    return table;
+}
+
+fn enumSetToRuntimeValue(state: *State, value: anytype) !runtime.Value {
+    const T = @TypeOf(value);
+    const table = state.raw_state.newTableWithHints(@intCast(value.count()), 0) catch |err| return errors.captureLuaError(state, err);
+    var next: i64 = 1;
+    inline for (comptime reflection.fieldsOf(T.Key)) |name| {
+        if (value.contains(@field(T.Key, name))) {
+            const raw_name = runtime.Value{ .string = try state.raw_state.strings.intern(name) };
+            index_mod.setTableValue(&state.raw_state, table, .{ .integer = next }, raw_name) catch |err| return errors.captureLuaError(state, err);
+            next += 1;
+        }
+    }
+    return table;
 }
 
 fn pointerToRuntimeValue(state: *State, value: anytype, comptime pointer: std.builtin.Type.Pointer) !runtime.Value {
@@ -120,12 +151,22 @@ fn structToRuntimeValue(state: *State, value: anytype, comptime info: std.builti
     const hash_hint = std.math.cast(u32, reflection.fieldNames(info).len) orelse return error.IntegerOutOfRange;
 
     const table = state.raw_state.newTableWithHints(0, hash_hint) catch |err| return errors.captureLuaError(state, err);
-    inline for (reflection.fieldNames(info)) |field| {
-        const raw_key = runtime.Value{ .string = try state.raw_state.strings.intern(field) };
-        const raw_value = try toRuntimeValue(state, @field(value, field));
-        index_mod.setTableValue(&state.raw_state, table, raw_key, raw_value) catch |err| return errors.captureLuaError(state, err);
-    }
+    try writeStructFields(state, table, value);
     return table;
+}
+
+fn writeStructFields(state: *State, table: runtime.Value, value: anytype) !void {
+    const T = @TypeOf(value);
+    inline for (comptime reflection.fieldsOf(T)) |field| {
+        const options = comptime decode_mod.fieldOptions(T, field);
+        if (options.embed) {
+            try writeStructFields(state, table, @field(value, field));
+        } else {
+            const raw_key = runtime.Value{ .string = try state.raw_state.strings.intern(options.key) };
+            const raw_value = try toRuntimeValue(state, @field(value, field));
+            index_mod.setTableValue(&state.raw_state, table, raw_key, raw_value) catch |err| return errors.captureLuaError(state, err);
+        }
+    }
 }
 
 fn tupleToRuntimeValue(state: *State, value: anytype, comptime len: usize) !runtime.Value {
@@ -163,7 +204,7 @@ pub fn fromRuntimeValue(state: *State, raw: runtime.Value, comptime T: type) !T 
     if (T == Value) return valueFromRuntime(state, raw);
     if (T == Ref) return handle.fromRuntime(state, raw);
     if (T == Table) return if (raw == .table) rooted(Table, state, raw) else error.TypeMismatch;
-    if (T == Function) return if (raw == .closure or raw == .api_callback) rooted(Function, state, raw) else error.TypeMismatch;
+    if (T == Function) return if (isFunction(raw)) rooted(Function, state, raw) else error.TypeMismatch;
     if (T == Coroutine) return if (raw == .thread) rooted(Coroutine, state, raw) else error.TypeMismatch;
     if (T == AnyUserdata) return if (raw == .userdata) rooted(AnyUserdata, state, raw) else error.TypeMismatch;
     if (comptime userdata_mod.isHandle(T)) return switch (raw) {
@@ -217,10 +258,16 @@ fn valueFromRuntime(state: *State, raw: runtime.Value) !Value {
         .number => |number| .{ .number = number },
         .string => |string| .{ .string = string.bytes() },
         .table => .{ .table = try rooted(Table, state, raw) },
-        .closure, .api_callback => .{ .function = try rooted(Function, state, raw) },
         .userdata => .{ .userdata = try rooted(AnyUserdata, state, raw) },
         .thread => .{ .coroutine = try rooted(Coroutine, state, raw) },
-        else => .unsupported,
+        else => .{ .function = try rooted(Function, state, raw) },
+    };
+}
+
+fn isFunction(raw: runtime.Value) bool {
+    return switch (raw) {
+        .nil, .boolean, .integer, .number, .string, .table, .userdata, .thread => false,
+        else => true,
     };
 }
 
@@ -228,10 +275,10 @@ fn rooted(comptime H: type, state: *State, raw: runtime.Value) !H {
     return .{ .ref = try handle.fromRuntime(state, raw) };
 }
 
-fn integerFromFloat(value: f64) ?i64 {
+pub fn integerFromFloat(value: f64) ?i64 {
     if (!std.math.isFinite(value)) return null;
     if (@trunc(value) != value) return null;
-    if (value < @as(f64, @floatFromInt(std.math.minInt(i64))) or value > @as(f64, @floatFromInt(std.math.maxInt(i64)))) return null;
+    if (value < @as(f64, @floatFromInt(std.math.minInt(i64))) or value >= @as(f64, @floatFromInt(std.math.maxInt(i64)))) return null;
     return @intFromFloat(value);
 }
 
@@ -242,12 +289,12 @@ fn isTupleResult(comptime T: type) bool {
     };
 }
 
-fn isOwnedApiValue(comptime T: type) bool {
-    return T == Value or T == Ref or T == Table or T == Function or T == Coroutine or T == ErrorRef or T == AnyUserdata or userdata_mod.isHandle(T);
+pub fn isOwnedApiValue(comptime T: type) bool {
+    return isTupleResult(T) or T == Value or T == Ref or T == Table or T == Function or T == Coroutine or T == ErrorRef or T == AnyUserdata or userdata_mod.isHandle(T);
 }
 
 pub fn deinitIfOwned(comptime T: type, value: *T) void {
-    if (comptime isOwnedApiValue(T) or isTupleResult(T)) {
+    if (comptime isOwnedApiValue(T)) {
         value.deinit();
     } else if (comptime @typeInfo(T) == .optional) {
         if (value.*) |*payload| deinitIfOwned(@typeInfo(T).optional.child, payload);

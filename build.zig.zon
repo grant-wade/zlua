@@ -1,12 +1,12 @@
 .{
     .name = .zlua,
-    .version = "0.7.3",
+    .version = "0.8.0",
     .fingerprint = 0xcf671dd1c69d54b,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{
         .zerde = .{
-            .url = "git+https://github.com/grant-wade/zerde?ref=v0.3.2#22cc699f6ef3b4277325e1c5768d4ee1cc4a12cf",
-            .hash = "zerde-0.3.2-r7zGawDsDAD88mv-CNQoN6mi9qICWtZNHiGKaKlDjy8_",
+            .url = "git+https://github.com/grant-wade/zerde?ref=v0.3.4#25640ef439dd3499e87f79e837d31bd8d96459ba",
+            .hash = "zerde-0.3.4-r7zGa1cFDQArMM4w5flT3P2m690_fB6Sy3NsgLH-Y86L",
         },
     },
     .paths = .{

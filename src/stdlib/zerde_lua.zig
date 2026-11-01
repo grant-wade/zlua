@@ -1,4 +1,5 @@
 const std = @import("std");
+const cost = @import("../runtime/budget.zig").cost;
 const zerde = @import("zerde");
 const runtime = @import("../runtime.zig");
 const io = @import("io.zig");
@@ -28,7 +29,17 @@ pub fn nullValue(state: *State) !Value {
     return .{ .table = state.library_tables.get(.zerde_null).? };
 }
 
+/// Peak bytes a format reader allocates per input byte, for the format that needs the most.
+const reader_peak_factor = 6;
+
 pub fn inputBytes(state: *State, value: Value, function_name: []const u8) ![]const u8 {
+    const bytes = try readInput(state, value, function_name);
+    try state.budget.charge(cost.scanned(bytes.len));
+    if (state.current_thread) |thread| try state.gc.reserve(thread, bytes.len *| reader_peak_factor);
+    return bytes;
+}
+
+fn readInput(state: *State, value: Value, function_name: []const u8) ![]const u8 {
     return switch (value) {
         .string => |string| string.bytes(),
         else => if (io.checkedFile(state, value) != null) {
@@ -134,6 +145,7 @@ pub const LuaSink = struct {
     }
 
     fn appendValue(self: *LuaSink, value: Value) !void {
+        try self.state.budget.charge(4);
         if (self.stack.items.len == 0) {
             if (self.has_root) return error.InvalidZerdeSinkState;
             self.root = value;
@@ -156,11 +168,33 @@ pub const LuaSink = struct {
     }
 };
 
-pub fn source(state: *State, encoder: anytype, operation: []const u8) LuaSource(@TypeOf(encoder.*)) {
-    return LuaSource(@TypeOf(encoder.*)).init(state, encoder, operation);
+/// With `{d}`, prints a float with a fraction or an exponent.
+pub const FloatText = struct {
+    value: f64,
+
+    pub fn formatNumber(self: FloatText, writer: *std.Io.Writer, options: anytype) std.Io.Writer.Error!void {
+        _ = options;
+        const magnitude = @abs(self.value);
+        if (magnitude != 0 and (magnitude >= 1e15 or magnitude < 1e-5)) return writer.print("{e}", .{self.value});
+        try writer.print("{d}", .{self.value});
+        if (self.value == @trunc(self.value)) try writer.writeAll(".0");
+    }
+};
+
+fn emitNativeFloat(encoder: anytype, value: f64) anyerror!void {
+    try encoder.emitFloat(value);
 }
 
-pub fn LuaSource(comptime Encoder: type) type {
+pub fn source(state: *State, encoder: anytype, operation: []const u8) LuaSource(@TypeOf(encoder.*), emitNativeFloat) {
+    return LuaSource(@TypeOf(encoder.*), emitNativeFloat).init(state, encoder, operation);
+}
+
+/// `emit_float(encoder, value)` writes each finite float.
+pub fn sourceWithFloats(state: *State, encoder: anytype, operation: []const u8, comptime emit_float: anytype) LuaSource(@TypeOf(encoder.*), emit_float) {
+    return LuaSource(@TypeOf(encoder.*), emit_float).init(state, encoder, operation);
+}
+
+pub fn LuaSource(comptime Encoder: type, comptime emit_float: anytype) type {
     return struct {
         const Self = @This();
 
@@ -184,15 +218,19 @@ pub fn LuaSource(comptime Encoder: type) type {
         }
 
         pub fn emit(self: *Self, value: Value) anyerror!void {
+            try self.state.budget.charge(4);
             switch (value) {
                 .nil => try self.encoder.emitNull(),
                 .boolean => |boolean| try self.encoder.emitBool(boolean),
                 .integer => |integer| try self.encoder.emitInt(integer),
                 .number => |number| {
                     if (!std.math.isFinite(number)) return self.fail("non-finite number");
-                    try self.encoder.emitFloat(number);
+                    try emit_float(self.encoder, number);
                 },
-                .string => |string| try self.encoder.emitString(string.bytes()),
+                .string => |string| {
+                    if (self.state.current_thread) |thread| try self.state.gc.reserve(thread, string.len *| 3);
+                    try self.encoder.emitString(string.bytes());
+                },
                 .table => |table| try self.emitTable(table),
                 else => return self.fail("unsupported value type"),
             }

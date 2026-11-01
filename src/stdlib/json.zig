@@ -28,6 +28,11 @@ pub fn read(state: *State, thread: *Thread, op: bytecode.Call) !void {
     try state.returnValues(thread, op.base, op.return_count, &.{sink.root});
 }
 
+// The encoder's `emitFloat` takes only float types; its `emitInt` prints any `{d}` value.
+fn emitFloatText(encoder: anytype, value: f64) anyerror!void {
+    try encoder.emitInt(zerde_lua.FloatText{ .value = value });
+}
+
 pub fn write(state: *State, thread: *Thread, op: bytecode.Call) !void {
     if (op.arg_count == 0) return state.failArgumentMessage("json.write", 1, "value expected");
 
@@ -36,7 +41,7 @@ pub fn write(state: *State, thread: *Thread, op: bytecode.Call) !void {
     var out = std.Io.Writer.Allocating.init(state.allocator);
     errdefer out.deinit();
     var encoder = zerde.json.encoderWithOptions(&out.writer, options);
-    var source = zerde_lua.source(state, &encoder, "json.write");
+    var source = zerde_lua.sourceWithFloats(state, &encoder, "json.write", emitFloatText);
     defer source.deinit();
 
     source.emit(value) catch |err| return failJsonError(state, "json.write", err);
@@ -67,6 +72,7 @@ fn writeOptions(state: *State, thread: *Thread, op: bytecode.Call) !zerde.json.W
 
     const indent = table.getLiteral("indent");
     if (indent != .nil) {
+        state.budget.noteLongString(indent);
         const integer = runtime.toInteger(indent) orelse return state.failArgumentType("json.write", 2, "table with numeric indent", indent);
         if (integer < 0) return state.failArgumentMessage("json.write", 2, "indent out of range");
         options.indent = std.math.cast(usize, integer) orelse return state.failArgumentMessage("json.write", 2, "indent out of range");
@@ -76,8 +82,8 @@ fn writeOptions(state: *State, thread: *Thread, op: bytecode.Call) !zerde.json.W
 }
 
 fn failJsonError(state: *State, operation: []const u8, err: anyerror) !void {
-    if (err == error.OutOfMemory) return err;
-    if (err == error.RuntimeError or err == error.StackOverflow or err == error.UnsupportedOpcode) return err;
+    if (err == error.OutOfMemory or err == error.WriteFailed) return error.OutOfMemory;
+    if (err == error.RuntimeError or err == error.StackOverflow or err == error.UnsupportedOpcode or err == error.Interrupted) return err;
 
     var message: std.ArrayList(u8) = .empty;
     defer message.deinit(state.allocator);

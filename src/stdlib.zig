@@ -66,6 +66,26 @@ pub const LibrarySet = struct {
     csv: bool = false,
     fs: bool = false,
 
+    pub fn merged(self: LibrarySet, other: LibrarySet) LibrarySet {
+        return .{
+            .base = self.base or other.base,
+            .table = self.table or other.table,
+            .string = self.string or other.string,
+            .math = self.math or other.math,
+            .utf8 = self.utf8 or other.utf8,
+            .coroutine = self.coroutine or other.coroutine,
+            .io = self.io or other.io,
+            .os = self.os or other.os,
+            .debug = self.debug or other.debug,
+            .package = self.package or other.package,
+            .json = self.json or other.json,
+            .toml = self.toml or other.toml,
+            .msgpack = self.msgpack or other.msgpack,
+            .csv = self.csv or other.csv,
+            .fs = self.fs or other.fs,
+        };
+    }
+
     pub fn safe() LibrarySet {
         return .{
             .base = true,
@@ -105,6 +125,7 @@ pub const LibraryTable = enum {
     package,
     package_loaded,
     package_preload,
+    userdata_types,
 };
 
 pub const InitHints = struct {
@@ -228,7 +249,12 @@ pub fn openLibraries(state: *State, selection: LibrarySelection) !void {
     if (libraries.msgpack) try openMsgpack(state);
     if (libraries.csv) try openCsv(state);
     if (libraries.fs) try openFs(state);
-    if (libraries.package) try openPackage(state, libraries);
+    state.opened_libraries = state.opened_libraries.merged(libraries);
+    if (libraries.package) {
+        try openPackage(state, libraries);
+    } else if (state.library_tables.get(.package_loaded) != null) {
+        try registerLoadedLibraries(state, libraries);
+    }
 }
 
 pub fn installGlobalTable(state: *State) !void {
@@ -531,9 +557,16 @@ fn openPackage(state: *State, libraries: LibrarySet) !void {
     try putStaticGlobal(state, "require", .{ .native = .require });
 
     const tables = &state.library_tables;
-    if (tables.get(.package) == null) try createPackageTables(state, libraries);
+    if (tables.get(.package) == null) try createPackageTables(state, state.opened_libraries);
     const package_lib = Value{ .table = tables.get(.package).? };
-    const loaded = Value{ .table = tables.get(.package_loaded).? };
+    try registerLoadedLibraries(state, state.opened_libraries);
+    try setStaticField(state, Value{ .table = tables.get(.package_loaded).? }, "package", package_lib);
+    try putStaticGlobal(state, "package", package_lib);
+}
+
+fn registerLoadedLibraries(state: *State, libraries: LibrarySet) !void {
+    const loaded = Value{ .table = state.library_tables.get(.package_loaded).? };
+    if (libraries.base) try setStaticField(state, loaded, "_G", .{ .table = state.global_table.? });
     if (libraries.coroutine) try setStaticField(state, loaded, "coroutine", state.getGlobal("coroutine"));
     if (libraries.debug) try setStaticField(state, loaded, "debug", state.getGlobal("debug"));
     if (libraries.io) try setStaticField(state, loaded, "io", state.getGlobal("io"));
@@ -547,12 +580,10 @@ fn openPackage(state: *State, libraries: LibrarySet) !void {
     if (libraries.msgpack) try setStaticField(state, loaded, "msgpack", state.getGlobal("msgpack"));
     if (libraries.csv) try setStaticField(state, loaded, "csv", state.getGlobal("csv"));
     if (libraries.fs) try setStaticField(state, loaded, "fs", state.getGlobal("fs"));
-    try setStaticField(state, loaded, "package", package_lib);
-    try putStaticGlobal(state, "package", package_lib);
 }
 
 fn createPackageTables(state: *State, libraries: LibrarySet) !void {
-    const loaded_count: u32 = 1 + @as(u32, @intFromBool(libraries.coroutine)) + @as(u32, @intFromBool(libraries.debug)) +
+    const loaded_count: u32 = 1 + @as(u32, @intFromBool(libraries.base)) + @as(u32, @intFromBool(libraries.coroutine)) + @as(u32, @intFromBool(libraries.debug)) +
         @as(u32, @intFromBool(libraries.io)) + @as(u32, @intFromBool(libraries.math)) + @as(u32, @intFromBool(libraries.os)) +
         @as(u32, @intFromBool(libraries.string)) + @as(u32, @intFromBool(libraries.table)) + @as(u32, @intFromBool(libraries.utf8)) +
         @as(u32, @intFromBool(libraries.json)) + @as(u32, @intFromBool(libraries.toml)) + @as(u32, @intFromBool(libraries.msgpack)) +
@@ -572,7 +603,8 @@ fn createPackageTables(state: *State, libraries: LibrarySet) !void {
     try setStaticField(state, package_lib, "loadlib", .{ .native = .package_loadlib });
     try setStaticField(state, package_lib, "path", .{ .string = static_strings.get("./?.lua;./?/init.lua") });
     try setStaticField(state, package_lib, "cpath", .{ .string = static_strings.get("") });
-    try setStaticField(state, package_lib, "config", .{ .string = static_strings.get(package.dir_separator ++ "\n;\n?\n!\n-\n") });
+    const config = if (package.usesPortablePaths(state)) static_strings.get("/\n;\n?\n!\n-\n") else static_strings.get(package.dir_separator ++ "\n;\n?\n!\n-\n");
+    try setStaticField(state, package_lib, "config", .{ .string = config });
     state.library_tables.set(.package, package_lib.table);
     state.library_tables.set(.package_loaded, loaded.table);
     state.library_tables.set(.package_preload, preload.table);

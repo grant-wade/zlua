@@ -250,7 +250,7 @@ const Copier = struct {
         }
         for (source.thread_allocations.items, d.thread_allocations.items) |old, new| try self.thread(old, new);
         for (source.userdata_allocations.items, d.userdata_allocations.items) |old, new| try self.userdata(old, new);
-        inline for (.{ "global_table", "userdata_pending_finalizer_head", "userdata_lua_pending_head", "table_finalizer_serial", "stdin_pos", "file_generation", "last_error", "error_handled", "warnings_on", "string_metatable", "number_metatable", "boolean_metatable", "nil_metatable", "file_metatable", "fs_file_metatable", "io_input", "io_output", "random_state" }) |name| @field(d, name) = try self.remap(@field(source, name));
+        inline for (.{ "output_bytes", "opened_libraries", "global_table", "userdata_pending_finalizer_head", "userdata_lua_pending_head", "table_finalizer_serial", "stdin_pos", "file_generation", "last_error", "error_handled", "warnings_on", "string_metatable", "number_metatable", "boolean_metatable", "nil_metatable", "file_metatable", "fs_file_metatable", "io_input", "io_output", "random_state" }) |name| @field(d, name) = try self.remap(@field(source, name));
         inline for (.{ "running", "mode", "params" }) |name| @field(d.gc, name) = @field(source.gc, name);
         inline for (.{ "instructions", "base" }) |name| @field(d.budget, name) = @field(source.budget, name);
         for (&d.library_tables.values, source.library_tables.values) |*slot, table| slot.* = try self.remap(table);
@@ -338,6 +338,7 @@ const Copier = struct {
         new.lua_finalizer_order = old.lua_finalizer_order;
         new.finalization_pending = old.finalization_pending;
         new.finalized = old.finalized;
+        new.closed = old.closed;
         new.finalizer = old.finalizer;
         new.finalizer_data = old.finalizer_data;
         if (p.snapshot_copy) |f| {
@@ -354,6 +355,7 @@ const Copier = struct {
                 .dispose = p.snapshot_dispose,
                 .finalized = p.finalized,
                 .managed_bytes = p.managed_bytes,
+                .external_bytes = p.external_bytes,
                 .snapshot_copy = p.snapshot_copy,
                 .snapshot_dispose = p.snapshot_dispose,
                 .snapshot_tracking = p.snapshot_tracking,
@@ -408,17 +410,17 @@ comptime {
         .external = "allocator allocator_lifetime options",
         .rebuilt = "object_pool strings api_roots gc budget",
         .remapped = "global_table table_finalizers table_pending_finalizers userdata_pending_finalizer_head userdata_lua_pending_head string_metatable number_metatable boolean_metatable nil_metatable file_metatable fs_file_metatable io_input io_output library_tables last_error",
-        .copied = "string_allocations table_allocations userdata_allocations closure_allocations upvalue_allocations thread_allocations chunk_allocations source_allocations stdout stderr table_finalizer_serial stdin_pos file_generation error_handled warnings_on random_state",
-        .transient = "execution_depth userdata_scope value_roots rollback snapshot_busy discarding exit_request local_zone current_thread api_callback_dispatch api_callback_user_data active_api_callback coroutine_close_depth",
+        .copied = "output_bytes opened_libraries string_allocations table_allocations userdata_allocations closure_allocations upvalue_allocations thread_allocations chunk_allocations source_allocations stdout stderr table_finalizer_serial stdin_pos file_generation error_handled warnings_on random_state",
+        .transient = "execution_depth native_invoke_depth native_stack userdata_scope value_roots rollback snapshot_busy discarding exit_request local_zone current_thread api_callback_dispatch api_callback_user_data active_api_callback coroutine_close_depth",
     });
     review(budget_mod.Budget, .{
         .copied = "instructions base",
-        .transient = "call_deadline checkpoint interrupt",
+        .transient = "call_deadline checkpoint interrupt stop_message",
     });
     review(gc_mod.Gc, .{
         .rebuilt = "next_total known_total",
         .copied = "running mode params",
-        .transient = "epoch generation phase cycle work remembered weak tables finalizers major_pending cycle_start_total found_young old old_chunks sweep_cursor major_base work_done minor_count collecting stress_collect stress_step stress_mark mark_all_stack_registers conservative_depth",
+        .transient = "epoch generation phase cycle work remembered weak tables finalizers major_pending cycle_start_total found_young old old_chunks sweep_cursor major_base work_done minor_count collecting stress_collect stress_step stress_mark mark_all_stack_registers conservative_depth last_reserve_total",
     });
     review(types.Thread, .{
         .copied = "exposed stack frames frame_extras yield_values protected_continuations generic_for_continuations pairs_continuations tail_call_continuations call_one_continuations hook_call hook_line hook_return hook_count hook_count_remaining pending_yield_hook_return continuation_order continuation_frame_count last_result_base last_result_count last_transfer_base last_transfer_count yield_result_base yield_result_count pending_unwind_resume_frame_count pending_unwind_target_frame_count started is_main closing status stack_error_space host_frame frame_storage_bytes",
@@ -452,7 +454,7 @@ comptime {
     });
     review(types.Userdata, .{
         .external = "ptr type_id finalizer finalizer_data deinit_fn",
-        .copied = "type_name finalized finalization_pending lua_finalizer_registered lua_finalizer_order",
+        .copied = "type_name finalized closed finalization_pending lua_finalizer_registered lua_finalizer_order",
         .remapped = "metatable payload finalizer_next lua_finalizer_next",
         .transient = "scope_readers scope_writers rollback gc",
     });
@@ -469,6 +471,6 @@ comptime {
     review(types.UserdataPayload, .{
         .external = "allocator lifetime ptr finalizer finalizer_data dispose snapshot_copy snapshot_dispose",
         .rebuilt = "references is_snapshot_copy",
-        .copied = "finalized snapshot_tracking managed_bytes",
+        .copied = "finalized snapshot_tracking managed_bytes external_bytes",
     });
 }

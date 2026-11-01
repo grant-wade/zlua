@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const api = @import("../api.zig");
 const ExitRequest = api.ExitRequest;
 const MemoryFile = api.MemoryFile;
@@ -84,6 +85,61 @@ test "api host-backed capabilities require explicit I/O access" {
         \\local ok_file, file_err = pcall(dofile, 'missing.lua')
         \\assert(ok_file == false and tostring(file_err):find('filesystem I/O unavailable'))
     , .{ .name = "=api-host-backed-capabilities-need-io" });
+}
+
+test "dotted require finds modules through portable filesystems" {
+    const script =
+        \\assert(package.config:sub(1, 1) == "/")
+        \\assert(package.searchpath("pkg.mod", "./?.lua") == "./pkg/mod.lua")
+        \\assert(require("pkg.mod") == 7)
+    ;
+    const files = [_]MemoryFile{.{ .path = "pkg/mod.lua", .contents = "return 7" }};
+    {
+        var lua = try State.init(std.testing.allocator, .{ .stdlib = .full, .capabilities = .{ .filesystem = .{ .memory = &files } } });
+        defer lua.deinit();
+        try lua.doString(script, .{});
+    }
+    {
+        var temporary = std.testing.tmpDir(.{});
+        defer temporary.cleanup();
+        const io = std.testing.io;
+        try temporary.dir.createDirPath(io, "pkg");
+        try temporary.dir.writeFile(io, .{ .sub_path = "pkg/mod.lua", .data = "return 7" });
+        var root = try temporary.dir.openDir(io, ".", .{});
+        defer root.close(io);
+        var lua = try State.init(std.testing.allocator, .{
+            .stdlib = .full,
+            .capabilities = .{ .io = .{ .runtime = io }, .filesystem = .{ .host_dir = .{ .dir = root } } },
+        });
+        defer lua.deinit();
+        try lua.doString(script, .{});
+    }
+}
+
+test "host_dir stat and list reject windows paths outside the directory" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    const io = std.testing.io;
+    try temporary.dir.writeFile(io, .{ .sub_path = "plain.txt", .data = "data" });
+    var root = try temporary.dir.openDir(io, ".", .{});
+    defer root.close(io);
+    var lua = try State.init(std.testing.allocator, .{
+        .stdlib = .full,
+        .capabilities = .{ .io = .{ .runtime = io }, .filesystem = .{ .host_dir = .{ .dir = root } } },
+    });
+    defer lua.deinit();
+    try lua.doString(
+        \\for _, path in ipairs({"C:/Windows", "C:/", "C:evil", "nul", "sub/CON.txt", "plain.txt::$DATA"}) do
+        \\  local stat, stat_err = fs.stat(path)
+        \\  assert(stat == nil and stat_err.code == "access_denied", path)
+        \\  local list, list_err = fs.list(path)
+        \\  assert(list == nil and list_err.code == "access_denied", path)
+        \\end
+        \\assert(fs.stat("plain.txt"))
+        \\assert(fs.stat("."))
+        \\assert(fs.list("."))
+    , .{});
 }
 
 test "api os filesystem mutations respect filesystem capability" {
@@ -620,4 +676,184 @@ test "api environment and fixed clock capabilities are explicit" {
         \\assert(os.time() == 123)
         \\assert(os.date('!%Y', 0) == '1970')
     , .{ .name = "=api-21.6-env-clock" });
+}
+
+test "host directory rejects symlinks that leave its root" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    const io = std.testing.io;
+    try temporary.dir.createDirPath(io, "root/sub");
+    try temporary.dir.createDirPath(io, "outside");
+    try temporary.dir.writeFile(io, .{ .sub_path = "outside/secret.txt", .data = "secret" });
+    try temporary.dir.writeFile(io, .{ .sub_path = "root/real.txt", .data = "real" });
+    var root = try temporary.dir.openDir(io, "root", .{});
+    defer root.close(io);
+    try root.symLink(io, "../outside/secret.txt", "link.txt", .{});
+    try root.symLink(io, "..", "up", .{});
+    try root.symLink(io, "/", "absolute", .{});
+    try root.symLink(io, "../real.txt", "sub/inner.txt", .{});
+    try root.symLink(io, "sub", "alias", .{});
+    try root.symLink(io, "loop", "loop", .{});
+
+    var lua = try State.init(std.testing.allocator, .{
+        .stdlib = .full,
+        .capabilities = .{ .io = .{ .runtime = io }, .filesystem = .{ .host_dir = .{ .dir = root } } },
+    });
+    defer lua.deinit();
+    try lua.doString(
+        \\local function denied(value, err) assert(value == nil and err.code == 'access_denied', err and err.message) end
+        \\assert(fs.read('sub/inner.txt') == 'real')
+        \\assert(fs.read('alias/inner.txt') == 'real')
+        \\denied(fs.read('link.txt'))
+        \\denied(fs.read('up/outside/secret.txt'))
+        \\denied(fs.read('absolute/etc/hosts'))
+        \\denied(fs.stat('link.txt'))
+        \\denied(fs.list('up'))
+        \\denied(fs.write('link.txt', 'overwritten'))
+        \\denied(fs.write('up/new.txt', 'created'))
+        \\denied(fs.mkdir('up/created'))
+        \\denied(fs.copy('link.txt', 'copy.txt'))
+        \\denied(fs.copy('real.txt', 'up/copy.txt'))
+        \\denied(fs.rename('real.txt', 'up/moved.txt'))
+        \\assert(select(3, io.open('link.txt')) == 13)
+        \\assert(loadfile('link.txt') == nil)
+        \\assert(fs.read('loop') == nil)
+        \\assert(fs.stat('link.txt', { follow_symlinks = false }).kind == 'sym_link')
+        \\assert(fs.remove('link.txt'))
+        \\assert(fs.stat('link.txt') == nil)
+    , .{ .name = "=symlinks" });
+    const secret = try temporary.dir.readFileAlloc(io, "outside/secret.txt", std.testing.allocator, .limited(64));
+    defer std.testing.allocator.free(secret);
+    try std.testing.expectEqualStrings("secret", secret);
+}
+
+test "child processes get only the granted environment" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const io = std.testing.io;
+    const script =
+        \\local child = assert(io.popen('printf "%s:%s" "${HOME-unset}" "${ZLUA_CHILD-unset}"'))
+        \\result = child:read('a')
+        \\child:close()
+        \\status = os.execute('test "${HOME-unset}" = unset')
+    ;
+    {
+        var lua = try State.init(std.testing.allocator, .{
+            .stdlib = .full,
+            .capabilities = .{ .io = .{ .runtime = io }, .process = .enabled },
+        });
+        defer lua.deinit();
+        try lua.doString(script, .{});
+        try std.testing.expectEqualStrings("unset:unset", try lua.getGlobal("result", []const u8));
+        try std.testing.expect(try lua.getGlobal("status", bool));
+    }
+    {
+        var environment = std.process.Environ.Map.init(std.testing.allocator);
+        defer environment.deinit();
+        try environment.put("ZLUA_CHILD", "granted");
+        var lua = try State.init(std.testing.allocator, .{
+            .stdlib = .full,
+            .capabilities = .{ .io = .{ .runtime = io }, .process = .enabled, .environment = .{ .map = &environment } },
+        });
+        defer lua.deinit();
+        try lua.doString(script, .{});
+        try std.testing.expectEqualStrings("unset:granted", try lua.getGlobal("result", []const u8));
+    }
+}
+
+test "fs.write respects the file size limit" {
+    var filesystem = MemoryFilesystem.init(std.testing.allocator);
+    defer filesystem.deinit();
+    var lua = try State.init(std.testing.allocator, .{
+        .stdlib = .full,
+        .limits = .{ .max_file_bytes = 8 },
+        .capabilities = .{ .filesystem = .{ .memory_rw = &filesystem } },
+    });
+    defer lua.deinit();
+    try lua.doString(
+        \\local ok, err = fs.write('big.txt', '123456789')
+        \\assert(ok == nil and err.operation == 'write')
+        \\assert(fs.exists('big.txt') == false)
+        \\assert(fs.write('fit.txt', '12345678'))
+        \\assert(fs.write('part.txt', '1234'))
+        \\assert(fs.write('part.txt', '5678', { append = true }))
+        \\assert(fs.write('part.txt', '9', { append = true }) == nil)
+        \\assert(fs.read('part.txt') == '12345678')
+    , .{});
+}
+
+const CrossDeviceFilesystem = struct {
+    fn memory(context: ?*anyopaque) *MemoryFilesystem {
+        return @ptrCast(@alignCast(context.?));
+    }
+    fn forwardSlashes(buffer: *[256]u8, path: []const u8) []const u8 {
+        const out = buffer[0..path.len];
+        _ = std.mem.replace(u8, path, "\\", "/", out);
+        return out;
+    }
+    fn readFile(context: ?*anyopaque, allocator: std.mem.Allocator, path: []const u8) anyerror![]const u8 {
+        var buffer: [256]u8 = undefined;
+        return memory(context).readFileAlloc(allocator, forwardSlashes(&buffer, path));
+    }
+    fn writeFile(context: ?*anyopaque, path: []const u8, contents: []const u8) anyerror!void {
+        var buffer: [256]u8 = undefined;
+        return memory(context).writeFile(forwardSlashes(&buffer, path), contents);
+    }
+    fn rename(_: ?*anyopaque, _: []const u8, _: []const u8) anyerror!void {
+        return error.CrossDevice;
+    }
+    fn stat(context: ?*anyopaque, path: []const u8, _: bool) anyerror!api.FilesystemFileStat {
+        var buffer: [256]u8 = undefined;
+        return memory(context).statPath(forwardSlashes(&buffer, path));
+    }
+    fn readDir(context: ?*anyopaque, allocator: std.mem.Allocator, path: []const u8) anyerror![]api.FilesystemDirectoryEntry {
+        var buffer: [256]u8 = undefined;
+        return memory(context).readDirAlloc(allocator, forwardSlashes(&buffer, path));
+    }
+    fn makeDir(context: ?*anyopaque, path: []const u8, parents: bool) anyerror!void {
+        var buffer: [256]u8 = undefined;
+        return memory(context).makeDir(forwardSlashes(&buffer, path), parents);
+    }
+    fn removePath(context: ?*anyopaque, path: []const u8, recursive: bool) anyerror!void {
+        var buffer: [256]u8 = undefined;
+        return memory(context).removePath(forwardSlashes(&buffer, path), recursive);
+    }
+    fn copyFile(context: ?*anyopaque, source: []const u8, destination: []const u8, overwrite: bool) anyerror!void {
+        var source_buffer: [256]u8 = undefined;
+        var destination_buffer: [256]u8 = undefined;
+        return memory(context).copyFile(forwardSlashes(&source_buffer, source), forwardSlashes(&destination_buffer, destination), overwrite);
+    }
+};
+
+test "fs.move copies and removes across devices" {
+    var filesystem = MemoryFilesystem.init(std.testing.allocator);
+    defer filesystem.deinit();
+    var lua = try State.init(std.testing.allocator, .{
+        .stdlib = .full,
+        .capabilities = .{ .filesystem = .{ .custom = .{
+            .context = &filesystem,
+            .read_file_alloc = CrossDeviceFilesystem.readFile,
+            .write_file = CrossDeviceFilesystem.writeFile,
+            .rename_file = CrossDeviceFilesystem.rename,
+            .stat = CrossDeviceFilesystem.stat,
+            .read_dir_alloc = CrossDeviceFilesystem.readDir,
+            .make_dir = CrossDeviceFilesystem.makeDir,
+            .remove_path = CrossDeviceFilesystem.removePath,
+            .copy_file = CrossDeviceFilesystem.copyFile,
+        } } },
+    });
+    defer lua.deinit();
+    try lua.doString(
+        \\assert(fs.write('file.txt', 'file'))
+        \\assert(fs.write('old.txt', 'replaced'))
+        \\assert(fs.move('file.txt', 'old.txt'))
+        \\assert(fs.read('old.txt') == 'file' and fs.exists('file.txt') == false)
+        \\assert(fs.write('tree/deep/leaf.txt', 'leaf', { create_parents = true }))
+        \\assert(fs.move('tree', 'moved'))
+        \\assert(fs.read('moved/deep/leaf.txt') == 'leaf' and fs.exists('tree') == false)
+        \\local ok, err = fs.rename('old.txt', 'new.txt')
+        \\assert(ok == nil and err.code == 'cross_device')
+        \\local renamed, message, errno = os.rename('old.txt', 'new.txt')
+        \\assert(renamed == nil and message:find('Cross%-device link') and errno == 18)
+    , .{});
 }

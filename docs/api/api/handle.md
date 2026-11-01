@@ -15,6 +15,7 @@
 - [frontend.token](../frontend/token.md)
 - [frontend.diagnostic](../frontend/diagnostic.md)
 - [frontend.lexer](../frontend/lexer.md)
+- [stack_guard](../stack_guard.md)
 - [frontend.ast](../frontend/ast.md)
 - [frontend.parser](../frontend/parser.md)
 - [compile](../compile.md)
@@ -29,26 +30,27 @@
 - [stdlib](../stdlib.md)
 - [stdlib.base](../stdlib/base.md)
 - [runtime.call](../runtime/call.md)
-- [stdlib.static_strings](../stdlib/static_strings.md)
-- [runtime.table_index](../runtime/table_index.md)
+- [runtime.budget](../runtime/budget.md)
+- [runtime.failure](../runtime/failure.md)
+- [runtime.debug](../runtime/debug.md)
+- [runtime.io](../runtime/io.md)
+- [runtime.host](../runtime/host.md)
 - [runtime.value](../runtime/value.md)
 - [runtime.number_format](../runtime/number_format.md)
-- [runtime.coroutine](../runtime/coroutine.md)
-- [runtime.debug](../runtime/debug.md)
+- [stdlib.static_strings](../stdlib/static_strings.md)
+- [runtime.table_index](../runtime/table_index.md)
 - [runtime.metatable](../runtime/metatable.md)
 - [runtime.rollback](../runtime/rollback.md)
 - [runtime.strings](../runtime/strings.md)
 - [runtime.operators](../runtime/operators.md)
-- [runtime.failure](../runtime/failure.md)
-- [runtime.io](../runtime/io.md)
-- [runtime.host](../runtime/host.md)
-- [runtime.load](../runtime/load.md)
 - [runtime.vm](../runtime/vm.md)
 - [runtime.gc](../runtime/gc.md)
 - [runtime.entry](../runtime/entry.md)
+- [runtime.coroutine](../runtime/coroutine.md)
+- [runtime.load](../runtime/load.md)
+- [runtime.upvalue](../runtime/upvalue.md)
 - [runtime.system](../runtime/system.md)
 - [runtime.timezone](../runtime/timezone.md)
-- [runtime.upvalue](../runtime/upvalue.md)
 - [runtime.index](../runtime/index.md)
 - [stdlib.table](../stdlib/table.md)
 - [stdlib.string](../stdlib/string.md)
@@ -68,7 +70,6 @@
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
 - [stdlib.fs](../stdlib/fs.md)
-- [runtime.budget](../runtime/budget.md)
 - [runtime.object_pool](../runtime/object_pool.md)
 - [runtime.execute](../runtime/execute.md)
 - [testing.process](../testing/process.md)
@@ -79,6 +80,7 @@
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
 - [api](../api.md)
+- [api.analyze](../api/analyze.md)
 - [api.callbacks](../api/callbacks.md)
 - [api.convert](../api/convert.md)
 - [api.errors](../api/errors.md)
@@ -92,6 +94,7 @@
 - [api.value](../api/value.md)
 - [api.userdata](../api/userdata.md)
 - [api.context](../api/context.md)
+- [api.decode](../api/decode.md)
 - [api.coroutine](../api/coroutine.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
@@ -119,11 +122,14 @@
 - [testing.parallel](../testing/parallel.md)
 - [testing.extension_runner](../testing/extension_runner.md)
 - [testing.official_suite](../testing/official_suite.md)
+- [testing.sandbox_runner](../testing/sandbox_runner.md)
+- [testing.generators](../testing/generators.md)
 
 </details>
 
 ## Functions
 
+- [beginScope](#fn-beginscope)
 - [fromRuntime](#fn-fromruntime)
 - [validate](#fn-validate)
 - [rawValue](#fn-rawvalue)
@@ -131,6 +137,7 @@
 ## Types
 
 - [Ref](#type-ref)
+- [HandleScope](#type-handlescope)
 
 <a id="type-ref"></a>
 
@@ -172,6 +179,62 @@ pub fn value(self: Ref) !Value
 ```
 
 References: [`Ref`](#type-ref)
+
+<a id="type-handlescope"></a>
+
+## HandleScope
+
+Releases the handles rooted since `State.handleScope`, except those given to `keep`. Scopes
+nest and end in reverse order, as `defer scope.end()` does.
+
+```zig
+pub const HandleScope = struct {
+    state: *State,
+    generation: u64,
+    start: usize,
+    previous_start: usize,
+};
+```
+
+### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [end](#fn-handlescope-end) | `self: *HandleScope` | `void` |  |
+| [keep](#fn-handlescope-keep) | `self: *const HandleScope, handle: anytype` | `@TypeOf(handle)` | Takes &#96;handle&#96;, a handle or a &#96;Value&#96; holding one, out of every open scope and returns it; the caller deinits it. |
+
+<a id="fn-handlescope-end"></a>
+
+### HandleScope.end
+
+```zig
+pub fn end(self: *HandleScope) void
+```
+
+References: [`HandleScope`](#type-handlescope)
+
+<a id="fn-handlescope-keep"></a>
+
+### HandleScope.keep
+
+Takes `handle`, a handle or a `Value` holding one, out of every open scope and returns it;
+the caller deinits it.
+
+```zig
+pub fn keep(self: *const HandleScope, handle: anytype) @TypeOf(handle)
+```
+
+References: [`HandleScope`](#type-handlescope)
+
+<a id="fn-beginscope"></a>
+
+## beginScope
+
+```zig
+pub fn beginScope(state: *State) HandleScope
+```
+
+References: [`HandleScope`](#type-handlescope)
 
 <a id="fn-fromruntime"></a>
 

@@ -1,4 +1,5 @@
 const std = @import("std");
+const StackGuard = @import("../stack_guard.zig").StackGuard;
 const diagnostic = @import("diagnostic.zig");
 const errors = @import("../errors.zig");
 const source_mod = @import("source.zig");
@@ -440,11 +441,17 @@ pub fn lex(allocator: std.mem.Allocator, source: []const u8) ![]token_mod.Token 
 }
 
 pub fn lexWithDiagnostic(allocator: std.mem.Allocator, source: []const u8, error_diagnostic: *?errors.Diagnostic) ![]token_mod.Token {
+    return lexGuarded(allocator, source, error_diagnostic, .{});
+}
+
+/// Like `lexWithDiagnostic`, returning `error.Interrupted` when `guard` is interrupted.
+pub fn lexGuarded(allocator: std.mem.Allocator, source: []const u8, error_diagnostic: *?errors.Diagnostic, guard: StackGuard) ![]token_mod.Token {
     var lexer = Lexer.initWithDiagnostic(allocator, source, error_diagnostic);
     defer lexer.deinit();
     var tokens = std.ArrayList(token_mod.Token).empty;
     errdefer tokens.deinit(allocator);
     while (true) {
+        if (guard.interrupted()) return error.Interrupted;
         const tok = try lexer.next();
         try tokens.append(allocator, tok);
         if (tok.tag == .eof) break;

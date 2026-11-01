@@ -5,11 +5,46 @@ const coroutine_runtime = @import("../runtime/coroutine.zig");
 const debug_runtime = @import("../runtime/debug.zig");
 const callbacks = @import("callbacks.zig");
 const convert = @import("convert.zig");
+const decode_mod = @import("decode.zig");
 const handle = @import("handle.zig");
 const Coroutine = @import("coroutine.zig").Coroutine;
 const Function = @import("function.zig").Function;
 const State = @import("state.zig").State;
+const userdata_mod = @import("userdata.zig");
+const Value = @import("value.zig").Value;
 const call_mod = @import("../runtime/call.zig");
+
+/// A typed callback parameter that receives the `T` given to `State.setHost` and takes no Lua
+/// argument. The callback raises a Lua error when the state has no such pointer.
+pub fn Host(comptime T: type) type {
+    return struct {
+        /// Marker for zlua's compile-time conversions.
+        pub const is_zlua_host = true;
+        pub const ValueType = T;
+
+        ptr: *T,
+    };
+}
+
+pub fn isHost(comptime T: type) bool {
+    return @typeInfo(T) == .@"struct" and @hasDecl(T, "is_zlua_host") and T.is_zlua_host;
+}
+
+/// A Lua function on a callback's coroutine.
+pub const Caller = struct {
+    /// Chunk name as given to `load`, such as `@path` or `=name`; borrows VM memory.
+    source: []const u8,
+    /// Null when the function's debug info is stripped.
+    line: ?usize,
+
+    /// Buffer length for `shortSource`.
+    pub const short_source_len = debug_runtime.chunk_id_size;
+
+    /// The chunk name as error messages show it, written to `buffer`.
+    pub fn shortSource(self: Caller, buffer: *[short_source_len]u8) []const u8 {
+        return debug_runtime.chunkId(buffer, self.source);
+    }
+};
 
 /// Callback context for functions registered with `State.register`.
 pub const Context = struct {
@@ -23,6 +58,36 @@ pub const Context = struct {
     /// The `IoCapability.runtime` the state was created with, or null when none was configured.
     pub fn io(self: *Context) ?std.Io {
         return self.raw.state.options.io;
+    }
+
+    /// The pointer given to `State.setHost` when it points to a `T`, or null.
+    pub fn host(self: *Context, comptime T: type) ?*T {
+        return self.lua.host(T);
+    }
+
+    /// The name this callback was registered under.
+    pub fn functionName(self: *Context) []const u8 {
+        return self.raw.function_name;
+    }
+
+    /// The Lua function `level` calls up this callback's coroutine, not counting native functions;
+    /// level 0 is the innermost one.
+    pub fn caller(self: *Context, level: usize) ?Caller {
+        const frames = self.raw.thread.frames.items;
+        var remaining = level;
+        var index = frames.len;
+        while (index > 0) {
+            index -= 1;
+            const frame = frames[index];
+            const source = frame.closure.proto.source_name;
+            if (debug_runtime.isCoroutineEntryFrame(frame) or std.mem.eql(u8, source, "=[C]")) continue;
+            if (remaining == 0) return .{
+                .source = source,
+                .line = if (frame.closure.stripped_debug) null else debug_runtime.lineForFrame(frame),
+            };
+            remaining -= 1;
+        }
+        return null;
     }
 
     /// Line of the Lua function running on this callback's coroutine, or null when there is
@@ -45,12 +110,25 @@ pub const Context = struct {
         return convert.fromRuntimeValue(self.lua, raw, T) catch |err| return self.argConversionError(index, T, raw, err);
     }
 
+    /// Decodes an argument by type like `decode`, allocating strings and slices with `allocator`;
+    /// a value that doesn't fit raises a `bad argument` error.
+    pub fn decodeArg(self: *Context, index: usize, comptime T: type, allocator: std.mem.Allocator) !T {
+        var value = try convert.fromRuntimeValue(self.lua, self.raw.callbackArgValue(index), Value);
+        defer value.deinit();
+        var diagnostic: decode_mod.Diagnostic = .{ .gpa = self.lua.allocator() };
+        defer diagnostic.deinit();
+        return decode_mod.decode(T, value, .{ .allocator = allocator, .diagnostic = &diagnostic }) catch |err| switch (err) {
+            error.Invalid => self.raw.failArgumentMessage(index, diagnostic.text),
+            error.OutOfMemory => error.OutOfMemory,
+        };
+    }
+
     /// Returns null when absent or `nil`.
     pub fn optionalArg(self: *Context, index: usize, comptime T: type) !?T {
         if (index >= self.argCount()) return null;
         const raw = self.raw.callbackArgValue(index);
         if (raw == .nil) return null;
-        return self.arg(index, T);
+        return try self.arg(index, T);
     }
 
     pub fn pushReturn(self: *Context, value: anytype) !void {
@@ -68,6 +146,24 @@ pub const Context = struct {
     pub fn raise(self: *Context, value: anytype) error{ LuaError, OutOfMemory, InvalidHandle } {
         const raw_value = convert.toRuntimeValue(self.lua, value) catch |err| return raiseConversionError(err);
         return self.raw.raise(raw_value);
+    }
+
+    /// Raises the formatted message as the Lua error object, after the position of the innermost
+    /// Lua function when it has debug info.
+    pub fn raisef(self: *Context, comptime fmt: []const u8, args: anytype) error{ LuaError, OutOfMemory, InvalidHandle } {
+        const allocator = self.lua.allocator();
+        const message = if (self.caller(0)) |at| blk: {
+            const line = at.line orelse break :blk try std.fmt.allocPrint(allocator, fmt, args);
+            var buffer: [debug_runtime.chunk_id_size]u8 = undefined;
+            break :blk try std.fmt.allocPrint(allocator, "{s}:{d}: " ++ fmt, .{ at.shortSource(&buffer), line } ++ args);
+        } else try std.fmt.allocPrint(allocator, fmt, args);
+        defer allocator.free(message);
+        return self.raise(message);
+    }
+
+    /// Raises `bad argument #index + 1 to 'name' (message)`; the first argument has index 0.
+    pub fn argError(self: *Context, index: usize, message: []const u8) runtime.RuntimeError {
+        return self.raw.failArgumentMessage(index, message);
     }
 
     /// Rooted handle to this callback's coroutine, usable beyond the callback.
@@ -117,10 +213,29 @@ pub const Context = struct {
 
     fn argConversionError(self: *Context, index: usize, comptime T: type, raw: runtime.Value, err: anyerror) anyerror {
         return switch (err) {
-            error.TypeMismatch => self.raw.failArgumentType(index, convert.expectedLuaType(T), raw),
+            error.TypeMismatch => if (expectsInteger(T) and raw == .number)
+                self.raw.failArgumentMessage(index, "number has no integer representation")
+            else
+                self.raw.failArgumentType(index, expectedTypeName(self.lua, T), raw),
             error.IntegerOutOfRange => self.raw.failArgumentMessage(index, "integer out of range"),
             error.UnsupportedType => self.raw.failArgumentMessage(index, "unsupported host argument type"),
+            error.UserdataClosed => self.raw.failArgumentMessage(index, "userdata is closed"),
             else => err,
+        };
+    }
+
+    fn expectedTypeName(lua: *State, comptime T: type) []const u8 {
+        if (comptime userdata_mod.PayloadOf(T)) |Payload| {
+            if (userdata_mod.definedName(lua, Payload)) |name| return name;
+        }
+        return convert.expectedLuaType(T);
+    }
+
+    fn expectsInteger(comptime T: type) bool {
+        return switch (@typeInfo(T)) {
+            .int, .comptime_int => true,
+            .optional => |optional| expectsInteger(optional.child),
+            else => false,
         };
     }
 

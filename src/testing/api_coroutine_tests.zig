@@ -607,3 +607,59 @@ test "coroutine.resume reports memory errors like pcall" {
         \\assert(select(2, pcall(string.rep, 'x', 4 * 1024 * 1024)) == message)
     , .{});
 }
+
+test "api protected resume options capture a traceback and bound one resume" {
+    var lua = try api.State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+
+    var failing = try lua.loadString(
+        \\local function inner() local t = nil; return t.x end
+        \\coroutine.yield()
+        \\inner()
+    , .{ .name = "=failing" });
+    defer failing.deinit();
+    var co = try lua.newCoroutine(failing);
+    defer co.deinit();
+    const first = try co.protectedResumeWith(.{}, void, void, .{ .traceback = true });
+    try std.testing.expect(first == .ok);
+    var second = try co.protectedResumeWith(.{}, void, void, .{ .traceback = true });
+    switch (second) {
+        .ok => return error.TestExpectedLuaError,
+        .lua_error => |*err| {
+            defer err.deinit();
+            const text = err.traceback() orelse return error.TestExpectedTraceback;
+            try std.testing.expect(std.mem.startsWith(u8, text, "stack traceback:"));
+            try std.testing.expect(std.mem.indexOf(u8, text, "failing:1") != null);
+            try std.testing.expect(std.mem.indexOf(u8, text, "failing:3") != null);
+        },
+    }
+    var dead = try co.protectedResumeWith(.{}, void, void, .{ .traceback = true });
+    switch (dead) {
+        .ok => return error.TestExpectedLuaError,
+        .lua_error => |*err| {
+            defer err.deinit();
+            try std.testing.expect(err.traceback() == null);
+        },
+    }
+
+    var spinning = try lua.loadString(
+        \\coroutine.yield()
+        \\while true do end
+    , .{});
+    defer spinning.deinit();
+    var loop = try lua.newCoroutine(spinning);
+    defer loop.deinit();
+    const started = try loop.protectedResumeWith(.{}, void, void, .{ .max_instructions = 1000 });
+    try std.testing.expect(started == .ok);
+    var spun = try loop.protectedResumeWith(.{}, void, void, .{ .max_instructions = 1000 });
+    switch (spun) {
+        .ok => return error.TestExpectedLuaError,
+        .lua_error => |*err| {
+            defer err.deinit();
+            const message = try err.message();
+            defer lua.allocator().free(message);
+            try std.testing.expect(std.mem.indexOf(u8, message, "instruction limit exceeded") != null);
+        },
+    }
+    try lua.doString("for _ = 1, 10000 do end", .{});
+}

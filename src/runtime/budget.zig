@@ -8,6 +8,36 @@ const Thread = types.Thread;
 /// Instructions between interrupt polls; the fast loop also polls at backward jumps and calls.
 const interrupt_poll_interval: u64 = 1024;
 
+/// Instructions before a budget's end that run metered.
+const metered_margin: u64 = 1024;
+
+/// Instructions charged for native work.
+pub const cost = struct {
+    pub inline fn copied(bytes: usize) u64 {
+        return bytes >> 6;
+    }
+
+    pub inline fn scanned(bytes: usize) u64 {
+        return bytes >> 3;
+    }
+
+    pub inline fn compiled(bytes: usize) u64 {
+        return @as(u64, bytes) *| 4;
+    }
+
+    pub inline fn elements(count: usize) u64 {
+        return @as(u64, count) *| 2;
+    }
+
+    pub inline fn registers(count: usize) u64 {
+        return count >> 2;
+    }
+
+    pub inline fn collected(bytes: usize) u64 {
+        return bytes >> 6;
+    }
+};
+
 /// Interrupt request shared with host threads. Heap-allocated so its address
 /// survives moves of the owning state.
 pub const InterruptControl = struct {
@@ -37,6 +67,8 @@ pub const Budget = struct {
     checkpoint: u64 = 0,
     /// Allocated on first use.
     interrupt: ?*InterruptControl = null,
+    /// Error every later safepoint raises, until the host clears it.
+    stop_message: ?[]const u8 = null,
 
     fn parentState(budget: *Budget) *State {
         return @alignCast(@fieldParentPtr("budget", budget));
@@ -54,15 +86,51 @@ pub const Budget = struct {
 
     /// Interrupts and exhausted budgets leave the checkpoint in place so every later
     /// safepoint raises again; Lua code cannot catch them and keep running.
-    noinline fn checkpointReached(budget: *Budget, thread: *Thread) !void {
+    noinline fn checkpointReached(budget: *Budget, thread: ?*Thread) !void {
         if (budget.interruptRequested()) return error.Interrupted;
-        if (budget.exhausted()) {
-            const state = budget.parentState();
-            const err = failure_mod.failRuntimeDetail(state, thread, "instruction limit exceeded");
-            state.error_handled = true;
-            return err;
-        }
+        if (budget.exhausted()) return budget.failExhausted(thread);
         budget.checkpoint = budget.nextCheckpoint();
+    }
+
+    fn failExhausted(budget: *Budget, thread: ?*Thread) types.RuntimeError {
+        const state = budget.parentState();
+        const message = budget.stop_message orelse "instruction limit exceeded";
+        const err = if (thread) |running| failure_mod.failRuntimeDetail(state, running, message) else state.fail(message);
+        state.error_handled = true;
+        return err;
+    }
+
+    /// Counts native work and raises when it ends the budget.
+    pub inline fn charge(budget: *Budget, instructions: u64) !void {
+        budget.instructions +|= instructions;
+        if (budget.instructions >= budget.checkpoint) try budget.chargeReached();
+    }
+
+    noinline fn chargeReached(budget: *Budget) !void {
+        const state = budget.parentState();
+        try budget.checkpointReached(state.current_thread);
+    }
+
+    /// Counts native work on a path that must not fail; the next safepoint enforces the budget.
+    pub inline fn note(budget: *Budget, instructions: u64) void {
+        budget.instructions +|= instructions;
+    }
+
+    /// Counts a read of every byte of `value` when it is a long string.
+    pub inline fn noteLongString(budget: *Budget, value: types.Value) void {
+        if (value == .string and !value.string.isShort()) budget.note(cost.scanned(value.string.len));
+    }
+
+    /// Makes `message` the error every later safepoint raises, starting with this call.
+    pub fn stop(budget: *Budget, message: []const u8) types.RuntimeError {
+        budget.stop_message = message;
+        budget.checkpoint = 0;
+        return budget.failExhausted(budget.parentState().current_thread);
+    }
+
+    pub fn clearStop(budget: *Budget) void {
+        budget.stop_message = null;
+        budget.checkpoint = 0;
     }
 
     /// Polled periodically by long-running native functions.
@@ -73,7 +141,13 @@ pub const Budget = struct {
         }
     }
 
+    /// True when the next safepoint raises an uncatchable error.
+    pub fn isStopping(budget: *const Budget) bool {
+        return budget.exhausted() or budget.interruptRequested();
+    }
+
     fn exhausted(budget: *const Budget) bool {
+        if (budget.stop_message != null) return true;
         if (budget.constParentState().options.max_instructions) |max| {
             if (budget.instructions -| budget.base >= max) return true;
         }
@@ -116,9 +190,14 @@ pub const Budget = struct {
         return true;
     }
 
-    /// The uncounted fast loop is disabled while any instruction budget applies.
-    pub inline fn active(budget: *const Budget) bool {
-        return budget.constParentState().options.max_instructions != null or budget.call_deadline != null;
+    /// Instructions the fast loop may run before leaving the rest of a budget to metered execution.
+    pub fn fastLoopAllowance(budget: *const Budget) u64 {
+        if (budget.stop_message != null) return 0;
+        var deadline: u64 = std.math.maxInt(u64);
+        if (budget.constParentState().options.max_instructions) |max| deadline = @min(deadline, budget.base +| max);
+        if (budget.call_deadline) |call_deadline| deadline = @min(deadline, call_deadline);
+        if (deadline == std.math.maxInt(u64)) return deadline;
+        return (deadline -| budget.instructions) -| metered_margin;
     }
 
     pub fn used(budget: *const Budget) u64 {

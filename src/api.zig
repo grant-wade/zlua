@@ -6,10 +6,12 @@
 //! invalidates prior handles and borrowed VM slices. The `runtime` module is internal.
 //! See `docs/embedding.md` for capabilities, error handling, snapshots, and ownership.
 
+const analysis = @import("api/analyze.zig");
 const callbacks = @import("api/callbacks.zig");
 const capabilities = @import("api/capabilities.zig");
 const context = @import("api/context.zig");
 const coroutine = @import("api/coroutine.zig");
+const decoding = @import("api/decode.zig");
 const errors = @import("api/errors.zig");
 const function = @import("api/function.zig");
 const handle = @import("api/handle.zig");
@@ -27,6 +29,7 @@ pub const CallResult = errors.CallResult;
 pub const ErrorRef = errors.ErrorRef;
 
 pub const State = state.State;
+pub const HostData = state.HostData;
 pub const InterruptHandle = state.InterruptHandle;
 pub const Snapshot = snapshot.Snapshot;
 
@@ -34,6 +37,7 @@ pub const LibrarySet = options.LibrarySet;
 pub const Stdlib = options.Stdlib;
 pub const Limits = options.Limits;
 pub const CallOptions = options.CallOptions;
+pub const ResumeOptions = options.ResumeOptions;
 pub const InstructionBudget = options.InstructionBudget;
 pub const GcMode = options.GcMode;
 pub const GcParam = options.GcParam;
@@ -79,6 +83,7 @@ pub const Capabilities = capabilities.Capabilities;
 pub const Value = value.Value;
 pub const Tuple = value.Tuple;
 pub const Ref = handle.Ref;
+pub const HandleScope = handle.HandleScope;
 pub const Table = table.Table;
 pub const Function = function.Function;
 pub const Coroutine = coroutine.Coroutine;
@@ -88,15 +93,33 @@ pub const ResumeResult = coroutine.ResumeResult;
 pub const Userdata = userdata.Userdata;
 pub const AnyUserdata = userdata.AnyUserdata;
 pub const UserdataOptions = userdata.UserdataOptions;
+pub const UserdataType = userdata.UserdataType;
 pub const UserdataPtrOptions = userdata.UserdataPtrOptions;
 pub const UserdataSnapshotHooks = userdata.UserdataSnapshotHooks;
 
+pub const Analysis = analysis.Analysis;
+pub const GlobalUse = analysis.GlobalUse;
+pub const analyze = analysis.analyze;
+
+pub const Decoder = decoding.Decoder;
+pub const DecodeError = decoding.DecodeError;
+pub const DecodeOptions = decoding.DecodeOptions;
+pub const Diagnostic = decoding.Diagnostic;
+pub const FieldOptions = decoding.FieldOptions;
+pub const decode = decoding.decode;
+pub const defaultValue = decoding.defaultValue;
+pub const fieldKeys = decoding.fieldKeys;
+pub const fieldOptions = decoding.fieldOptions;
+
 pub const HostFn = callbacks.HostFn;
 pub const Context = context.Context;
+pub const Host = context.Host;
+pub const Caller = context.Caller;
 
 test {
     _ = @import("api/memory_limit.zig");
     _ = @import("testing/api_state_tests.zig");
+    _ = @import("testing/api_analyze_tests.zig");
     _ = @import("testing/api_callback_tests.zig");
     _ = @import("testing/api_userdata_tests.zig");
     _ = @import("testing/api_capability_tests.zig");
@@ -105,7 +128,9 @@ test {
     _ = @import("testing/api_host_tests.zig");
     _ = @import("testing/api_file_tests.zig");
     _ = @import("testing/api_coroutine_tests.zig");
+    _ = @import("testing/api_decode_tests.zig");
     _ = @import("testing/api_limit_tests.zig");
     _ = @import("testing/api_table_tests.zig");
     _ = @import("testing/api_fuzz_tests.zig");
+    _ = @import("testing/api_sandbox_tests.zig");
 }

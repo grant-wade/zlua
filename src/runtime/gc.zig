@@ -1,4 +1,5 @@
 const std = @import("std");
+const budget_mod = @import("budget.zig");
 const compile = @import("../compile.zig");
 const errors = @import("../errors.zig");
 const reflection = @import("../reflection.zig");
@@ -9,6 +10,7 @@ const host = @import("host.zig");
 const io_mod = @import("io.zig");
 const metatable_mod = @import("metatable.zig");
 const rollback = @import("rollback.zig");
+const system_mod = @import("system.zig");
 const State = @import("state.zig").State;
 const types = @import("types.zig");
 const upvalue_mod = @import("upvalue.zig");
@@ -46,6 +48,8 @@ pub const Gc = struct {
     params: GcParams = .{},
     next_total: usize = 0,
     known_total: usize = 0,
+    /// `known_total` after the last collection made by `reserve`.
+    last_reserve_total: usize = 0,
     epoch: u32 = 1,
     generation: u32 = 1,
     phase: types.GcPhase = .pause,
@@ -295,6 +299,7 @@ pub const Gc = struct {
             return gc.failInvalidOption(thread, op);
         }
         if (option == .nil or (option == .string and option.string.eqlBytes("collect"))) {
+            try state.budget.charge(budget_mod.cost.collected(state.gc.known_total));
             if (state.gc.conservative_depth != 0) {
                 try gc.collectConservatively(thread);
             } else {
@@ -305,11 +310,13 @@ pub const Gc = struct {
         }
         if (option == .string and option.string.eqlBytes("step")) {
             const budget = if (op.arg_count >= 2 and argValue(state, thread, op, 1) != .nil) toInteger(argValue(state, thread, op, 1)) orelse return state.fail("number expected") else 0;
+            try state.budget.charge(budget_mod.cost.collected(state.gc.known_total) >> 4);
             const complete = try gc.collectStep(thread, budget);
             try state.returnValues(thread, op.base, op.return_count, &.{.{ .boolean = complete }});
             return;
         }
         if (option == .string and option.string.eqlBytes("count")) {
+            try state.budget.charge(budget_mod.cost.registers(state.thread_allocations.items.len));
             try state.returnValues(thread, op.base, op.return_count, &.{.{ .number = @as(f64, @floatFromInt(gc.refreshAllocationTotal())) / 1024.0 }});
             return;
         }
@@ -376,6 +383,12 @@ pub const Gc = struct {
         return state.fail("bad argument #2 to 'collectgarbage'");
     }
 
+    fn nearMemoryLimit(gc: *Gc) bool {
+        const state = gc.parentState();
+        const limit = state.options.max_memory orelse return false;
+        return state.gc.known_total >= limit - limit / 4;
+    }
+
     fn luaFastStep(gc: *Gc) bool {
         const state = gc.parentState();
         const incremental = state.gc.mode == .incremental or state.gc.major_pending or
@@ -412,12 +425,18 @@ pub const Gc = struct {
     }
 
     pub fn autoStep(gc: *Gc, thread: ?*Thread) !void {
+        if (thread) |running| if (running.frames.items.len == 0) return;
         const state = gc.parentState();
         if (state.gc.stress_step and state.gc.phase == .pause) state.gc.major_pending = true;
         defer state.gc.stress_mark = state.gc.known_total;
         const conservative = state.gc.conservative_depth != 0;
-        if (state.gc.stress_collect or gc.luaFastStep()) return gc.collectWithFinalizersMode(thread, conservative);
-        _ = try gc.step(thread, conservative);
+        if (state.gc.stress_collect or gc.luaFastStep() or gc.nearMemoryLimit()) return gc.collectWithFinalizersMode(thread, conservative);
+        const stepsize: usize = @intCast(@max(state.gc.params.stepsize, 1));
+        var debt = state.gc.known_total -| state.gc.next_total;
+        while (!try gc.step(thread, conservative)) {
+            if (state.gc.phase == .pause or debt < stepsize) return;
+            debt -= stepsize;
+        }
     }
 
     fn basicWork(gc: *Gc) usize {
@@ -530,7 +549,7 @@ pub const Gc = struct {
                     state.gc.major_pending = state.gc.params.minormajor != 0 and
                         state.gc.known_total > state.gc.major_base +| @max(256, state.gc.major_base *| @as(usize, @intCast(@max(state.gc.params.minormajor, 0))) / 100);
                     state.gc.phase = .finalize;
-                    if (try gc.runFinalizerBatch(thread, 1)) _ = try gc.runUserdataFinalizerBatch(1);
+                    if (try gc.runFinalizerBatch(thread, 1)) _ = try gc.runUserdataFinalizerBatch(std.math.maxInt(usize));
                     gc.drain();
                     state.gc.phase = .pause;
                     gc.resetAutoThreshold();
@@ -655,6 +674,22 @@ pub const Gc = struct {
             total +| @max(256, total *| @as(usize, @intCast(@max(state.gc.params.minormul, 0))) / 100)
         else
             @max(total +| 256, total *| @as(usize, @intCast(@max(state.gc.params.pause, 100))) / 100);
+        if (state.options.max_memory) |limit| {
+            state.gc.next_total = @min(state.gc.next_total, @max(limit / 4 * 3, total +| limit / 8));
+            if (total >= limit / 2) state.gc.major_pending = true;
+        }
+    }
+
+    /// Collects before a native allocation of `bytes` that may not fit under `max_memory`.
+    /// `thread` must be running a native function with no unrooted values.
+    pub fn reserve(gc: *Gc, thread: *Thread, bytes: usize) !void {
+        const state = gc.parentState();
+        const limit = state.options.max_memory orelse return;
+        if (bytes < limit / 32 or state.gc.collecting) return;
+        const total = gc.currentAllocationTotal();
+        if (total +| bytes <= limit - limit / 8 or total == state.gc.last_reserve_total) return;
+        try gc.collectWithFinalizersMode(thread, true);
+        state.gc.last_reserve_total = gc.currentAllocationTotal();
     }
 
     pub fn normalizeBaseline(gc: *Gc) void {
@@ -1345,8 +1380,9 @@ pub const Gc = struct {
     }
 
     /// Calls all pending finalizers like `luaC_freeallobjects`, ignoring errors.
-    /// An interrupt, `os.exit`, or a host failure stops the calls.
-    fn runCloseFinalizersOnThread(gc: *Gc, thread: *Thread) void {
+    /// An interrupt or a host failure stops the calls, and `os.exit` follows `on_exit`.
+    /// `thread` is replaced when a finalizer exits and the calls proceed.
+    fn runCloseFinalizersOnThread(gc: *Gc, thread: **Thread, closure: *Closure, on_exit: CloseExit) void {
         const state = gc.parentState();
         var finalizers = std.ArrayList(CloseFinalizer).empty;
         defer finalizers.deinit(state.allocator);
@@ -1367,10 +1403,18 @@ pub const Gc = struct {
         defer state.gc.collecting = previous_collecting;
         for (finalizers.items) |finalizer| switch (finalizer.object) {
             inline .table, .userdata => |object, tag| {
-                const frame = thread.frames.items[thread.frames.items.len - 1];
-                thread.ensureStack(state.allocator, frame.base + @as(usize, thread.scratchRegister()) + 2, call_mod.callStackValueLimit(state, thread)) catch return;
+                const frame = thread.*.frames.items[thread.*.frames.items.len - 1];
+                thread.*.ensureStack(state.allocator, frame.base + @as(usize, thread.*.scratchRegister()) + 2, call_mod.callStackValueLimit(state, thread.*)) catch return;
                 state.budget.reset();
-                gc.callLuaFinalizer(thread, @unionInit(Value, @tagName(tag), object), object.metatable) catch return;
+                gc.callLuaFinalizer(thread.*, @unionInit(Value, @tagName(tag), object), object.metatable) catch |err| {
+                    if (err != error.LuaExit or on_exit == .stop) return;
+                    system_mod.finishExitUnwind(state, thread.*) catch return;
+                    state.exit_request = null;
+                    const next = entry_mod.newHostThread(state, closure) catch return;
+                    entry_mod.retireHostThread(state, thread.*);
+                    thread.* = next;
+                    state.current_thread = next;
+                };
             },
             .file => |userdata| _ = state.finalizeBuiltinUserdata(userdata),
         };
@@ -1440,7 +1484,13 @@ pub const Gc = struct {
             userdata.finalization_pending = false;
             userdata.finalized = true;
             if (state.finalizeBuiltinUserdata(userdata)) continue;
-            if (userdata.payload) |payload| payload.finalize() else if (userdata.finalizer) |finalizer| finalizer(userdata.ptr, userdata.finalizer_data);
+            if (userdata.payload) |payload| {
+                payload.finalize();
+                if (payload.finalized) {
+                    gc.noteAllocationFreed(payload.external_bytes);
+                    payload.external_bytes = 0;
+                }
+            } else if (userdata.finalizer) |finalizer| finalizer(userdata.ptr, userdata.finalizer_data, state.allocator);
         }
         return true;
     }
@@ -1604,7 +1654,7 @@ pub const Gc = struct {
             return;
         }
         if (!userdata.finalized and !state.discarding) {
-            if (userdata.finalizer) |finalizer| finalizer(userdata.ptr, userdata.finalizer_data);
+            if (userdata.finalizer) |finalizer| finalizer(userdata.ptr, userdata.finalizer_data, state.allocator);
             userdata.finalized = true;
         }
         if (userdata.deinit_fn) |deinit_fn| deinit_fn(state.allocator, userdata.ptr);
@@ -1724,25 +1774,41 @@ pub const Gc = struct {
         gc.markValue(value);
     }
 
+    const FinalizerDeadline = struct { active: bool, previous: ?u64 };
+
+    fn beginFinalizerBudget(gc: *Gc) FinalizerDeadline {
+        const state = gc.parentState();
+        const max = state.options.max_finalizer_instructions orelse return .{ .active = false, .previous = null };
+        return .{ .active = true, .previous = state.budget.beginCall(max) };
+    }
+
+    fn endFinalizerBudget(gc: *Gc, deadline: FinalizerDeadline) void {
+        if (deadline.active) gc.parentState().budget.endCall(deadline.previous);
+    }
+
     /// Runs pending finalizers as `deinit` does, keeping the state. Only for an idle host;
     /// later registrations are left for `deinit`.
-    pub fn runCloseFinalizers(gc: *Gc) void {
+    pub fn runCloseFinalizers(gc: *Gc, on_exit: CloseExit) void {
         const state = gc.parentState();
         if (state.execution_depth != 0 or state.current_thread != null) return;
         if (state.table_pending_finalizers.items.len == 0 and state.table_finalizers.items.len == 0 and !gc.hasUserdataLuaFinalizers() and !stdlib.io.hasOpenFiles(state)) return;
+        const deadline = gc.beginFinalizerBudget();
+        defer gc.endFinalizerBudget(deadline);
         var proto = proto_mod.Proto.init(state.allocator);
         defer proto.deinit();
         proto.source_name = "=[C]";
         var closure = Closure{ .proto = &proto };
-        const thread = entry_mod.newHostThread(state, &closure) catch return;
+        var thread = entry_mod.newHostThread(state, &closure) catch return;
         defer entry_mod.retireHostThread(state, thread);
         state.current_thread = thread;
         defer state.current_thread = null;
-        gc.runCloseFinalizersOnThread(thread);
+        gc.runCloseFinalizersOnThread(&thread, &closure, on_exit);
     }
 
     fn runFinalizersFromHost(gc: *Gc, limit: usize) anyerror!bool {
         const state = gc.parentState();
+        const deadline = gc.beginFinalizerBudget();
+        defer gc.endFinalizerBudget(deadline);
         var proto = proto_mod.Proto.init(state.allocator);
         defer proto.deinit();
         proto.source_name = "=[C]";
@@ -1805,7 +1871,7 @@ fn threadListBytes(thread: *const Thread) usize {
 }
 
 pub fn userdataBytes(userdata: *const Userdata) usize {
-    return @sizeOf(Userdata) + if (userdata.payload) |payload| @sizeOf(types.UserdataPayload) + payload.managed_bytes else @as(usize, 0);
+    return @sizeOf(Userdata) + if (userdata.payload) |payload| @sizeOf(types.UserdataPayload) + payload.managed_bytes + payload.external_bytes else @as(usize, 0);
 }
 
 // Lua's floating-byte parameter encoding, decoded back to a percentage.
@@ -1834,6 +1900,9 @@ fn callerLiveEnd(frame: types.CallFrame) usize {
     const args: usize = if (op.arg_count == bytecode.multret_arg_count) 0 else op.arg_count;
     return frame.base + op.base + 1 + args;
 }
+
+/// What `os.exit` inside a closing finalizer does to the finalizers after it.
+pub const CloseExit = enum { stop, proceed };
 
 const CloseFinalizer = struct {
     object: union(enum) { table: *Table, userdata: *Userdata, file: *Userdata },
