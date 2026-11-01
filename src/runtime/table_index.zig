@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const types = @import("types.zig");
 const value_mod = @import("value.zig");
 
@@ -10,7 +11,7 @@ pub const HashPart = struct {
     len: u32 align(@alignOf(TableEntry)) = 0,
     capacity: u32,
     slot_count: u32,
-    /// Nonzero after a long probe chain; mixed into slot positions.
+    /// Nonzero after a long probe chain; slot hashes are then keyed with it.
     salt: u32 = 0,
 
     pub const Slot = struct {
@@ -80,10 +81,10 @@ pub const HashPart = struct {
             for (self.entries(), 0..) |entry, index| if (keysEqual(entry.key, key)) return index;
             return null;
         }
-        const hash = hashKey(key);
+        const hash = self.slotHash(key);
         const table_slots = self.slots();
         const mask = table_slots.len - 1;
-        var position = homePosition(hash, self.salt) & mask;
+        var position = hash & mask;
         while (true) : (position = (position + 1) & mask) {
             const slot = table_slots[position];
             if (slot.entry == 0) return null;
@@ -91,16 +92,18 @@ pub const HashPart = struct {
         }
     }
 
-    pub inline fn findBytes(self: *const HashPart, key: []const u8, hash: u32) ?usize {
+    /// `key_hash` is `hashStringKey(key)`.
+    pub inline fn findBytes(self: *const HashPart, key: []const u8, key_hash: u32) ?usize {
         if (self.slot_count == 0) {
             for (self.entries(), 0..) |entry, index| {
                 if (entry.key == .string and entry.key.string.eqlBytes(key)) return index;
             }
             return null;
         }
+        const hash = slotHashOfBytes(key, key_hash, self.salt);
         const table_slots = self.slots();
         const mask = table_slots.len - 1;
-        var position = homePosition(hash, self.salt) & mask;
+        var position = hash & mask;
         while (true) : (position = (position + 1) & mask) {
             const slot = table_slots[position];
             if (slot.entry == 0) return null;
@@ -115,7 +118,7 @@ pub const HashPart = struct {
         std.debug.assert(self.len < self.capacity);
         self.storage()[self.len] = .{ .key = key, .value = value };
         self.len += 1;
-        if (self.slot_count != 0 and self.place(.{ .hash = hashKey(key), .entry = self.len }) and self.salt == 0) {
+        if (self.slot_count != 0 and self.place(.{ .hash = self.slotHash(key), .entry = self.len }) and self.salt == 0) {
             self.salt = newHashSalt(@intFromPtr(self));
             self.reindex();
         }
@@ -126,45 +129,102 @@ pub const HashPart = struct {
         if (self.slot_count == 0) return;
         @memset(self.slots(), .{ .hash = 0, .entry = 0 });
         for (self.entries(), 1..) |entry, position| {
-            if (self.place(.{ .hash = hashKey(entry.key), .entry = @intCast(position) }) and self.salt == 0) {
+            if (self.place(.{ .hash = self.slotHash(entry.key), .entry = @intCast(position) }) and self.salt == 0) {
                 self.salt = newHashSalt(@intFromPtr(self));
                 return self.reindex();
             }
         }
     }
 
+    inline fn slotHash(self: *const HashPart, key: Value) u32 {
+        if (self.salt != 0) {
+            @branchHint(.cold);
+            return keyedKey(key, self.salt);
+        }
+        return hashKey(key);
+    }
+
     /// Returns true when the probe chain was long.
     fn place(self: *HashPart, slot: Slot) bool {
         const table_slots = self.slots();
         const mask = table_slots.len - 1;
-        var position = homePosition(slot.hash, self.salt) & mask;
-        var probes: u32 = 0;
-        while (table_slots[position].entry != 0) : (probes += 1) position = (position + 1) & mask;
+        var position = slot.hash & mask;
+        var chain: ChainLength = .{};
+        while (table_slots[position].entry != 0) : (position = (position + 1) & mask) chain.add(table_slots[position].hash == slot.hash);
         table_slots[position] = slot;
-        return probes > long_probe_chain;
+        return chain.isLong();
     }
 };
 
-/// Probes beyond which a table or the intern set assumes its keys were chosen to collide.
-pub const long_probe_chain = 128;
+/// Probes made placing a key in a table or the intern set.
+pub const ChainLength = struct {
+    probes: u32 = 0,
+    same_hash: u32 = 0,
 
-/// The value whose low bits pick the first slot for `hash`.
-pub inline fn homePosition(hash: u32, salt: u32) u32 {
-    if (salt == 0) return hash;
-    return hash ^ ((hash *% salt) >> 11);
+    pub inline fn add(self: *ChainLength, same_hash: bool) void {
+        self.probes += 1;
+        self.same_hash += @intFromBool(same_hash);
+    }
+
+    /// True when the keys look chosen to collide.
+    pub inline fn isLong(self: ChainLength) bool {
+        return self.probes > 512 or self.same_hash > 16;
+    }
+};
+
+const KeyedHash = std.crypto.auth.siphash.SipHash64(1, 3);
+
+var process_key: [KeyedHash.key_length]u8 = undefined;
+var process_key_state: std.atomic.Value(enum(u8) { unset, filling, ready }) = .init(.unset);
+
+/// The process's secret hash key; every thread sees the same bytes.
+fn processKey() *const [KeyedHash.key_length]u8 {
+    if (process_key_state.load(.acquire) == .ready) return &process_key;
+    if (process_key_state.cmpxchgStrong(.unset, .filling, .acquire, .acquire) == null) {
+        fillProcessKey();
+        process_key_state.store(.ready, .release);
+    } else {
+        while (process_key_state.load(.acquire) != .ready) std.atomic.spinLoopHint();
+    }
+    return &process_key;
 }
 
-var hash_secret: std.atomic.Value(usize) = .init(0);
-
-/// An odd multiplier a script can't predict. `seed` adds an address to the process's secret.
-pub fn newHashSalt(seed: usize) u32 {
-    var secret = hash_secret.load(.monotonic);
-    if (secret == 0) {
-        secret = @frameAddress() ^ @intFromPtr(&hash_secret);
-        hash_secret.store(secret, .monotonic);
+fn fillProcessKey() void {
+    if (builtin.os.tag != .freestanding) {
+        const io = std.Io.Threaded.global_single_threaded.io();
+        if (io.randomSecure(&process_key)) |_| return else |_| {}
     }
-    const mixed = std.hash.Wyhash.hash(secret, std.mem.asBytes(&seed));
-    return @truncate(mixed | 1);
+    const addresses = [_]usize{ @frameAddress(), @intFromPtr(&process_key), @returnAddress() };
+    const low = std.hash.Wyhash.hash(0, std.mem.asBytes(&addresses));
+    const high = std.hash.Wyhash.hash(low, std.mem.asBytes(&addresses));
+    std.mem.writeInt(u64, process_key[0..8], low, .little);
+    std.mem.writeInt(u64, process_key[8..16], high, .little);
+}
+
+/// A nonzero per-index key a script can't predict. `seed` distinguishes indexes.
+pub fn newHashSalt(seed: usize) u32 {
+    return @truncate(KeyedHash.toInt(std.mem.asBytes(&seed), processKey()) | 1);
+}
+
+/// The slot hash of `bytes`, whose `hashStringKey` is `bytes_hash`, in an index with `salt`.
+pub inline fn slotHashOfBytes(bytes: []const u8, bytes_hash: u32, salt: u32) u32 {
+    if (salt != 0) {
+        @branchHint(.cold);
+        return keyedBytes(bytes, salt);
+    }
+    return bytes_hash;
+}
+
+noinline fn keyedBytes(bytes: []const u8, salt: u32) u32 {
+    var key = processKey().*;
+    std.mem.writeInt(u32, key[0..4], std.mem.readInt(u32, key[0..4], .little) ^ salt, .little);
+    return foldHash(KeyedHash.toInt(bytes, &key));
+}
+
+noinline fn keyedKey(key: Value, salt: u32) u32 {
+    if (key == .string) return keyedBytes(key.string.bytes(), salt);
+    const hash = value_mod.hashValue(key);
+    return keyedBytes(std.mem.asBytes(&hash), salt);
 }
 
 pub inline fn hashKey(key: Value) u32 {

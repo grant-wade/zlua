@@ -18,7 +18,7 @@
 - A bound `__gc` runs at most once per object, and typed access afterward fails with `error.UserdataClosed`.
 - `decode` rejects values nested more than 200 levels deep.
 - A numeric `for` over non-numbers in a binary chunk raises an error message.
-- Strings chosen to collide no longer make table and string interning operations slow.
+- Table keys and strings chosen to collide made table and string interning operations slow.
 - A crafted TZif file no longer overflows an integer in the timezone parser.
 - `utf8.offset` with `math.mininteger` aborted the process.
 - `tonumber` with a base aborted the process when the value overflowed an integer.

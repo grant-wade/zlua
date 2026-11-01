@@ -129,8 +129,8 @@
 
 ## Functions
 
-- [homePosition](#fn-homeposition)
 - [newHashSalt](#fn-newhashsalt)
+- [slotHashOfBytes](#fn-slothashofbytes)
 - [hashKey](#fn-hashkey)
 - [foldHash](#fn-foldhash)
 - [hashStringKey](#fn-hashstringkey)
@@ -139,10 +139,7 @@
 ## Types
 
 - [HashPart](#type-hashpart)
-
-## Constants
-
-- [long_probe_chain](#const-long_probe_chain)
+- [ChainLength](#type-chainlength)
 
 <a id="type-hashpart"></a>
 
@@ -155,7 +152,7 @@ pub const HashPart = struct {
     len: u32 align(@alignOf(TableEntry)) = 0,
     capacity: u32,
     slot_count: u32,
-    /// Nonzero after a long probe chain; mixed into slot positions.
+    /// Nonzero after a long probe chain; slot hashes are then keyed with it.
     salt: u32 = 0,
 };
 ```
@@ -174,7 +171,7 @@ pub const HashPart = struct {
 | [entries](#fn-hashpart-entries) | `self: *const HashPart` | `[]TableEntry` |  |
 | [slots](#fn-hashpart-slots) | `self: *const HashPart` | `[]Slot` |  |
 | [find](#fn-hashpart-find) | `self: *const HashPart, key: Value` | `?usize` |  |
-| [findBytes](#fn-hashpart-findbytes) | `self: *const HashPart, key: []const u8, hash: u32` | `?usize` |  |
+| [findBytes](#fn-hashpart-findbytes) | `self: *const HashPart, key: []const u8, key_hash: u32` | `?usize` | &#96;key_hash&#96; is &#96;hashStringKey(key)&#96;. |
 | [appendAssumeCapacity](#fn-hashpart-appendassumecapacity) | `self: *HashPart, key: Value, value: Value` | `void` | &#96;key&#96; must be absent and &#96;len&#96; below &#96;capacity&#96;. |
 | [reindex](#fn-hashpart-reindex) | `self: *HashPart` | `void` | Restores the index after entries were removed, moved, or copied in. |
 
@@ -280,8 +277,10 @@ References: [`HashPart`](#type-hashpart)
 
 ### HashPart.findBytes
 
+`key_hash` is `hashStringKey(key)`.
+
 ```zig
-pub inline fn findBytes(self: *const HashPart, key: []const u8, hash: u32) ?usize
+pub inline fn findBytes(self: *const HashPart, key: []const u8, key_hash: u32) ?usize
 ```
 
 References: [`HashPart`](#type-hashpart)
@@ -310,34 +309,66 @@ pub fn reindex(self: *HashPart) void
 
 References: [`HashPart`](#type-hashpart)
 
-<a id="const-long_probe_chain"></a>
+<a id="type-chainlength"></a>
 
-## long_probe_chain
+## ChainLength
 
-Probes beyond which a table or the intern set assumes its keys were chosen to collide.
-
-```zig
-pub const long_probe_chain = 128;
-```
-
-<a id="fn-homeposition"></a>
-
-## homePosition
-
-The value whose low bits pick the first slot for `hash`.
+Probes made placing a key in a table or the intern set.
 
 ```zig
-pub inline fn homePosition(hash: u32, salt: u32) u32
+pub const ChainLength = struct {
+    probes: u32 = 0,
+    same_hash: u32 = 0,
+};
 ```
+
+### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [add](#fn-chainlength-add) | `self: *ChainLength, same_hash: bool` | `void` |  |
+| [isLong](#fn-chainlength-islong) | `self: ChainLength` | `bool` | True when the keys look chosen to collide. |
+
+<a id="fn-chainlength-add"></a>
+
+### ChainLength.add
+
+```zig
+pub inline fn add(self: *ChainLength, same_hash: bool) void
+```
+
+References: [`ChainLength`](#type-chainlength)
+
+<a id="fn-chainlength-islong"></a>
+
+### ChainLength.isLong
+
+True when the keys look chosen to collide.
+
+```zig
+pub inline fn isLong(self: ChainLength) bool
+```
+
+References: [`ChainLength`](#type-chainlength)
 
 <a id="fn-newhashsalt"></a>
 
 ## newHashSalt
 
-An odd multiplier a script can't predict. `seed` adds an address to the process's secret.
+A nonzero per-index key a script can't predict. `seed` distinguishes indexes.
 
 ```zig
 pub fn newHashSalt(seed: usize) u32
+```
+
+<a id="fn-slothashofbytes"></a>
+
+## slotHashOfBytes
+
+The slot hash of `bytes`, whose `hashStringKey` is `bytes_hash`, in an index with `salt`.
+
+```zig
+pub inline fn slotHashOfBytes(bytes: []const u8, bytes_hash: u32, salt: u32) u32
 ```
 
 <a id="fn-hashkey"></a>

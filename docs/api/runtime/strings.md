@@ -162,7 +162,7 @@ pub const InternSet = struct {
     hashes: []u32 = &.{},
     entries: []?*const String = &.{},
     count: usize = 0,
-    /// Nonzero after a long probe chain; see `HashPart.salt`.
+    /// Nonzero after a long probe chain; `hashes` are then keyed with it.
     salt: u32 = 0,
     /// A long probe chain was seen; the next `ensureUnusedCapacity` picks a salt.
     needs_salt: bool = false,
@@ -176,7 +176,7 @@ pub const InternSet = struct {
 | [initStatic](#fn-internset-initstatic) | `allocator: std.mem.Allocator, extra: usize` | `!InternSet` | &#96;extra&#96; is the number of strings to reserve beyond the static catalog. |
 | [deinit](#fn-internset-deinit) | `self: *InternSet, allocator: std.mem.Allocator` | `void` |  |
 | [clone](#fn-internset-clone) | `self: *const InternSet, allocator: std.mem.Allocator` | `!InternSet` |  |
-| [find](#fn-internset-find) | `self: *const InternSet, bytes: []const u8, hash: u32` | `?*const String` |  |
+| [find](#fn-internset-find) | `self: *const InternSet, bytes: []const u8, bytes_hash: u32` | `?*const String` | &#96;bytes_hash&#96; is &#96;hashStringKey(bytes)&#96;. |
 | [ensureUnusedCapacity](#fn-internset-ensureunusedcapacity) | `self: *InternSet, allocator: std.mem.Allocator, extra: usize` | `!void` |  |
 | [insertAssumeCapacity](#fn-internset-insertassumecapacity) | `self: *InternSet, string: *const String` | `void` | The string must be absent and capacity reserved. |
 | [remove](#fn-internset-remove) | `self: *InternSet, string: *const String` | `void` |  |
@@ -217,8 +217,10 @@ References: [`InternSet`](#type-internset)
 
 ### InternSet.find
 
+`bytes_hash` is `hashStringKey(bytes)`.
+
 ```zig
-pub inline fn find(self: *const InternSet, bytes: []const u8, hash: u32) ?*const String
+pub inline fn find(self: *const InternSet, bytes: []const u8, bytes_hash: u32) ?*const String
 ```
 
 References: [`InternSet`](#type-internset)

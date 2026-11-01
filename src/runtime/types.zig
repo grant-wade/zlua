@@ -639,6 +639,7 @@ pub const Table = struct {
     fn growHash(self: *Table, allocator: std.mem.Allocator, count: usize) !void {
         const part = try TableHashPart.create(allocator, try TableHashPart.capacityFor(count));
         if (self.hash) |old| {
+            part.salt = old.salt;
             for (old.entries()) |entry| part.appendAssumeCapacity(entry.key, entry.value);
             old.destroy(allocator);
         }

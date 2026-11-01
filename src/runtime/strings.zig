@@ -15,7 +15,7 @@ pub const InternSet = struct {
     hashes: []u32 = &.{},
     entries: []?*const String = &.{},
     count: usize = 0,
-    /// Nonzero after a long probe chain; see `HashPart.salt`.
+    /// Nonzero after a long probe chain; `hashes` are then keyed with it.
     salt: u32 = 0,
     /// A long probe chain was seen; the next `ensureUnusedCapacity` picks a salt.
     needs_salt: bool = false,
@@ -61,10 +61,12 @@ pub const InternSet = struct {
         return .{ .hashes = hashes, .entries = try allocator.dupe(?*const String, self.entries), .count = self.count, .salt = self.salt, .needs_salt = self.needs_salt };
     }
 
-    pub inline fn find(self: *const InternSet, bytes: []const u8, hash: u32) ?*const String {
+    /// `bytes_hash` is `hashStringKey(bytes)`.
+    pub inline fn find(self: *const InternSet, bytes: []const u8, bytes_hash: u32) ?*const String {
         if (self.entries.len == 0) return null;
         const mask = self.entries.len - 1;
-        var position = table_index.homePosition(hash, self.salt) & mask;
+        const hash = self.slotHash(bytes, bytes_hash);
+        var position = hash & mask;
         while (self.entries[position]) |string| : (position = (position + 1) & mask) {
             if (self.hashes[position] == hash and string.eqlBytes(bytes)) return string;
         }
@@ -85,7 +87,7 @@ pub const InternSet = struct {
         self.hashes = hashes;
         self.entries = entries;
         if (rehash) self.salt = table_index.newHashSalt(@intFromPtr(hashes.ptr));
-        for (old_hashes, old_entries) |hash, entry| if (entry) |string| self.place(string, hash);
+        for (old_entries) |entry| if (entry) |string| self.place(string, self.slotHash(string.bytes(), string.hash));
         allocator.free(old_hashes);
         allocator.free(old_entries);
     }
@@ -93,27 +95,31 @@ pub const InternSet = struct {
     /// The string must be absent and capacity reserved.
     pub fn insertAssumeCapacity(self: *InternSet, string: *const String) void {
         std.debug.assert(self.count + 1 + (self.count + 1) / 3 <= self.entries.len);
-        self.place(string, string.hash);
+        self.place(string, self.slotHash(string.bytes(), string.hash));
         self.count += 1;
+    }
+
+    inline fn slotHash(self: *const InternSet, bytes: []const u8, bytes_hash: u32) u32 {
+        return table_index.slotHashOfBytes(bytes, bytes_hash, self.salt);
     }
 
     fn place(self: *InternSet, string: *const String, hash: u32) void {
         const mask = self.entries.len - 1;
-        var position = table_index.homePosition(hash, self.salt) & mask;
-        var probes: u32 = 0;
-        while (self.entries[position] != null) : (probes += 1) position = (position + 1) & mask;
-        if (probes > table_index.long_probe_chain) self.needs_salt = true;
+        var position = hash & mask;
+        var chain: table_index.ChainLength = .{};
+        while (self.entries[position] != null) : (position = (position + 1) & mask) chain.add(self.hashes[position] == hash);
+        if (chain.isLong()) self.needs_salt = true;
         self.hashes[position] = hash;
         self.entries[position] = string;
     }
 
     pub fn remove(self: *InternSet, string: *const String) void {
         const mask = self.entries.len - 1;
-        var hole = table_index.homePosition(string.hash, self.salt) & mask;
+        var hole = self.slotHash(string.bytes(), string.hash) & mask;
         while (self.entries[hole] != string) hole = (hole + 1) & mask;
         var next = (hole + 1) & mask;
         while (self.entries[next] != null) : (next = (next + 1) & mask) {
-            const home = table_index.homePosition(self.hashes[next], self.salt) & mask;
+            const home = self.hashes[next] & mask;
             if (((next -% home) & mask) >= ((next -% hole) & mask)) {
                 self.hashes[hole] = self.hashes[next];
                 self.entries[hole] = self.entries[next];
