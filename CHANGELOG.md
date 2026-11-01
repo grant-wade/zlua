@@ -1,11 +1,25 @@
 # Changelog
 
-## Unreleased
+## 0.8.0
+
+### Breaking changes
+
+- `Value.unsupported` is removed.
+- Userdata finalizers take the state's allocator as a second parameter.
+- Typed callbacks and userdata methods release handle parameters when they
+  return, and must not deinitialize them.
+- `load`, `loadfile`, `dofile`, and `require` reject binary chunks in embedded
+  states unless `Options.binary_chunks` is set.
+- `getmetatable` returns false for userdata metatables zlua creates, unless
+  `UserdataType.expose_metatable` is set.
+- States keep a copy of Lua output only when `DebugOptions.capture_output` is
+  set.
 
 ### Sandbox
 
 - Long `f()()`, `or`, `and`, and arithmetic chains no longer overflow the native stack in the compiler.
 - `toml.read` rejects nesting deeper than 64 levels instead of overflowing the native stack.
+- zerde is updated to 0.3.4, which parses TOML iteratively.
 - `Limits.max_native_stack` limits native stack use, raising `C stack overflow`.
 - `max_instructions` and per-call budgets charge native work by its size.
 - The compiler polls for interrupts.
@@ -13,8 +27,6 @@
 - `Limits.max_output_bytes` limits Lua output, with `State.outputBytes` and `State.resetOutputLimit`.
 - `Limits.untrusted` is a preset for code you don't trust.
 - Garbage is collected before `max_memory` fails an allocation.
-- `load`, `loadfile`, `dofile`, and `require` reject binary chunks in embedded states unless `Options.binary_chunks` is set.
-- `getmetatable` returns false for userdata metatables zlua creates, unless `UserdataType.expose_metatable` is set.
 - A bound `__gc` runs at most once per object, and typed access afterward fails with `error.UserdataClosed`.
 - `decode` rejects values nested more than 200 levels deep.
 - A numeric `for` over non-numbers in a binary chunk raises an error message.
@@ -43,9 +55,8 @@
 
 - `Context.currentLine` returns the line of the running Lua function.
 - `Function` and `Value.function` accept standard library functions and their
-  iterators, and `Value.unsupported` is removed.
+  iterators.
 - `Value.typeName` returns the name Lua's `type` gives a value.
-- Userdata finalizers receive the state's allocator.
 - `UserdataOptions.external_bytes` and `Userdata.setExternalBytes` report host
   storage to the collector.
 - `State.defineUserdata` gives a userdata type one metatable, with typed methods
@@ -68,8 +79,6 @@
   plain callbacks.
 - Conversions to Lua turn enums into names, follow `lua` field options, and
   handle vectors, `std.EnumArray`, `std.EnumSet`, and `toLua` hooks.
-- Typed callbacks and userdata methods release handle parameters when they
-  return.
 - `State.handleScope` releases the handles created until its `end`.
 - `analyze` lists a chunk's global reads and writes without running it.
 - `Coroutine.protectedResumeWith` takes `ResumeOptions` for a traceback and a
@@ -77,8 +86,6 @@
 - `Caller.short_source_len` gives the buffer length for `Caller.shortSource`.
 - `UtcOffset`, `PopenResult`, and the other embedding types are exported from
   the package root.
-- States no longer keep a copy of Lua output; `DebugOptions.capture_output`
-  enables it.
 
 ### Performance
 
@@ -114,6 +121,23 @@
 - An `os.exit` inside a finalizer skipped the remaining finalizers in
   `State.deinit`.
 - Process benchmark paths printed by `--list` did not work as selectors.
+
+### Testing
+
+- `zig build test-sandbox` runs hostile Lua scripts in Debug, ReleaseSafe, and
+  ReleaseFast.
+- `zig build test-diff-generated` compares generated programs under Lua 5.5 and
+  zlua.
+- `zig build test-stack-stress` runs the differential fixtures, moving the Lua
+  stack on every growth check.
+- CI runs these suites and the unit and differential tests in ReleaseSafe.
+- A daily workflow runs the fuzz targets.
+
+### Documentation
+
+- The guides are rewritten against the implementation.
+- `docs/security.md` covers running untrusted Lua, and `docs/snapshots.md` covers
+  snapshots.
 
 ## 0.7.3
 
