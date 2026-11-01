@@ -38,8 +38,9 @@ run checks their seed inputs and a seeded sweep of each generator. To search for
 crashes, run the fuzzer with an optional iteration limit. Run one fuzzer at a
 time per cache directory. Fuzzing requires Zig `0.17.0` and an LLVM build such as
 ReleaseSafe; the command fails to compile on `0.16.0` and fails with
-`pcs_len was zero` in a default Debug build. The `Fuzz` workflow runs it on a
-schedule.
+`pcs_len was zero` in a default Debug build. A crash prints its stack trace and
+saves its input to `.zig-cache/f/crash`, and the command still exits 0. The
+`Fuzz` workflow runs it on a schedule and fails when that file exists.
 
 ```sh
 zig build test --fuzz=100K -Doptimize=ReleaseSafe

@@ -29,9 +29,13 @@ pub fn nullValue(state: *State) !Value {
     return .{ .table = state.library_tables.get(.zerde_null).? };
 }
 
+/// Peak bytes a format reader allocates per input byte, for the format that needs the most.
+const reader_peak_factor = 6;
+
 pub fn inputBytes(state: *State, value: Value, function_name: []const u8) ![]const u8 {
     const bytes = try readInput(state, value, function_name);
     try state.budget.charge(cost.scanned(bytes.len));
+    if (state.current_thread) |thread| try state.gc.reserve(thread, bytes.len *| reader_peak_factor);
     return bytes;
 }
 
@@ -223,7 +227,10 @@ pub fn LuaSource(comptime Encoder: type, comptime emit_float: anytype) type {
                     if (!std.math.isFinite(number)) return self.fail("non-finite number");
                     try emit_float(self.encoder, number);
                 },
-                .string => |string| try self.encoder.emitString(string.bytes()),
+                .string => |string| {
+                    if (self.state.current_thread) |thread| try self.state.gc.reserve(thread, string.len *| 3);
+                    try self.encoder.emitString(string.bytes());
+                },
                 .table => |table| try self.emitTable(table),
                 else => return self.fail("unsupported value type"),
             }

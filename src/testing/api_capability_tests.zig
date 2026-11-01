@@ -87,6 +87,35 @@ test "api host-backed capabilities require explicit I/O access" {
     , .{ .name = "=api-host-backed-capabilities-need-io" });
 }
 
+test "dotted require finds modules through portable filesystems" {
+    const script =
+        \\assert(package.config:sub(1, 1) == "/")
+        \\assert(package.searchpath("pkg.mod", "./?.lua") == "./pkg/mod.lua")
+        \\assert(require("pkg.mod") == 7)
+    ;
+    const files = [_]MemoryFile{.{ .path = "pkg/mod.lua", .contents = "return 7" }};
+    {
+        var lua = try State.init(std.testing.allocator, .{ .stdlib = .full, .capabilities = .{ .filesystem = .{ .memory = &files } } });
+        defer lua.deinit();
+        try lua.doString(script, .{});
+    }
+    {
+        var temporary = std.testing.tmpDir(.{});
+        defer temporary.cleanup();
+        const io = std.testing.io;
+        try temporary.dir.createDirPath(io, "pkg");
+        try temporary.dir.writeFile(io, .{ .sub_path = "pkg/mod.lua", .data = "return 7" });
+        var root = try temporary.dir.openDir(io, ".", .{});
+        defer root.close(io);
+        var lua = try State.init(std.testing.allocator, .{
+            .stdlib = .full,
+            .capabilities = .{ .io = .{ .runtime = io }, .filesystem = .{ .host_dir = .{ .dir = root } } },
+        });
+        defer lua.deinit();
+        try lua.doString(script, .{});
+    }
+}
+
 test "host_dir stat and list reject windows paths outside the directory" {
     if (builtin.os.tag != .windows) return error.SkipZigTest;
     var temporary = std.testing.tmpDir(.{});

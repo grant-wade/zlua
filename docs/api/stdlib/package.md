@@ -129,6 +129,7 @@
 
 ## Functions
 
+- [usesPortablePaths](#fn-usesportablepaths)
 - [loadfile](#fn-loadfile)
 - [dofile](#fn-dofile)
 - [require](#fn-require)
@@ -149,6 +150,16 @@
 
 ```zig
 pub const dir_separator = if (builtin.os.tag == .windows) "\\" else "/";
+```
+
+<a id="fn-usesportablepaths"></a>
+
+## usesPortablePaths
+
+True when the state's filesystem takes '/'-separated paths on every OS.
+
+```zig
+pub fn usesPortablePaths(state: *const State) bool
 ```
 
 <a id="fn-loadfile"></a>

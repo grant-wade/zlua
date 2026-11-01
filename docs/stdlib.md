@@ -51,9 +51,10 @@ A few of these deserve a note. `warn` follows Lua 5.5, including the `@on` and
 once enabled they print to stderr as `Lua warning: <message>`. `xpcall` runs its
 message handler at the point of the error, before any to-be-closed variables
 close. `loadfile` and `dofile` read through the filesystem capability, or from
-stdin when no file name is given. `load`, `loadfile`, `dofile`, and `require`
-accept binary chunks in the CLI, and in embedded states with
-`Options.binary_chunks`.
+stdin when no file name is given. `package.config` and the default searchers use
+`/` as the directory separator with memory and `host_dir` filesystems on every
+OS. `load`, `loadfile`, `dofile`, and `require` accept binary chunks in the CLI,
+and in embedded states with `Options.binary_chunks`.
 
 The other standard libraries provide these members:
 

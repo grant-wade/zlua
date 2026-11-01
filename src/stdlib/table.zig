@@ -25,6 +25,9 @@ pub fn concat(state: *State, thread: *Thread, op: bytecode.Call) !void {
     while (index <= stop) : (index += 1) {
         try state.budget.charge(2);
         if (index != start) try out.appendSlice(sep);
+        const next = table_value.table.get(.{ .integer = index });
+        const next_len = if (next == .string) next.string.len else 0;
+        try state.gc.reserve(thread, (out.buffer.items.len +| next_len) *| 2);
         const value = try index_mod.getTableFromThread(state, thread, table_value, .{ .integer = index });
         switch (value) {
             .integer, .number, .string => try runtime.appendLuaString(state.allocator, &out.buffer, value),

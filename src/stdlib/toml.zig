@@ -77,7 +77,7 @@ fn writeOptions(state: *State, thread: *Thread, op: bytecode.Call) !zerde.toml.W
 }
 
 fn failTomlError(state: *State, operation: []const u8, err: anyerror) !void {
-    if (err == error.OutOfMemory) return err;
+    if (err == error.OutOfMemory or err == error.WriteFailed) return error.OutOfMemory;
     if (err == error.RuntimeError or err == error.StackOverflow or err == error.UnsupportedOpcode or err == error.Interrupted) return err;
 
     var message: std.ArrayList(u8) = .empty;

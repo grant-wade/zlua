@@ -159,6 +159,25 @@ test "snapshot workers keep closed userdata closed" {
     try std.testing.expectEqual(@as(usize, 1), Handle.gc_runs);
 }
 
+test "snapshot workers collect garbage before the memory limit" {
+    var lua = try api.State.init(a, .{ .limits = .{ .max_memory = 10 << 20 } });
+    defer lua.deinit();
+    try lua.doString("source = ('x'):rep(2 << 20)", .{});
+    var snapshot = try lua.snapshot(a);
+    defer snapshot.deinit();
+    var worker = try snapshot.newState(a);
+    defer worker.deinit();
+    for (0..2) |_| {
+        try worker.doString(
+            \\for _ = 1, 40 do local result = source .. "y" end
+            \\for _ = 1, 40 do local result = table.concat({source}) end
+            \\for _ = 1, 40 do local result = source:gsub("^x", "y") end
+            \\for _ = 1, 40 do local result = string.format("%s", source) end
+        , .{});
+        try worker.reset();
+    }
+}
+
 test "snapshot workers inherit the output count" {
     var buffer: [64]u8 = undefined;
     var sink: std.Io.Writer.Discarding = .init(&buffer);

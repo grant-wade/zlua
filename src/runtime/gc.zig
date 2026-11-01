@@ -383,6 +383,12 @@ pub const Gc = struct {
         return state.fail("bad argument #2 to 'collectgarbage'");
     }
 
+    fn nearMemoryLimit(gc: *Gc) bool {
+        const state = gc.parentState();
+        const limit = state.options.max_memory orelse return false;
+        return state.gc.known_total >= limit - limit / 4;
+    }
+
     fn luaFastStep(gc: *Gc) bool {
         const state = gc.parentState();
         const incremental = state.gc.mode == .incremental or state.gc.major_pending or
@@ -419,11 +425,12 @@ pub const Gc = struct {
     }
 
     pub fn autoStep(gc: *Gc, thread: ?*Thread) !void {
+        if (thread) |running| if (running.frames.items.len == 0) return;
         const state = gc.parentState();
         if (state.gc.stress_step and state.gc.phase == .pause) state.gc.major_pending = true;
         defer state.gc.stress_mark = state.gc.known_total;
         const conservative = state.gc.conservative_depth != 0;
-        if (state.gc.stress_collect or gc.luaFastStep()) return gc.collectWithFinalizersMode(thread, conservative);
+        if (state.gc.stress_collect or gc.luaFastStep() or gc.nearMemoryLimit()) return gc.collectWithFinalizersMode(thread, conservative);
         const stepsize: usize = @intCast(@max(state.gc.params.stepsize, 1));
         var debt = state.gc.known_total -| state.gc.next_total;
         while (!try gc.step(thread, conservative)) {
@@ -678,7 +685,7 @@ pub const Gc = struct {
     pub fn reserve(gc: *Gc, thread: *Thread, bytes: usize) !void {
         const state = gc.parentState();
         const limit = state.options.max_memory orelse return;
-        if (bytes < limit / 32 or state.gc.collecting or state.rollback != null) return;
+        if (bytes < limit / 32 or state.gc.collecting) return;
         const total = gc.currentAllocationTotal();
         if (total +| bytes <= limit - limit / 8 or total == state.gc.last_reserve_total) return;
         try gc.collectWithFinalizersMode(thread, true);

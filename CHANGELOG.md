@@ -23,6 +23,9 @@
 - `utf8.offset` with `math.mininteger` aborted the process.
 - `tonumber` with a base aborted the process when the value overflowed an integer.
 - Converting the float `2^63` to a Zig integer aborted the process.
+- Dotted `require` names failed on Windows with memory and `host_dir` filesystems.
+- A collector step as a coroutine finished with a finalizer pending aborted the process.
+- `json`, `toml`, `msgpack`, and `csv` functions reported exceeding `max_memory` as `WriteFailed`.
 - `host_dir` filesystems reject drive-relative paths, alternate data streams, and device names on Windows.
 
 ### Lua Compatibility

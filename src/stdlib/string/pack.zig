@@ -103,6 +103,7 @@ pub fn pack(state: *State, thread: *Thread, op: bytecode.Call) !void {
         }
         index += 1;
     }
+    out.shrinkAndFree(state.allocator, out.items.len);
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(out.items) }});
 }
 

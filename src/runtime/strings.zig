@@ -270,6 +270,7 @@ pub const Builder = struct {
 
     pub fn finish(self: *Builder) !*const String {
         defer self.deinit();
+        if (self.buffer.items.len > short_string_limit) self.buffer.shrinkAndFree(self.allocator(), self.buffer.items.len);
         return self.strings.intern(self.buffer.items);
     }
 };

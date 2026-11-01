@@ -162,6 +162,7 @@ pub fn gsub(state: *State, thread: *Thread, op: bytecode.Call) !void {
     var previous_match_end: ?usize = null;
     while (pos <= source.len and count < max_count) {
         try state.budget.charge(2);
+        try state.gc.reserve(thread, out.buffer.items.len *| 2);
         const found = (try pattern_mod.simplePatternFind(state, source, pattern, pos)) orelse break;
         try out.appendSlice(source[pos..found.range.start]);
         if (found.range.start == found.range.end and previous_match_end != null and previous_match_end.? == found.range.start) {

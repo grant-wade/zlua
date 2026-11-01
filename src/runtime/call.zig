@@ -1210,7 +1210,18 @@ fn tableCreateHints(self: *State, thread: *Thread, op: bytecode.Call) ![2]u32 {
 }
 
 pub fn callNative(self: *State, native: NativeFn, thread: *Thread, op: bytecode.Call) !void {
+    if (self.options.max_memory != null) try reserveForStringArguments(self, thread, op);
     try stdlib.callNative(self, native, thread, op);
+}
+
+/// Collects before a native call that may need twice the size of its string arguments.
+fn reserveForStringArguments(self: *State, thread: *Thread, op: bytecode.Call) !void {
+    var bytes: usize = 0;
+    for (0..op.arg_count) |index| {
+        const value = argValue(self, thread, op, @intCast(index));
+        if (value == .string) bytes +|= value.string.len;
+    }
+    try self.gc.reserve(thread, bytes *| 2);
 }
 
 fn isYieldBlockingNative(value: Value) bool {
