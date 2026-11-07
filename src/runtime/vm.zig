@@ -52,7 +52,7 @@ fn runThreadLoop(self: *State, thread: *Thread, target_frame_count: usize) anyer
     defer self.execution_depth -= 1;
     if (self.execution_depth >= lua_max_c_calls) try call_mod.checkCStack(self, thread);
     if (self.native_stack.exceeded()) try call_mod.failCStackOverflow(self, thread);
-    try rollback_mod.threadWritable(thread);
+    if (thread.rollback != null) try rollback_mod.threadWritable(thread);
     while (thread.frames.items.len > target_frame_count) {
         if (thread.pending_unwind_error != null or thread.pending_yield_hook_return or call_mod.hasPendingContinuations(thread)) {
             if (thread.pending_unwind_error != null and thread.frames.items.len == thread.pending_unwind_resume_frame_count) {
@@ -413,7 +413,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
 
     var stack_limit = @min(thread.stack.items.len, self.stackValueLimit());
     var frame_limit = @min(thread.frames.capacity, self.callFrameLimit());
-    var return_floor = fastReturnFloor(thread, target_frame_count);
+    var return_floor = @call(.always_inline, fastReturnFloor, .{ thread, target_frame_count });
 
     var frame_index = thread.frames.items.len - 1;
     var frame = &thread.frames.items[frame_index];

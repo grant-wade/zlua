@@ -841,7 +841,7 @@ fn callClosure(self: *State, thread: *Thread, op: bytecode.Call, closure: *Closu
     const frame_end = base + 1 + shifted + @max(closure.proto.max_registers, 1);
     if (frame_end > self.stackValueLimit()) try checkStackValueOverflow(self, thread, frame_end);
     const frame = try prepareClosureFrame(self, thread, closure, base, base + 1, @intCast(op.arg_count), base, op.return_count);
-    try thread.frames.append(self.allocator, frame);
+    if (thread.frames.items.len < thread.frames.capacity) thread.frames.appendAssumeCapacity(frame) else try thread.frames.append(self.allocator, frame);
     if (debug_name_override != null or debug_namewhat_override != null) {
         const frame_index = thread.frames.items.len - 1;
         const extra = thread.frameExtraMut(self.allocator, frame_index) catch |err| {

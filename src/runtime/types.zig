@@ -1090,7 +1090,12 @@ pub const Thread = struct {
         self.continuation_frame_count = result;
     }
 
-    pub fn ensureStack(self: *Thread, allocator: std.mem.Allocator, size: usize, limit: usize) !void {
+    pub inline fn ensureStack(self: *Thread, allocator: std.mem.Allocator, size: usize, limit: usize) !void {
+        if (size <= self.stack.items.len and size <= limit and !stress_stack_moves) return;
+        return self.growStack(allocator, size, limit);
+    }
+
+    noinline fn growStack(self: *Thread, allocator: std.mem.Allocator, size: usize, limit: usize) !void {
         if (size > limit) return error.StackOverflow;
         if (stress_stack_moves and self.stack.items.len <= stress_stack_limit) try self.moveStack(allocator);
         const old_len = self.stack.items.len;
