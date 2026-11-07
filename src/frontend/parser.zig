@@ -319,16 +319,27 @@ const Parser = struct {
     }
 
     fn parseTableConstructorAfterLeftBrace(self: *Parser, open: token_mod.Token) anyerror!ast.TableConstructor {
+        const open_line = if (self.index >= 2) self.tokens[self.index - 2].span.end.line else open.span.start.line;
         var fields = std.ArrayList(ast.TableField).empty;
+        var field_lines = std.ArrayList(usize).empty;
         while (!self.check(.right_brace)) {
             if (self.check(.eof)) return self.failExpectedClose("}", "{", open, self.peek());
-            try fields.append(self.allocator, try self.parseTableField());
-            if (self.match(.comma) == null and self.match(.semicolon) == null) break;
-            if (self.check(.right_brace)) break;
+            const field = try self.parseTableField();
+            try fields.append(self.allocator, field);
+            const last_line = self.tokens[self.index - 1].span.end.line;
+            const separator = self.match(.comma) orelse self.match(.semicolon);
+            const store_line = if (field == .array) if (separator) |tok| tok.span.end.line else last_line else last_line;
+            try field_lines.append(self.allocator, store_line);
+            if (separator == null or self.check(.right_brace)) break;
         }
         if (!self.check(.right_brace)) return self.failExpectedClose("}", "{", open, self.peek());
-        _ = self.advance();
-        return .{ .fields = try fields.toOwnedSlice(self.allocator) };
+        const close = self.advance();
+        if (fields.items.len != 0 and fields.items[fields.items.len - 1] == .array) field_lines.items[field_lines.items.len - 1] = close.span.end.line;
+        return .{
+            .fields = try fields.toOwnedSlice(self.allocator),
+            .open_line = open_line,
+            .field_lines = try field_lines.toOwnedSlice(self.allocator),
+        };
     }
 
     fn parseTableField(self: *Parser) anyerror!ast.TableField {

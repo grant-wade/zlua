@@ -52,7 +52,7 @@ fn runThreadLoop(self: *State, thread: *Thread, target_frame_count: usize) anyer
     defer self.execution_depth -= 1;
     if (self.execution_depth >= lua_max_c_calls) try call_mod.checkCStack(self, thread);
     if (self.native_stack.exceeded()) try call_mod.failCStackOverflow(self, thread);
-    try rollback_mod.threadWritable(thread);
+    if (thread.rollback != null) try rollback_mod.threadWritable(thread);
     while (thread.frames.items.len > target_frame_count) {
         if (thread.pending_unwind_error != null or thread.pending_yield_hook_return or call_mod.hasPendingContinuations(thread)) {
             if (thread.pending_unwind_error != null and thread.frames.items.len == thread.pending_unwind_resume_frame_count) {
@@ -413,7 +413,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
 
     var stack_limit = @min(thread.stack.items.len, self.stackValueLimit());
     var frame_limit = @min(thread.frames.capacity, self.callFrameLimit());
-    var return_floor = fastReturnFloor(thread, target_frame_count);
+    var return_floor = @call(.always_inline, fastReturnFloor, .{ thread, target_frame_count });
 
     var frame_index = thread.frames.items.len - 1;
     var frame = &thread.frames.items[frame_index];
@@ -978,7 +978,8 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
 
                 const executed_count = pc +% count_bias -% segment_start;
                 const copied = @min(op.arg_count, param_count);
-                clearRegisters(thread.stack.items[callee_base + copied .. stack_end]);
+                const cleared_end = param_count + @intFromBool(callee_proto.named_vararg_readonly);
+                if (copied < cleared_end) clearRegisters(thread.stack.items[callee_base + copied .. callee_base + cleared_end]);
                 frame.pc = @intCast(pc + 1);
                 frame = &@as([*]CallFrame, @ptrCast(frame))[1];
                 frame.* = .{
@@ -1028,7 +1029,18 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 pc += 1;
                 frame.pc = @intCast(pc);
                 stack[op.dest] = try self.newTableWithHints(op.array_hint, op.hash_hint);
-                if (self.gc.running and self.gc.shouldRunAuto()) {
+                if (self.gc.running and self.gc.autoStepDue()) {
+                    resync = pc +% count_bias;
+                    continue :frames;
+                }
+                continue :fast_loop std.meta.activeTag(instructions[pc]);
+            },
+            .closure => {
+                const op = instructions[pc].closure;
+                pc += 1;
+                frame.pc = @intCast(pc);
+                stack[op.dest] = try self.newClosure(thread, proto.children.items[op.proto]);
+                if (self.gc.running and self.gc.autoStepDue()) {
                     resync = pc +% count_bias;
                     continue :frames;
                 }
@@ -1046,6 +1058,58 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             .tail_call => {
                 const op = instructions[pc].tail_call.wide();
                 if (thread.hook != .nil) break :fast_loop;
+                lua_tail: {
+                    var arg_count = op.arg_count;
+                    if (arg_count == bytecode.multret_arg_count) {
+                        if (pc +% count_bias != segment_start) break :lua_tail;
+                        const expected_base = base + op.base + 1;
+                        if (thread.last_result_base < expected_base) break :lua_tail;
+                        arg_count = @intCast((thread.last_result_base + thread.last_result_count) -| expected_base);
+                    }
+                    const callee = stack[op.base];
+                    if (callee != .closure or !callee.closure.proto.fast_loop_call or proto.has_to_close_locals or frame.has_extra or
+                        thread.next_call_name != null or thread.next_call_namewhat != null) break :lua_tail;
+                    const closure = callee.closure;
+                    const callee_proto = closure.proto;
+                    const param_count = callee_proto.param_count;
+                    const argument_base = frame.argumentBase();
+                    const vararg_count: u32 = if (callee_proto.is_vararg and arg_count > param_count) arg_count - param_count else 0;
+                    const callee_base = if (vararg_count != 0) argument_base + arg_count else argument_base;
+                    if (callee_base + @max(callee_proto.max_registers, 1) > stack_limit) break :lua_tail;
+
+                    if (thread.open_upvalues) |upvalue| if (upvalue.cell.open.stack_index >= base) upvalue_mod.closeUpvalues(self, thread, base);
+                    const source = base + op.base + 1;
+                    const copied = @min(arg_count, param_count);
+                    const moved = if (vararg_count != 0) arg_count else copied;
+                    for (0..moved) |index| thread.stack.items[argument_base + index] = thread.stack.items[source + index];
+                    if (vararg_count != 0) shiftParameters(thread.stack.items, argument_base, callee_base, param_count);
+                    const cleared_end = param_count + @intFromBool(callee_proto.named_vararg_readonly);
+                    if (copied < cleared_end) clearRegisters(thread.stack.items[callee_base + copied .. callee_base + cleared_end]);
+
+                    const executed_count = pc +% count_bias -% segment_start;
+                    frame.* = .{
+                        .closure = closure,
+                        .base = @intCast(callee_base),
+                        .pc = 0,
+                        .return_start = frame.return_start,
+                        .return_count = frame.return_count,
+                        .vararg_base = @intCast(argument_base + param_count),
+                        .vararg_count = vararg_count,
+                        .named_vararg_readonly = callee_proto.named_vararg_readonly,
+                        .is_tail_call = true,
+                    };
+                    if (executed_count != 0) {
+                        thread.last_result_count = 0;
+                        thread.last_transfer_count = 0;
+                    }
+                    proto = callee_proto;
+                    segment_start = pc +% count_bias +% 1;
+                    count_bias = segment_start;
+                    pc = 0;
+                    base = callee_base;
+                    if (pc +% count_bias >= allowance or self.budget.fastLoopInterrupted()) return true;
+                    continue :frames;
+                }
                 if (pc +% count_bias != segment_start) {
                     if (op.arg_count == bytecode.multret_arg_count) break :fast_loop;
                     thread.last_result_count = 0;
@@ -1063,9 +1127,8 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 const op = instructions[pc].ret;
                 // Returning onto the floor frame is fine, but the outer loop must take over afterwards.
                 if (frame_index < return_floor or frame_index == 0) break :fast_loop;
-                const open_here = if (thread.open_upvalues) |upvalue| upvalue.cell.open.stack_index >= base else false;
-                if (proto.has_to_close_locals or op.count == bytecode.multret_count or frame.return_count == bytecode.multret_count or
-                    (frame.has_extra and thread.frame_extras.items[frame_index].pending_returns != null) or open_here)
+                if (proto.has_to_close_locals or op.count == bytecode.multret_count or
+                    (frame.has_extra and thread.frame_extras.items[frame_index].pending_returns != null))
                 {
                     @branchHint(.unlikely);
                     if (thread.hook != .nil) break :fast_loop;
@@ -1082,8 +1145,9 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     continue :frames;
                 }
                 const return_start = frame.return_start;
-                const return_count = frame.return_count;
+                const return_count: u32 = if (frame.return_count == bytecode.multret_count) op.count else frame.return_count;
                 if (return_start + return_count > stack_limit) break :fast_loop;
+                if (thread.open_upvalues) |upvalue| if (upvalue.cell.open.stack_index >= base) upvalue_mod.closeUpvalues(self, thread, base);
                 const executed_count = pc +% count_bias -% segment_start;
                 const copied = @min(return_count, op.count);
                 for (0..copied) |index| thread.stack.items[return_start + index] = stack[op.first + index];

@@ -369,7 +369,7 @@ pub fn prepareClosureFrame(self: *State, thread: *Thread, closure: *Closure, sou
     if (vararg_count != 0) {
         for (0..param_count) |index| stack[base + index] = stack[frame_base + index];
     }
-    for (copied..register_count) |index| stack[base + index] = .nil;
+    for (copied..param_count + @intFromBool(proto.named_vararg)) |index| stack[base + index] = .nil;
 
     const readonly_vararg = proto.named_vararg_readonly;
     if (proto.named_vararg and !readonly_vararg) {
@@ -832,7 +832,29 @@ fn checkFrameOverflow(self: *State, thread: *Thread) !void {
     return error.RuntimeError;
 }
 
+/// Pushes the frame of a fixed-parameter closure whose registers fit the current stack, or returns false.
+inline fn pushPlainClosureFrame(self: *State, thread: *Thread, op: bytecode.Call, closure: *Closure) bool {
+    const proto = closure.proto;
+    if (!proto.fast_loop_call or proto.is_vararg or thread.hook_call) return false;
+    const frame_count = thread.frames.items.len;
+    if (frame_count >= thread.frames.capacity or frame_count >= self.callFrameLimit()) return false;
+    const base = thread.frames.items[frame_count - 1].base + op.base + 1;
+    const param_count = proto.param_count;
+    if (base + @max(proto.max_registers, 1) > @min(thread.stack.items.len, self.stackValueLimit())) return false;
+    if (op.arg_count < param_count) @memset(thread.stack.items[base + op.arg_count .. base + param_count], .nil);
+    thread.frames.appendAssumeCapacity(.{
+        .closure = closure,
+        .base = @intCast(base),
+        .pc = 0,
+        .return_start = @intCast(base - 1),
+        .return_count = op.return_count,
+        .vararg_base = @intCast(base + param_count),
+    });
+    return true;
+}
+
 fn callClosure(self: *State, thread: *Thread, op: bytecode.Call, closure: *Closure, debug_name_override: ?[]const u8, debug_namewhat_override: ?[]const u8) !void {
+    if (debug_name_override == null and debug_namewhat_override == null and pushPlainClosureFrame(self, thread, op, closure)) return;
     if (thread.frames.items.len >= self.callFrameLimit()) try checkFrameOverflow(self, thread);
 
     const caller = thread.frames.items[thread.frames.items.len - 1];
@@ -841,7 +863,7 @@ fn callClosure(self: *State, thread: *Thread, op: bytecode.Call, closure: *Closu
     const frame_end = base + 1 + shifted + @max(closure.proto.max_registers, 1);
     if (frame_end > self.stackValueLimit()) try checkStackValueOverflow(self, thread, frame_end);
     const frame = try prepareClosureFrame(self, thread, closure, base, base + 1, @intCast(op.arg_count), base, op.return_count);
-    try thread.frames.append(self.allocator, frame);
+    if (thread.frames.items.len < thread.frames.capacity) thread.frames.appendAssumeCapacity(frame) else try thread.frames.append(self.allocator, frame);
     if (debug_name_override != null or debug_namewhat_override != null) {
         const frame_index = thread.frames.items.len - 1;
         const extra = thread.frameExtraMut(self.allocator, frame_index) catch |err| {
@@ -911,7 +933,7 @@ pub fn tailCallValue(self: *State, thread: *Thread, op: bytecode.Call) anyerror!
                 },
                 else => return err,
             };
-            try vm_mod.runThreadUntil(self, thread, frame_count);
+            if (thread.frames.items.len > frame_count) try vm_mod.runThreadUntil(self, thread, frame_count);
             try returnFromFrame(self, thread, resolved.base, frame.return_count);
         },
     }

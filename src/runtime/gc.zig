@@ -657,6 +657,12 @@ pub const Gc = struct {
     pub fn shouldRunAuto(gc: *Gc) bool {
         const state = gc.parentState();
         if (state.current_thread) |thread| gc.syncThreadStorage(thread);
+        return gc.autoStepDue();
+    }
+
+    /// The current thread's storage must already be synced.
+    pub fn autoStepDue(gc: *Gc) bool {
+        const state = gc.parentState();
         return !state.gc.collecting and gc.currentAllocationTotal() >= state.gc.next_total;
     }
 
