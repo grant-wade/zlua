@@ -978,7 +978,8 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
 
                 const executed_count = pc +% count_bias -% segment_start;
                 const copied = @min(op.arg_count, param_count);
-                clearRegisters(thread.stack.items[callee_base + copied .. stack_end]);
+                const cleared_end = param_count + @intFromBool(callee_proto.named_vararg_readonly);
+                if (copied < cleared_end) clearRegisters(thread.stack.items[callee_base + copied .. callee_base + cleared_end]);
                 frame.pc = @intCast(pc + 1);
                 frame = &@as([*]CallFrame, @ptrCast(frame))[1];
                 frame.* = .{

@@ -369,7 +369,7 @@ pub fn prepareClosureFrame(self: *State, thread: *Thread, closure: *Closure, sou
     if (vararg_count != 0) {
         for (0..param_count) |index| stack[base + index] = stack[frame_base + index];
     }
-    for (copied..register_count) |index| stack[base + index] = .nil;
+    for (copied..param_count + @intFromBool(proto.named_vararg)) |index| stack[base + index] = .nil;
 
     const readonly_vararg = proto.named_vararg_readonly;
     if (proto.named_vararg and !readonly_vararg) {
