@@ -911,7 +911,7 @@ pub fn tailCallValue(self: *State, thread: *Thread, op: bytecode.Call) anyerror!
                 },
                 else => return err,
             };
-            try vm_mod.runThreadUntil(self, thread, frame_count);
+            if (thread.frames.items.len > frame_count) try vm_mod.runThreadUntil(self, thread, frame_count);
             try returnFromFrame(self, thread, resolved.base, frame.return_count);
         },
     }
