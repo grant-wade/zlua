@@ -1,15 +1,15 @@
-Lua 5.5.0
+Lua 5.5.1
 https://www.lua.org/
 
-zlua follows the Lua language and reference implementation and uses the
-official Lua implementation and test suite for compatibility testing and
-benchmarks. The build downloads these upstream sources and installs the
-reference interpreter as lua5.5.
+Parts of zlua, such as the table sort and pattern matcher, are translated from
+the Lua 5.5 sources. The build downloads the Lua sources and official test suite
+for compatibility testing and benchmarks, and installs the reference interpreter
+as lua5.5.
 
-The following notice is reproduced from Lua 5.5.0's src/lua.h and also
-applies to the official Lua 5.5.0 test suite.
+The following notice is reproduced from Lua 5.5.1's src/lua.h. It applies to
+the translated parts of zlua and to the Lua sources and test suite.
 
-Copyright (C) 1994-2025 Lua.org, PUC-Rio.
+Copyright (C) 1994-2026 Lua.org, PUC-Rio.
 
 Permission is hereby granted, free of charge, to any person obtaining
 a copy of this software and associated documentation files (the

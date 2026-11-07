@@ -1,7 +1,7 @@
 # zlua_test
 
 `zlua_test` is a small project that checks zlua works as a dependency of another
-Zig project, on both Zig `0.16.0` and `0.17.0`. CI builds, runs, and tests it on
+Zig project, on both Zig `0.16.0` and `0.17.1`. CI builds, runs, and tests it on
 every push.
 
 It depends on this checkout of `zlua` through `.path = "../.."` in

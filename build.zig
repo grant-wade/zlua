@@ -1,7 +1,7 @@
 const std = @import("std");
 
 const lua_deps_root = ".zlua-deps";
-const lua_source_root = lua_deps_root ++ "/lua-5.5.0/src";
+const lua_source_root = lua_deps_root ++ "/lua-5.5.1/src";
 
 const EmbeddingExample = struct {
     name: []const u8,
@@ -167,6 +167,7 @@ pub fn build(b: *std.Build) void {
         .{ .name = "zlua-embed-typed-userdata-initializer", .path = "examples/typed_userdata_initializer.zig" },
         .{ .name = "zlua-embed-preload-module", .path = "examples/preload_module.zig" },
         .{ .name = "zlua-embed-watchdog", .path = "examples/watchdog.zig" },
+        .{ .name = "zlua-embed-readme", .path = "examples/readme.zig" },
     };
 
     const examples_step = b.step("examples", "Compile and run all embedding examples, requiring exit code 0");

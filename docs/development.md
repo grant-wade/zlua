@@ -1,6 +1,6 @@
 # Development
 
-zlua supports Zig `0.16.0` and `0.17.0`. Its only package dependency is `zerde`.
+zlua supports Zig `0.16.0` and `0.17.1`. Its only package dependency is `zerde`.
 The build also downloads the Lua 5.5 source and official tests into
 `.zlua-deps/`, a directory Git ignores, so you don't need Lua installed on your
 system.
@@ -58,7 +58,7 @@ The recipe formats `build.zig`, top-level `src/*.zig`, `src/testing/*.zig`, and
 `examples/*.zig`. For changed files in other nested source directories, run
 `zig fmt` on them directly.
 
-Format with Zig `0.16.0`. The `0.17.0` formatter can produce syntax that
+Format with Zig `0.16.0`. The `0.17.1` formatter can produce syntax that
 `0.16.0` cannot parse, and the recipe rejects other versions. If `zig` on your
 `PATH` is a different version, point the recipe at a 0.16 compiler:
 
@@ -72,8 +72,8 @@ just --set zig /path/to/zig-0.16.0/zig fmt
 them. If you use a local mirror, you can override the URLs:
 
 ```sh
-ZLUA_LUA_URL=https://example.invalid/lua-5.5.0.tar.gz \
-ZLUA_LUA_TESTS_URL=https://example.invalid/lua-5.5.0-tests.tar.gz \
+ZLUA_LUA_URL=https://example.invalid/lua-5.5.1.tar.gz \
+ZLUA_LUA_TESTS_URL=https://example.invalid/lua-5.5.1-tests.tar.gz \
 zig build fetch-lua
 ```
 

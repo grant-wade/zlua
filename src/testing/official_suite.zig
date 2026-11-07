@@ -8,7 +8,7 @@ const Dir = std.Io.Dir;
 const File = std.Io.File;
 
 const Options = struct {
-    suite_path: []const u8 = ".zlua-deps/lua-5.5.0-tests",
+    suite_path: []const u8 = ".zlua-deps/lua-5.5.1-tests",
     file_args: []const []const u8 = &.{},
     clua: ?[]const u8 = null,
     zlua: ?[]const u8 = null,

@@ -17,13 +17,28 @@
 
 ### Lua Compatibility
 
+- The reference interpreter and official test suite are Lua 5.5.1.
+- `table.unpack` raises an argument error for values that can't act as a table.
+- Table functions accept non-table values whose metatables provide the
+  metamethods they use, and strings need no `__len`.
+- Locals of a block stay visible to `debug.getlocal` while its to-be-closed
+  variables close.
+- `table.sort` reads and writes elements in place in the same order as Lua, so
+  `__index`, `__newindex`, comparators, and errors see the same table states.
+- `table.sort` accepts up to `INT_MAX - 1` elements instead of 1,000,000.
 - Line hooks reported line 1 for table constructor instructions.
 - Multiple assignments store from right to left, and indexed targets read local keys and tables when the store runs.
 - Error messages name `t["k"]`, `t[1]`, other indexed values, and a nil `_ENV` like Lua 5.5.
 - Long chains of left-associative operators compile instead of failing with too many registers.
 
+### Testing
+
+- CI runs on Zig 0.16.0 and 0.17.1.
+
 ### Fixes
 
+- `table.remove` could free the removed value when removing the last element
+  of a proxy table ran `__newindex`.
 - Growing a table's array part past integer keys held in its hash part hid those keys, and `pairs` over the table never finished.
 
 ## 0.8.0
