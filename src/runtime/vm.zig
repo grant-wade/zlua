@@ -1029,7 +1029,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 pc += 1;
                 frame.pc = @intCast(pc);
                 stack[op.dest] = try self.newTableWithHints(op.array_hint, op.hash_hint);
-                if (self.gc.running and self.gc.shouldRunAuto()) {
+                if (self.gc.running and self.gc.autoStepDue()) {
                     resync = pc +% count_bias;
                     continue :frames;
                 }
@@ -1040,7 +1040,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 pc += 1;
                 frame.pc = @intCast(pc);
                 stack[op.dest] = try self.newClosure(thread, proto.children.items[op.proto]);
-                if (self.gc.running and self.gc.shouldRunAuto()) {
+                if (self.gc.running and self.gc.autoStepDue()) {
                     resync = pc +% count_bias;
                     continue :frames;
                 }
