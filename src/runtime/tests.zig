@@ -591,6 +591,7 @@ const verified_chunk_program =
     \\  local total = start
     \\  return function(step)
     \\    total = total + step + #log * 0
+    \\    log.last = total
     \\    return total
     \\  end
     \\end

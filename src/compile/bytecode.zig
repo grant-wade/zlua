@@ -111,6 +111,13 @@ pub const Instruction = union(enum(u8)) {
     shr_k: BinaryConstant,
     compare_branch_k: CompareBranchConstant,
 
+    get_method: MethodAccess,
+    get_upvalue_field: UpvalueFieldAccess,
+    set_upvalue_field: UpvalueFieldSet,
+    get_index: IndexAccess,
+    set_index: IndexSet,
+    set_field_k: FieldSetConstant,
+
     /// The jump offset of a jumping instruction, or null.
     pub fn jumpOffset(self: Instruction) ?JumpOffset {
         return switch (self) {
@@ -191,6 +198,45 @@ pub const FieldSet = struct {
     table: Register,
     name: ConstantIndex align(1),
     value: Register,
+};
+
+/// Loads `table[name]` into `dest` and `table` into `dest + 1`.
+pub const MethodAccess = struct {
+    dest: Register,
+    table: Register,
+    name: ConstantIndex align(1),
+};
+
+pub const UpvalueFieldAccess = struct {
+    dest: Register,
+    upvalue: UpvalueIndex,
+    name: ConstantIndex align(1),
+};
+
+pub const UpvalueFieldSet = struct {
+    upvalue: UpvalueIndex,
+    name: ConstantIndex align(1),
+    value: Register,
+};
+
+/// Reads `table[index]` for an integer constant `index`.
+pub const IndexAccess = struct {
+    dest: Register,
+    table: Register,
+    index: u32 align(1),
+};
+
+pub const IndexSet = struct {
+    table: Register,
+    index: u32 align(1),
+    value: Register,
+};
+
+/// Assigns constant `constant` to `table[name]`.
+pub const FieldSetConstant = struct {
+    table: Register,
+    name: ConstantIndex align(1),
+    constant: u16 align(1),
 };
 
 /// Creates a table in `dest`, which is above every live register of the frame.

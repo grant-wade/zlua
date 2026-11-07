@@ -133,7 +133,12 @@ pub const Proto = struct {
         for (self.instructions.items) |instruction| {
             const touches = switch (instruction) {
                 .get_table => |op| op.dest == register or op.key == register,
-                .get_field => |op| op.dest == register,
+                inline .get_field, .get_index => |op| op.dest == register,
+                .get_method => |op| op.dest == register or op.dest + 1 == register or op.table == register,
+                .get_upvalue_field => |op| op.dest == register,
+                .set_upvalue_field => |op| op.value == register,
+                .set_index => |op| op.table == register or op.value == register,
+                .set_field_k => |op| op.table == register,
                 .jmp, .close => false,
                 .load_nil, .check_close, .close_tbc => |r| r == register,
                 inline .load_bool, .load_const, .new_table, .closure => |op| op.dest == register,

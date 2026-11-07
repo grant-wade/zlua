@@ -241,6 +241,12 @@ fn verifyInstruction(proto: *const proto_mod.Proto, instruction: bytecode.Instru
         .set_array => |op| op.table < registers and op.value < registers and op.index != 0,
         .get_field => |op| op.dest < registers and op.table < registers and isStringConstant(proto, op.name),
         .set_field => |op| op.table < registers and op.value < registers and isStringConstant(proto, op.name),
+        .set_field_k => |op| op.table < registers and isStringConstant(proto, op.name) and op.constant < proto.constants.items.len,
+        .get_method => |op| registerRange(registers, op.dest, 2) and op.table < registers and isStringConstant(proto, op.name),
+        .get_upvalue_field => |op| op.dest < registers and op.upvalue < proto.upvalues.items.len and isStringConstant(proto, op.name),
+        .set_upvalue_field => |op| op.value < registers and op.upvalue < proto.upvalues.items.len and isStringConstant(proto, op.name),
+        .get_index => |op| op.dest < registers and op.table < registers,
+        .set_index => |op| op.table < registers and op.value < registers,
         .new_table => |op| op.dest < registers and @as(u64, op.array_hint) + op.hash_hint <= proto.instructions.items.len,
         .set_list => |op| op.table < registers and op.start_index != 0 and
             (if (op.count == bytecode.set_list_multret) op.first < registers else registerRange(registers, op.first, op.count)),

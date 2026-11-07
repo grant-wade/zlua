@@ -337,7 +337,7 @@ const ChunkBuilder = struct {
 
     fn step(self: *ChunkBuilder, pc: u32) !void {
         const p = self.picker;
-        switch (p.below(32)) {
+        switch (p.below(35)) {
             0 => try self.emit(.{ .load_nil = self.scratch() }),
             1 => try self.emit(.{ .load_bool = .{ .dest = self.scratch(), .value = p.chance(50) } }),
             2 => try self.emit(.{ .load_const = .{ .dest = self.scratch(), .constant = p.below(chunk_constants.len) } }),
@@ -435,6 +435,24 @@ const ChunkBuilder = struct {
             29 => if (self.children != 0) {
                 try self.emit(.{ .closure = .{ .dest = self.scratch(), .proto = p.below(self.children) } });
             } else try self.emit(.{ .close = @intCast(p.below(@as(u32, self.registers) + 1)) }),
+            31 => {
+                const dest = self.scratch();
+                if (dest + 1 >= self.registers) return self.emit(.{ .load_nil = dest });
+                try self.emit(.{ .get_method = .{ .dest = dest, .table = self.typed(typed_table), .name = constant_string + p.below(2) } });
+            },
+            32 => if (self.upvalues != 0) {
+                const upvalue: bytecode.UpvalueIndex = @intCast(p.below(self.upvalues));
+                if (p.chance(50)) {
+                    try self.emit(.{ .get_upvalue_field = .{ .dest = self.scratch(), .upvalue = upvalue, .name = constant_string + p.below(2) } });
+                } else {
+                    try self.emit(.{ .set_upvalue_field = .{ .upvalue = upvalue, .name = constant_string + p.below(2), .value = self.any() } });
+                }
+            } else try self.emit(.{ .load_nil = self.scratch() }),
+            33 => switch (p.below(3)) {
+                0 => try self.emit(.{ .get_index = .{ .dest = self.scratch(), .table = self.typed(typed_table), .index = p.below(8) } }),
+                1 => try self.emit(.{ .set_index = .{ .table = self.typed(typed_table), .index = p.below(8), .value = self.any() } }),
+                else => try self.emit(.{ .set_field_k = .{ .table = self.typed(typed_table), .name = constant_string + p.below(2), .constant = @intCast(p.below(chunk_constants.len)) } }),
+            },
             30 => switch (p.below(3)) {
                 0 => try self.emit(.{ .close = @intCast(p.below(@as(u32, self.registers) + 1)) }),
                 1 => {

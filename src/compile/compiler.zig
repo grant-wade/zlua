@@ -59,10 +59,10 @@ const PreparedTarget = union(enum) {
     local: bytecode.Register,
     upvalue: bytecode.UpvalueIndex,
     global: bytecode.ConstantIndex,
-    /// A global stored through the `_ENV` upvalue, read when the store runs.
-    env_upvalue: struct { upvalue: bytecode.UpvalueIndex, name: bytecode.ConstantIndex },
-    /// `table_origin` is null for a global stored through a local `_ENV`.
-    field: struct { table: bytecode.Register, name: bytecode.ConstantIndex, table_origin: ?proto_mod.OperandOrigin },
+    /// A field of a table held in an upvalue, read when the store runs.
+    upvalue_field: struct { upvalue: bytecode.UpvalueIndex, name: bytecode.ConstantIndex, table_origin: proto_mod.OperandOrigin },
+    field: struct { table: bytecode.Register, name: bytecode.ConstantIndex, table_origin: proto_mod.OperandOrigin },
+    integer_index: struct { table: bytecode.Register, index: u32, table_origin: proto_mod.OperandOrigin },
     index: struct { table: bytecode.Register, key: bytecode.Register, table_origin: proto_mod.OperandOrigin },
 };
 
@@ -302,6 +302,11 @@ const FunctionCompiler = struct {
         const mark = self.registerMark();
         defer self.release(mark);
         if (target != .local) if (self.sourceRegister(value)) |register| return self.assignPreparedTarget(target, register);
+        if (target == .field) if (try self.shortConstant(value)) |constant| {
+            const field = target.field;
+            _ = try self.emitWithErrorSite(.{ .set_field_k = .{ .table = field.table, .name = field.name, .constant = constant } }, .newindex, &.{field.table_origin}, null);
+            return;
+        };
         const temporary = try self.allocReg();
         const value_start = self.proto.pc();
         if (debug_name != null and value.* == .function_literal) {
@@ -323,6 +328,9 @@ const FunctionCompiler = struct {
                     .field => |*field| if (field.table == register) {
                         field.table = copy orelse try self.conflictCopy(&copy, register);
                     },
+                    .integer_index => |*index| if (index.table == register) {
+                        index.table = copy orelse try self.conflictCopy(&copy, register);
+                    },
                     .index => |*index| {
                         if (index.table == register) index.table = copy orelse try self.conflictCopy(&copy, register);
                         if (index.key == register) index.key = copy orelse try self.conflictCopy(&copy, register);
@@ -333,14 +341,14 @@ const FunctionCompiler = struct {
             .upvalue => |upvalue| {
                 var copy: ?bytecode.Register = null;
                 for (earlier) |*previous| switch (previous.*) {
-                    .env_upvalue => |env| if (env.upvalue == upvalue) {
+                    .upvalue_field => |field| if (field.upvalue == upvalue) {
                         const table = copy orelse table: {
                             const register = try self.allocReg();
                             _ = try self.emit(.{ .get_upvalue = .{ .register = register, .upvalue = upvalue } });
                             copy = register;
                             break :table register;
                         };
-                        previous.* = .{ .field = .{ .table = table, .name = env.name, .table_origin = null } };
+                        previous.* = .{ .field = .{ .table = table, .name = field.name, .table_origin = field.table_origin } };
                     },
                     else => {},
                 };
@@ -365,6 +373,10 @@ const FunctionCompiler = struct {
             else => {},
         };
         switch (instructions[instructions.len - 1]) {
+            inline .get_upvalue_field, .get_index => |*op| {
+                if (op.dest != source) return false;
+                op.dest = dest;
+            },
             .load_nil => |*register| {
                 if (register.* != source) return false;
                 register.* = dest;
@@ -733,6 +745,15 @@ const FunctionCompiler = struct {
             .function_literal => |body| try self.compileFunctionLiteral(body, dest, null),
             .grouped => |inner| try self.compileExpr(inner, dest),
             .index => |index| {
+                if (index.key.* == .string) return self.compileFieldRead(index.receiver, try self.addConstant(.{ .string = index.key.string.lexeme }), dest);
+                if (try self.integerIndexKey(index.key)) |key| {
+                    const mark = self.registerMark();
+                    const table_origin = try self.exprOrigin(index.receiver);
+                    const table = try self.operandRegister(index.receiver);
+                    _ = try self.emitWithErrorSite(.{ .get_index = .{ .dest = dest, .table = table, .index = key } }, .index, &.{table_origin}, null);
+                    self.release(mark);
+                    return;
+                }
                 if (self.sourceRegister(index.receiver)) |table| {
                     if (self.sourceRegister(index.key)) |key| {
                         const table_origin = try self.exprOrigin(index.receiver);
@@ -741,7 +762,7 @@ const FunctionCompiler = struct {
                     }
                     // A literal key cannot change the receiver, so read-only named varargs avoid a table.
                     switch (index.key.*) {
-                        .nil, .boolean, .integer, .float, .string => {
+                        .nil, .boolean, .integer, .float => {
                             const mark = self.registerMark();
                             const key = try self.allocReg();
                             try self.compileExpr(index.key, key);
@@ -762,17 +783,7 @@ const FunctionCompiler = struct {
                 _ = try self.emitWithErrorSite(.{ .get_table = .{ .dest = dest, .table = table, .key = key } }, .index, &.{table_origin}, null);
                 self.release(mark);
             },
-            .field => |field| {
-                const mark = self.registerMark();
-                const table = self.sourceRegister(field.receiver) orelse receiver: {
-                    const register = try self.allocReg();
-                    try self.compileExpr(field.receiver, register);
-                    break :receiver register;
-                };
-                const table_origin = try self.exprOrigin(field.receiver);
-                _ = try self.emitWithErrorSite(.{ .get_field = .{ .dest = dest, .table = table, .name = try self.nameConstant(field.name.name) } }, .index, &.{table_origin}, null);
-                self.release(mark);
-            },
+            .field => |field| try self.compileFieldRead(field.receiver, try self.nameConstant(field.name.name), dest),
             .call, .method_call => {
                 if (dest + 1 == self.registerMark()) {
                     _ = try self.compileCallInto(expr, 1, dest, false);
@@ -795,6 +806,18 @@ const FunctionCompiler = struct {
                 try self.compileBinary(binary, dest);
             },
         }
+    }
+
+    fn compileFieldRead(self: *FunctionCompiler, receiver: *const ast.Expr, name: bytecode.ConstantIndex, dest: bytecode.Register) anyerror!void {
+        const table_origin = try self.exprOrigin(receiver);
+        if (try self.upvalueOperand(receiver)) |upvalue| {
+            _ = try self.emitWithErrorSite(.{ .get_upvalue_field = .{ .dest = dest, .upvalue = upvalue, .name = name } }, .index, &.{table_origin}, null);
+            return;
+        }
+        const mark = self.registerMark();
+        defer self.release(mark);
+        const table = try self.operandRegister(receiver);
+        _ = try self.emitWithErrorSite(.{ .get_field = .{ .dest = dest, .table = table, .name = name } }, .index, &.{table_origin}, null);
     }
 
     fn foldConstant(self: *FunctionCompiler, expr: *const ast.Expr) anyerror!?fold.Numeral {
@@ -889,26 +912,29 @@ const FunctionCompiler = struct {
                         try self.compileExprCount(value, value_reg, bytecode.multret_count);
                         _ = try self.emit(.{ .set_list = .{ .table = dest, .first = value_reg, .count = bytecode.set_list_multret, .start_index = array_index } });
                     } else {
-                        try self.compileExpr(value, value_reg);
-                        _ = try self.emit(.{ .set_array = .{ .table = dest, .index = array_index, .value = value_reg } });
+                        self.release(mark);
+                        const source = try self.operandRegister(value);
+                        _ = try self.emit(.{ .set_array = .{ .table = dest, .index = array_index, .value = source } });
                         array_index += 1;
                     }
                 },
                 .keyed => |keyed| {
-                    const key = try self.allocReg();
-                    const value = try self.allocReg();
-                    try self.compileExpr(keyed.key, key);
-                    try self.compileExpr(keyed.value, value);
+                    const key = try self.operandRegister(keyed.key);
+                    const value = try self.operandRegister(keyed.value);
                     _ = try self.emit(.{ .set_table = .{ .table = dest, .key = key, .value = value } });
                 },
                 .named => |named| {
-                    const value = try self.allocReg();
+                    const name = try self.nameConstant(named.name.name);
                     if (named.value.* == .function_literal) {
+                        const value = try self.allocReg();
                         try self.compileFunctionLiteral(named.value.function_literal, value, named.name.name);
+                        _ = try self.emit(.{ .set_field = .{ .table = dest, .name = name, .value = value } });
+                    } else if (try self.shortConstant(named.value)) |constant| {
+                        _ = try self.emit(.{ .set_field_k = .{ .table = dest, .name = name, .constant = constant } });
                     } else {
-                        try self.compileExpr(named.value, value);
+                        const value = try self.operandRegister(named.value);
+                        _ = try self.emit(.{ .set_field = .{ .table = dest, .name = name, .value = value } });
                     }
-                    _ = try self.emit(.{ .set_field = .{ .table = dest, .name = try self.nameConstant(named.name.name), .value = value } });
                 },
             }
             self.release(mark);
@@ -1320,11 +1346,13 @@ const FunctionCompiler = struct {
             },
             .method_call => |call| {
                 try self.reserveRegistersUntil(@as(usize, dest) + 2);
-                const receiver = dest + 1;
                 const receiver_origin = try self.exprOrigin(call.receiver);
                 const method_name = try self.nameConstant(call.method.name);
-                try self.compileExpr(call.receiver, receiver);
-                _ = try self.emitWithErrorSite(.{ .get_field = .{ .dest = dest, .table = receiver, .name = method_name } }, .index, &.{receiver_origin}, null);
+                const receiver = self.sourceRegister(call.receiver) orelse receiver: {
+                    try self.compileExpr(call.receiver, dest + 1);
+                    break :receiver dest + 1;
+                };
+                _ = try self.emitWithErrorSite(.{ .get_method = .{ .dest = dest, .table = receiver, .name = method_name } }, .index, &.{receiver_origin}, null);
                 const arg_count = try self.compileCallArgs(call.args, dest + 2, 1);
                 const method_origin = if (method_name <= lua_rk_constant_limit)
                     proto_mod.OperandOrigin{ .method = call.method.name }
@@ -1441,14 +1469,12 @@ const FunctionCompiler = struct {
     fn prepareAssignmentTarget(self: *FunctionCompiler, target: *const ast.Expr) anyerror!PreparedTarget {
         switch (target.*) {
             .identifier => |identifier| return self.prepareNameTarget(identifier.name),
-            .field => |field| {
-                const table_origin = try self.exprOrigin(field.receiver);
-                const table = try self.operandRegister(field.receiver);
-                return .{ .field = .{ .table = table, .name = try self.nameConstant(field.name.name), .table_origin = table_origin } };
-            },
+            .field => |field| return self.prepareFieldTarget(field.receiver, try self.nameConstant(field.name.name)),
             .index => |index| {
+                if (index.key.* == .string) return self.prepareFieldTarget(index.receiver, try self.addConstant(.{ .string = index.key.string.lexeme }));
                 const table_origin = try self.exprOrigin(index.receiver);
                 const table = try self.operandRegister(index.receiver);
+                if (try self.integerIndexKey(index.key)) |key| return .{ .integer_index = .{ .table = table, .index = key, .table_origin = table_origin } };
                 const key = try self.operandRegister(index.key);
                 return .{ .index = .{ .table = table, .key = key, .table_origin = table_origin } };
             },
@@ -1463,10 +1489,42 @@ const FunctionCompiler = struct {
             .undeclared => if (try self.lookupUpvalue(name)) |upvalue| return .{ .upvalue = upvalue },
         }
         if (!std.mem.eql(u8, name, "_ENV")) {
-            if (self.lookupLocal("_ENV")) |env| return .{ .field = .{ .table = env.register, .name = try self.nameConstant(name), .table_origin = null } };
-            if (try self.lookupUpvalue("_ENV")) |upvalue| return .{ .env_upvalue = .{ .upvalue = upvalue, .name = try self.nameConstant(name) } };
+            if (self.lookupLocal("_ENV")) |env| return .{ .field = .{ .table = env.register, .name = try self.nameConstant(name), .table_origin = .{ .local = "_ENV" } } };
+            if (try self.lookupUpvalue("_ENV")) |upvalue| return .{ .upvalue_field = .{ .upvalue = upvalue, .name = try self.nameConstant(name), .table_origin = .{ .upvalue = "_ENV" } } };
         }
         return .{ .global = try self.nameConstant(name) };
+    }
+
+    fn prepareFieldTarget(self: *FunctionCompiler, receiver: *const ast.Expr, name: bytecode.ConstantIndex) !PreparedTarget {
+        const table_origin = try self.exprOrigin(receiver);
+        if (try self.upvalueOperand(receiver)) |upvalue| return .{ .upvalue_field = .{ .upvalue = upvalue, .name = name, .table_origin = table_origin } };
+        return .{ .field = .{ .table = try self.operandRegister(receiver), .name = name, .table_origin = table_origin } };
+    }
+
+    /// The upvalue an identifier operand names, or null.
+    fn upvalueOperand(self: *FunctionCompiler, expr: *const ast.Expr) !?bytecode.UpvalueIndex {
+        return switch (expr.*) {
+            .grouped => |inner| self.upvalueOperand(inner),
+            .identifier => |identifier| if (self.lookupName(identifier.name) == .undeclared) try self.lookupUpvalue(identifier.name) else null,
+            else => null,
+        };
+    }
+
+    /// An integer constant key that an indexing instruction can carry, or null.
+    fn integerIndexKey(self: *FunctionCompiler, key: *const ast.Expr) !?u32 {
+        const value = (try self.foldConstant(key)) orelse return null;
+        return if (value == .integer) std.math.cast(u32, value.integer) else null;
+    }
+
+    /// A literal or folded numeric constant that fits a short constant operand, or null.
+    fn shortConstant(self: *FunctionCompiler, expr: *const ast.Expr) !?u16 {
+        const constant: bytecode.ConstantIndex = switch (ungroupedExpr(expr).*) {
+            .nil => try self.addConstant(.nil),
+            .boolean => |literal| try self.addConstant(.{ .boolean = literal.value }),
+            .string => |literal| try self.addConstant(.{ .string = literal.lexeme }),
+            else => (try self.numericConstant(expr)) orelse return null,
+        };
+        return std.math.cast(u16, constant);
     }
 
     /// The register of a local operand, or a new register holding the evaluated operand.
@@ -1484,18 +1542,9 @@ const FunctionCompiler = struct {
             },
             .upvalue => |upvalue| _ = try self.emit(.{ .set_upvalue = .{ .register = value_reg, .upvalue = upvalue } }),
             .global => |name| _ = try self.emit(.{ .set_global = .{ .register = value_reg, .name = name } }),
-            .env_upvalue => |env| {
-                const mark = self.registerMark();
-                defer self.release(mark);
-                const table = try self.allocReg();
-                _ = try self.emit(.{ .get_upvalue = .{ .register = table, .upvalue = env.upvalue } });
-                _ = try self.emit(.{ .set_field = .{ .table = table, .name = env.name, .value = value_reg } });
-            },
-            .field => |field| if (field.table_origin) |origin| {
-                _ = try self.emitWithErrorSite(.{ .set_field = .{ .table = field.table, .name = field.name, .value = value_reg } }, .newindex, &.{origin}, null);
-            } else {
-                _ = try self.emit(.{ .set_field = .{ .table = field.table, .name = field.name, .value = value_reg } });
-            },
+            .upvalue_field => |field| _ = try self.emitWithErrorSite(.{ .set_upvalue_field = .{ .upvalue = field.upvalue, .name = field.name, .value = value_reg } }, .newindex, &.{field.table_origin}, null),
+            .field => |field| _ = try self.emitWithErrorSite(.{ .set_field = .{ .table = field.table, .name = field.name, .value = value_reg } }, .newindex, &.{field.table_origin}, null),
+            .integer_index => |index| _ = try self.emitWithErrorSite(.{ .set_index = .{ .table = index.table, .index = index.index, .value = value_reg } }, .newindex, &.{index.table_origin}, null),
             .index => |index| _ = try self.emitWithErrorSite(.{ .set_table = .{ .table = index.table, .key = index.key, .value = value_reg } }, .newindex, &.{index.table_origin}, null),
         }
     }
@@ -1515,35 +1564,22 @@ const FunctionCompiler = struct {
     }
 
     fn assignName(self: *FunctionCompiler, name: []const u8, value_reg: bytecode.Register) !void {
-        switch (self.lookupName(name)) {
-            .local => |local| _ = try self.emit(.{ .move = .{ .dest = local.register, .source = value_reg } }),
-            .global => try self.storeGlobalName(name, value_reg),
-            .undeclared => if (try self.lookupUpvalue(name)) |upvalue| {
-                _ = try self.emit(.{ .set_upvalue = .{ .register = value_reg, .upvalue = upvalue } });
-            } else if (!std.mem.eql(u8, name, "_ENV") and try self.storeInEnvironment(name, value_reg)) {
-                return;
-            } else {
-                _ = try self.emit(.{ .set_global = .{ .register = value_reg, .name = try self.nameConstant(name) } });
-            },
-        }
+        try self.assignPreparedTarget(try self.prepareNameTarget(name), value_reg);
     }
 
     fn loadFromEnvironment(self: *FunctionCompiler, name: []const u8, dest: bytecode.Register) !bool {
-        const mark = self.registerMark();
-        defer self.release(mark);
-        const env = try self.environmentRegister() orelse return false;
-        _ = try self.emit(.{ .get_field = .{ .dest = dest, .table = env, .name = try self.nameConstant(name) } });
+        if (self.lookupLocal("_ENV")) |env| {
+            _ = try self.emitWithErrorSite(.{ .get_field = .{ .dest = dest, .table = env.register, .name = try self.nameConstant(name) } }, .index, &.{.{ .local = "_ENV" }}, null);
+            return true;
+        }
+        const upvalue = try self.lookupUpvalue("_ENV") orelse return false;
+        _ = try self.emitWithErrorSite(.{ .get_upvalue_field = .{ .dest = dest, .upvalue = upvalue, .name = try self.nameConstant(name) } }, .index, &.{.{ .upvalue = "_ENV" }}, null);
         return true;
     }
 
     fn loadGlobalName(self: *FunctionCompiler, name: []const u8, dest: bytecode.Register) !void {
         if (!std.mem.eql(u8, name, "_ENV") and try self.loadFromEnvironment(name, dest)) return;
         _ = try self.emit(.{ .get_global = .{ .register = dest, .name = try self.nameConstant(name) } });
-    }
-
-    fn storeGlobalName(self: *FunctionCompiler, name: []const u8, value_reg: bytecode.Register) !void {
-        if (!std.mem.eql(u8, name, "_ENV") and try self.storeInEnvironment(name, value_reg)) return;
-        _ = try self.emit(.{ .set_global = .{ .register = value_reg, .name = try self.nameConstant(name) } });
     }
 
     fn environmentRegister(self: *FunctionCompiler) !?bytecode.Register {
@@ -1554,14 +1590,6 @@ const FunctionCompiler = struct {
             return env;
         }
         return null;
-    }
-
-    fn storeInEnvironment(self: *FunctionCompiler, name: []const u8, value_reg: bytecode.Register) !bool {
-        const mark = self.registerMark();
-        defer self.release(mark);
-        const env = try self.environmentRegister() orelse return false;
-        _ = try self.emit(.{ .set_field = .{ .table = env, .name = try self.nameConstant(name), .value = value_reg } });
-        return true;
     }
 
     fn lookupLocal(self: *FunctionCompiler, name: []const u8) ?Local {
@@ -1804,6 +1832,13 @@ const FunctionCompiler = struct {
         return switch (expr.*) {
             .identifier => |identifier| self.nameOrigin(identifier.name),
             .field => |field| .{ .field = field.name.name },
+            .index => |index| switch (index.key.*) {
+                .string => |literal| .{ .field = stringLiteralPreview(literal.lexeme) },
+                else => if (try self.foldConstant(index.key)) |key| switch (key) {
+                    .integer => |value| .{ .field = if (value >= 0 and value <= lua_rk_constant_limit) "integer index" else "?" },
+                    .number => .{ .field = "?" },
+                } else .{ .field = "?" },
+            },
             .grouped => |inner| self.exprOrigin(inner),
             .string => |literal| .{ .constant = stringLiteralPreview(literal.lexeme) },
             else => .temporary,
