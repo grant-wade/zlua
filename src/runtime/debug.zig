@@ -342,11 +342,11 @@ pub fn messageHandlerCallName(thread: *Thread) ?CallName {
             return .{ .namewhat = originNamewhat(origin) orelse return null, .name = originName(origin) };
         },
         .tfor_call => return .{ .namewhat = "for iterator", .name = "for iterator" },
-        .get_global, .get_table, .get_field => "index",
-        .set_global, .set_table, .set_array, .set_field => "newindex",
+        .get_global, .get_table, .get_field, .get_method, .get_upvalue_field, .get_index => "index",
+        .set_global, .set_table, .set_array, .set_field, .set_field_k, .set_upvalue_field, .set_index => "newindex",
         .concat, .concat_range => "concat",
-        .compare_branch => |op| @tagName(op.op),
-        .compare_branch_k => |op| switch (op.op) {
+        .compare_branch => |op| @tagName(op.branch.op),
+        .compare_branch_k => |op| switch (op.branch.op) {
             .eq => "eq",
             .lt, .gt => "lt",
             .le, .ge => "le",

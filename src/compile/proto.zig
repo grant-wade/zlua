@@ -133,7 +133,12 @@ pub const Proto = struct {
         for (self.instructions.items) |instruction| {
             const touches = switch (instruction) {
                 .get_table => |op| op.dest == register or op.key == register,
-                .get_field => |op| op.dest == register,
+                inline .get_field, .get_index => |op| op.dest == register,
+                .get_method => |op| op.dest == register or op.dest + 1 == register or op.table == register,
+                .get_upvalue_field => |op| op.dest == register,
+                .set_upvalue_field => |op| op.value == register,
+                .set_index => |op| op.table == register or op.value == register,
+                .set_field_k => |op| op.table == register,
                 .jmp, .close => false,
                 .load_nil, .check_close, .close_tbc => |r| r == register,
                 inline .load_bool, .load_const, .new_table, .closure => |op| op.dest == register,
@@ -167,19 +172,9 @@ pub const Proto = struct {
     }
 
     pub fn patchJump(self: *Proto, index: usize, target_pc: usize) !void {
-        const offset = try jumpOffset(index, target_pc);
-        switch (self.instructions.items[index]) {
-            .jmp => self.instructions.items[index].jmp = offset,
-            .compare_branch => self.instructions.items[index].compare_branch.offset = offset,
-            .compare_branch_k => self.instructions.items[index].compare_branch_k.offset = offset,
-            .test_op => self.instructions.items[index].test_op.offset = offset,
-            .test_set => self.instructions.items[index].test_set.offset = offset,
-            .for_prep => self.instructions.items[index].for_prep.offset = offset,
-            .for_loop => self.instructions.items[index].for_loop.offset = offset,
-            .tfor_prep => self.instructions.items[index].tfor_prep.offset = offset,
-            .tfor_loop => self.instructions.items[index].tfor_loop.offset = offset,
-            else => return error.InvalidJumpPatch,
-        }
+        const instruction = &self.instructions.items[index];
+        if (instruction.jumpOffset() == null) return error.InvalidJumpPatch;
+        try instruction.setJumpOffset(try jumpOffset(index, target_pc));
     }
 
     /// Linear-time deduplicating insert; the compiler uses `appendConstant` with its own index.

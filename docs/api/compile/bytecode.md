@@ -130,6 +130,7 @@
 ## Functions
 
 - [constantEql](#fn-constanteql)
+- [Branch](#fn-branch)
 
 ## Types
 
@@ -146,6 +147,12 @@
 - [ArraySet](#type-arrayset)
 - [FieldAccess](#type-fieldaccess)
 - [FieldSet](#type-fieldset)
+- [MethodAccess](#type-methodaccess)
+- [UpvalueFieldAccess](#type-upvaluefieldaccess)
+- [UpvalueFieldSet](#type-upvaluefieldset)
+- [IndexAccess](#type-indexaccess)
+- [IndexSet](#type-indexset)
+- [FieldSetConstant](#type-fieldsetconstant)
 - [NewTable](#type-newtable)
 - [SetList](#type-setlist)
 - [Unary](#type-unary)
@@ -159,6 +166,7 @@
 - [Test](#type-test)
 - [TestSet](#type-testset)
 - [Call](#type-call)
+- [CallInstruction](#type-callinstruction)
 - [Return](#type-return)
 - [Vararg](#type-vararg)
 - [Closure](#type-closure)
@@ -169,6 +177,7 @@
 
 - [multret_count](#const-multret_count)
 - [multret_arg_count](#const-multret_arg_count)
+- [set_list_multret](#const-set_list_multret)
 
 ## Aliases
 
@@ -178,13 +187,14 @@
 - [UpvalueIndex](#alias-upvalueindex)
 - [LocalIndex](#alias-localindex)
 - [JumpOffset](#alias-jumpoffset)
+- [BranchOffset](#alias-branchoffset)
 
 <a id="alias-register"></a>
 
 ## Register
 
 ```zig
-pub const Register = u16;
+pub const Register = u8;
 ```
 
 <a id="alias-constantindex"></a>
@@ -208,7 +218,7 @@ pub const ProtoIndex = u32;
 ## UpvalueIndex
 
 ```zig
-pub const UpvalueIndex = u16;
+pub const UpvalueIndex = u8;
 ```
 
 <a id="alias-localindex"></a>
@@ -227,6 +237,16 @@ pub const LocalIndex = u16;
 pub const JumpOffset = i32;
 ```
 
+<a id="alias-branchoffset"></a>
+
+## BranchOffset
+
+Jump offset stored in a `Branch`.
+
+```zig
+pub const BranchOffset = i28;
+```
+
 <a id="const-multret_count"></a>
 
 ## multret_count
@@ -241,6 +261,16 @@ pub const multret_count: u16 = std.math.maxInt(u16);
 
 ```zig
 pub const multret_arg_count: u32 = std.math.maxInt(u32);
+```
+
+<a id="const-set_list_multret"></a>
+
+## set_list_multret
+
+`SetList.count` when the values end with multiple results.
+
+```zig
+pub const set_list_multret: u8 = std.math.maxInt(u8);
 ```
 
 <a id="type-constant"></a>
@@ -309,12 +339,12 @@ pub const Instruction = union(enum(u8)) {
     not: Unary,
     len: Unary,
     concat: Binary,
-    jmp: JumpOffset,
+    jmp: JumpOffset align(1),
     compare_branch: CompareBranch,
     test_op: Test,
     test_set: TestSet,
-    call: Call,
-    tail_call: Call,
+    call: CallInstruction,
+    tail_call: CallInstruction,
     ret: Return,
     vararg: Vararg,
     closure: Closure,
@@ -339,8 +369,45 @@ pub const Instruction = union(enum(u8)) {
     shl_k: BinaryConstant,
     shr_k: BinaryConstant,
     compare_branch_k: CompareBranchConstant,
+    get_method: MethodAccess,
+    get_upvalue_field: UpvalueFieldAccess,
+    set_upvalue_field: UpvalueFieldSet,
+    get_index: IndexAccess,
+    set_index: IndexSet,
+    set_field_k: FieldSetConstant,
 };
 ```
+
+### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [jumpOffset](#fn-instruction-jumpoffset) | `self: Instruction` | `?JumpOffset` | The jump offset of a jumping instruction, or null. |
+| [setJumpOffset](#fn-instruction-setjumpoffset) | `self: *Instruction, offset: JumpOffset` | `error` | The instruction must carry a jump offset. |
+
+<a id="fn-instruction-jumpoffset"></a>
+
+### Instruction.jumpOffset
+
+The jump offset of a jumping instruction, or null.
+
+```zig
+pub fn jumpOffset(self: Instruction) ?JumpOffset
+```
+
+References: [`Instruction`](#type-instruction), [`JumpOffset`](#alias-jumpoffset)
+
+<a id="fn-instruction-setjumpoffset"></a>
+
+### Instruction.setJumpOffset
+
+The instruction must carry a jump offset.
+
+```zig
+pub fn setJumpOffset(self: *Instruction, offset: JumpOffset) error{JumpOutOfRange}!void
+```
+
+References: [`Instruction`](#type-instruction), [`JumpOffset`](#alias-jumpoffset)
 
 <a id="type-loadbool"></a>
 
@@ -360,7 +427,7 @@ pub const LoadBool = struct {
 ```zig
 pub const LoadConst = struct {
     dest: Register,
-    constant: ConstantIndex,
+    constant: ConstantIndex align(1),
 };
 ```
 
@@ -382,7 +449,7 @@ pub const Move = struct {
 ```zig
 pub const GlobalAccess = struct {
     register: Register,
-    name: ConstantIndex,
+    name: ConstantIndex align(1),
 };
 ```
 
@@ -394,7 +461,7 @@ pub const GlobalAccess = struct {
 pub const GlobalDeclare = struct {
     table: Register,
     value: Register,
-    name: ConstantIndex,
+    name: ConstantIndex align(1),
 };
 ```
 
@@ -440,7 +507,7 @@ pub const TableSet = struct {
 ```zig
 pub const ArraySet = struct {
     table: Register,
-    index: u32,
+    index: u32 align(1),
     value: Register,
 };
 ```
@@ -453,7 +520,7 @@ pub const ArraySet = struct {
 pub const FieldAccess = struct {
     dest: Register,
     table: Register,
-    name: ConstantIndex,
+    name: ConstantIndex align(1),
 };
 ```
 
@@ -464,8 +531,86 @@ pub const FieldAccess = struct {
 ```zig
 pub const FieldSet = struct {
     table: Register,
-    name: ConstantIndex,
+    name: ConstantIndex align(1),
     value: Register,
+};
+```
+
+<a id="type-methodaccess"></a>
+
+## MethodAccess
+
+Loads `table[name]` into `dest` and `table` into `dest + 1`.
+
+```zig
+pub const MethodAccess = struct {
+    dest: Register,
+    table: Register,
+    name: ConstantIndex align(1),
+};
+```
+
+<a id="type-upvaluefieldaccess"></a>
+
+## UpvalueFieldAccess
+
+```zig
+pub const UpvalueFieldAccess = struct {
+    dest: Register,
+    upvalue: UpvalueIndex,
+    name: ConstantIndex align(1),
+};
+```
+
+<a id="type-upvaluefieldset"></a>
+
+## UpvalueFieldSet
+
+```zig
+pub const UpvalueFieldSet = struct {
+    upvalue: UpvalueIndex,
+    name: ConstantIndex align(1),
+    value: Register,
+};
+```
+
+<a id="type-indexaccess"></a>
+
+## IndexAccess
+
+Reads `table[index]` for an integer constant `index`.
+
+```zig
+pub const IndexAccess = struct {
+    dest: Register,
+    table: Register,
+    index: u32 align(1),
+};
+```
+
+<a id="type-indexset"></a>
+
+## IndexSet
+
+```zig
+pub const IndexSet = struct {
+    table: Register,
+    index: u32 align(1),
+    value: Register,
+};
+```
+
+<a id="type-fieldsetconstant"></a>
+
+## FieldSetConstant
+
+Assigns constant `constant` to `table[name]`.
+
+```zig
+pub const FieldSetConstant = struct {
+    table: Register,
+    name: ConstantIndex align(1),
+    constant: u16 align(1),
 };
 ```
 
@@ -473,11 +618,13 @@ pub const FieldSet = struct {
 
 ## NewTable
 
+Creates a table in `dest`, which is above every live register of the frame.
+
 ```zig
 pub const NewTable = struct {
     dest: Register,
-    array_hint: u32 = 0,
-    hash_hint: u32 = 0,
+    array_hint: u32 align(1) = 0,
+    hash_hint: u16 align(1) = 0,
 };
 ```
 
@@ -489,8 +636,9 @@ pub const NewTable = struct {
 pub const SetList = struct {
     table: Register,
     first: Register,
-    count: u32,
-    start_index: u32,
+    /// `set_list_multret` when the values end with multiple results.
+    count: u8,
+    start_index: u32 align(1),
 };
 ```
 
@@ -527,7 +675,7 @@ pub const Binary = struct {
 pub const BinaryConstant = struct {
     dest: Register,
     left: Register,
-    constant: ConstantIndex,
+    constant: ConstantIndex align(1),
 };
 ```
 
@@ -542,7 +690,7 @@ like PUC OP_CONCAT. Operand registers are scratch space.
 pub const ConcatRange = struct {
     dest: Register,
     first: Register,
-    count: u16,
+    count: u16 align(1),
 };
 ```
 
@@ -551,11 +699,21 @@ pub const ConcatRange = struct {
 ## CompareBranchOp
 
 ```zig
-pub const CompareBranchOp = enum {
+pub const CompareBranchOp = enum(u3) {
     eq,
     lt,
     le,
 };
+```
+
+<a id="fn-branch"></a>
+
+## Branch
+
+A comparison and the jump taken when its result equals `jump_if_truthy`.
+
+```zig
+pub fn Branch(comptime Op: type) type
 ```
 
 <a id="type-comparebranch"></a>
@@ -566,9 +724,7 @@ pub const CompareBranchOp = enum {
 pub const CompareBranch = struct {
     left: Register,
     right: Register,
-    op: CompareBranchOp,
-    jump_if_truthy: bool,
-    offset: JumpOffset,
+    branch: Branch(CompareBranchOp) align(1),
 };
 ```
 
@@ -581,10 +737,8 @@ Compares a register with a numeric constant; `gt` and `ge` put the constant on t
 ```zig
 pub const CompareBranchConstant = struct {
     register: Register,
-    constant: u16,
-    op: CompareConstantOp,
-    jump_if_truthy: bool,
-    offset: JumpOffset,
+    constant: u16 align(1),
+    branch: Branch(CompareConstantOp) align(1),
 };
 ```
 
@@ -593,7 +747,7 @@ pub const CompareBranchConstant = struct {
 ## CompareConstantOp
 
 ```zig
-pub const CompareConstantOp = enum {
+pub const CompareConstantOp = enum(u3) {
     eq,
     lt,
     le,
@@ -610,7 +764,7 @@ pub const CompareConstantOp = enum {
 pub const Test = struct {
     register: Register,
     jump_if_truthy: bool,
-    offset: JumpOffset,
+    offset: JumpOffset align(1),
 };
 ```
 
@@ -623,7 +777,7 @@ pub const TestSet = struct {
     dest: Register,
     source: Register,
     jump_if_truthy: bool,
-    offset: JumpOffset,
+    offset: JumpOffset align(1),
 };
 ```
 
@@ -634,11 +788,42 @@ pub const TestSet = struct {
 ```zig
 pub const Call = struct {
     base: u32,
-    /// `multret_arg_count` in bytecode when arguments end with multiple results.
+    /// `multret_arg_count` when arguments end with multiple results.
     arg_count: u32,
     return_count: u16,
 };
 ```
+
+<a id="type-callinstruction"></a>
+
+## CallInstruction
+
+The operands of a `call` or `tail_call` instruction.
+
+```zig
+pub const CallInstruction = struct {
+    base: Register,
+    /// `multret_count` when arguments end with multiple results.
+    arg_count: u16 align(1),
+    return_count: u16 align(1),
+};
+```
+
+### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [wide](#fn-callinstruction-wide) | `self: CallInstruction` | `Call` |  |
+
+<a id="fn-callinstruction-wide"></a>
+
+### CallInstruction.wide
+
+```zig
+pub fn wide(self: CallInstruction) Call
+```
+
+References: [`CallInstruction`](#type-callinstruction), [`Call`](#type-call)
 
 <a id="type-return"></a>
 
@@ -647,7 +832,7 @@ pub const Call = struct {
 ```zig
 pub const Return = struct {
     first: Register,
-    count: u16,
+    count: u16 align(1),
 };
 ```
 
@@ -658,7 +843,7 @@ pub const Return = struct {
 ```zig
 pub const Vararg = struct {
     dest: Register,
-    count: u16,
+    count: u16 align(1),
 };
 ```
 
@@ -669,7 +854,7 @@ pub const Vararg = struct {
 ```zig
 pub const Closure = struct {
     dest: Register,
-    proto: ProtoIndex,
+    proto: ProtoIndex align(1),
 };
 ```
 
@@ -680,7 +865,7 @@ pub const Closure = struct {
 ```zig
 pub const ForLoop = struct {
     base: Register,
-    offset: JumpOffset,
+    offset: JumpOffset align(1),
 };
 ```
 
@@ -691,8 +876,8 @@ pub const ForLoop = struct {
 ```zig
 pub const GenericFor = struct {
     base: Register,
-    variable_count: u16,
-    offset: JumpOffset,
+    variable_count: u16 align(1),
+    offset: JumpOffset align(1),
 };
 ```
 

@@ -66,6 +66,12 @@ fn writeInstruction(allocator: std.mem.Allocator, out: *std.ArrayList(u8), instr
         .set_array => |op| try appendFmt(allocator, out, "SET_ARRAY r{d} [{d}] r{d}", .{ op.table, op.index, op.value }),
         .get_field => |op| try appendFmt(allocator, out, "GET_FIELD r{d} r{d} K{d}", .{ op.dest, op.table, op.name }),
         .set_field => |op| try appendFmt(allocator, out, "SET_FIELD r{d} K{d} r{d}", .{ op.table, op.name, op.value }),
+        .set_field_k => |op| try appendFmt(allocator, out, "SET_FIELD_K r{d} K{d} K{d}", .{ op.table, op.name, op.constant }),
+        .get_method => |op| try appendFmt(allocator, out, "GET_METHOD r{d} r{d} K{d}", .{ op.dest, op.table, op.name }),
+        .get_upvalue_field => |op| try appendFmt(allocator, out, "GET_UPVALUE_FIELD r{d} U{d} K{d}", .{ op.dest, op.upvalue, op.name }),
+        .set_upvalue_field => |op| try appendFmt(allocator, out, "SET_UPVALUE_FIELD U{d} K{d} r{d}", .{ op.upvalue, op.name, op.value }),
+        .get_index => |op| try appendFmt(allocator, out, "GET_INDEX r{d} r{d} [{d}]", .{ op.dest, op.table, op.index }),
+        .set_index => |op| try appendFmt(allocator, out, "SET_INDEX r{d} [{d}] r{d}", .{ op.table, op.index, op.value }),
         .new_table => |op| try appendFmt(allocator, out, "NEW_TABLE r{d} array={d} hash={d}", .{ op.dest, op.array_hint, op.hash_hint }),
         .set_list => |op| try appendFmt(allocator, out, "SET_LIST r{d} first=r{d} count={d} start={d}", .{ op.table, op.first, op.count, op.start_index }),
         .add => |op| try writeBinary(allocator, out, "ADD", op),
@@ -90,7 +96,7 @@ fn writeInstruction(allocator: std.mem.Allocator, out: *std.ArrayList(u8), instr
         .concat => |op| try writeBinary(allocator, out, "CONCAT", op),
         .concat_range => |op| try appendFmt(allocator, out, "CONCAT_RANGE r{d} r{d} count={d}", .{ op.dest, op.first, op.count }),
         .jmp => |offset| try appendFmt(allocator, out, "JMP {d}", .{offset}),
-        .compare_branch => |op| try appendFmt(allocator, out, "COMPARE_BRANCH {s} r{d} r{d} truthy={} {d}", .{ @tagName(op.op), op.left, op.right, op.jump_if_truthy, op.offset }),
+        .compare_branch => |op| try appendFmt(allocator, out, "COMPARE_BRANCH {s} r{d} r{d} truthy={} {d}", .{ @tagName(op.branch.op), op.left, op.right, op.branch.jump_if_truthy, op.branch.offset }),
         .test_op => |op| try appendFmt(allocator, out, "TEST r{d} truthy={} {d}", .{ op.register, op.jump_if_truthy, op.offset }),
         .test_set => |op| try appendFmt(allocator, out, "TEST_SET r{d} r{d} truthy={} {d}", .{ op.dest, op.source, op.jump_if_truthy, op.offset }),
         .call => |op| try appendFmt(allocator, out, "CALL r{d} args={d} returns={d}", .{ op.base, op.arg_count, op.return_count }),
@@ -117,7 +123,7 @@ fn writeInstruction(allocator: std.mem.Allocator, out: *std.ArrayList(u8), instr
         .bxor_k => |op| try writeBinaryConstant(allocator, out, "BXOR_K", op),
         .shl_k => |op| try writeBinaryConstant(allocator, out, "SHL_K", op),
         .shr_k => |op| try writeBinaryConstant(allocator, out, "SHR_K", op),
-        .compare_branch_k => |op| try appendFmt(allocator, out, "COMPARE_BRANCH_K {s} r{d} K{d} truthy={} {d}", .{ @tagName(op.op), op.register, op.constant, op.jump_if_truthy, op.offset }),
+        .compare_branch_k => |op| try appendFmt(allocator, out, "COMPARE_BRANCH_K {s} r{d} K{d} truthy={} {d}", .{ @tagName(op.branch.op), op.register, op.constant, op.branch.jump_if_truthy, op.branch.offset }),
     }
 }
 

@@ -310,17 +310,17 @@ const ChunkBuilder = struct {
         _ = try self.proto.emit(instruction, 1);
     }
 
-    fn any(self: *ChunkBuilder) u16 {
+    fn any(self: *ChunkBuilder) bytecode.Register {
         return @intCast(self.picker.below(self.registers));
     }
 
     /// A register holding an expected type, or now and then any register.
-    fn typed(self: *ChunkBuilder, register: u16) u16 {
+    fn typed(self: *ChunkBuilder, register: u16) bytecode.Register {
         if (register >= self.registers or self.picker.chance(2)) return self.any();
-        return register;
+        return @intCast(register);
     }
 
-    fn scratch(self: *ChunkBuilder) u16 {
+    fn scratch(self: *ChunkBuilder) bytecode.Register {
         if (self.registers <= first_scratch) return self.any();
         return @intCast(first_scratch + self.picker.below(self.registers - first_scratch));
     }
@@ -331,13 +331,13 @@ const ChunkBuilder = struct {
         return @min(@as(i32, @intCast(self.picker.below(6))), remaining);
     }
 
-    fn number(self: *ChunkBuilder) u16 {
+    fn number(self: *ChunkBuilder) bytecode.Register {
         return self.typed(if (self.picker.chance(50)) typed_int else typed_float);
     }
 
     fn step(self: *ChunkBuilder, pc: u32) !void {
         const p = self.picker;
-        switch (p.below(32)) {
+        switch (p.below(35)) {
             0 => try self.emit(.{ .load_nil = self.scratch() }),
             1 => try self.emit(.{ .load_bool = .{ .dest = self.scratch(), .value = p.chance(50) } }),
             2 => try self.emit(.{ .load_const = .{ .dest = self.scratch(), .constant = p.below(chunk_constants.len) } }),
@@ -357,7 +357,7 @@ const ChunkBuilder = struct {
             12 => try self.emit(.{ .new_table = .{ .dest = self.scratch() } }),
             13 => {
                 const first = self.scratch();
-                const count: u32 = if (p.chance(4)) bytecode.multret_count else p.below(@as(u32, self.registers - first) + 1);
+                const count: u8 = if (p.chance(4)) bytecode.set_list_multret else @intCast(p.below(@as(u32, self.registers - first) + 1));
                 try self.emit(.{ .set_list = .{ .table = self.typed(typed_table), .first = first, .count = count, .start_index = p.below(4) + 1 } });
             },
             14, 15 => {
@@ -408,8 +408,8 @@ const ChunkBuilder = struct {
                 });
             },
             19 => try self.emit(.{ .jmp = self.jump(pc) }),
-            20 => try self.emit(.{ .compare_branch = .{ .left = self.number(), .right = self.number(), .op = p.pick(bytecode.CompareBranchOp, &.{ .eq, .lt, .le }), .jump_if_truthy = p.chance(50), .offset = self.jump(pc) } }),
-            21 => try self.emit(.{ .compare_branch_k = .{ .register = self.number(), .constant = @intCast(p.pick(u32, &numeric_constants)), .op = p.pick(bytecode.CompareConstantOp, &.{ .eq, .lt, .le, .gt, .ge }), .jump_if_truthy = p.chance(50), .offset = self.jump(pc) } }),
+            20 => try self.emit(.{ .compare_branch = .{ .left = self.number(), .right = self.number(), .branch = .{ .op = p.pick(bytecode.CompareBranchOp, &.{ .eq, .lt, .le }), .jump_if_truthy = p.chance(50), .offset = @intCast(self.jump(pc)) } } }),
+            21 => try self.emit(.{ .compare_branch_k = .{ .register = self.number(), .constant = @intCast(p.pick(u32, &numeric_constants)), .branch = .{ .op = p.pick(bytecode.CompareConstantOp, &.{ .eq, .lt, .le, .gt, .ge }), .jump_if_truthy = p.chance(50), .offset = @intCast(self.jump(pc)) } } }),
             22 => try self.emit(.{ .test_op = .{ .register = self.any(), .jump_if_truthy = p.chance(50), .offset = self.jump(pc) } }),
             23 => try self.emit(.{ .test_set = .{ .dest = self.scratch(), .source = self.any(), .jump_if_truthy = p.chance(50), .offset = self.jump(pc) } }),
             24, 25, 26 => {
@@ -417,10 +417,10 @@ const ChunkBuilder = struct {
                 try self.emit(.{ .move = .{ .dest = base, .source = self.typed(typed_function) } });
                 const room: u32 = self.registers - base - 1;
                 const args = p.below(room + 1);
-                const arg_count: u32 = if (p.chance(3)) bytecode.multret_arg_count else args;
+                const arg_count: u16 = if (p.chance(3)) bytecode.multret_count else @intCast(args);
                 const room_with_base: u32 = self.registers - base;
                 const return_count: u16 = if (p.chance(30)) bytecode.multret_count else @intCast(p.below(room_with_base + 1));
-                const call: bytecode.Call = .{ .base = base, .arg_count = arg_count, .return_count = return_count };
+                const call: bytecode.CallInstruction = .{ .base = base, .arg_count = arg_count, .return_count = return_count };
                 try self.emit(if (p.chance(3)) .{ .tail_call = call } else .{ .call = call });
             },
             27 => {
@@ -435,6 +435,24 @@ const ChunkBuilder = struct {
             29 => if (self.children != 0) {
                 try self.emit(.{ .closure = .{ .dest = self.scratch(), .proto = p.below(self.children) } });
             } else try self.emit(.{ .close = @intCast(p.below(@as(u32, self.registers) + 1)) }),
+            31 => {
+                const dest = self.scratch();
+                if (dest + 1 >= self.registers) return self.emit(.{ .load_nil = dest });
+                try self.emit(.{ .get_method = .{ .dest = dest, .table = self.typed(typed_table), .name = constant_string + p.below(2) } });
+            },
+            32 => if (self.upvalues != 0) {
+                const upvalue: bytecode.UpvalueIndex = @intCast(p.below(self.upvalues));
+                if (p.chance(50)) {
+                    try self.emit(.{ .get_upvalue_field = .{ .dest = self.scratch(), .upvalue = upvalue, .name = constant_string + p.below(2) } });
+                } else {
+                    try self.emit(.{ .set_upvalue_field = .{ .upvalue = upvalue, .name = constant_string + p.below(2), .value = self.any() } });
+                }
+            } else try self.emit(.{ .load_nil = self.scratch() }),
+            33 => switch (p.below(3)) {
+                0 => try self.emit(.{ .get_index = .{ .dest = self.scratch(), .table = self.typed(typed_table), .index = p.below(8) } }),
+                1 => try self.emit(.{ .set_index = .{ .table = self.typed(typed_table), .index = p.below(8), .value = self.any() } }),
+                else => try self.emit(.{ .set_field_k = .{ .table = self.typed(typed_table), .name = constant_string + p.below(2), .constant = @intCast(p.below(chunk_constants.len)) } }),
+            },
             30 => switch (p.below(3)) {
                 0 => try self.emit(.{ .close = @intCast(p.below(@as(u32, self.registers) + 1)) }),
                 1 => {
@@ -446,11 +464,11 @@ const ChunkBuilder = struct {
             },
             else => {
                 if (self.registers < 8) return self.emit(.{ .load_nil = self.scratch() });
-                const base: u16 = @intCast(first_scratch + p.below(self.registers - 7 - (first_scratch - 1)));
+                const base: bytecode.Register = @intCast(first_scratch + p.below(self.registers - 7 - (first_scratch - 1)));
                 const jump_offset = self.jump(pc);
                 switch (p.below(4)) {
                     0, 1 => {
-                        for (0..3) |offset| try self.emit(.{ .load_const = .{ .dest = base + @as(u16, @intCast(offset)), .constant = if (p.chance(70)) constant_integer + p.below(2) else constant_number } });
+                        for (0..3) |offset| try self.emit(.{ .load_const = .{ .dest = base + @as(bytecode.Register, @intCast(offset)), .constant = if (p.chance(70)) constant_integer + p.below(2) else constant_number } });
                         if (p.chance(70)) try self.emit(.{ .for_prep = .{ .base = base, .offset = jump_offset } });
                         try self.emit(.{ .for_loop = .{ .base = base, .offset = if (p.chance(50)) jump_offset else -1 } });
                     },
@@ -460,7 +478,7 @@ const ChunkBuilder = struct {
                     },
                     else => {
                         const count = 2 + @as(u16, @intCast(p.below(4)));
-                        for (0..count) |offset| try self.emit(.{ .move = .{ .dest = base + @as(u16, @intCast(offset)), .source = if (p.chance(50)) typed_string else typed_int } });
+                        for (0..count) |offset| try self.emit(.{ .move = .{ .dest = base + @as(bytecode.Register, @intCast(offset)), .source = if (p.chance(50)) typed_string else typed_int } });
                         try self.emit(.{ .concat_range = .{ .dest = self.scratch(), .first = base, .count = count } });
                     },
                 }
@@ -520,20 +538,14 @@ fn fillProto(picker: Picker, allocator: Allocator, proto: *Proto, depth: u32, pa
 
     const code_length: i64 = @intCast(proto.instructions.items.len);
     for (proto.instructions.items, 0..) |*instruction, index| {
-        const offset: ?*i32 = switch (instruction.*) {
-            .jmp => |*value| value,
-            .compare_branch => |*op| &op.offset,
-            .compare_branch_k => |*op| &op.offset,
-            .test_op => |*op| &op.offset,
-            .test_set => |*op| &op.offset,
-            .for_prep, .for_loop => |*op| &op.offset,
-            .tfor_call => |*op| &op.offset,
-            else => null,
+        const offset = switch (instruction.*) {
+            .tfor_call => |op| op.offset,
+            else => instruction.jumpOffset(),
         };
         if (offset) |target| {
             const here: i64 = @intCast(index);
-            const destination = std.math.clamp(here + 1 + target.*, 0, code_length - 1);
-            target.* = @intCast(destination - here - 1);
+            const destination = std.math.clamp(here + 1 + target, 0, code_length - 1);
+            instruction.setJumpOffset(@intCast(destination - here - 1)) catch unreachable;
         }
     }
 }

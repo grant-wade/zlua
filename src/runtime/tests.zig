@@ -591,6 +591,7 @@ const verified_chunk_program =
     \\  local total = start
     \\  return function(step)
     \\    total = total + step + #log * 0
+    \\    log.last = total
     \\    return total
     \\  end
     \\end
@@ -726,8 +727,8 @@ const InstructionSite = struct {
         return &self.proto.instructions.items[self.pc];
     }
 
-    fn registers(self: InstructionSite) u16 {
-        return self.proto.max_registers;
+    fn registers(self: InstructionSite) bytecode.Register {
+        return @intCast(self.proto.max_registers);
     }
 };
 
@@ -789,11 +790,11 @@ fn applyChunkMutation(root: *proto_mod.Proto, mutation: ChunkMutation) !bool {
         },
         .branch_past_end => {
             const site = findSite(root, .compare_branch) orelse return false;
-            site.op().compare_branch.offset = @intCast(site.proto.instructions.items.len - site.pc);
+            site.op().compare_branch.branch.offset = @intCast(site.proto.instructions.items.len - site.pc);
         },
         .constant_branch_past_end => {
             const site = findSite(root, .compare_branch_k) orelse return false;
-            site.op().compare_branch_k.offset = @intCast(site.proto.instructions.items.len - site.pc);
+            site.op().compare_branch_k.branch.offset = @intCast(site.proto.instructions.items.len - site.pc);
         },
         .constant_operand_kind => {
             const site = findSite(root, .add_k) orelse return false;
@@ -860,7 +861,7 @@ fn applyChunkMutation(root: *proto_mod.Proto, mutation: ChunkMutation) !bool {
         },
         .local_register => {
             if (root.locals.items.len == 0) return false;
-            root.locals.items[0].register = root.max_registers;
+            root.locals.items[0].register = @intCast(root.max_registers);
         },
         .error_site_pc => {
             if (root.error_sites.items.len == 0) return false;

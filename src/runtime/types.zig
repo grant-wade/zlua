@@ -761,11 +761,8 @@ pub const Table = struct {
                 return;
             }
             if (value != .nil and index <= self.array.capacity) {
-                const old_len = self.array.len;
-                try self.array.resize(allocator, index);
-                @memset(self.array.items()[old_len..], .nil);
+                self.extendArrayAssumeCapacity(index);
                 self.array.items()[index - 1] = value;
-                self.removeHashKey(key);
                 return;
             }
         }
@@ -809,6 +806,28 @@ pub const Table = struct {
             border = next_index;
         }
         return @intCast(border);
+    }
+
+    /// Extends the array part to `new_len`, which must not exceed its capacity, moving the
+    /// hash entries of the added indexes into it.
+    pub fn extendArrayAssumeCapacity(self: *Table, new_len: usize) void {
+        const old_len = self.array.len;
+        std.debug.assert(new_len > old_len and new_len <= self.array.capacity);
+        self.array.len = @intCast(new_len);
+        const added = self.array.items()[old_len..new_len];
+        @memset(added, .nil);
+        const hash_entries = self.entries();
+        if (hash_entries.len == 0) return;
+        var write_index: usize = 0;
+        for (hash_entries) |entry| {
+            if (value_mod.arrayIndex(entry.key)) |index| if (index > old_len and index <= new_len) {
+                added[index - old_len - 1] = entry.value;
+                continue;
+            };
+            hash_entries[write_index] = entry;
+            write_index += 1;
+        }
+        self.truncateEntries(write_index);
     }
 
     fn trimArray(self: *Table, border: usize) void {

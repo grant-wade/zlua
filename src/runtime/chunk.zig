@@ -8,7 +8,7 @@ const value_mod = @import("value.zig");
 const bytecode = compile.bytecode;
 const proto_mod = compile.proto;
 pub const binary_chunk_signature = "\x1bLua";
-pub const binary_chunk_payload_magic = "zlua\x00bc1";
+pub const binary_chunk_payload_magic = "zlua\x00bc2";
 
 const max_proto_depth: usize = 200;
 
@@ -116,147 +116,35 @@ fn appendBinaryConstant(allocator: std.mem.Allocator, out: *std.ArrayList(u8), c
 }
 
 fn appendBinaryInstruction(allocator: std.mem.Allocator, out: *std.ArrayList(u8), instruction: bytecode.Instruction) !void {
-    try out.append(allocator, @intCast(@intFromEnum(std.meta.activeTag(instruction))));
+    try out.append(allocator, @intFromEnum(std.meta.activeTag(instruction)));
     switch (instruction) {
-        .load_nil => |dest| try appendBinaryU16(allocator, out, dest),
-        .load_bool => |op| {
-            try appendBinaryU16(allocator, out, op.dest);
-            try appendBinaryBool(allocator, out, op.value);
-        },
-        .load_const => |op| {
-            try appendBinaryU16(allocator, out, op.dest);
-            try appendBinaryU32(allocator, out, op.constant);
-        },
-        .move => |op| try appendBinaryMove(allocator, out, op),
-        .get_global, .set_global => |op| {
-            try appendBinaryU16(allocator, out, op.register);
-            try appendBinaryU32(allocator, out, op.name);
-        },
-        .declare_global => |op| {
-            try appendBinaryU16(allocator, out, op.table);
-            try appendBinaryU16(allocator, out, op.value);
-            try appendBinaryU32(allocator, out, op.name);
-        },
-        .get_upvalue, .set_upvalue => |op| {
-            try appendBinaryU16(allocator, out, op.register);
-            try appendBinaryU16(allocator, out, op.upvalue);
-        },
-        .get_table => |op| {
-            try appendBinaryU16(allocator, out, op.dest);
-            try appendBinaryU16(allocator, out, op.table);
-            try appendBinaryU16(allocator, out, op.key);
-        },
-        .set_table => |op| {
-            try appendBinaryU16(allocator, out, op.table);
-            try appendBinaryU16(allocator, out, op.key);
-            try appendBinaryU16(allocator, out, op.value);
-        },
-        .set_array => |op| {
-            try appendBinaryU16(allocator, out, op.table);
-            try appendBinaryU32(allocator, out, op.index);
-            try appendBinaryU16(allocator, out, op.value);
-        },
-        .get_field => |op| {
-            try appendBinaryU16(allocator, out, op.dest);
-            try appendBinaryU16(allocator, out, op.table);
-            try appendBinaryU32(allocator, out, op.name);
-        },
-        .set_field => |op| {
-            try appendBinaryU16(allocator, out, op.table);
-            try appendBinaryU32(allocator, out, op.name);
-            try appendBinaryU16(allocator, out, op.value);
-        },
-        .new_table => |op| {
-            try appendBinaryU16(allocator, out, op.dest);
-            try appendBinaryU32(allocator, out, op.array_hint);
-            try appendBinaryU32(allocator, out, op.hash_hint);
-        },
-        .set_list => |op| {
-            try appendBinaryU16(allocator, out, op.table);
-            try appendBinaryU16(allocator, out, op.first);
-            try appendBinaryU32(allocator, out, op.count);
-            try appendBinaryU32(allocator, out, op.start_index);
-        },
-        .add, .sub, .mul, .div, .idiv, .mod, .pow, .band, .bor, .bxor, .shl, .shr, .eq, .lt, .le, .concat => |op| try appendBinaryBinary(allocator, out, op),
-        .unm, .bnot, .not, .len => |op| {
-            try appendBinaryU16(allocator, out, op.dest);
-            try appendBinaryU16(allocator, out, op.source);
-        },
-        .jmp => |offset| try appendBinaryI32(allocator, out, offset),
-        .compare_branch => |op| {
-            try appendBinaryU16(allocator, out, op.left);
-            try appendBinaryU16(allocator, out, op.right);
-            try out.append(allocator, @intCast(@intFromEnum(op.op)));
-            try appendBinaryBool(allocator, out, op.jump_if_truthy);
-            try appendBinaryI32(allocator, out, op.offset);
-        },
-        .test_op => |op| {
-            try appendBinaryU16(allocator, out, op.register);
-            try appendBinaryBool(allocator, out, op.jump_if_truthy);
-            try appendBinaryI32(allocator, out, op.offset);
-        },
-        .test_set => |op| {
-            try appendBinaryU16(allocator, out, op.dest);
-            try appendBinaryU16(allocator, out, op.source);
-            try appendBinaryBool(allocator, out, op.jump_if_truthy);
-            try appendBinaryI32(allocator, out, op.offset);
-        },
-        .call, .tail_call => |op| {
-            try appendBinaryU16(allocator, out, @intCast(op.base));
-            try appendBinaryU16(allocator, out, if (op.arg_count == bytecode.multret_arg_count) bytecode.multret_count else @intCast(op.arg_count));
-            try appendBinaryU16(allocator, out, op.return_count);
-        },
-        .ret => |op| {
-            try appendBinaryU16(allocator, out, op.first);
-            try appendBinaryU16(allocator, out, op.count);
-        },
-        .vararg => |op| {
-            try appendBinaryU16(allocator, out, op.dest);
-            try appendBinaryU16(allocator, out, op.count);
-        },
-        .closure => |op| {
-            try appendBinaryU16(allocator, out, op.dest);
-            try appendBinaryU32(allocator, out, op.proto);
-        },
-        .close, .check_close, .close_tbc => |register| try appendBinaryU16(allocator, out, register),
-        .for_prep, .for_loop => |op| {
-            try appendBinaryU16(allocator, out, op.base);
-            try appendBinaryI32(allocator, out, op.offset);
-        },
-        .tfor_prep, .tfor_call, .tfor_loop => |op| {
-            try appendBinaryU16(allocator, out, op.base);
-            try appendBinaryU16(allocator, out, op.variable_count);
-            try appendBinaryI32(allocator, out, op.offset);
-        },
-        .concat_range => |op| {
-            try appendBinaryU16(allocator, out, op.dest);
-            try appendBinaryU16(allocator, out, op.first);
-            try appendBinaryU16(allocator, out, op.count);
-        },
-        .add_k, .sub_k, .mul_k, .div_k, .idiv_k, .mod_k, .band_k, .bor_k, .bxor_k, .shl_k, .shr_k => |op| {
-            try appendBinaryU16(allocator, out, op.dest);
-            try appendBinaryU16(allocator, out, op.left);
-            try appendBinaryU32(allocator, out, op.constant);
-        },
-        .compare_branch_k => |op| {
-            try appendBinaryU16(allocator, out, op.register);
-            try appendBinaryU16(allocator, out, op.constant);
-            try out.append(allocator, @intCast(@intFromEnum(op.op)));
-            try appendBinaryBool(allocator, out, op.jump_if_truthy);
-            try appendBinaryI32(allocator, out, op.offset);
-        },
+        inline else => |operands| try appendBinaryOperands(allocator, out, operands),
     }
 }
 
-fn appendBinaryMove(allocator: std.mem.Allocator, out: *std.ArrayList(u8), op: bytecode.Move) !void {
-    try appendBinaryU16(allocator, out, op.dest);
-    try appendBinaryU16(allocator, out, op.source);
+fn appendBinaryOperands(allocator: std.mem.Allocator, out: *std.ArrayList(u8), operands: anytype) !void {
+    const T = @TypeOf(operands);
+    switch (@typeInfo(T)) {
+        .int => {
+            const Wide = OperandInt(T);
+            var bytes: [@sizeOf(Wide)]u8 = undefined;
+            std.mem.writeInt(Wide, &bytes, operands, .little);
+            try out.appendSlice(allocator, &bytes);
+        },
+        .bool => try appendBinaryBool(allocator, out, operands),
+        .@"enum" => try out.append(allocator, @intFromEnum(operands)),
+        .@"struct" => inline for (comptime reflection.fieldsOf(T)) |name| try appendBinaryOperands(allocator, out, @field(operands, name)),
+        else => @compileError("unsupported instruction operand " ++ @typeName(T)),
+    }
 }
 
-fn appendBinaryBinary(allocator: std.mem.Allocator, out: *std.ArrayList(u8), op: bytecode.Binary) !void {
-    try appendBinaryU16(allocator, out, op.dest);
-    try appendBinaryU16(allocator, out, op.left);
-    try appendBinaryU16(allocator, out, op.right);
+/// The byte-sized integer type that serializes operand integer type `T`.
+fn OperandInt(comptime T: type) type {
+    const info = @typeInfo(T).int;
+    return switch (info.signedness) {
+        .unsigned => if (info.bits <= 8) u8 else if (info.bits <= 16) u16 else if (info.bits <= 32) u32 else u64,
+        .signed => if (info.bits <= 8) i8 else if (info.bits <= 16) i16 else if (info.bits <= 32) i32 else i64,
+    };
 }
 
 fn appendBinaryErrorSite(allocator: std.mem.Allocator, out: *std.ArrayList(u8), site: proto_mod.ErrorSite) !void {
@@ -295,12 +183,6 @@ fn appendBinaryU32(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value:
     const int_value = std.math.cast(u32, value) orelse return error.OutOfMemory;
     var bytes: [4]u8 = undefined;
     std.mem.writeInt(u32, bytes[0..], int_value, .little);
-    try out.appendSlice(allocator, bytes[0..]);
-}
-
-fn appendBinaryI32(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value: i32) !void {
-    var bytes: [4]u8 = undefined;
-    std.mem.writeInt(i32, bytes[0..], value, .little);
     try out.appendSlice(allocator, bytes[0..]);
 }
 
@@ -359,20 +241,26 @@ fn verifyInstruction(proto: *const proto_mod.Proto, instruction: bytecode.Instru
         .set_array => |op| op.table < registers and op.value < registers and op.index != 0,
         .get_field => |op| op.dest < registers and op.table < registers and isStringConstant(proto, op.name),
         .set_field => |op| op.table < registers and op.value < registers and isStringConstant(proto, op.name),
+        .set_field_k => |op| op.table < registers and isStringConstant(proto, op.name) and op.constant < proto.constants.items.len,
+        .get_method => |op| registerRange(registers, op.dest, 2) and op.table < registers and isStringConstant(proto, op.name),
+        .get_upvalue_field => |op| op.dest < registers and op.upvalue < proto.upvalues.items.len and isStringConstant(proto, op.name),
+        .set_upvalue_field => |op| op.value < registers and op.upvalue < proto.upvalues.items.len and isStringConstant(proto, op.name),
+        .get_index => |op| op.dest < registers and op.table < registers,
+        .set_index => |op| op.table < registers and op.value < registers,
         .new_table => |op| op.dest < registers and @as(u64, op.array_hint) + op.hash_hint <= proto.instructions.items.len,
         .set_list => |op| op.table < registers and op.start_index != 0 and
-            (if (op.count == bytecode.multret_count) op.first < registers else registerRange(registers, op.first, op.count)),
+            (if (op.count == bytecode.set_list_multret) op.first < registers else registerRange(registers, op.first, op.count)),
         .add, .sub, .mul, .div, .idiv, .mod, .pow, .band, .bor, .bxor, .shl, .shr, .eq, .lt, .le, .concat => |op| op.dest < registers and op.left < registers and op.right < registers,
         .unm, .bnot, .not, .len => |op| op.dest < registers and op.source < registers,
         .concat_range => |op| op.dest < registers and op.count >= 2 and registerRange(registers, op.first, op.count),
         .add_k, .sub_k, .mul_k, .div_k, .idiv_k, .mod_k, .band_k, .bor_k, .bxor_k, .shl_k, .shr_k => |op| op.dest < registers and op.left < registers and isNumericConstant(proto, op.constant),
-        .compare_branch_k => |op| op.register < registers and isNumericConstant(proto, op.constant) and validJump(proto, pc, op.offset),
+        .compare_branch_k => |op| op.register < registers and isNumericConstant(proto, op.constant) and validJump(proto, pc, op.branch.offset),
         .jmp => |offset| validJump(proto, pc, offset),
-        .compare_branch => |op| op.left < registers and op.right < registers and validJump(proto, pc, op.offset),
+        .compare_branch => |op| op.left < registers and op.right < registers and validJump(proto, pc, op.branch.offset),
         .test_op => |op| op.register < registers and validJump(proto, pc, op.offset),
         .test_set => |op| op.dest < registers and op.source < registers and validJump(proto, pc, op.offset),
         .call, .tail_call => |op| op.base < registers and
-            (op.arg_count == bytecode.multret_arg_count or registerRange(registers, @as(usize, op.base) + 1, op.arg_count)) and
+            (op.arg_count == bytecode.multret_count or registerRange(registers, @as(usize, op.base) + 1, op.arg_count)) and
             (op.return_count == bytecode.multret_count or registerRange(registers, op.base, op.return_count)),
         .ret => |op| if (op.count == bytecode.multret_count) op.first < registers else registerRange(registers, op.first, op.count),
         .vararg => |op| if (op.count == bytecode.multret_count) op.dest < registers else registerRange(registers, op.dest, op.count),
@@ -477,7 +365,7 @@ pub const BinaryChunkReader = struct {
         try proto.locals.ensureTotalCapacity(proto.allocator, local_count);
         for (0..local_count) |_| {
             const name = try self.readProtoString(proto);
-            const register = try self.readU16();
+            const register = std.math.cast(bytecode.Register, try self.readU16()) orelse return self.state.fail("bad binary chunk");
             const start_pc = try self.readUsize();
             const end_pc = try self.readUsize();
             const to_close = try self.readBool();
@@ -534,94 +422,27 @@ pub const BinaryChunkReader = struct {
     }
 
     fn readInstruction(self: *Self) !bytecode.Instruction {
-        const InstructionTag = std.meta.Tag(bytecode.Instruction);
-        const tag = try self.readEnum(InstructionTag);
-        return switch (tag) {
-            .load_nil => .{ .load_nil = try self.readU16() },
-            .load_bool => .{ .load_bool = .{ .dest = try self.readU16(), .value = try self.readBool() } },
-            .load_const => .{ .load_const = .{ .dest = try self.readU16(), .constant = try self.readU32() } },
-            .move => .{ .move = .{ .dest = try self.readU16(), .source = try self.readU16() } },
-            .get_global => .{ .get_global = .{ .register = try self.readU16(), .name = try self.readU32() } },
-            .set_global => .{ .set_global = .{ .register = try self.readU16(), .name = try self.readU32() } },
-            .declare_global => .{ .declare_global = .{ .table = try self.readU16(), .value = try self.readU16(), .name = try self.readU32() } },
-            .get_upvalue => .{ .get_upvalue = .{ .register = try self.readU16(), .upvalue = try self.readU16() } },
-            .set_upvalue => .{ .set_upvalue = .{ .register = try self.readU16(), .upvalue = try self.readU16() } },
-            .get_table => .{ .get_table = .{ .dest = try self.readU16(), .table = try self.readU16(), .key = try self.readU16() } },
-            .set_table => .{ .set_table = .{ .table = try self.readU16(), .key = try self.readU16(), .value = try self.readU16() } },
-            .set_array => .{ .set_array = .{ .table = try self.readU16(), .index = try self.readU32(), .value = try self.readU16() } },
-            .get_field => .{ .get_field = .{ .dest = try self.readU16(), .table = try self.readU16(), .name = try self.readU32() } },
-            .set_field => .{ .set_field = .{ .table = try self.readU16(), .name = try self.readU32(), .value = try self.readU16() } },
-            .new_table => .{ .new_table = .{ .dest = try self.readU16(), .array_hint = try self.readU32(), .hash_hint = try self.readU32() } },
-            .set_list => .{ .set_list = .{ .table = try self.readU16(), .first = try self.readU16(), .count = try self.readU32(), .start_index = try self.readU32() } },
-            .add => .{ .add = try self.readBinary() },
-            .sub => .{ .sub = try self.readBinary() },
-            .mul => .{ .mul = try self.readBinary() },
-            .div => .{ .div = try self.readBinary() },
-            .idiv => .{ .idiv = try self.readBinary() },
-            .mod => .{ .mod = try self.readBinary() },
-            .pow => .{ .pow = try self.readBinary() },
-            .unm => .{ .unm = try self.readUnary() },
-            .band => .{ .band = try self.readBinary() },
-            .bor => .{ .bor = try self.readBinary() },
-            .bxor => .{ .bxor = try self.readBinary() },
-            .bnot => .{ .bnot = try self.readUnary() },
-            .shl => .{ .shl = try self.readBinary() },
-            .shr => .{ .shr = try self.readBinary() },
-            .eq => .{ .eq = try self.readBinary() },
-            .lt => .{ .lt = try self.readBinary() },
-            .le => .{ .le = try self.readBinary() },
-            .not => .{ .not = try self.readUnary() },
-            .len => .{ .len = try self.readUnary() },
-            .concat => .{ .concat = try self.readBinary() },
-            .jmp => .{ .jmp = try self.readI32() },
-            .compare_branch => .{ .compare_branch = .{ .left = try self.readU16(), .right = try self.readU16(), .op = try self.readEnum(bytecode.CompareBranchOp), .jump_if_truthy = try self.readBool(), .offset = try self.readI32() } },
-            .test_op => .{ .test_op = .{ .register = try self.readU16(), .jump_if_truthy = try self.readBool(), .offset = try self.readI32() } },
-            .test_set => .{ .test_set = .{ .dest = try self.readU16(), .source = try self.readU16(), .jump_if_truthy = try self.readBool(), .offset = try self.readI32() } },
-            .call => .{ .call = .{ .base = try self.readU16(), .arg_count = try self.readArgCount(), .return_count = try self.readU16() } },
-            .tail_call => .{ .tail_call = .{ .base = try self.readU16(), .arg_count = try self.readArgCount(), .return_count = try self.readU16() } },
-            .ret => .{ .ret = .{ .first = try self.readU16(), .count = try self.readU16() } },
-            .vararg => .{ .vararg = .{ .dest = try self.readU16(), .count = try self.readU16() } },
-            .closure => .{ .closure = .{ .dest = try self.readU16(), .proto = try self.readU32() } },
-            .close => .{ .close = try self.readU16() },
-            .check_close => .{ .check_close = try self.readU16() },
-            .close_tbc => .{ .close_tbc = try self.readU16() },
-            .for_prep => .{ .for_prep = .{ .base = try self.readU16(), .offset = try self.readI32() } },
-            .for_loop => .{ .for_loop = .{ .base = try self.readU16(), .offset = try self.readI32() } },
-            .tfor_prep => .{ .tfor_prep = .{ .base = try self.readU16(), .variable_count = try self.readU16(), .offset = try self.readI32() } },
-            .tfor_call => .{ .tfor_call = .{ .base = try self.readU16(), .variable_count = try self.readU16(), .offset = try self.readI32() } },
-            .tfor_loop => .{ .tfor_loop = .{ .base = try self.readU16(), .variable_count = try self.readU16(), .offset = try self.readI32() } },
-            .concat_range => .{ .concat_range = try self.readConcatRange() },
-            .add_k => .{ .add_k = try self.readBinaryConstant() },
-            .sub_k => .{ .sub_k = try self.readBinaryConstant() },
-            .mul_k => .{ .mul_k = try self.readBinaryConstant() },
-            .div_k => .{ .div_k = try self.readBinaryConstant() },
-            .idiv_k => .{ .idiv_k = try self.readBinaryConstant() },
-            .mod_k => .{ .mod_k = try self.readBinaryConstant() },
-            .band_k => .{ .band_k = try self.readBinaryConstant() },
-            .bor_k => .{ .bor_k = try self.readBinaryConstant() },
-            .bxor_k => .{ .bxor_k = try self.readBinaryConstant() },
-            .shl_k => .{ .shl_k = try self.readBinaryConstant() },
-            .shr_k => .{ .shr_k = try self.readBinaryConstant() },
-            .compare_branch_k => .{ .compare_branch_k = .{ .register = try self.readU16(), .constant = try self.readU16(), .op = try self.readEnum(bytecode.CompareConstantOp), .jump_if_truthy = try self.readBool(), .offset = try self.readI32() } },
-        };
+        switch (try self.readEnum(std.meta.Tag(bytecode.Instruction))) {
+            inline else => |tag| return @unionInit(bytecode.Instruction, @tagName(tag), try self.readOperands(@FieldType(bytecode.Instruction, @tagName(tag)))),
+        }
     }
 
-    fn readConcatRange(self: *Self) !bytecode.ConcatRange {
-        const op: bytecode.ConcatRange = .{ .dest = try self.readU16(), .first = try self.readU16(), .count = try self.readU16() };
-        if (op.count < 2) return self.state.fail("bad binary chunk");
-        return op;
-    }
-
-    fn readUnary(self: *Self) !bytecode.Unary {
-        return .{ .dest = try self.readU16(), .source = try self.readU16() };
-    }
-
-    fn readBinary(self: *Self) !bytecode.Binary {
-        return .{ .dest = try self.readU16(), .left = try self.readU16(), .right = try self.readU16() };
-    }
-
-    fn readBinaryConstant(self: *Self) !bytecode.BinaryConstant {
-        return .{ .dest = try self.readU16(), .left = try self.readU16(), .constant = try self.readU32() };
+    fn readOperands(self: *Self, comptime T: type) !T {
+        switch (@typeInfo(T)) {
+            .int => {
+                const Wide = OperandInt(T);
+                const wide = std.mem.readInt(Wide, (try self.readBytes(@sizeOf(Wide)))[0..@sizeOf(Wide)], .little);
+                return std.math.cast(T, wide) orelse self.state.fail("bad binary chunk");
+            },
+            .bool => return self.readBool(),
+            .@"enum" => return self.readEnum(T),
+            .@"struct" => {
+                var operands: T = undefined;
+                inline for (comptime reflection.fieldsOf(T)) |name| @field(operands, name) = try self.readOperands(@FieldType(T, name));
+                return operands;
+            },
+            else => @compileError("unsupported instruction operand " ++ @typeName(T)),
+        }
     }
 
     fn readErrorSite(self: *Self, proto: *proto_mod.Proto) !proto_mod.ErrorSite {
@@ -704,17 +525,8 @@ pub const BinaryChunkReader = struct {
         return std.mem.readInt(u16, (try self.readBytes(2))[0..2], .little);
     }
 
-    fn readArgCount(self: *Self) !u32 {
-        const count = try self.readU16();
-        return if (count == bytecode.multret_count) bytecode.multret_arg_count else count;
-    }
-
     fn readU32(self: *Self) !u32 {
         return std.mem.readInt(u32, (try self.readBytes(4))[0..4], .little);
-    }
-
-    fn readI32(self: *Self) !i32 {
-        return std.mem.readInt(i32, (try self.readBytes(4))[0..4], .little);
     }
 
     fn readU64(self: *Self) !u64 {

@@ -1324,6 +1324,7 @@ pub const Table = struct {
 | [set](#fn-table-set) | `self: *Table, allocator: std.mem.Allocator, key: Value, value: Value` | `!void` |  |
 | [setExistingNonNil](#fn-table-setexistingnonnil) | `self: *Table, key: Value, value: Value` | `bool` |  |
 | [len](#fn-table-len) | `self: *Table` | `i64` |  |
+| [extendArrayAssumeCapacity](#fn-table-extendarrayassumecapacity) | `self: *Table, new_len: usize` | `void` | Extends the array part to &#96;new_len&#96;, which must not exceed its capacity, moving the hash entries of the added indexes into it. |
 | [next](#fn-table-next) | `self: *const Table, key: Value` | `![2]Value` |  |
 | [removeHashKey](#fn-table-removehashkey) | `self: *Table, key: Value` | `void` |  |
 | [removeEntryAt](#fn-table-removeentryat) | `self: *Table, index: usize` | `void` | Removes one entry, keeping the order of the rest for &#96;next&#96;. |
@@ -1567,6 +1568,19 @@ References: [`Table`](#type-table), [`Value`](#type-value)
 
 ```zig
 pub fn len(self: *Table) i64
+```
+
+References: [`Table`](#type-table)
+
+<a id="fn-table-extendarrayassumecapacity"></a>
+
+### Table.extendArrayAssumeCapacity
+
+Extends the array part to `new_len`, which must not exceed its capacity, moving the
+hash entries of the added indexes into it.
+
+```zig
+pub fn extendArrayAssumeCapacity(self: *Table, new_len: usize) void
 ```
 
 References: [`Table`](#type-table)
