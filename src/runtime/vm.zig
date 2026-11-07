@@ -1035,6 +1035,17 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 }
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
+            .closure => {
+                const op = instructions[pc].closure;
+                pc += 1;
+                frame.pc = @intCast(pc);
+                stack[op.dest] = try self.newClosure(thread, proto.children.items[op.proto]);
+                if (self.gc.running and self.gc.shouldRunAuto()) {
+                    resync = pc +% count_bias;
+                    continue :frames;
+                }
+                continue :fast_loop std.meta.activeTag(instructions[pc]);
+            },
             .set_list => {
                 const op = instructions[pc].set_list;
                 if (op.count == bytecode.set_list_multret and pc +% count_bias != segment_start) break :fast_loop;
@@ -1064,9 +1075,8 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 const op = instructions[pc].ret;
                 // Returning onto the floor frame is fine, but the outer loop must take over afterwards.
                 if (frame_index < return_floor or frame_index == 0) break :fast_loop;
-                const open_here = if (thread.open_upvalues) |upvalue| upvalue.cell.open.stack_index >= base else false;
                 if (proto.has_to_close_locals or op.count == bytecode.multret_count or frame.return_count == bytecode.multret_count or
-                    (frame.has_extra and thread.frame_extras.items[frame_index].pending_returns != null) or open_here)
+                    (frame.has_extra and thread.frame_extras.items[frame_index].pending_returns != null))
                 {
                     @branchHint(.unlikely);
                     if (thread.hook != .nil) break :fast_loop;
@@ -1085,6 +1095,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 const return_start = frame.return_start;
                 const return_count = frame.return_count;
                 if (return_start + return_count > stack_limit) break :fast_loop;
+                if (thread.open_upvalues) |upvalue| if (upvalue.cell.open.stack_index >= base) upvalue_mod.closeUpvalues(self, thread, base);
                 const executed_count = pc +% count_bias -% segment_start;
                 const copied = @min(return_count, op.count);
                 for (0..copied) |index| thread.stack.items[return_start + index] = stack[op.first + index];
