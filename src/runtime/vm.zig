@@ -670,9 +670,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     table.array.items()[index - 1] = value;
                 } else if (value != .nil) {
                     if (index > table.array.capacity) break :fast_loop;
-                    const old_len = table.array.len;
-                    table.array.len = @intCast(index);
-                    @memset(table.array.items()[old_len..], .nil);
+                    table.extendArrayAssumeCapacity(index);
                     table.array.items()[index - 1] = value;
                 }
                 self.gc.writeTableBarrier(table, .{ .integer = @intCast(index) }, value);
@@ -1237,11 +1235,8 @@ fn fastTableArraySetIndex(self: *State, table_value: Value, index_u32: u32, valu
     if (index > table.array.capacity) return false;
 
     const old_capacity_bytes = gc_mod.tableCapacityBytes(table);
-    const old_len = table.array.len;
-    try table.array.resize(self.allocator, index);
-    @memset(table.array.items()[old_len..], .nil);
+    table.extendArrayAssumeCapacity(index);
     table.array.items()[index - 1] = value;
-    table.removeHashKey(key_value);
     self.gc.noteTableCapacityDelta(table, old_capacity_bytes);
     self.gc.writeTableBarrier(table, key_value, value);
     return true;
@@ -1267,9 +1262,7 @@ fn setTableArrayRawIndex(self: *State, table: *Table, index_u32: u32, value: Val
     }
     if (index <= table.array.capacity) {
         const old_capacity_bytes = gc_mod.tableCapacityBytes(table);
-        const old_len = table.array.len;
-        try table.array.resize(self.allocator, index);
-        @memset(table.array.items()[old_len..], .nil);
+        table.extendArrayAssumeCapacity(index);
         table.array.items()[index - 1] = value;
         self.gc.noteTableCapacityDelta(table, old_capacity_bytes);
         self.gc.writeTableBarrier(table, key, value);
@@ -1453,10 +1446,8 @@ fn fastSetListRaw(self: *State, thread: *Thread, table_value: Value, source_star
     if (grow_to > table.array.len and start_index > table.array.len + 1 and grow_to > table.array.capacity) return false;
     if (grow_to > table.array.len) {
         const old_capacity_bytes = gc_mod.tableCapacityBytes(table);
-        const old_len = table.array.len;
         try table.reserveArray(self.allocator, grow_to);
-        try table.array.resize(self.allocator, grow_to);
-        @memset(table.array.items()[old_len..], .nil);
+        table.extendArrayAssumeCapacity(grow_to);
         self.gc.noteTableCapacityDelta(table, old_capacity_bytes);
     }
 
