@@ -17,6 +17,7 @@
 
 ### Lua Compatibility
 
+- Line hooks reported line 1 for table constructor instructions.
 - Multiple assignments store from right to left, and indexed targets read local keys and tables when the store runs.
 - Error messages name `t["k"]`, `t[1]`, other indexed values, and a nil `_ENV` like Lua 5.5.
 - Long chains of left-associative operators compile instead of failing with too many registers.

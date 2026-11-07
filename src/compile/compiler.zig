@@ -900,27 +900,35 @@ const FunctionCompiler = struct {
             .array => array_count += 1,
             .keyed, .named => hash_count += 1,
         };
+        self.current_line = constructor.open_line;
         _ = try self.emit(.{ .new_table = .{ .dest = dest, .array_hint = array_count, .hash_hint = std.math.lossyCast(u16, hash_count) } });
 
         var array_index: u32 = 1;
-        for (constructor.fields, 0..) |field, field_index| {
+        for (constructor.fields, constructor.field_lines, 0..) |field, store_line, field_index| {
             const mark = self.registerMark();
             switch (field) {
                 .array => |value| {
                     const value_reg = try self.allocReg();
                     if (field_index == constructor.fields.len - 1 and isMultiResultExpr(value)) {
                         try self.compileExprCount(value, value_reg, bytecode.multret_count);
+                        self.current_line = store_line;
                         _ = try self.emit(.{ .set_list = .{ .table = dest, .first = value_reg, .count = bytecode.set_list_multret, .start_index = array_index } });
                     } else {
                         self.release(mark);
-                        const source = try self.operandRegister(value);
-                        _ = try self.emit(.{ .set_array = .{ .table = dest, .index = array_index, .value = source } });
+                        const previous_forced = self.forced_line;
+                        if (isLiteral(value)) self.forced_line = store_line;
+                        const source = self.operandRegister(value);
+                        self.forced_line = previous_forced;
+                        const source_register = try source;
+                        self.current_line = store_line;
+                        _ = try self.emit(.{ .set_array = .{ .table = dest, .index = array_index, .value = source_register } });
                         array_index += 1;
                     }
                 },
                 .keyed => |keyed| {
                     const key = try self.operandRegister(keyed.key);
                     const value = try self.operandRegister(keyed.value);
+                    self.current_line = store_line;
                     _ = try self.emit(.{ .set_table = .{ .table = dest, .key = key, .value = value } });
                 },
                 .named => |named| {
@@ -928,11 +936,14 @@ const FunctionCompiler = struct {
                     if (named.value.* == .function_literal) {
                         const value = try self.allocReg();
                         try self.compileFunctionLiteral(named.value.function_literal, value, named.name.name);
+                        self.current_line = store_line;
                         _ = try self.emit(.{ .set_field = .{ .table = dest, .name = name, .value = value } });
                     } else if (try self.shortConstant(named.value)) |constant| {
+                        self.current_line = store_line;
                         _ = try self.emit(.{ .set_field_k = .{ .table = dest, .name = name, .constant = constant } });
                     } else {
                         const value = try self.operandRegister(named.value);
+                        self.current_line = store_line;
                         _ = try self.emit(.{ .set_field = .{ .table = dest, .name = name, .value = value } });
                     }
                 },
@@ -1966,6 +1977,13 @@ fn labelIsLastNoOp(block: ast.Block, index: usize) bool {
     return true;
 }
 
+fn isLiteral(expr: *const ast.Expr) bool {
+    return switch (expr.*) {
+        .nil, .boolean, .integer, .float, .string => true,
+        else => false,
+    };
+}
+
 fn isCallExpr(expr: *const ast.Expr) bool {
     return switch (expr.*) {
         .call, .method_call => true,
@@ -2084,7 +2102,7 @@ fn exprLine(expr: ast.Expr) usize {
             .string => |literal| return literal.span.start.line,
             .vararg => |span| return span.start.line,
             .identifier => |identifier| return identifier.span.start.line,
-            .table_constructor => return 1,
+            .table_constructor => |constructor| return constructor.open_line,
             .function_literal => |body| return body.end_line,
             .grouped => |inner| current = inner.*,
             .index => |index| current = index.receiver.*,

@@ -158,6 +158,10 @@ pub const TokenLiteral = struct {
 
 pub const TableConstructor = struct {
     fields: []const TableField,
+    /// Line of the token before `{`.
+    open_line: usize = 0,
+    /// Line at which each field's store runs, parallel to `fields`.
+    field_lines: []const usize = &.{},
 };
 
 pub const TableField = union(enum) {
