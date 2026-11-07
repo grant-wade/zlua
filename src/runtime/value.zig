@@ -306,11 +306,7 @@ fn prepareProto(proto: *proto_mod.Proto, constant_count: *u32) !void {
 
 fn jumpTargetsInBounds(instructions: []const bytecode.Instruction) bool {
     for (instructions, 0..) |instruction, index| {
-        const offset: bytecode.JumpOffset = switch (instruction) {
-            .jmp => |offset| offset,
-            inline .compare_branch, .compare_branch_k, .test_op, .test_set, .for_loop, .for_prep, .tfor_prep, .tfor_loop => |op| op.offset,
-            else => continue,
-        };
+        const offset = instruction.jumpOffset() orelse continue;
         const source = index + 1;
         const target = if (offset >= 0) source + @as(usize, @intCast(offset)) else source -% @as(usize, @intCast(-offset));
         if (target >= instructions.len) return false;
@@ -323,11 +319,7 @@ fn closeExitJumps(proto: *proto_mod.Proto) ![]const u64 {
     const bits = try proto.arena.allocator().alloc(u64, (instructions.len + 63) / 64);
     @memset(bits, 0);
     for (instructions, 0..) |instruction, index| {
-        const offset: bytecode.JumpOffset = switch (instruction) {
-            .jmp => |offset| offset,
-            inline .compare_branch, .compare_branch_k, .test_op, .test_set, .for_loop, .for_prep, .tfor_prep, .tfor_loop => |op| op.offset,
-            else => continue,
-        };
+        const offset = instruction.jumpOffset() orelse continue;
         const source = index + 1;
         const target = if (offset >= 0) source + @as(usize, @intCast(offset)) else source -% @as(usize, @intCast(-offset));
         for (proto.locals.items) |local| {

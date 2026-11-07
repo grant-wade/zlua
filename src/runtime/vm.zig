@@ -317,8 +317,8 @@ fn executeInstruction(self: *State, thread: *Thread, proto: *const proto_mod.Pro
             const lhs = stack[base + op.left];
             const rhs = stack[base + op.right];
             operators_mod.noteStringComparison(self, lhs, rhs);
-            if (operators_mod.rawCompareBranchResult(lhs, rhs, op.op)) |result| {
-                if (result == op.jump_if_truthy) try jumpThreadMaybeFast(self, thread, op.offset, true);
+            if (operators_mod.rawCompareBranchResult(lhs, rhs, op.branch.op)) |result| {
+                if (result == op.branch.jump_if_truthy) try jumpThreadMaybeFast(self, thread, op.branch.offset, true);
             } else {
                 try operators_mod.compareBranch(self, thread, op);
             }
@@ -333,8 +333,8 @@ fn executeInstruction(self: *State, thread: *Thread, proto: *const proto_mod.Pro
                 try jumpThreadMaybeFast(self, thread, op.offset, true);
             }
         },
-        .call => |op| try call_mod.callValue(self, thread, op),
-        .tail_call => |op| try call_mod.tailCallValue(self, thread, op),
+        .call => |op| try call_mod.callValue(self, thread, op.wide()),
+        .tail_call => |op| try call_mod.tailCallValue(self, thread, op.wide()),
         .ret => |op| try call_mod.returnFromFrame(self, thread, op.first, op.count),
         .vararg => |op| try call_mod.loadVarargs(self, thread, op),
         .for_prep => |op| try forPrep(self, thread, op),
@@ -361,8 +361,8 @@ fn executeInstruction(self: *State, thread: *Thread, proto: *const proto_mod.Pro
         .compare_branch_k => |op| {
             const constant = proto.constant_values[op.constant];
             operators_mod.noteStringComparison(self, stack[base + op.register], constant);
-            if (operators_mod.rawCompareConstantResult(stack[base + op.register], constant, op.op)) |result| {
-                if (result == op.jump_if_truthy) try jumpThreadMaybeFast(self, thread, op.offset, true);
+            if (operators_mod.rawCompareConstantResult(stack[base + op.register], constant, op.branch.op)) |result| {
+                if (result == op.branch.jump_if_truthy) try jumpThreadMaybeFast(self, thread, op.branch.offset, true);
             } else {
                 try operators_mod.compareBranchConstant(self, thread, op, constant);
             }
@@ -703,17 +703,17 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 const value = stack[op.register];
                 const constant = proto.constant_values[op.constant];
                 if (operators_mod.comparesLongStrings(value, constant)) break :fast_loop;
-                const result = if (value == .integer and constant == .integer) switch (op.op) {
+                const result = if (value == .integer and constant == .integer) switch (op.branch.op) {
                     .eq => value.integer == constant.integer,
                     .lt => value.integer < constant.integer,
                     .le => value.integer <= constant.integer,
                     .gt => value.integer > constant.integer,
                     .ge => value.integer >= constant.integer,
-                } else operators_mod.rawCompareConstantResult(value, constant, op.op) orelse break :fast_loop;
+                } else operators_mod.rawCompareConstantResult(value, constant, op.branch.op) orelse break :fast_loop;
                 pc += 1;
-                if (result == op.jump_if_truthy) {
+                if (result == op.branch.jump_if_truthy) {
                     const source_pc = pc;
-                    pc = jumpTarget(source_pc, op.offset);
+                    pc = jumpTarget(source_pc, op.branch.offset);
                     count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                     if (pc < source_pc) {
                         if (frame.has_extra) thread.frame_extras.items[frame_index].last_hook_line = null;
@@ -728,15 +728,15 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 const lhs = stack[op.left];
                 const rhs = stack[op.right];
                 if (operators_mod.comparesLongStrings(lhs, rhs)) break :fast_loop;
-                const result = if (lhs == .integer and rhs == .integer) switch (op.op) {
+                const result = if (lhs == .integer and rhs == .integer) switch (op.branch.op) {
                     .eq => lhs.integer == rhs.integer,
                     .lt => lhs.integer < rhs.integer,
                     .le => lhs.integer <= rhs.integer,
-                } else operators_mod.rawCompareBranchResult(lhs, rhs, op.op) orelse break :fast_loop;
+                } else operators_mod.rawCompareBranchResult(lhs, rhs, op.branch.op) orelse break :fast_loop;
                 pc += 1;
-                if (result == op.jump_if_truthy) {
+                if (result == op.branch.jump_if_truthy) {
                     const source_pc = pc;
-                    pc = jumpTarget(source_pc, op.offset);
+                    pc = jumpTarget(source_pc, op.branch.offset);
                     count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                     if (pc < source_pc) {
                         if (frame.has_extra) thread.frame_extras.items[frame_index].last_hook_line = null;
@@ -820,7 +820,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .call => {
-                var op = instructions[pc].call;
+                var op = instructions[pc].call.wide();
                 if (thread.hook_call) break :fast_loop;
                 if (op.arg_count == bytecode.multret_arg_count) {
                     // Only valid while a preceding call/vararg still owns the last-result state.
@@ -946,7 +946,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             },
             .set_list => {
                 const op = instructions[pc].set_list;
-                if (op.count == bytecode.multret_count and pc +% count_bias != segment_start) break :fast_loop;
+                if (op.count == bytecode.set_list_multret and pc +% count_bias != segment_start) break :fast_loop;
                 pc += 1;
                 frame.pc = @intCast(pc);
                 try setList(self, thread, op);
@@ -954,7 +954,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 continue :frames;
             },
             .tail_call => {
-                const op = instructions[pc].tail_call;
+                const op = instructions[pc].tail_call.wide();
                 if (thread.hook != .nil) break :fast_loop;
                 if (pc +% count_bias != segment_start) {
                     if (op.arg_count == bytecode.multret_arg_count) break :fast_loop;
@@ -1425,7 +1425,7 @@ fn forLoop(self: *State, thread: *Thread, op: bytecode.ForLoop) !void {
 fn setList(self: *State, thread: *Thread, op: bytecode.SetList) !void {
     const frame = thread.frames.items[thread.frames.items.len - 1];
     const source_start = frame.base + op.first;
-    const count: usize = if (op.count == bytecode.multret_count) try call_mod.resolveResultCount(self, thread, source_start, bytecode.multret_count) else op.count;
+    const count: usize = if (op.count == bytecode.set_list_multret) try call_mod.resolveResultCount(self, thread, source_start, bytecode.multret_count) else op.count;
     self.budget.note(budget_mod.cost.registers(count));
     const table_value = get(self, thread, op.table);
     if (try fastSetListRaw(self, thread, table_value, source_start, count, op.start_index)) return;

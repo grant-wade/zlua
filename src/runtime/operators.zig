@@ -224,17 +224,17 @@ pub fn compareValuesToRegister(self: *State, thread: *Thread, op: bytecode.Binar
 }
 
 pub fn compareBranch(self: *State, thread: *Thread, op: bytecode.CompareBranch) !void {
-    return compareBranchValues(self, thread, vm_mod.get(self, thread, op.left), vm_mod.get(self, thread, op.right), op.op, op.jump_if_truthy, op.offset);
+    return compareBranchValues(self, thread, vm_mod.get(self, thread, op.left), vm_mod.get(self, thread, op.right), op.branch.op, op.branch.jump_if_truthy, op.branch.offset);
 }
 
 pub fn compareBranchConstant(self: *State, thread: *Thread, op: bytecode.CompareBranchConstant, constant: Value) !void {
     const value = vm_mod.get(self, thread, op.register);
-    return switch (op.op) {
-        .eq => compareBranchValues(self, thread, value, constant, .eq, op.jump_if_truthy, op.offset),
-        .lt => compareBranchValues(self, thread, value, constant, .lt, op.jump_if_truthy, op.offset),
-        .le => compareBranchValues(self, thread, value, constant, .le, op.jump_if_truthy, op.offset),
-        .gt => compareBranchValues(self, thread, constant, value, .lt, op.jump_if_truthy, op.offset),
-        .ge => compareBranchValues(self, thread, constant, value, .le, op.jump_if_truthy, op.offset),
+    return switch (op.branch.op) {
+        .eq => compareBranchValues(self, thread, value, constant, .eq, op.branch.jump_if_truthy, op.branch.offset),
+        .lt => compareBranchValues(self, thread, value, constant, .lt, op.branch.jump_if_truthy, op.branch.offset),
+        .le => compareBranchValues(self, thread, value, constant, .le, op.branch.jump_if_truthy, op.branch.offset),
+        .gt => compareBranchValues(self, thread, constant, value, .lt, op.branch.jump_if_truthy, op.branch.offset),
+        .ge => compareBranchValues(self, thread, constant, value, .le, op.branch.jump_if_truthy, op.branch.offset),
     };
 }
 

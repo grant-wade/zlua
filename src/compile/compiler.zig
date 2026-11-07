@@ -804,7 +804,7 @@ const FunctionCompiler = struct {
             .array => array_count += 1,
             .keyed, .named => hash_count += 1,
         };
-        _ = try self.emit(.{ .new_table = .{ .dest = dest, .array_hint = array_count, .hash_hint = hash_count } });
+        _ = try self.emit(.{ .new_table = .{ .dest = dest, .array_hint = array_count, .hash_hint = std.math.lossyCast(u16, hash_count) } });
 
         var array_index: u32 = 1;
         for (constructor.fields, 0..) |field, field_index| {
@@ -814,7 +814,7 @@ const FunctionCompiler = struct {
                     const value_reg = try self.allocReg();
                     if (field_index == constructor.fields.len - 1 and isMultiResultExpr(value)) {
                         try self.compileExprCount(value, value_reg, bytecode.multret_count);
-                        _ = try self.emit(.{ .set_list = .{ .table = dest, .first = value_reg, .count = bytecode.multret_count, .start_index = array_index } });
+                        _ = try self.emit(.{ .set_list = .{ .table = dest, .first = value_reg, .count = bytecode.set_list_multret, .start_index = array_index } });
                     } else {
                         try self.compileExpr(value, value_reg);
                         _ = try self.emit(.{ .set_array = .{ .table = dest, .index = array_index, .value = value_reg } });
@@ -1129,9 +1129,7 @@ const FunctionCompiler = struct {
         const pc = try self.emitWithErrorSite(.{ .compare_branch = .{
             .left = branch_left,
             .right = branch_right,
-            .op = branch_op,
-            .jump_if_truthy = branch_jump_if_truthy,
-            .offset = 0,
+            .branch = .{ .op = branch_op, .jump_if_truthy = branch_jump_if_truthy, .offset = 0 },
         } }, .compare, &.{ left_origin, right_origin }, null);
         self.release(mark);
         return pc;
@@ -1170,9 +1168,7 @@ const FunctionCompiler = struct {
         const pc = try self.emitWithErrorSite(.{ .compare_branch_k = .{
             .register = register,
             .constant = short_constant,
-            .op = op,
-            .jump_if_truthy = jump_if_truthy,
-            .offset = 0,
+            .branch = .{ .op = op, .jump_if_truthy = jump_if_truthy, .offset = 0 },
         } }, .compare, &.{ left_origin, right_origin }, null);
         self.release(mark);
         return pc;
@@ -1197,9 +1193,10 @@ const FunctionCompiler = struct {
     }
 
     fn compileCallInto(self: *FunctionCompiler, expr: *const ast.Expr, returns: u16, dest: bytecode.Register, tail: bool) anyerror!bytecode.Register {
+        if (returns != bytecode.multret_count) try self.reserveRegistersUntil(@as(usize, dest) + returns);
         switch (expr.*) {
             .call => {
-                try self.reserveRegistersUntil(dest + 1);
+                try self.reserveRegistersUntil(@as(usize, dest) + 1);
                 const Link = struct { call: ast.CallExpr, name: proto_mod.OperandOrigin };
                 var links = std.ArrayList(Link).empty;
                 defer links.deinit(self.allocator);
@@ -1220,20 +1217,20 @@ const FunctionCompiler = struct {
                     const link = links.items[index];
                     const outermost = index == 0;
                     const link_returns = if (outermost) returns else 1;
-                    const arg_count = try self.compileCallArgs(link.call.args, dest + 1, 0);
+                    const arg_count = try self.compileCallArgs(link.call.args, try self.registerAt(dest, 1), 0);
                     self.current_line = link.call.call_line;
                     const instruction: bytecode.Instruction = if (outermost and tail)
-                        .{ .tail_call = .{ .base = dest, .arg_count = callArgCount(arg_count), .return_count = link_returns } }
+                        .{ .tail_call = .{ .base = dest, .arg_count = arg_count, .return_count = link_returns } }
                     else
-                        .{ .call = .{ .base = dest, .arg_count = callArgCount(arg_count), .return_count = link_returns } };
+                        .{ .call = .{ .base = dest, .arg_count = arg_count, .return_count = link_returns } };
                     _ = try self.emitWithErrorSite(instruction, .call, &.{link.name}, link.name);
                     self.release(callReleaseMark(dest, link_returns));
                 }
                 return dest;
             },
             .method_call => |call| {
+                try self.reserveRegistersUntil(@as(usize, dest) + 2);
                 const receiver = dest + 1;
-                try self.reserveRegistersUntil(dest + 2);
                 const receiver_origin = try self.exprOrigin(call.receiver);
                 const method_name = try self.nameConstant(call.method.name);
                 try self.compileExpr(call.receiver, receiver);
@@ -1244,7 +1241,7 @@ const FunctionCompiler = struct {
                 else
                     proto_mod.OperandOrigin{ .field = call.method.name };
                 self.current_line = call.call_line;
-                _ = try self.emitWithErrorSite(if (tail) .{ .tail_call = .{ .base = dest, .arg_count = callArgCount(arg_count), .return_count = returns } } else .{ .call = .{ .base = dest, .arg_count = callArgCount(arg_count), .return_count = returns } }, .call, &.{method_origin}, method_origin);
+                _ = try self.emitWithErrorSite(if (tail) .{ .tail_call = .{ .base = dest, .arg_count = arg_count, .return_count = returns } } else .{ .call = .{ .base = dest, .arg_count = arg_count, .return_count = returns } }, .call, &.{method_origin}, method_origin);
                 self.release(callReleaseMark(dest, returns));
                 return dest;
             },
@@ -1253,11 +1250,11 @@ const FunctionCompiler = struct {
     }
 
     fn compileExprListAdjusted(self: *FunctionCompiler, values: []const *ast.Expr, dest: bytecode.Register, needed: u16) anyerror!void {
-        try self.reserveRegistersUntil(dest + needed);
+        try self.reserveRegistersUntil(@as(usize, dest) + needed);
         var value_index: usize = 0;
         var out_index: u16 = 0;
         while (out_index < needed) : (out_index += 1) {
-            const out = dest + out_index;
+            const out: bytecode.Register = @intCast(dest + out_index);
             if (value_index >= values.len) {
                 _ = try self.emit(.{ .load_nil = out });
                 continue;
@@ -1275,26 +1272,26 @@ const FunctionCompiler = struct {
         }
 
         while (value_index < values.len) : (value_index += 1) {
-            try self.compileDiscardedExpr(values[value_index], dest + needed);
+            try self.compileDiscardedExpr(values[value_index], @intCast(dest + needed));
         }
     }
 
     fn compileExprListMultret(self: *FunctionCompiler, values: []const *ast.Expr, dest: bytecode.Register) anyerror!u16 {
         if (values.len == 0) return 0;
         for (values[0 .. values.len - 1], 0..) |value, index| {
-            const out = dest + @as(bytecode.Register, @intCast(index));
-            try self.reserveRegistersUntil(out + 1);
+            const out = try self.registerAt(dest, index);
+            try self.reserveRegistersUntil(@as(usize, out) + 1);
             try self.compileExpr(value, out);
         }
 
         const last = values[values.len - 1];
-        const last_dest = dest + @as(bytecode.Register, @intCast(values.len - 1));
+        const last_dest = try self.registerAt(dest, values.len - 1);
         if (isMultiResultExpr(last)) {
             try self.compileExprCount(last, last_dest, bytecode.multret_count);
             return bytecode.multret_count;
         }
 
-        try self.reserveRegistersUntil(last_dest + 1);
+        try self.reserveRegistersUntil(@as(usize, last_dest) + 1);
         try self.compileExpr(last, last_dest);
         return @intCast(values.len);
     }
@@ -1303,7 +1300,7 @@ const FunctionCompiler = struct {
         switch (expr.*) {
             .call, .method_call => _ = try self.compileCallInto(expr, count, dest, false),
             .vararg => {
-                if (count != bytecode.multret_count) try self.reserveRegistersUntil(dest + count) else try self.reserveRegistersUntil(dest + 1);
+                try self.reserveRegistersUntil(@as(usize, dest) + if (count != bytecode.multret_count) count else 1);
                 _ = try self.emit(.{ .vararg = .{ .dest = dest, .count = count } });
                 self.release(callReleaseMark(dest, count));
             },
@@ -1315,10 +1312,10 @@ const FunctionCompiler = struct {
                     self.release(mark);
                     return;
                 }
-                try self.reserveRegistersUntil(dest + count);
+                try self.reserveRegistersUntil(@as(usize, dest) + count);
                 try self.compileExpr(expr, dest);
                 var index: u16 = 1;
-                while (index < count) : (index += 1) _ = try self.emit(.{ .load_nil = dest + index });
+                while (index < count) : (index += 1) _ = try self.emit(.{ .load_nil = @intCast(dest + index) });
             },
         }
     }
@@ -1334,19 +1331,19 @@ const FunctionCompiler = struct {
     fn compileCallArgs(self: *FunctionCompiler, args: []const *ast.Expr, first_arg: bytecode.Register, fixed_prefix: u16) anyerror!u16 {
         if (args.len == 0) return fixed_prefix;
         for (args[0 .. args.len - 1], 0..) |arg, index| {
-            const reg = first_arg + @as(bytecode.Register, @intCast(index));
-            try self.reserveRegistersUntil(reg + 1);
+            const reg = try self.registerAt(first_arg, index);
+            try self.reserveRegistersUntil(@as(usize, reg) + 1);
             try self.compileExpr(arg, reg);
         }
 
         const last = args[args.len - 1];
-        const last_reg = first_arg + @as(bytecode.Register, @intCast(args.len - 1));
+        const last_reg = try self.registerAt(first_arg, args.len - 1);
         if (isMultiResultExpr(last)) {
             try self.compileExprCount(last, last_reg, bytecode.multret_count);
             return bytecode.multret_count;
         }
 
-        try self.reserveRegistersUntil(last_reg + 1);
+        try self.reserveRegistersUntil(@as(usize, last_reg) + 1);
         try self.compileExpr(last, last_reg);
         return fixed_prefix + @as(u16, @intCast(args.len));
     }
@@ -1656,7 +1653,7 @@ const FunctionCompiler = struct {
     }
 
     fn allocReg(self: *FunctionCompiler) !bytecode.Register {
-        if (self.next_register >= lua_max_registers or self.next_register == std.math.maxInt(bytecode.Register)) return self.failRegisterOverflow();
+        if (self.next_register >= lua_max_registers) return self.failRegisterOverflow();
         const register = self.next_register;
         self.next_register += 1;
         self.proto.max_registers = @max(self.proto.max_registers, self.next_register);
@@ -1674,12 +1671,19 @@ const FunctionCompiler = struct {
         return self.next_register;
     }
 
-    fn release(self: *FunctionCompiler, mark_register: bytecode.Register) void {
-        self.next_register = mark_register;
+    /// `mark_register` must not exceed the registers reserved so far.
+    fn release(self: *FunctionCompiler, mark_register: usize) void {
+        self.next_register = @intCast(mark_register);
     }
 
-    fn reserveRegistersUntil(self: *FunctionCompiler, end_register: bytecode.Register) !void {
+    fn reserveRegistersUntil(self: *FunctionCompiler, end_register: usize) !void {
         while (self.next_register < end_register) _ = try self.allocReg();
+    }
+
+    fn registerAt(self: *FunctionCompiler, first: bytecode.Register, offset: usize) !bytecode.Register {
+        const register = @as(usize, first) + offset;
+        if (register >= lua_max_registers) return self.failRegisterOverflow();
+        return @intCast(register);
     }
 
     fn emit(self: *FunctionCompiler, instruction: bytecode.Instruction) !usize {
@@ -1867,12 +1871,8 @@ fn assignmentTargetDebugName(target: *const ast.Expr) ?[]const u8 {
     };
 }
 
-fn callReleaseMark(dest: bytecode.Register, count: u16) bytecode.Register {
-    return if (count == bytecode.multret_count) dest + 1 else dest + count;
-}
-
-fn callArgCount(count: u16) u32 {
-    return if (count == bytecode.multret_count) bytecode.multret_arg_count else count;
+fn callReleaseMark(dest: bytecode.Register, count: u16) usize {
+    return if (count == bytecode.multret_count) @as(usize, dest) + 1 else @as(usize, dest) + count;
 }
 
 fn stmtLine(statement: ast.Stmt) usize {

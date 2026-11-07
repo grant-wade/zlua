@@ -345,8 +345,8 @@ pub fn messageHandlerCallName(thread: *Thread) ?CallName {
         .get_global, .get_table, .get_field => "index",
         .set_global, .set_table, .set_array, .set_field => "newindex",
         .concat, .concat_range => "concat",
-        .compare_branch => |op| @tagName(op.op),
-        .compare_branch_k => |op| switch (op.op) {
+        .compare_branch => |op| @tagName(op.branch.op),
+        .compare_branch_k => |op| switch (op.branch.op) {
             .eq => "eq",
             .lt, .gt => "lt",
             .le, .ge => "le",

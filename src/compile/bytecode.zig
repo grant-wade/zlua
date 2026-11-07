@@ -1,13 +1,17 @@
 const std = @import("std");
 
-pub const Register = u16;
+pub const Register = u8;
 pub const ConstantIndex = u32;
 pub const ProtoIndex = u32;
-pub const UpvalueIndex = u16;
+pub const UpvalueIndex = u8;
 pub const LocalIndex = u16;
 pub const JumpOffset = i32;
+/// Jump offset stored in a `Branch`.
+pub const BranchOffset = i28;
 pub const multret_count: u16 = std.math.maxInt(u16);
 pub const multret_arg_count: u32 = std.math.maxInt(u32);
+/// `SetList.count` when the values end with multiple results.
+pub const set_list_multret: u8 = std.math.maxInt(u8);
 
 pub const Constant = union(enum) {
     nil,
@@ -28,7 +32,6 @@ pub fn constantEql(lhs: Constant, rhs: Constant) bool {
     };
 }
 
-// Full-byte tags avoid masking unused tag bits in every VM dispatch.
 pub const Instruction = union(enum(u8)) {
     load_nil: Register,
     load_bool: LoadBool,
@@ -72,13 +75,13 @@ pub const Instruction = union(enum(u8)) {
     len: Unary,
     concat: Binary,
 
-    jmp: JumpOffset,
+    jmp: JumpOffset align(1),
     compare_branch: CompareBranch,
     test_op: Test,
     test_set: TestSet,
 
-    call: Call,
-    tail_call: Call,
+    call: CallInstruction,
+    tail_call: CallInstruction,
     ret: Return,
     vararg: Vararg,
 
@@ -107,6 +110,26 @@ pub const Instruction = union(enum(u8)) {
     shl_k: BinaryConstant,
     shr_k: BinaryConstant,
     compare_branch_k: CompareBranchConstant,
+
+    /// The jump offset of a jumping instruction, or null.
+    pub fn jumpOffset(self: Instruction) ?JumpOffset {
+        return switch (self) {
+            .jmp => |offset| offset,
+            inline .compare_branch, .compare_branch_k => |op| op.branch.offset,
+            inline .test_op, .test_set, .for_loop, .for_prep, .tfor_prep, .tfor_loop => |op| op.offset,
+            else => null,
+        };
+    }
+
+    /// The instruction must carry a jump offset.
+    pub fn setJumpOffset(self: *Instruction, offset: JumpOffset) error{JumpOutOfRange}!void {
+        switch (self.*) {
+            .jmp => |*value| value.* = offset,
+            inline .compare_branch, .compare_branch_k => |*op| op.branch.offset = std.math.cast(BranchOffset, offset) orelse return error.JumpOutOfRange,
+            inline .test_op, .test_set, .for_loop, .for_prep, .tfor_prep, .tfor_call, .tfor_loop => |*op| op.offset = offset,
+            else => unreachable,
+        }
+    }
 };
 
 pub const LoadBool = struct {
@@ -116,7 +139,7 @@ pub const LoadBool = struct {
 
 pub const LoadConst = struct {
     dest: Register,
-    constant: ConstantIndex,
+    constant: ConstantIndex align(1),
 };
 
 pub const Move = struct {
@@ -126,13 +149,13 @@ pub const Move = struct {
 
 pub const GlobalAccess = struct {
     register: Register,
-    name: ConstantIndex,
+    name: ConstantIndex align(1),
 };
 
 pub const GlobalDeclare = struct {
     table: Register,
     value: Register,
-    name: ConstantIndex,
+    name: ConstantIndex align(1),
 };
 
 pub const UpvalueAccess = struct {
@@ -154,33 +177,34 @@ pub const TableSet = struct {
 
 pub const ArraySet = struct {
     table: Register,
-    index: u32,
+    index: u32 align(1),
     value: Register,
 };
 
 pub const FieldAccess = struct {
     dest: Register,
     table: Register,
-    name: ConstantIndex,
+    name: ConstantIndex align(1),
 };
 
 pub const FieldSet = struct {
     table: Register,
-    name: ConstantIndex,
+    name: ConstantIndex align(1),
     value: Register,
 };
 
 pub const NewTable = struct {
     dest: Register,
-    array_hint: u32 = 0,
-    hash_hint: u32 = 0,
+    array_hint: u32 align(1) = 0,
+    hash_hint: u16 align(1) = 0,
 };
 
 pub const SetList = struct {
     table: Register,
     first: Register,
-    count: u32,
-    start_index: u32,
+    /// `set_list_multret` when the values end with multiple results.
+    count: u8,
+    start_index: u32 align(1),
 };
 
 pub const Unary = struct {
@@ -198,7 +222,7 @@ pub const Binary = struct {
 pub const BinaryConstant = struct {
     dest: Register,
     left: Register,
-    constant: ConstantIndex,
+    constant: ConstantIndex align(1),
 };
 
 /// Concatenates `count` (at least 2) registers from `first` right to left into `dest`,
@@ -206,33 +230,38 @@ pub const BinaryConstant = struct {
 pub const ConcatRange = struct {
     dest: Register,
     first: Register,
-    count: u16,
+    count: u16 align(1),
 };
 
-pub const CompareBranchOp = enum {
+pub const CompareBranchOp = enum(u3) {
     eq,
     lt,
     le,
 };
 
+/// A comparison and the jump taken when its result equals `jump_if_truthy`.
+pub fn Branch(comptime Op: type) type {
+    return packed struct(u32) {
+        op: Op,
+        jump_if_truthy: bool,
+        offset: BranchOffset,
+    };
+}
+
 pub const CompareBranch = struct {
     left: Register,
     right: Register,
-    op: CompareBranchOp,
-    jump_if_truthy: bool,
-    offset: JumpOffset,
+    branch: Branch(CompareBranchOp) align(1),
 };
 
 /// Compares a register with a numeric constant; `gt` and `ge` put the constant on the left.
 pub const CompareBranchConstant = struct {
     register: Register,
-    constant: u16,
-    op: CompareConstantOp,
-    jump_if_truthy: bool,
-    offset: JumpOffset,
+    constant: u16 align(1),
+    branch: Branch(CompareConstantOp) align(1),
 };
 
-pub const CompareConstantOp = enum {
+pub const CompareConstantOp = enum(u3) {
     eq,
     lt,
     le,
@@ -243,45 +272,65 @@ pub const CompareConstantOp = enum {
 pub const Test = struct {
     register: Register,
     jump_if_truthy: bool,
-    offset: JumpOffset,
+    offset: JumpOffset align(1),
 };
 
 pub const TestSet = struct {
     dest: Register,
     source: Register,
     jump_if_truthy: bool,
-    offset: JumpOffset,
+    offset: JumpOffset align(1),
 };
 
 pub const Call = struct {
     base: u32,
-    /// `multret_arg_count` in bytecode when arguments end with multiple results.
+    /// `multret_arg_count` when arguments end with multiple results.
     arg_count: u32,
     return_count: u16,
 };
 
+/// The operands of a `call` or `tail_call` instruction.
+pub const CallInstruction = struct {
+    base: Register,
+    /// `multret_count` when arguments end with multiple results.
+    arg_count: u16 align(1),
+    return_count: u16 align(1),
+
+    pub fn wide(self: CallInstruction) Call {
+        return .{
+            .base = self.base,
+            .arg_count = if (self.arg_count == multret_count) multret_arg_count else self.arg_count,
+            .return_count = self.return_count,
+        };
+    }
+};
+
 pub const Return = struct {
     first: Register,
-    count: u16,
+    count: u16 align(1),
 };
 
 pub const Vararg = struct {
     dest: Register,
-    count: u16,
+    count: u16 align(1),
 };
 
 pub const Closure = struct {
     dest: Register,
-    proto: ProtoIndex,
+    proto: ProtoIndex align(1),
 };
 
 pub const ForLoop = struct {
     base: Register,
-    offset: JumpOffset,
+    offset: JumpOffset align(1),
 };
 
 pub const GenericFor = struct {
     base: Register,
-    variable_count: u16,
-    offset: JumpOffset,
+    variable_count: u16 align(1),
+    offset: JumpOffset align(1),
 };
+
+comptime {
+    std.debug.assert(@sizeOf(Instruction) == 8);
+}
