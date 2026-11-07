@@ -78,12 +78,15 @@ constants, nested protos, upvalue descriptors, register requirements, the
 function's shape, line and local debug data, and operand origins used for
 runtime errors.
 
-The instruction set is small enough to describe by purpose:
+Each instruction is 8 bytes: a one-byte opcode followed by its operands, with
+8-bit registers and upvalue indexes. The instruction set is small enough to
+describe by purpose:
 
 | Family | Examples |
 | --- | --- |
 | Values and moves | `load_nil`, `load_bool`, `load_const`, `move` |
 | Globals, upvalues, and tables | `get_global`, `set_global`, `get_table`, `set_field`, `new_table` |
+| Fused table access | `get_method`, `get_upvalue_field`, `set_upvalue_field`, `get_index`, `set_index`, `set_field_k` |
 | Operators | arithmetic, bitwise, comparison, length, and concatenation instructions |
 | Control flow | jumps, tests, numeric `for`, and generic `for` |
 | Calls | `call`, `tail_call`, `ret`, and `vararg` |
@@ -413,5 +416,7 @@ These rules hold across the codebase, and changes should preserve them:
 - Host effects remain explicit capabilities.
 - Binary chunks and VM layouts remain internal.
 - Loaded binary chunks are verified before they run.
+- `new_table` writes the frame's highest live register. A collection that runs
+  after a `new_table` marks only the registers below its destination.
 - Performance work must still pass differential, extension, official, and
   embedding tests.

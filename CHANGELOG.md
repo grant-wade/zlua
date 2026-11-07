@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### Breaking changes
+
+- Binary chunks from earlier versions no longer load.
+
+### Performance
+
+- Instructions are 8 bytes instead of 16.
+- Table stores, returns, and conditions read local registers without copying them.
+- Method lookups, upvalue table fields, integer-constant indexes, and constant field stores each take one instruction.
+
+### Lua Compatibility
+
+- Multiple assignments store from right to left, and indexed targets read local keys and tables when the store runs.
+- Error messages name `t["k"]`, `t[1]`, other indexed values, and a nil `_ENV` like Lua 5.5.
+- Long chains of left-associative operators compile instead of failing with too many registers.
+
+### Fixes
+
+- Growing a table's array part past integer keys held in its hash part hid those keys, and `pairs` over the table never finished.
+
 ## 0.8.0
 
 ### Breaking changes

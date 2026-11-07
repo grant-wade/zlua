@@ -156,7 +156,7 @@ pub const binary_chunk_signature = "\x1bLua";
 ## binary_chunk_payload_magic
 
 ```zig
-pub const binary_chunk_payload_magic = "zlua\x00bc1";
+pub const binary_chunk_payload_magic = "zlua\x00bc2";
 ```
 
 <a id="fn-appendbinarychunk"></a>
