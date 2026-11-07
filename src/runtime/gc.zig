@@ -1895,6 +1895,7 @@ fn callerLiveEnd(frame: types.CallFrame) usize {
     if (frame.pc == 0 or frame.pc > frame.closure.proto.instructions.items.len) return whole;
     const op = switch (frame.closure.proto.instructions.items[frame.pc - 1]) {
         .call, .tail_call => |op| op,
+        .new_table => |op| return frame.base + op.dest + 1,
         else => return whole,
     };
     const args: usize = if (op.arg_count == bytecode.multret_count) 0 else op.arg_count;

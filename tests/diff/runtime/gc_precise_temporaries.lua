@@ -135,3 +135,23 @@ do
   collectgarbage()
   print("dead local", weak[1] == nil)
 end
+
+do
+  local finalized = nil
+  setmetatable({}, { __gc = function() finalized = true end })
+  local rounds = 0
+  repeat
+    local scratch = {}
+    rounds = rounds + 1
+  until finalized or rounds > 1000000
+  print("stale call operand finalized", finalized)
+end
+
+do
+  local a, b = {}, {}
+  local wa = setmetatable({ a }, { __mode = "v" })
+  local wb = setmetatable({ b }, { __mode = "v" })
+  a, b = {}, {}
+  collectgarbage()
+  print("assigned tables kept", type(a), type(b), wa[1] == nil, wb[1] == nil)
+end

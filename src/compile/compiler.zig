@@ -54,9 +54,15 @@ const PendingLocal = struct {
     to_close: bool = false,
 };
 
+/// An assignment target whose prefix and key are already evaluated.
 const PreparedTarget = union(enum) {
-    expr: *const ast.Expr,
-    field: struct { table: bytecode.Register, name: bytecode.ConstantIndex, table_origin: proto_mod.OperandOrigin },
+    local: bytecode.Register,
+    upvalue: bytecode.UpvalueIndex,
+    global: bytecode.ConstantIndex,
+    /// A global stored through the `_ENV` upvalue, read when the store runs.
+    env_upvalue: struct { upvalue: bytecode.UpvalueIndex, name: bytecode.ConstantIndex },
+    /// `table_origin` is null for a global stored through a local `_ENV`.
+    field: struct { table: bytecode.Register, name: bytecode.ConstantIndex, table_origin: ?proto_mod.OperandOrigin },
     index: struct { table: bytecode.Register, key: bytecode.Register, table_origin: proto_mod.OperandOrigin },
 };
 
@@ -261,30 +267,93 @@ const FunctionCompiler = struct {
         const mark = self.registerMark();
         var targets = std.ArrayList(PreparedTarget).empty;
         defer targets.deinit(self.allocator);
-        for (assignment.targets) |target| try targets.append(self.allocator, try self.prepareAssignmentTarget(target));
-
-        const first_value = try self.allocRegs(@intCast(assignment.targets.len));
-        const value_start = self.proto.pc();
-        if (assignment.targets.len == 1 and assignment.values.len == 1 and assignment.values[0].* == .function_literal) {
-            try self.compileFunctionLiteral(assignment.values[0].function_literal, first_value, assignmentTargetDebugName(assignment.targets[0]));
-        } else {
-            try self.compileExprListAdjusted(assignment.values, first_value, @intCast(assignment.targets.len));
+        for (assignment.targets) |target| {
+            const prepared = try self.prepareAssignmentTarget(target);
+            try self.copyConflictingTargets(targets.items, prepared);
+            try targets.append(self.allocator, prepared);
         }
 
-        if (assignment.targets.len == 1 and assignment.values.len == 1) {
-            if (self.sourceRegister(assignment.targets[0])) |dest| {
-                if (self.redirectAssignmentResult(value_start, first_value, dest)) {
-                    self.release(mark);
-                    return;
-                }
+        const count = targets.items.len;
+        const values = assignment.values;
+        if (values.len == count and !isMultiResultExpr(values[count - 1])) {
+            const first_value = try self.allocRegs(@intCast(count - 1));
+            try self.compileExprListAdjusted(values[0 .. count - 1], first_value, @intCast(count - 1));
+            const debug_name = if (count == 1) assignmentTargetDebugName(assignment.targets[0]) else null;
+            try self.storeAssignmentExpr(targets.items[count - 1], values[count - 1], debug_name);
+            var index = count - 1;
+            while (index > 0) {
+                index -= 1;
+                try self.assignPreparedTarget(targets.items[index], first_value + @as(bytecode.Register, @intCast(index)));
+            }
+        } else {
+            const first_value = try self.allocRegs(@intCast(count));
+            try self.compileExprListAdjusted(values, first_value, @intCast(count));
+            var index = count;
+            while (index > 0) {
+                index -= 1;
+                try self.assignPreparedTarget(targets.items[index], first_value + @as(bytecode.Register, @intCast(index)));
             }
         }
-
-        for (targets.items, 0..) |target, index| {
-            try self.assignPreparedTarget(target, first_value + @as(bytecode.Register, @intCast(index)));
-        }
-
         self.release(mark);
+    }
+
+    /// Compiles `value` and stores it in `target` without an intermediate move when possible.
+    fn storeAssignmentExpr(self: *FunctionCompiler, target: PreparedTarget, value: *const ast.Expr, debug_name: ?[]const u8) anyerror!void {
+        const mark = self.registerMark();
+        defer self.release(mark);
+        if (target != .local) if (self.sourceRegister(value)) |register| return self.assignPreparedTarget(target, register);
+        const temporary = try self.allocReg();
+        const value_start = self.proto.pc();
+        if (debug_name != null and value.* == .function_literal) {
+            try self.compileFunctionLiteral(value.function_literal, temporary, debug_name);
+        } else {
+            try self.compileExpr(value, temporary);
+        }
+        if (target == .local and self.redirectAssignmentResult(value_start, temporary, target.local)) return;
+        try self.assignPreparedTarget(target, temporary);
+    }
+
+    /// Before `target` is stored, earlier targets that index through the local or upvalue it
+    /// assigns use a copy of the old value.
+    fn copyConflictingTargets(self: *FunctionCompiler, earlier: []PreparedTarget, target: PreparedTarget) !void {
+        switch (target) {
+            .local => |register| {
+                var copy: ?bytecode.Register = null;
+                for (earlier) |*previous| switch (previous.*) {
+                    .field => |*field| if (field.table == register) {
+                        field.table = copy orelse try self.conflictCopy(&copy, register);
+                    },
+                    .index => |*index| {
+                        if (index.table == register) index.table = copy orelse try self.conflictCopy(&copy, register);
+                        if (index.key == register) index.key = copy orelse try self.conflictCopy(&copy, register);
+                    },
+                    else => {},
+                };
+            },
+            .upvalue => |upvalue| {
+                var copy: ?bytecode.Register = null;
+                for (earlier) |*previous| switch (previous.*) {
+                    .env_upvalue => |env| if (env.upvalue == upvalue) {
+                        const table = copy orelse table: {
+                            const register = try self.allocReg();
+                            _ = try self.emit(.{ .get_upvalue = .{ .register = register, .upvalue = upvalue } });
+                            copy = register;
+                            break :table register;
+                        };
+                        previous.* = .{ .field = .{ .table = table, .name = env.name, .table_origin = null } };
+                    },
+                    else => {},
+                };
+            },
+            else => {},
+        }
+    }
+
+    fn conflictCopy(self: *FunctionCompiler, copy: *?bytecode.Register, source: bytecode.Register) !bytecode.Register {
+        const register = try self.allocReg();
+        _ = try self.emit(.{ .move = .{ .dest = register, .source = source } });
+        copy.* = register;
+        return register;
     }
 
     fn redirectAssignmentResult(self: *FunctionCompiler, start: usize, source: bytecode.Register, dest: bytecode.Register) bool {
@@ -304,7 +373,7 @@ const FunctionCompiler = struct {
                 if (op.register != source) return false;
                 op.register = dest;
             },
-            inline .load_bool, .load_const, .move, .get_table, .get_field, .new_table, .closure, .add, .sub, .mul, .div, .idiv, .mod, .pow, .unm, .band, .bor, .bxor, .bnot, .shl, .shr, .eq, .lt, .le, .not, .len, .concat, .concat_range, .add_k, .sub_k, .mul_k, .div_k, .idiv_k, .mod_k, .band_k, .bor_k, .bxor_k, .shl_k, .shr_k => |*op| {
+            inline .load_bool, .load_const, .move, .get_table, .get_field, .closure, .add, .sub, .mul, .div, .idiv, .mod, .pow, .unm, .band, .bor, .bxor, .bnot, .shl, .shr, .eq, .lt, .le, .not, .len, .concat, .concat_range, .add_k, .sub_k, .mul_k, .div_k, .idiv_k, .mod_k, .band_k, .bor_k, .bxor_k, .shl_k, .shr_k => |*op| {
                 if (op.dest != source) return false;
                 op.dest = dest;
             },
@@ -440,7 +509,7 @@ const FunctionCompiler = struct {
             if (index + 1 < stmt.branches.len or stmt.else_block != null) {
                 try end_jumps.append(self.allocator, try self.emit(.{ .jmp = 0 }));
             }
-            try self.proto.patchJump(skip, self.proto.pc());
+            if (skip) |pc| try self.proto.patchJump(pc, self.proto.pc());
         }
 
         if (stmt.else_block) |else_block| try self.compileScopedBlock(else_block);
@@ -458,7 +527,7 @@ const FunctionCompiler = struct {
 
         const back = try self.emit(.{ .jmp = 0 });
         try self.proto.patchJump(back, loop_start);
-        try self.proto.patchJump(done, self.proto.pc());
+        if (done) |pc| try self.proto.patchJump(pc, self.proto.pc());
     }
 
     fn compileRepeat(self: *FunctionCompiler, stmt: ast.RepeatStmt) anyerror!void {
@@ -477,7 +546,7 @@ const FunctionCompiler = struct {
             break :jump jump;
         } else try self.compileConditionJump(stmt.condition, false);
         try self.leaveScope();
-        try self.proto.patchJump(repeat_jump, loop_start);
+        if (repeat_jump) |pc| try self.proto.patchJump(pc, loop_start);
         try self.leaveLoop(self.proto.pc());
     }
 
@@ -638,6 +707,10 @@ const FunctionCompiler = struct {
             self.release(first);
             return;
         }
+        if (stmt.values.len == 1 and !self.hasActiveToCloseLocal()) if (self.sourceRegister(stmt.values[0])) |register| {
+            _ = try self.emit(.{ .ret = .{ .first = register, .count = 1 } });
+            return;
+        };
         const count = try self.compileExprListMultret(stmt.values, first);
         if (count != bytecode.multret_count and count > 254) return error.TooManyReturns;
         _ = try self.emit(.{ .ret = .{ .first = first, .count = count } });
@@ -953,7 +1026,7 @@ const FunctionCompiler = struct {
         // Like Lua, concat copies a local left operand first unless the right side cannot run code.
         const use_direct_left = direct_left != null and (binary.op != .concat or self.evaluationIsInert(binary.right));
         const use_direct_right = direct_right != null and direct_right.? != dest;
-        const right = if (use_direct_right) direct_right.? else try self.allocReg();
+        const right = if (use_direct_right) direct_right.? else undefined;
         const left_origin = try self.exprOrigin(binary.left);
         const right_origin = try self.exprOrigin(binary.right);
         return .{
@@ -980,8 +1053,12 @@ const FunctionCompiler = struct {
                 self.current_line = exprLine(binary.right.*);
                 self.release(form.mark);
             },
-            .registers => |form| {
-                if (form.compiles_right) try self.compileExpr(binary.right, form.right);
+            .registers => |registers| {
+                var form = registers;
+                if (form.compiles_right) {
+                    form.right = try self.allocReg();
+                    try self.compileExpr(binary.right, form.right);
+                }
                 const right_line = exprLine(binary.right.*);
                 self.current_line = binary.op_line;
                 var left_origin = form.left_origin;
@@ -1056,12 +1133,25 @@ const FunctionCompiler = struct {
         };
     }
 
-    fn compileConditionJump(self: *FunctionCompiler, expr: *const ast.Expr, jump_if_truthy: bool) anyerror!usize {
+    /// The pc of the jump to patch, or null when the condition never jumps.
+    fn compileConditionJump(self: *FunctionCompiler, expr: *const ast.Expr, jump_if_truthy: bool) anyerror!?usize {
         self.current_line = exprLine(expr.*);
         switch (expr.*) {
             .grouped => |inner| return self.compileConditionJump(inner, jump_if_truthy),
             .unary => |unary| if (unary.op == .not) return self.compileConditionJump(unary.operand, !jump_if_truthy),
             .binary => |binary| if (try self.compileCompareBranch(binary, jump_if_truthy)) |pc| return pc,
+            .nil, .boolean, .integer, .float, .string => {
+                const truthy = switch (expr.*) {
+                    .nil => false,
+                    .boolean => |literal| literal.value,
+                    else => true,
+                };
+                if (truthy != jump_if_truthy) return null;
+                return try self.emit(.{ .jmp = 0 });
+            },
+            .identifier => if (self.sourceRegister(expr)) |register| {
+                return try self.emit(.{ .test_op = .{ .register = register, .jump_if_truthy = jump_if_truthy, .offset = 0 } });
+            },
             else => {},
         }
 
@@ -1348,57 +1438,64 @@ const FunctionCompiler = struct {
         return fixed_prefix + @as(u16, @intCast(args.len));
     }
 
-    fn assignTarget(self: *FunctionCompiler, target: *const ast.Expr, value_reg: bytecode.Register) anyerror!void {
+    fn prepareAssignmentTarget(self: *FunctionCompiler, target: *const ast.Expr) anyerror!PreparedTarget {
         switch (target.*) {
-            .identifier => |identifier| try self.assignName(identifier.name, value_reg),
+            .identifier => |identifier| return self.prepareNameTarget(identifier.name),
             .field => |field| {
-                const mark = self.registerMark();
-                const table = try self.allocReg();
-                try self.compileExpr(field.receiver, table);
-                _ = try self.emit(.{ .set_field = .{ .table = table, .name = try self.nameConstant(field.name.name), .value = value_reg } });
-                self.release(mark);
+                const table_origin = try self.exprOrigin(field.receiver);
+                const table = try self.operandRegister(field.receiver);
+                return .{ .field = .{ .table = table, .name = try self.nameConstant(field.name.name), .table_origin = table_origin } };
             },
             .index => |index| {
-                const mark = self.registerMark();
-                const table = try self.allocReg();
-                const key = try self.allocReg();
-                try self.compileExpr(index.receiver, table);
-                try self.compileExpr(index.key, key);
-                _ = try self.emit(.{ .set_table = .{ .table = table, .key = key, .value = value_reg } });
-                self.release(mark);
+                const table_origin = try self.exprOrigin(index.receiver);
+                const table = try self.operandRegister(index.receiver);
+                const key = try self.operandRegister(index.key);
+                return .{ .index = .{ .table = table, .key = key, .table_origin = table_origin } };
             },
             else => return error.CompileError,
         }
     }
 
-    fn prepareAssignmentTarget(self: *FunctionCompiler, target: *const ast.Expr) anyerror!PreparedTarget {
-        return switch (target.*) {
-            .identifier => |identifier| blk: {
-                if (self.lookupName(identifier.name) != .local) _ = try self.lookupUpvalue(identifier.name);
-                break :blk .{ .expr = target };
-            },
-            .field => |field| blk: {
-                const table = try self.allocReg();
-                const table_origin = try self.exprOrigin(field.receiver);
-                try self.compileExpr(field.receiver, table);
-                break :blk .{ .field = .{ .table = table, .name = try self.nameConstant(field.name.name), .table_origin = table_origin } };
-            },
-            .index => |index| blk: {
-                const table = try self.allocReg();
-                const key = try self.allocReg();
-                const table_origin = try self.exprOrigin(index.receiver);
-                try self.compileExpr(index.receiver, table);
-                try self.compileExpr(index.key, key);
-                break :blk .{ .index = .{ .table = table, .key = key, .table_origin = table_origin } };
-            },
-            else => error.CompileError,
-        };
+    fn prepareNameTarget(self: *FunctionCompiler, name: []const u8) !PreparedTarget {
+        switch (self.lookupName(name)) {
+            .local => |local| return .{ .local = local.register },
+            .global => {},
+            .undeclared => if (try self.lookupUpvalue(name)) |upvalue| return .{ .upvalue = upvalue },
+        }
+        if (!std.mem.eql(u8, name, "_ENV")) {
+            if (self.lookupLocal("_ENV")) |env| return .{ .field = .{ .table = env.register, .name = try self.nameConstant(name), .table_origin = null } };
+            if (try self.lookupUpvalue("_ENV")) |upvalue| return .{ .env_upvalue = .{ .upvalue = upvalue, .name = try self.nameConstant(name) } };
+        }
+        return .{ .global = try self.nameConstant(name) };
+    }
+
+    /// The register of a local operand, or a new register holding the evaluated operand.
+    fn operandRegister(self: *FunctionCompiler, expr: *const ast.Expr) !bytecode.Register {
+        if (self.sourceRegister(expr)) |register| return register;
+        const register = try self.allocReg();
+        try self.compileExpr(expr, register);
+        return register;
     }
 
     fn assignPreparedTarget(self: *FunctionCompiler, target: PreparedTarget, value_reg: bytecode.Register) anyerror!void {
         switch (target) {
-            .expr => |expr| try self.assignTarget(expr, value_reg),
-            .field => |field| _ = try self.emitWithErrorSite(.{ .set_field = .{ .table = field.table, .name = field.name, .value = value_reg } }, .newindex, &.{field.table_origin}, null),
+            .local => |register| if (register != value_reg) {
+                _ = try self.emit(.{ .move = .{ .dest = register, .source = value_reg } });
+            },
+            .upvalue => |upvalue| _ = try self.emit(.{ .set_upvalue = .{ .register = value_reg, .upvalue = upvalue } }),
+            .global => |name| _ = try self.emit(.{ .set_global = .{ .register = value_reg, .name = name } }),
+            .env_upvalue => |env| {
+                const mark = self.registerMark();
+                defer self.release(mark);
+                const table = try self.allocReg();
+                _ = try self.emit(.{ .get_upvalue = .{ .register = table, .upvalue = env.upvalue } });
+                _ = try self.emit(.{ .set_field = .{ .table = table, .name = env.name, .value = value_reg } });
+            },
+            .field => |field| if (field.table_origin) |origin| {
+                _ = try self.emitWithErrorSite(.{ .set_field = .{ .table = field.table, .name = field.name, .value = value_reg } }, .newindex, &.{origin}, null);
+            } else {
+                _ = try self.emit(.{ .set_field = .{ .table = field.table, .name = field.name, .value = value_reg } });
+            },
             .index => |index| _ = try self.emitWithErrorSite(.{ .set_table = .{ .table = index.table, .key = index.key, .value = value_reg } }, .newindex, &.{index.table_origin}, null),
         }
     }

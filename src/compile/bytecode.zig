@@ -193,6 +193,7 @@ pub const FieldSet = struct {
     value: Register,
 };
 
+/// Creates a table in `dest`, which is above every live register of the frame.
 pub const NewTable = struct {
     dest: Register,
     array_hint: u32 align(1) = 0,
