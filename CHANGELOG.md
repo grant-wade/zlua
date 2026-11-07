@@ -11,6 +11,9 @@
 - Instructions are 8 bytes instead of 16.
 - Table stores, returns, and conditions read local registers without copying them.
 - Method lookups, upvalue table fields, integer-constant indexes, and constant field stores each take one instruction.
+- Entering a Lua function clears only its missing parameters.
+- Lua tail calls, closure creation, returns that close upvalues, and returns to multiple-result calls run in the fast loop.
+- Natives such as `table.sort` and `pcall` push fixed-parameter Lua frames directly.
 
 ### Lua Compatibility
 
