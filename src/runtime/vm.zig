@@ -1127,7 +1127,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 const op = instructions[pc].ret;
                 // Returning onto the floor frame is fine, but the outer loop must take over afterwards.
                 if (frame_index < return_floor or frame_index == 0) break :fast_loop;
-                if (proto.has_to_close_locals or op.count == bytecode.multret_count or frame.return_count == bytecode.multret_count or
+                if (proto.has_to_close_locals or op.count == bytecode.multret_count or
                     (frame.has_extra and thread.frame_extras.items[frame_index].pending_returns != null))
                 {
                     @branchHint(.unlikely);
@@ -1145,7 +1145,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     continue :frames;
                 }
                 const return_start = frame.return_start;
-                const return_count = frame.return_count;
+                const return_count: u32 = if (frame.return_count == bytecode.multret_count) op.count else frame.return_count;
                 if (return_start + return_count > stack_limit) break :fast_loop;
                 if (thread.open_upvalues) |upvalue| if (upvalue.cell.open.stack_index >= base) upvalue_mod.closeUpvalues(self, thread, base);
                 const executed_count = pc +% count_bias -% segment_start;
