@@ -319,11 +319,11 @@ fn runFaultSweep(args: ChildArgs) !void {
 
 fn installHostBindings(lua: *api.State) !void {
     for (0..object_count) |id| {
-        var resource = try lua.newUserdataAuto(Resource, .{ .id = id }, .{ .finalizer = Resource.finalize });
+        var resource = try lua.newUserdata(Resource, .{ .id = id }, .{ .finalizer = Resource.finalize });
         defer resource.deinit();
         try lua.setGlobal(if (id == 0) "res" else "res2", resource);
     }
-    var other = try lua.newUserdataAuto(Other, .{}, .{});
+    var other = try lua.newUserdata(Other, .{}, .{});
     defer other.deinit();
     try lua.setGlobal("other", other);
 

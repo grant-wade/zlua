@@ -30,7 +30,7 @@ pub fn main() !void {
     var lua = try zlua.State.init(allocator, .{});
     defer lua.deinit();
 
-    var counter = try lua.newUserdataAuto(Counter, .{ .value = 0 }, .{});
+    var counter = try lua.newUserdata(Counter, .{ .value = 0 }, .{});
     defer counter.deinit();
     try lua.setGlobal("counter", counter);
 

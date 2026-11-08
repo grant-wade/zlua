@@ -677,10 +677,10 @@ test "snapshot borrowed userdata and deep owned userdata hooks" {
     var storage = [_]u8{ 1, 2, 3 };
     var backing = Buffer{ .bytes = &storage };
     var lua = try api.State.init(a, .{});
-    var shared = try lua.newUserdataPtr(Buffer, &backing, .{});
+    var shared = try lua.wrapUserdata(Buffer, &backing, .{});
     try lua.setGlobal("shared", shared);
     shared.deinit();
-    var owned = try lua.newUserdataPtr(Buffer, &backing, .{ .snapshot = .{ .copy = Buffer.copy, .dispose = Buffer.dispose } });
+    var owned = try lua.wrapUserdata(Buffer, &backing, .{ .snapshot = .{ .copy = Buffer.copy, .dispose = Buffer.dispose } });
     try lua.setGlobal("owned", owned);
     owned.deinit();
     var snapshot = try lua.snapshot(a);
@@ -1012,7 +1012,7 @@ test "scoped userdata copies on first write with atomic failure and unchanged re
     var fail = false;
     var lua = try api.State.init(a, .{});
     defer lua.deinit();
-    var ud = try lua.newUserdataAuto(ScopedPayload, .{ .copies = &copies, .finals = &finals, .disposals = &disposals, .fail = &fail }, .{ .finalizer = ScopedPayload.finalize, .snapshot = .{ .copy = ScopedPayload.copy, .dispose = ScopedPayload.dispose, .tracking = .scoped } });
+    var ud = try lua.newUserdata(ScopedPayload, .{ .copies = &copies, .finals = &finals, .disposals = &disposals, .fail = &fail }, .{ .finalizer = ScopedPayload.finalize, .snapshot = .{ .copy = ScopedPayload.copy, .dispose = ScopedPayload.dispose, .tracking = .scoped } });
     try lua.setGlobal("u", ud);
     try std.testing.expectError(error.ScopedAccessRequired, ud.ptr());
     var snapshot = try lua.snapshot(a);
@@ -1146,7 +1146,7 @@ test "scoped borrowed pointers are rejected and active scopes remain GC roots" {
     var payload = ScopedPayload{ .copies = &copies, .finals = &finals, .disposals = &disposals, .fail = &fail };
     var lua = try api.State.init(a, .{});
     defer lua.deinit();
-    try std.testing.expectError(error.ScopedAccessRequiresOwnedUserdata, lua.newUserdataPtr(ScopedPayload, &payload, .{ .snapshot = .{ .copy = ScopedPayload.copy, .dispose = ScopedPayload.dispose, .tracking = .scoped } }));
+    try std.testing.expectError(error.ScopedAccessRequiresOwnedUserdata, lua.wrapUserdata(ScopedPayload, &payload, .{ .snapshot = .{ .copy = ScopedPayload.copy, .dispose = ScopedPayload.dispose, .tracking = .scoped } }));
     var ud = try lua.newUserdata(ScopedPayload, payload, .{ .finalizer = ScopedPayload.finalize, .snapshot = .{ .copy = ScopedPayload.copy, .dispose = ScopedPayload.dispose, .tracking = .scoped } });
     const Context = struct { lua: *api.State, handle: *api.Userdata(ScopedPayload) };
     try ud.withRead(Context{ .lua = &lua, .handle = &ud }, struct {

@@ -132,10 +132,10 @@ fn userdataBoundary(allocator: std.mem.Allocator) !void {
     var backing = Payload{ .value = 7 };
     var lua = try zlua.State.init(allocator, .{});
     defer lua.deinit();
-    var shared = try lua.newUserdataPtr(Payload, &backing, .{});
+    var shared = try lua.wrapUserdata(Payload, &backing, .{});
     defer shared.deinit();
     try lua.setGlobal("shared", shared);
-    var copied = try lua.newUserdataPtr(Payload, &backing, .{
+    var copied = try lua.wrapUserdata(Payload, &backing, .{
         .snapshot = .{ .copy = Payload.copy, .dispose = Payload.dispose },
     });
     defer copied.deinit();

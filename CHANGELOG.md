@@ -15,6 +15,10 @@
 - `State.stepGc` takes a step count.
 - Registering a function again under the same name returns the same Lua
   function.
+- `newUserdata` binds the methods of `T` and defines `T` on first use, and
+  `wrapUserdata` wraps host-owned storage. `newUserdataAuto`, `newUserdataPtr`,
+  `newUserdataPtrAuto`, and `UserdataPtrOptions` are removed.
+- `registerUserdataInitializerWith` is `registerConstructor`.
 
 ### Data Formats
 

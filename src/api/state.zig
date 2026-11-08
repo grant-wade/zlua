@@ -38,7 +38,6 @@ const Table = @import("table.zig").Table;
 const TableOptions = options_mod.TableOptions;
 const Userdata = userdata_mod.Userdata;
 const UserdataOptions = userdata_mod.UserdataOptions;
-const UserdataPtrOptions = userdata_mod.UserdataPtrOptions;
 const UserdataType = userdata_mod.UserdataType;
 const Value = @import("value.zig").Value;
 const coroutine_mod = @import("../runtime/coroutine.zig");
@@ -337,8 +336,8 @@ pub const State = struct {
     }
 
     /// Registers a Lua constructor that reads `initializer`'s arguments by type (`*Context` is
-    /// injected) and wraps its `T` or `!T` result with `newUserdataAuto`.
-    pub fn registerUserdataInitializerWith(self: *State, comptime T: type, name: []const u8, comptime initializer: anytype, comptime options: UserdataOptions(T)) !Function {
+    /// injected) and wraps its `T` or `!T` result with `newUserdata`.
+    pub fn registerConstructor(self: *State, comptime T: type, name: []const u8, comptime initializer: anytype, comptime options: UserdataOptions(T)) !Function {
         const Wrapper = struct {
             fn call(ctx: *Context) !void {
                 try callbacks.callUserdataInitializer(T, initializer, options, ctx);
@@ -372,36 +371,27 @@ pub const State = struct {
         return userdata_mod.define(self, T, options);
     }
 
-    /// Allocates Lua-owned userdata initialized with `value`.
+    /// Allocates Lua-owned userdata initialized with `value`, defining `T` with `defineUserdata` on
+    /// first use. An explicit `options.metatable` gets `T`'s methods instead.
     pub fn newUserdata(self: *State, comptime T: type, value: T, options: UserdataOptions(T)) !Userdata(T) {
-        return userdata_mod.create(self, T, value, options);
-    }
-
-    /// Like `newUserdata`, defining `T` with `defineUserdata` on first use. With an explicit
-    /// `metatable`, installs `T`'s methods on it instead.
-    pub fn newUserdataAuto(self: *State, comptime T: type, value: T, options: UserdataOptions(T)) !Userdata(T) {
         if (options.metatable == null) {
             if (!userdata_mod.isDefined(self, T)) try userdata_mod.define(self, T, .{});
-            return self.newUserdata(T, value, options);
+            return userdata_mod.create(self, T, value, options);
         }
-        var userdata = try self.newUserdata(T, value, options);
+        var userdata = try userdata_mod.create(self, T, value, options);
         errdefer userdata.deinit();
         try userdata_mod.bindMethods(T, userdata, T);
         return userdata;
     }
 
-    /// Wraps host-owned `ptr` as userdata without taking ownership.
-    pub fn newUserdataPtr(self: *State, comptime T: type, ptr: *T, options: UserdataPtrOptions(T)) !Userdata(T) {
-        return userdata_mod.wrapPtr(self, T, ptr, options);
-    }
-
-    /// Like `newUserdataPtr`, also installing `T`'s methods as in `newUserdataAuto`.
-    pub fn newUserdataPtrAuto(self: *State, comptime T: type, ptr: *T, options: UserdataPtrOptions(T)) !Userdata(T) {
+    /// Wraps host-owned `ptr` as userdata without taking ownership, binding methods as
+    /// `newUserdata` does.
+    pub fn wrapUserdata(self: *State, comptime T: type, ptr: *T, options: UserdataOptions(T)) !Userdata(T) {
         if (options.metatable == null) {
             if (!userdata_mod.isDefined(self, T)) try userdata_mod.define(self, T, .{});
-            return self.newUserdataPtr(T, ptr, options);
+            return userdata_mod.wrapPtr(self, T, ptr, options);
         }
-        var userdata = try self.newUserdataPtr(T, ptr, options);
+        var userdata = try userdata_mod.wrapPtr(self, T, ptr, options);
         errdefer userdata.deinit();
         try userdata_mod.bindMethods(T, userdata, T);
         return userdata;

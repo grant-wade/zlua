@@ -201,14 +201,14 @@ pub fn callUserdataInitializer(comptime T: type, comptime initializer: anytype, 
         .error_union => |error_union| {
             if (comptime error_union.payload != T) @compileError("userdata initializers must return T or !T");
             const value = try @call(.auto, initializer, args);
-            var userdata = try ctx.state().newUserdataAuto(T, value, options);
+            var userdata = try ctx.state().newUserdata(T, value, options);
             defer userdata.deinit();
             try ctx.returnValues(userdata);
         },
         else => {
             if (comptime Return != T) @compileError("userdata initializers must return T or !T");
             const value = @call(.auto, initializer, args);
-            var userdata = try ctx.state().newUserdataAuto(T, value, options);
+            var userdata = try ctx.state().newUserdata(T, value, options);
             defer userdata.deinit();
             try ctx.returnValues(userdata);
         },

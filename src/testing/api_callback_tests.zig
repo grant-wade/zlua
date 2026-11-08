@@ -1084,14 +1084,14 @@ test "registering a callback again reuses its entry" {
 
     var first = try lua.register("noop", Callbacks.noop);
     defer first.deinit();
-    var counter = try lua.newUserdataAuto(Counter, .{}, .{ .metatable = metatable });
+    var counter = try lua.newUserdata(Counter, .{}, .{ .metatable = metatable });
     counter.deinit();
     const entries = lua.callbacks.items.len;
 
     for (0..100) |_| {
         var again = try lua.register("noop", Callbacks.noop);
         again.deinit();
-        var another = try lua.newUserdataAuto(Counter, .{}, .{ .metatable = metatable });
+        var another = try lua.newUserdata(Counter, .{}, .{ .metatable = metatable });
         another.deinit();
     }
     try std.testing.expectEqual(entries, lua.callbacks.items.len);

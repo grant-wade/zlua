@@ -202,7 +202,7 @@ test "failed userdata construction never takes the host finalizer obligation" {
         var payload: Payload = .{ .finalized = &finalized };
         failing.fail_index = failing.alloc_index + offset;
         var success = false;
-        if (lua.newUserdataPtr(Payload, &payload, .{ .finalizer = Payload.release })) |result| {
+        if (lua.wrapUserdata(Payload, &payload, .{ .finalizer = Payload.release })) |result| {
             var handle = result;
             handle.deinit();
             success = true;
@@ -289,12 +289,12 @@ test "userdata __gc metamethods run before host finalizers" {
         try lua.doString("assert(#events == 1)", .{});
         try std.testing.expectEqualStrings("host;", log.items);
 
-        var counted = try lua.newUserdataAuto(Counted, .{ .hits = &hits }, .{});
+        var counted = try lua.newUserdata(Counted, .{ .hits = &hits }, .{});
         counted.deinit();
         try lua.collect();
         try std.testing.expectEqual(@as(usize, 1), hits);
 
-        var kept = try lua.newUserdataAuto(Counted, .{ .hits = &hits }, .{});
+        var kept = try lua.newUserdata(Counted, .{ .hits = &hits }, .{});
         try lua.setGlobal("kept", kept);
         kept.deinit();
     }

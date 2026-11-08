@@ -17,21 +17,10 @@ const metatable_mod = @import("../runtime/metatable.zig");
 
 pub fn UserdataOptions(comptime T: type) type {
     return struct {
-        /// Shared metatable used instead of allocating one; install methods before sharing it.
+        /// Shared metatable used instead of the type's own.
         metatable: ?Table = null,
-        /// Runs before Lua-owned storage is destroyed, with the state's allocator.
-        finalizer: ?*const fn (*T, std.mem.Allocator) void = null,
-        snapshot: ?UserdataSnapshotHooks(T) = null,
-        /// Host storage the payload keeps alive, reported to the collector.
-        external_bytes: usize = 0,
-    };
-}
-
-pub fn UserdataPtrOptions(comptime T: type) type {
-    return struct {
-        /// Shared metatable used instead of allocating one.
-        metatable: ?Table = null,
-        /// Runs when the Lua userdata wrapper is finalized, with the state's allocator.
+        /// Runs with the state's allocator when Lua finalizes the userdata, before Lua-owned
+        /// storage is freed.
         finalizer: ?*const fn (*T, std.mem.Allocator) void = null,
         snapshot: ?UserdataSnapshotHooks(T) = null,
         /// Host storage the payload keeps alive, reported to the collector.
@@ -139,7 +128,7 @@ pub fn Userdata(comptime T: type) type {
 
         fn bindMethods(self: @This(), comptime Source: type) !void {
             try handle.validate(self.ref, self.ref.state);
-            if (@typeInfo(Source) != .@"struct") @compileError("bindMethods requires a struct type");
+            if (comptime @typeInfo(Source) != .@"struct") return;
 
             inline for (reflection.declarationNames(Source)) |decl| {
                 const member = @field(Source, decl);
@@ -245,7 +234,10 @@ pub fn define(state: *State, comptime T: type, comptime options: UserdataType) !
     try raw.setTableRaw(types, typeKey(T), metatable);
 
     const Source = options.methods orelse T;
-    if (@typeInfo(Source) != .@"struct") @compileError("userdata methods must come from a struct type");
+    if (@typeInfo(Source) != .@"struct") {
+        if (options.methods != null) @compileError("userdata methods must come from a struct type");
+        return;
+    }
     inline for (reflection.declarationNames(Source)) |decl| {
         const member = @field(Source, decl);
         if (comptime isMethod(T, @TypeOf(member))) {
@@ -313,7 +305,7 @@ pub fn create(state: *State, comptime T: type, value: T, options: UserdataOption
     return userdata;
 }
 
-pub fn wrapPtr(state: *State, comptime T: type, ptr: *T, options: UserdataPtrOptions(T)) !Userdata(T) {
+pub fn wrapPtr(state: *State, comptime T: type, ptr: *T, options: UserdataOptions(T)) !Userdata(T) {
     if (options.snapshot) |hooks| if (hooks.tracking == .scoped) return error.ScopedAccessRequiresOwnedUserdata;
     const metatable = try sharedMetatable(state, options.metatable) orelse definedMetatable(state, T);
     const raw = try state.raw_state.newUserdata(ptr, typeId(T), @typeName(T), null, null, null);

@@ -33,7 +33,7 @@ test "api typed host callback can create userdata through context" {
     };
     const Callbacks = struct {
         fn newBudget(ctx: *Context, amount: i64) !Userdata(Budget) {
-            return ctx.state().newUserdataAuto(Budget, .{ .remaining = amount }, .{});
+            return ctx.state().newUserdata(Budget, .{ .remaining = amount }, .{});
         }
     };
 
@@ -71,7 +71,7 @@ test "api userdata methods receive typed Zig pointers" {
     var lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
-    var counter = try lua.newUserdataAuto(Counter, .{ .value = 0 }, .{});
+    var counter = try lua.newUserdata(Counter, .{ .value = 0 }, .{});
     defer counter.deinit();
     try lua.setGlobal("counter", counter);
 
@@ -115,7 +115,7 @@ test "api auto userdata binding installs receiver methods" {
     var lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
-    var counter = try lua.newUserdataAuto(Counter, .{ .value = 0 }, .{});
+    var counter = try lua.newUserdata(Counter, .{ .value = 0 }, .{});
     defer counter.deinit();
     try lua.setGlobal("counter", counter);
 
@@ -146,7 +146,7 @@ test "api auto userdata pointer wrappers bind methods" {
     defer lua.deinit();
 
     var backing = Counter{ .value = 10 };
-    var counter = try lua.newUserdataPtrAuto(Counter, &backing, .{});
+    var counter = try lua.wrapUserdata(Counter, &backing, .{});
     defer counter.deinit();
     try lua.setGlobal("counter", counter);
 
@@ -177,7 +177,7 @@ test "api userdata initializer with returns auto-bound userdata" {
     var lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
-    var new_budget = try lua.registerUserdataInitializerWith(Budget, "new_budget", Budget.init, .{});
+    var new_budget = try lua.registerConstructor(Budget, "new_budget", Budget.init, .{});
     defer new_budget.deinit();
     try lua.setGlobal("new_budget", new_budget);
 
@@ -211,7 +211,7 @@ test "api userdata initializer with accepts plain initializer functions" {
     var lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
-    var new_counter = try lua.registerUserdataInitializerWith(Counter, "new_counter", Counter.init, .{});
+    var new_counter = try lua.registerConstructor(Counter, "new_counter", Counter.init, .{});
     defer new_counter.deinit();
     try lua.setGlobal("new_counter", new_counter);
 
@@ -230,7 +230,7 @@ test "api userdata initializer with argument errors become Lua errors" {
     var lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
-    var new_counter = try lua.registerUserdataInitializerWith(Counter, "new_counter", Counter.init, .{});
+    var new_counter = try lua.registerConstructor(Counter, "new_counter", Counter.init, .{});
     defer new_counter.deinit();
     try lua.setGlobal("new_counter", new_counter);
 
@@ -264,7 +264,7 @@ test "api userdata initializer with can raise Lua errors" {
     var lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
-    var new_counter = try lua.registerUserdataInitializerWith(Counter, "new_counter", Counter.init, .{});
+    var new_counter = try lua.registerConstructor(Counter, "new_counter", Counter.init, .{});
     defer new_counter.deinit();
     try lua.setGlobal("new_counter", new_counter);
 
@@ -301,7 +301,7 @@ test "api auto userdata binding skips non receiver declarations" {
     var lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
-    var fixture = try lua.newUserdataAuto(Fixture, .{ .value = 7 }, .{});
+    var fixture = try lua.newUserdata(Fixture, .{ .value = 7 }, .{});
     defer fixture.deinit();
     try lua.setGlobal("fixture", fixture);
 
@@ -336,7 +336,7 @@ test "api userdata method context injection works in later positions" {
     var lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
-    var counter = try lua.newUserdataAuto(Counter, .{ .value = 0 }, .{});
+    var counter = try lua.newUserdata(Counter, .{ .value = 0 }, .{});
     defer counter.deinit();
     try lua.setGlobal("counter", counter);
 
@@ -365,7 +365,7 @@ test "api userdata pointer wrappers and Context.arg typed reads" {
     defer lua.deinit();
 
     var backing = Counter{ .value = 10 };
-    var counter = try lua.newUserdataPtr(Counter, &backing, .{});
+    var counter = try lua.wrapUserdata(Counter, &backing, .{});
     defer counter.deinit();
     try lua.setGlobal("counter", counter);
     var add_counter = try lua.register("add_counter", Callbacks.add);
@@ -428,7 +428,7 @@ test "api userdata method wrong receiver errors are clear" {
     var lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
-    var counter = try lua.newUserdataAuto(Counter, .{ .value = 0 }, .{});
+    var counter = try lua.newUserdata(Counter, .{ .value = 0 }, .{});
     defer counter.deinit();
     try lua.setGlobal("counter", counter);
 
@@ -489,7 +489,7 @@ test "api userdata close metamethod runs for to-be-closed locals" {
     defer lua.deinit();
 
     var closed: usize = 0;
-    var closer = try lua.newUserdataAuto(Closer, .{ .closed = &closed }, .{});
+    var closer = try lua.newUserdata(Closer, .{ .closed = &closed }, .{});
     defer closer.deinit();
     try lua.setGlobal("closer", closer);
 
@@ -501,7 +501,7 @@ test "api userdata close metamethod runs for to-be-closed locals" {
     try std.testing.expectEqual(@as(usize, 1), closed);
 }
 
-test "api userdata pairs and ipairs use explicit and automatic metamethods" {
+test "api userdata pairs and ipairs use bound metamethods" {
     const Sequence = struct {
         values: [4]?bool,
         fail: bool = false,
@@ -522,46 +522,40 @@ test "api userdata pairs and ipairs use explicit and automatic metamethods" {
     };
     var lua = try State.init(std.testing.allocator, .{ .stdlib = .full });
     defer lua.deinit();
-    try lua.defineUserdata(Sequence, .{});
-    for ([_]bool{ false, true }) |automatic| {
-        for ([_][4]?bool{
-            .{ null, null, null, null },
-            .{ false, true, null, null },
-            .{ true, null, false, null },
-        }) |values| {
-            const payload: Sequence = .{ .values = values };
-            var sequence = if (automatic)
-                try lua.newUserdataAuto(Sequence, payload, .{})
-            else
-                try lua.newUserdata(Sequence, payload, .{});
-            defer sequence.deinit();
-            try lua.setGlobal("sequence", sequence);
-            var expected = try lua.createTable(.{});
-            defer expected.deinit();
-            for (values, 1..) |value, index| try expected.set(index, value);
-            try lua.setGlobal("expected", expected);
-            try lua.doString(
-                \\assert(type(sequence) == 'userdata')
-                \\assert(select('#', pairs(sequence)) == 4)
-                \\local found = {}
-                \\for k, v in pairs(sequence) do assert(v == expected[k]); found[k] = v end
-                \\for k, v in pairs(expected) do assert(found[k] == v) end
-                \\local iter, state, key = ipairs(sequence)
-                \\assert(state == sequence and key == 0)
-                \\local count = 0
-                \\for k, v in ipairs(sequence) do
-                \\  count = count + 1
-                \\  assert(k == count and v == expected[k])
-                \\  local direct_k, direct_v = iter(state, key)
-                \\  assert(direct_k == k and direct_v == v)
-                \\  key = k
-                \\end
-                \\assert(expected[count + 1] == nil)
-                \\assert(select('#', iter(state, key)) == 1 and iter(state, key) == nil)
-            , .{});
-        }
+    for ([_][4]?bool{
+        .{ null, null, null, null },
+        .{ false, true, null, null },
+        .{ true, null, false, null },
+    }) |values| {
+        const payload: Sequence = .{ .values = values };
+        var sequence = try lua.newUserdata(Sequence, payload, .{});
+        defer sequence.deinit();
+        try lua.setGlobal("sequence", sequence);
+        var expected = try lua.createTable(.{});
+        defer expected.deinit();
+        for (values, 1..) |value, index| try expected.set(index, value);
+        try lua.setGlobal("expected", expected);
+        try lua.doString(
+            \\assert(type(sequence) == 'userdata')
+            \\assert(select('#', pairs(sequence)) == 4)
+            \\local found = {}
+            \\for k, v in pairs(sequence) do assert(v == expected[k]); found[k] = v end
+            \\for k, v in pairs(expected) do assert(found[k] == v) end
+            \\local iter, state, key = ipairs(sequence)
+            \\assert(state == sequence and key == 0)
+            \\local count = 0
+            \\for k, v in ipairs(sequence) do
+            \\  count = count + 1
+            \\  assert(k == count and v == expected[k])
+            \\  local direct_k, direct_v = iter(state, key)
+            \\  assert(direct_k == k and direct_v == v)
+            \\  key = k
+            \\end
+            \\assert(expected[count + 1] == nil)
+            \\assert(select('#', iter(state, key)) == 1 and iter(state, key) == nil)
+        , .{});
     }
-    var failing = try lua.newUserdataAuto(Sequence, .{ .values = @splat(null), .fail = true }, .{});
+    var failing = try lua.newUserdata(Sequence, .{ .values = @splat(null), .fail = true }, .{});
     defer failing.deinit();
     try lua.setGlobal("failing", failing);
     try lua.doString(
@@ -819,15 +813,15 @@ test "api auto userdata define their type once" {
     var lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
-    var first = try lua.newUserdataAuto(DefinedCanvas, .{ .width = 1 }, .{});
+    var first = try lua.newUserdata(DefinedCanvas, .{ .width = 1 }, .{});
     defer first.deinit();
     const callbacks = lua.callbacks.items.len;
     for (0..8) |_| {
-        var more = try lua.newUserdataAuto(DefinedCanvas, .{ .width = 2 }, .{});
+        var more = try lua.newUserdata(DefinedCanvas, .{ .width = 2 }, .{});
         more.deinit();
     }
     var backing = DefinedCanvas{ .width = 3 };
-    var pointer = try lua.newUserdataPtrAuto(DefinedCanvas, &backing, .{});
+    var pointer = try lua.wrapUserdata(DefinedCanvas, &backing, .{});
     defer pointer.deinit();
     try std.testing.expectEqual(callbacks, lua.callbacks.items.len);
     try lua.setGlobal("pointer", pointer);
@@ -879,7 +873,7 @@ test "api userdata method raises an error naming the current Lua line" {
     var lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
-    var scene = try lua.newUserdataAuto(Scene, .{}, .{});
+    var scene = try lua.newUserdata(Scene, .{}, .{});
     defer scene.deinit();
     try lua.setGlobal("s", scene);
 

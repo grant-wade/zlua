@@ -404,7 +404,7 @@ test "userdata method scopes finish before host yield and rejected conversion ne
     };
     var lua = try api.State.init(a, .{});
     defer lua.deinit();
-    var payload = try lua.newUserdataAuto(Payload, .{}, .{ .snapshot = .{ .copy = Payload.copy, .dispose = Payload.dispose, .tracking = .scoped } });
+    var payload = try lua.newUserdata(Payload, .{}, .{ .snapshot = .{ .copy = Payload.copy, .dispose = Payload.dispose, .tracking = .scoped } });
     defer payload.deinit();
     try lua.setGlobal("payload", payload);
     var chunk = try lua.loadString("return payload:ask()", .{});

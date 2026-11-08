@@ -11,7 +11,7 @@ const Budget = struct {
 };
 
 fn newBudget(ctx: *zlua.Context, amount: i64) !zlua.Userdata(Budget) {
-    return ctx.state().newUserdataAuto(Budget, .{ .remaining = amount }, .{});
+    return ctx.state().newUserdata(Budget, .{ .remaining = amount }, .{});
 }
 
 pub fn main(init: std.process.Init) !void {

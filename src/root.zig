@@ -92,7 +92,6 @@ pub const ExitRequest = api.ExitRequest;
 pub const WarningHandler = api.WarningHandler;
 pub const Capabilities = api.Capabilities;
 pub const UserdataOptions = api.UserdataOptions;
-pub const UserdataPtrOptions = api.UserdataPtrOptions;
 
 test "root exports the types host callbacks must name" {
     comptime {

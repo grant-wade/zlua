@@ -142,7 +142,7 @@ test "snapshot workers keep closed userdata closed" {
     Handle.gc_runs = 0;
     var lua = try api.State.init(a, .{ .stdlib = .full });
     defer lua.deinit();
-    var handle = try lua.newUserdataAuto(Handle, .{}, .{ .snapshot = .{ .copy = Hooks.copy, .dispose = Hooks.dispose } });
+    var handle = try lua.newUserdata(Handle, .{}, .{ .snapshot = .{ .copy = Hooks.copy, .dispose = Hooks.dispose } });
     defer handle.deinit();
     try lua.setGlobal("handle", handle);
     try lua.doString("debug.getmetatable(handle).__gc(handle)", .{});
@@ -201,7 +201,7 @@ test "snapshot workers inherit the output count" {
 test "finalizer budget bounds deinit and collect and host finalizers still run" {
     Handle.finalized = 0;
     var lua = try api.State.init(a, .{ .limits = .{ .max_finalizer_instructions = 10_000 } });
-    var handle = try lua.newUserdataAuto(Handle, .{}, .{ .finalizer = Handle.finalize });
+    var handle = try lua.newUserdata(Handle, .{}, .{ .finalizer = Handle.finalize });
     try lua.setGlobal("handle", handle);
     handle.deinit();
 
@@ -235,7 +235,7 @@ test "bound __gc runs once and closes the payload" {
     Handle.gc_runs = 0;
     Handle.finalized = 0;
     var lua = try api.State.init(a, .{ .stdlib = .full });
-    var handle = try lua.newUserdataAuto(Handle, .{}, .{ .finalizer = Handle.finalize });
+    var handle = try lua.newUserdata(Handle, .{}, .{ .finalizer = Handle.finalize });
     try lua.setGlobal("handle", handle);
     try std.testing.expect((try handle.ptr()).id == 1);
 

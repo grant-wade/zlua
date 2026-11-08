@@ -274,7 +274,7 @@ test "a Zig file converts to a Lua module" {
     try lua.setLoadedModule("local", Local);
     try lua.setLoadedModule("item", @import("globals_module_fixture.zig").Item);
     try lua.setLoadedModule("inventory", @import("globals_module_fixture.zig"));
-    var item = try lua.newUserdataAuto(@import("globals_module_fixture.zig").Item, .{ .count = 2 }, .{});
+    var item = try lua.newUserdata(@import("globals_module_fixture.zig").Item, .{ .count = 2 }, .{});
     defer item.deinit();
     try lua.setGlobal("item", item);
 

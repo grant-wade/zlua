@@ -830,9 +830,9 @@ or library callbacks such as `table.sort`, `string.gsub`, `load` readers,
 
 ## Userdata
 
-`newUserdata` stores a Zig value that Lua owns, and `newUserdataPtr` wraps
-storage the host owns. `newUserdataAuto` and `newUserdataPtrAuto` also bind the
-public methods of `T`:
+`newUserdata` stores a Zig value that Lua owns, and `wrapUserdata` wraps
+storage the host owns. Public functions of `T` whose first parameter is `*T` or
+`*const T` become methods, and names beginning with `__` become metamethods:
 
 ```zig
 const Counter = struct {
@@ -844,7 +844,7 @@ const Counter = struct {
     }
 };
 
-var counter = try lua.newUserdataAuto(Counter, .{ .value = 0 }, .{});
+var counter = try lua.newUserdata(Counter, .{ .value = 0 }, .{});
 defer counter.deinit();
 try lua.setGlobal("counter", counter);
 ```
@@ -855,9 +855,9 @@ type and returns another rooted handle.
 
 | Option or call | Effect |
 | --- | --- |
-| `.finalizer` | Runs with the payload and the state's allocator: before storage is freed for Lua-owned userdata, and when the wrapper is finalized for host-owned storage. |
+| `.finalizer` | Runs with the payload and the state's allocator when Lua finalizes the userdata, before Lua-owned storage is freed. |
 | `.external_bytes`, `setExternalBytes` | Report host storage the payload keeps alive to the collector. These bytes do not count against `max_memory`. |
-| `.metatable` | Uses your own metatable. `newUserdataAuto` installs `T`'s methods on it. If construction fails, the host still finalizes the value. |
+| `.metatable` | Uses your own metatable and installs `T`'s methods on it. If construction fails, the host still finalizes the value. |
 | `.snapshot` | Copy hooks; see [Userdata Payloads](snapshots.md#userdata-payloads). |
 
 A `__gc` metamethod runs before the host finalizer and the deinit hook. A `__gc`
@@ -872,8 +872,8 @@ not enumerated automatically; define `__pairs` for custom iteration, or
 
 ### Shared Metatables
 
-`defineUserdata` builds one metatable for `T` holding its typed methods, used by
-every later `newUserdata` or `newUserdataPtr` of `T`:
+The first `newUserdata` or `wrapUserdata` of `T` builds one metatable for `T`
+that every later value shares. `defineUserdata` builds it with options instead:
 
 ```zig
 const Canvas = struct {
@@ -892,14 +892,8 @@ defer canvas.deinit();
 `.name` sets `__name`, which `tostring` and argument errors show. `.methods`
 names another struct to take the methods from.
 
-`newUserdataAuto` and `newUserdataPtrAuto` define `T` on first use. Public
-functions whose first parameter is `*T` or `*const T` become methods on
-`__index`, and names beginning with `__` become metamethods.
-`registerUserdataInitializerWith` creates a typed Lua constructor that returns
-auto-bound userdata.
-
-Without a definition, `newUserdata` gives each value its own metatable with no
-methods.
+`registerConstructor(T, name, initializer, options)` creates a Lua function that
+reads `initializer`'s arguments by type and returns its result as userdata.
 
 ## Snapshots
 

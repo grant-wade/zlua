@@ -94,7 +94,6 @@ pub const Userdata = userdata.Userdata;
 pub const AnyUserdata = userdata.AnyUserdata;
 pub const UserdataOptions = userdata.UserdataOptions;
 pub const UserdataType = userdata.UserdataType;
-pub const UserdataPtrOptions = userdata.UserdataPtrOptions;
 pub const UserdataSnapshotHooks = userdata.UserdataSnapshotHooks;
 
 pub const Analysis = analysis.Analysis;
