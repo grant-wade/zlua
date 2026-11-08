@@ -19,6 +19,13 @@ const table_index = @import("table_index.zig");
 const value_mod = @import("value.zig");
 
 const Thread = types.Thread;
+/// Whether Lua calls and returns jump straight to the next handler; wasm restarts the frame loop.
+const direct_frame_dispatch = switch (@import("builtin").cpu.arch) {
+    .wasm32, .wasm64 => false,
+    else => true,
+};
+/// Forces inlining outside Debug.
+const release_inline: std.builtin.CallModifier = if (std.ascii.eqlIgnoreCase(@tagName(@import("builtin").mode), "debug")) .auto else .always_inline;
 const bytecode = compile.bytecode;
 const proto_mod = compile.proto;
 const lua_max_c_calls = state_mod.lua_max_c_calls;
@@ -516,67 +523,67 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             },
             .add => {
                 const op = instructions[pc].add;
-                if (!operators_mod.binarySlotOpFast(&stack[op.dest], &stack[op.left], &stack[op.right], .add)) break :fast_loop;
+                if (!@call(release_inline, operators_mod.binarySlotOpFast, .{ &stack[op.dest], &stack[op.left], &stack[op.right], .add })) break :fast_loop;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .sub => {
                 const op = instructions[pc].sub;
-                if (!operators_mod.binarySlotOpFast(&stack[op.dest], &stack[op.left], &stack[op.right], .sub)) break :fast_loop;
+                if (!@call(release_inline, operators_mod.binarySlotOpFast, .{ &stack[op.dest], &stack[op.left], &stack[op.right], .sub })) break :fast_loop;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .mul => {
                 const op = instructions[pc].mul;
-                if (!operators_mod.binarySlotOpFast(&stack[op.dest], &stack[op.left], &stack[op.right], .mul)) break :fast_loop;
+                if (!@call(release_inline, operators_mod.binarySlotOpFast, .{ &stack[op.dest], &stack[op.left], &stack[op.right], .mul })) break :fast_loop;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .div => {
                 const op = instructions[pc].div;
-                if (!operators_mod.binarySlotOpFast(&stack[op.dest], &stack[op.left], &stack[op.right], .div)) break :fast_loop;
+                if (!@call(release_inline, operators_mod.binarySlotOpFast, .{ &stack[op.dest], &stack[op.left], &stack[op.right], .div })) break :fast_loop;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .idiv => {
                 const op = instructions[pc].idiv;
-                if (!operators_mod.binarySlotOpFast(&stack[op.dest], &stack[op.left], &stack[op.right], .idiv)) break :fast_loop;
+                if (!@call(release_inline, operators_mod.binarySlotOpFast, .{ &stack[op.dest], &stack[op.left], &stack[op.right], .idiv })) break :fast_loop;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .mod => {
                 const op = instructions[pc].mod;
-                if (!operators_mod.binarySlotOpFast(&stack[op.dest], &stack[op.left], &stack[op.right], .mod)) break :fast_loop;
+                if (!@call(release_inline, operators_mod.binarySlotOpFast, .{ &stack[op.dest], &stack[op.left], &stack[op.right], .mod })) break :fast_loop;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .band => {
                 const op = instructions[pc].band;
-                if (!operators_mod.binarySlotOpFast(&stack[op.dest], &stack[op.left], &stack[op.right], .band)) break :fast_loop;
+                if (!@call(release_inline, operators_mod.binarySlotOpFast, .{ &stack[op.dest], &stack[op.left], &stack[op.right], .band })) break :fast_loop;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .bor => {
                 const op = instructions[pc].bor;
-                if (!operators_mod.binarySlotOpFast(&stack[op.dest], &stack[op.left], &stack[op.right], .bor)) break :fast_loop;
+                if (!@call(release_inline, operators_mod.binarySlotOpFast, .{ &stack[op.dest], &stack[op.left], &stack[op.right], .bor })) break :fast_loop;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .bxor => {
                 const op = instructions[pc].bxor;
-                if (!operators_mod.binarySlotOpFast(&stack[op.dest], &stack[op.left], &stack[op.right], .bxor)) break :fast_loop;
+                if (!@call(release_inline, operators_mod.binarySlotOpFast, .{ &stack[op.dest], &stack[op.left], &stack[op.right], .bxor })) break :fast_loop;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .shl => {
                 const op = instructions[pc].shl;
-                if (!operators_mod.binarySlotOpFast(&stack[op.dest], &stack[op.left], &stack[op.right], .shl)) break :fast_loop;
+                if (!@call(release_inline, operators_mod.binarySlotOpFast, .{ &stack[op.dest], &stack[op.left], &stack[op.right], .shl })) break :fast_loop;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .shr => {
                 const op = instructions[pc].shr;
-                if (!operators_mod.binarySlotOpFast(&stack[op.dest], &stack[op.left], &stack[op.right], .shr)) break :fast_loop;
+                if (!@call(release_inline, operators_mod.binarySlotOpFast, .{ &stack[op.dest], &stack[op.left], &stack[op.right], .shr })) break :fast_loop;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
@@ -778,7 +785,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             inline .add_k, .sub_k, .mul_k, .div_k, .idiv_k, .mod_k, .band_k, .bor_k, .bxor_k, .shl_k, .shr_k => |tag| {
                 const op = @field(instructions[pc], @tagName(tag));
                 const kind = comptime operators_mod.constantBinaryOp(tag);
-                if (!operators_mod.binarySlotOpFast(&stack[op.dest], &stack[op.left], &proto.constant_values[op.constant], kind)) break :fast_loop;
+                if (!@call(release_inline, operators_mod.binarySlotOpFast, .{ &stack[op.dest], &stack[op.left], &proto.constant_values[op.constant], kind })) break :fast_loop;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
@@ -1020,6 +1027,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 pc = 0;
                 base = callee_base;
                 if (pc +% count_bias >= allowance) return true;
+                if (!direct_frame_dispatch) continue :frames;
                 instructions = proto.instructions.items;
                 stack = thread.stack.items[base..];
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
@@ -1187,7 +1195,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 base = frame.base;
                 if (frame_index + 1 == return_floor or pc +% count_bias >= allowance) return true;
                 if (hookLineSet(thread, frame_index)) allowance = pc +% count_bias;
-                if (!proto.fast_loop_entry) continue :frames;
+                if (!direct_frame_dispatch or !proto.fast_loop_entry) continue :frames;
                 instructions = proto.instructions.items;
                 stack = thread.stack.items[base..];
                 continue :fast_loop std.meta.activeTag(instructions[pc]);

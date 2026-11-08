@@ -68,20 +68,20 @@ comptime {
 }
 
 /// Copies the 8-byte payload and the tag byte of `src`, but not its padding.
-pub inline fn copyValue(dst: *Value, src: *const Value) void {
+pub fn copyValue(dst: *Value, src: *const Value) void {
     const from: *const [9]u8 = @ptrCast(src);
     const to: *[9]u8 = @ptrCast(dst);
     @as(*u64, @ptrCast(@alignCast(to))).* = @as(*const u64, @ptrCast(@alignCast(from))).*;
     to[8] = from[8];
 }
 
-pub inline fn loadValue(src: *const Value) Value {
+pub fn loadValue(src: *const Value) Value {
     var value: Value = undefined;
     copyValue(&value, src);
     return value;
 }
 
-pub inline fn storeValue(dst: *Value, value: Value) void {
+pub fn storeValue(dst: *Value, value: Value) void {
     var source = value;
     _ = &source;
     copyValue(dst, &source);

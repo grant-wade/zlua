@@ -433,7 +433,7 @@ pub inline fn rawNumericBinaryOpFast(lhs: Value, rhs: Value, comptime op: Binary
 }
 
 /// Stores `lhs op rhs` in `dst` for numbers and returns true, or returns false for the general path.
-pub inline fn binarySlotOpFast(dst: *Value, lhs: *const Value, rhs: *const Value, comptime op: BinaryOp) bool {
+pub fn binarySlotOpFast(dst: *Value, lhs: *const Value, rhs: *const Value, comptime op: BinaryOp) bool {
     switch (op) {
         .band, .bor, .bxor, .shl, .shr => {
             if (lhs.* != .integer or rhs.* != .integer) return false;
