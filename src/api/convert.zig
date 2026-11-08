@@ -14,6 +14,8 @@ const State = @import("state.zig").State;
 const Table = @import("table.zig").Table;
 const Value = @import("value.zig").Value;
 const index_mod = @import("../runtime/index.zig");
+const callbacks = @import("callbacks.zig");
+const namespace = @import("namespace.zig");
 
 pub fn expectedLuaType(comptime T: type) []const u8 {
     if (T == Value or T == Ref or T == ErrorRef) return "value";
@@ -48,6 +50,11 @@ pub fn convertArgs(state: *State, args: anytype) ![]runtime.Value {
 }
 
 pub fn toRuntimeValue(state: *State, value: anytype) !runtime.Value {
+    return toRuntimeValueNamed(state, value, "?");
+}
+
+/// Like `toRuntimeValue`; `name` labels a Zig function in Lua error messages.
+pub fn toRuntimeValueNamed(state: *State, value: anytype, name: []const u8) !runtime.Value {
     const T = @TypeOf(value);
     if (T == Value) return switch (value) {
         .nil => .nil,
@@ -87,8 +94,90 @@ pub fn toRuntimeValue(state: *State, value: anytype) !runtime.Value {
         .@"struct" => |info| structToRuntimeValue(state, value, info),
         .@"enum" => .{ .string = try state.raw_state.strings.intern(std.enums.tagName(T, value) orelse return error.UnsupportedType) },
         .enum_literal => .{ .string = try state.raw_state.strings.intern(@tagName(value)) },
+        .@"fn" => .{ .api_callback = try callbacks.intern(state, name, callbacks.typedHostFn(value)) },
+        .type => namespaceToRuntimeValue(state, value, .{}),
         else => error.UnsupportedType,
     };
+}
+
+/// Whether `toRuntimeValue` accepts a `T`; pointers to structs are assumed convertible.
+pub fn canConvert(comptime T: type) bool {
+    if (T == Value or T == Ref or T == Table or T == Function or T == Coroutine or T == ErrorRef or T == AnyUserdata or userdata_mod.isHandle(T)) return true;
+    if (decode_mod.hasToLua(T) or decode_mod.isEnumArray(T) or decode_mod.isEnumSet(T)) return true;
+    return switch (@typeInfo(T)) {
+        .null, .bool, .int, .comptime_int, .float, .comptime_float, .@"enum", .enum_literal, .@"fn", .type => true,
+        .optional => |optional| canConvert(optional.child),
+        .array => |array| array.child == u8 or canConvert(array.child),
+        .vector => |vector| canConvert(vector.child),
+        .pointer => |pointer| switch (pointer.size) {
+            .slice => pointer.child == u8 or canConvert(pointer.child),
+            .one => switch (@typeInfo(pointer.child)) {
+                .array => |array| array.child == u8 or canConvert(array.child),
+                .@"struct" => true,
+                else => false,
+            },
+            else => false,
+        },
+        .@"struct" => {
+            inline for (comptime reflection.fieldsOf(T)) |field| {
+                if (!canConvert(@FieldType(T, field))) return false;
+            }
+            return true;
+        },
+        else => false,
+    };
+}
+
+fn namespaceToRuntimeValue(state: *State, comptime T: type, comptime path: namespace.Path) !runtime.Value {
+    const hash_hint = comptime namespace.tags(T).len + namespace.exports(T, path).len;
+    const table = state.raw_state.newTableWithHints(0, hash_hint) catch |err| return errors.captureLuaError(state, err);
+    try writeNamespace(state, TableSink{ .table = table }, T, path);
+    return table;
+}
+
+fn writeNamespace(state: *State, sink: anytype, comptime T: type, comptime path: namespace.Path) !void {
+    inline for (comptime namespace.tags(T)) |tag| {
+        try sink.put(state, tag, .{ .string = try state.raw_state.strings.intern(tag) });
+    }
+    inline for (comptime namespace.exports(T, path)) |name| {
+        const key = comptime namespace.declOptions(T, name).key;
+        const decl = @field(T, name);
+        const raw = if (@TypeOf(decl) == type)
+            try namespaceToRuntimeValue(state, decl, comptime path.push(T, name))
+        else
+            try toRuntimeValueNamed(state, decl, key);
+        try sink.put(state, key, raw);
+    }
+}
+
+/// Receives entries for a fresh table.
+pub const TableSink = struct {
+    table: runtime.Value,
+
+    pub fn put(self: TableSink, state: *State, key: []const u8, value: runtime.Value) !void {
+        const raw_key = runtime.Value{ .string = try state.raw_state.strings.intern(key) };
+        index_mod.setTableValue(&state.raw_state, self.table, raw_key, value) catch |err| return errors.captureLuaError(state, err);
+    }
+};
+
+/// Converts the fields of struct `value`, or the tags and exported declarations of struct or enum
+/// type `value`, and passes each Lua key and value to `sink.put(state, key, value)`.
+pub fn writeEntries(state: *State, sink: anytype, value: anytype) !void {
+    const T = @TypeOf(value);
+    if (T == type) return writeNamespace(state, sink, value, .{});
+    const info = switch (@typeInfo(T)) {
+        .@"struct" => |info| info,
+        else => @compileError("expected a struct, or a struct or enum type, found " ++ @typeName(T)),
+    };
+    if (info.is_tuple) @compileError("expected a struct with named fields, found a tuple");
+    inline for (comptime reflection.fieldsOf(T)) |field| {
+        const options = comptime decode_mod.fieldOptions(T, field);
+        if (options.embed) {
+            try writeEntries(state, sink, @field(value, field));
+        } else {
+            try sink.put(state, options.key, try toRuntimeValueNamed(state, @field(value, field), options.key));
+        }
+    }
 }
 
 fn enumArrayToRuntimeValue(state: *State, value: anytype) !runtime.Value {
@@ -128,6 +217,7 @@ fn pointerToRuntimeValue(state: *State, value: anytype, comptime pointer: std.bu
                 return arrayToRuntimeValue(state, value[0..]);
             },
             .@"struct" => return toRuntimeValue(state, value.*),
+            .@"fn" => @compileError("pass a function to Lua directly instead of through a pointer, or wrap the pointer with State.registerTyped"),
             else => return error.UnsupportedType,
         },
         else => return error.UnsupportedType,
@@ -151,22 +241,8 @@ fn structToRuntimeValue(state: *State, value: anytype, comptime info: std.builti
     const hash_hint = std.math.cast(u32, reflection.fieldNames(info).len) orelse return error.IntegerOutOfRange;
 
     const table = state.raw_state.newTableWithHints(0, hash_hint) catch |err| return errors.captureLuaError(state, err);
-    try writeStructFields(state, table, value);
+    try writeEntries(state, TableSink{ .table = table }, value);
     return table;
-}
-
-fn writeStructFields(state: *State, table: runtime.Value, value: anytype) !void {
-    const T = @TypeOf(value);
-    inline for (comptime reflection.fieldsOf(T)) |field| {
-        const options = comptime decode_mod.fieldOptions(T, field);
-        if (options.embed) {
-            try writeStructFields(state, table, @field(value, field));
-        } else {
-            const raw_key = runtime.Value{ .string = try state.raw_state.strings.intern(options.key) };
-            const raw_value = try toRuntimeValue(state, @field(value, field));
-            index_mod.setTableValue(&state.raw_state, table, raw_key, raw_value) catch |err| return errors.captureLuaError(state, err);
-        }
-    }
 }
 
 fn tupleToRuntimeValue(state: *State, value: anytype, comptime len: usize) !runtime.Value {

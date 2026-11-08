@@ -98,6 +98,7 @@
 - [api.coroutine](../api/coroutine.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
+- [api.namespace](../api/namespace.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
 - [testing.bench_runner](../testing/bench_runner.md)
@@ -204,6 +205,7 @@ pub const Gc = struct {
 | [setParam](#fn-gc-setparam) | `gc: *Gc, param: GcParam, value: i64` | `void` |  |
 | [collectWithFinalizers](#fn-gc-collectwithfinalizers) | `gc: *Gc, thread: ?*Thread` | `!void` |  |
 | [shouldRunAuto](#fn-gc-shouldrunauto) | `gc: *Gc` | `bool` |  |
+| [autoStepDue](#fn-gc-autostepdue) | `gc: *Gc` | `bool` | The current thread's storage must already be synced. |
 | [notePrototype](#fn-gc-noteprototype) | `gc: *Gc, proto: *const proto_mod.Proto` | `void` | Brings the next automatic step closer by the prototype's size without adding it to the heap total, whose growth decides the switches between minor and major collections. |
 | [resetAutoThreshold](#fn-gc-resetautothreshold) | `gc: *Gc` | `void` |  |
 | [reserve](#fn-gc-reserve) | `gc: *Gc, thread: *Thread, bytes: usize` | `!void` | Collects before a native allocation of &#96;bytes&#96; that may not fit under &#96;max_memory&#96;. &#96;thread&#96; must be running a native function with no unrooted values. |
@@ -443,6 +445,18 @@ References: [`Gc`](#type-gc)
 
 ```zig
 pub fn shouldRunAuto(gc: *Gc) bool
+```
+
+References: [`Gc`](#type-gc)
+
+<a id="fn-gc-autostepdue"></a>
+
+### Gc.autoStepDue
+
+The current thread's storage must already be synced.
+
+```zig
+pub fn autoStepDue(gc: *Gc) bool
 ```
 
 References: [`Gc`](#type-gc)

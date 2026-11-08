@@ -131,6 +131,7 @@ test {
     _ = @import("testing/api_decode_tests.zig");
     _ = @import("testing/api_limit_tests.zig");
     _ = @import("testing/api_table_tests.zig");
+    _ = @import("testing/api_globals_tests.zig");
     _ = @import("testing/api_fuzz_tests.zig");
     _ = @import("testing/api_sandbox_tests.zig");
 }

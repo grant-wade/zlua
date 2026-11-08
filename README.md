@@ -47,13 +47,14 @@ pub fn main(init: std.process.Init) !void {
     });
     defer lua.deinit();
 
-    var add_fn = try lua.registerTyped("add", add);
-    defer add_fn.deinit();
-    try lua.setGlobal("add", add_fn);
+    try lua.setGlobals(.{
+        .add = add,
+        .greeting = "hello",
+    });
 
     try lua.doString(
         \\function greet(name)
-        \\  return "hello, " .. name .. "! 2 + 3 = " .. add(2, 3)
+        \\  return greeting .. ", " .. name .. "! 2 + 3 = " .. add(2, 3)
         \\end
     , .{ .name = "=readme" });
 
@@ -70,9 +71,9 @@ Output:
 hello, zlua! 2 + 3 = 5
 ```
 
-The [embedding guide](docs/embedding.md) covers decoding tables into Zig
-structs, userdata, coroutines, snapshots, and more, with runnable programs in
-[`examples/`](examples).
+The [embedding guide](docs/embedding.md) covers Zig files as Lua modules,
+decoding tables into Zig structs, userdata, coroutines, snapshots, and more,
+with runnable programs in [`examples/`](examples).
 
 By default, a new state opens only the sandbox-friendly standard libraries.
 Everything else is up to the host: filesystem access, output, clocks, processes,

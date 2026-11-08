@@ -44,6 +44,14 @@ pub const Table = struct {
         try state_mod.gcBoundary(state);
     }
 
+    /// Assigns `t[key]` as `set` does for each field of struct `values`, or for each tag and
+    /// exported public declaration of struct or enum type `values`.
+    pub fn setFields(self: Table, values: anytype) !void {
+        const state = self.ref.state;
+        try convert.writeEntries(state, AssignSink{ .table = (try self.rawValue()).table }, values);
+        try state_mod.gcBoundary(state);
+    }
+
     /// Like `set` without `__newindex`; a nil or NaN key returns `error.LuaError`.
     pub fn rawSet(self: Table, key: anytype, value: anytype) !void {
         const state = self.ref.state;
@@ -349,6 +357,15 @@ fn indexTable(state: *State, start: *runtime.Table, key: runtime.Value) !runtime
     }
     return state.raw_state.fail("'__index' chain too long; possible loop");
 }
+
+const AssignSink = struct {
+    table: *runtime.Table,
+
+    pub fn put(self: AssignSink, state: *State, key: []const u8, value: runtime.Value) !void {
+        const raw_key = runtime.Value{ .string = try state.raw_state.strings.intern(key) };
+        assignTable(state, self.table, raw_key, value) catch |err| return errors.captureLuaError(state, err);
+    }
+};
 
 fn assignTable(state: *State, start: *runtime.Table, key: runtime.Value, value: runtime.Value) !void {
     var table = start;

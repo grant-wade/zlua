@@ -31,6 +31,16 @@
 - Error messages name `t["k"]`, `t[1]`, other indexed values, and a nil `_ENV` like Lua 5.5.
 - Long chains of left-associative operators compile instead of failing with too many registers.
 
+### Embedding API
+
+- Zig functions convert to Lua functions wherever Zig values are passed to Lua.
+- Struct and enum types, including Zig files, convert to tables of their public
+  declarations, and enum types also map each tag to its name.
+- `State.setGlobals` sets a global for each field of a struct.
+- `State.createTableFrom` creates a table from a struct.
+- `Table.setFields` assigns each field of a struct to a table.
+- A typed callback parameter that Lua can't pass is a compile error.
+
 ### Testing
 
 - CI runs on Zig 0.16.0 and 0.17.1.

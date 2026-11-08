@@ -98,6 +98,7 @@
 - [api.coroutine](../api/coroutine.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
+- [api.namespace](../api/namespace.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
 - [testing.bench_runner](../testing/bench_runner.md)
@@ -475,6 +476,10 @@ pub const TokenLiteral = struct {
 ```zig
 pub const TableConstructor = struct {
     fields: []const TableField,
+    /// Line of the token before `{`.
+    open_line: usize = 0,
+    /// Line at which each field's store runs, parallel to `fields`.
+    field_lines: []const usize = &.{},
 };
 ```
 

@@ -124,6 +124,31 @@ pub fn hasToLua(comptime T: type) bool {
     return hasDeclaration(T, "toLua");
 }
 
+/// Whether `decode` accepts a `T`; types nested deeper than 16 levels are assumed decodable.
+pub fn canDecode(comptime T: type) bool {
+    return canDecodeAt(T, 0);
+}
+
+fn canDecodeAt(comptime T: type, comptime depth: usize) bool {
+    if (depth > 16 or hasFromLua(T) or isEnumArray(T) or isEnumSet(T)) return true;
+    if (convert.isOwnedApiValue(T) or isBitSet(T)) return false;
+    return switch (@typeInfo(T)) {
+        .int, .float, .bool, .@"enum" => true,
+        .optional => |optional| canDecodeAt(optional.child, depth + 1),
+        .array => |array| canDecodeAt(array.child, depth + 1),
+        .vector => |vector| canDecodeAt(vector.child, depth + 1),
+        .pointer => |pointer| pointer.size == .slice and (pointer.child == u8 or canDecodeAt(pointer.child, depth + 1)),
+        .@"struct" => {
+            inline for (comptime reflection.fieldsOf(T)) |name| {
+                const Field = @FieldType(T, name);
+                if (!(isBitSet(Field) and fieldOptions(T, name).elements != null) and !canDecodeAt(Field, depth + 1)) return false;
+            }
+            return true;
+        },
+        else => false,
+    };
+}
+
 /// Whether a typed callback parameter of type `T` is read by `Context.decodeArg`.
 pub fn needsDecoding(comptime T: type) bool {
     if (hasFromLua(T)) return true;

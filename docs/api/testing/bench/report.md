@@ -97,6 +97,7 @@
 - [api.coroutine](../../api/coroutine.md)
 - [api.snapshot](../../api/snapshot.md)
 - [api.memory_limit](../../api/memory_limit.md)
+- [api.namespace](../../api/namespace.md)
 - [testing](../../testing.md)
 - [testing.clua](../../testing/clua.md)
 - [testing.bench_runner](../../testing/bench_runner.md)

@@ -98,6 +98,7 @@
 - [api.coroutine](../api/coroutine.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
+- [api.namespace](../api/namespace.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
 - [testing.bench_runner](../testing/bench_runner.md)
@@ -263,6 +264,8 @@ pub const State = struct {
 | [push](#fn-state-push) | `self: *State, value: anytype` | `!Value` | Converts a Zig value into a rooted &#96;Value&#96;. |
 | [read](#fn-state-read) | `self: *State, value: Value, comptime T: type` | `!T` | A &#96;[]const u8&#96; result borrows VM memory; see &#96;Value.string&#96;. |
 | [setGlobal](#fn-state-setglobal) | `self: *State, name: []const u8, value: anytype` | `!void` |  |
+| [setGlobals](#fn-state-setglobals) | `self: *State, values: anytype` | `!void` | Sets a global for each field of struct &#96;values&#96;, or for each tag and exported public declaration of struct or enum type &#96;values&#96;. |
+| [createTableFrom](#fn-state-createtablefrom) | `self: *State, values: anytype` | `!Table` | Creates a table holding the fields of struct &#96;values&#96;, or the tags and exported public declarations of struct or enum type &#96;values&#96;. |
 | [getGlobal](#fn-state-getglobal) | `self: *State, name: []const u8, comptime T: type` | `!T` | A &#96;[]const u8&#96; result borrows VM memory; see &#96;Value.string&#96;. |
 | [register](#fn-state-register) | `self: *State, name: []const u8, callback: HostFn` | `!Function` | Wraps an untyped callback as a Lua function; it is not installed automatically. |
 | [registerTyped](#fn-state-registertyped) | `self: *State, name: []const u8, comptime function: anytype` | `!Function` | Like &#96;register&#96;, reading parameters from Lua arguments by type; &#96;*Context&#96; is injected. |
@@ -620,6 +623,32 @@ References: [`State`](#type-state)
 
 ```zig
 pub fn setGlobal(self: *State, name: []const u8, value: anytype) !void
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-setglobals"></a>
+
+### State.setGlobals
+
+Sets a global for each field of struct `values`, or for each tag and exported public
+declaration of struct or enum type `values`.
+
+```zig
+pub fn setGlobals(self: *State, values: anytype) !void
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-createtablefrom"></a>
+
+### State.createTableFrom
+
+Creates a table holding the fields of struct `values`, or the tags and exported public
+declarations of struct or enum type `values`.
+
+```zig
+pub fn createTableFrom(self: *State, values: anytype) !Table
 ```
 
 References: [`State`](#type-state)

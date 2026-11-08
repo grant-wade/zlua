@@ -98,6 +98,7 @@
 - [api.coroutine](../api/coroutine.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
+- [api.namespace](../api/namespace.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
 - [testing.bench_runner](../testing/bench_runner.md)
@@ -135,6 +136,7 @@
 - [isEnumSet](#fn-isenumset)
 - [hasFromLua](#fn-hasfromlua)
 - [hasToLua](#fn-hastolua)
+- [canDecode](#fn-candecode)
 - [needsDecoding](#fn-needsdecoding)
 - [defaultValue](#fn-defaultvalue)
 - [Decoder](#fn-decoder)
@@ -287,6 +289,16 @@ pub fn hasFromLua(comptime T: type) bool
 
 ```zig
 pub fn hasToLua(comptime T: type) bool
+```
+
+<a id="fn-candecode"></a>
+
+## canDecode
+
+Whether `decode` accepts a `T`; types nested deeper than 16 levels are assumed decodable.
+
+```zig
+pub fn canDecode(comptime T: type) bool
 ```
 
 <a id="fn-needsdecoding"></a>

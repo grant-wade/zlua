@@ -98,6 +98,7 @@
 - [api.coroutine](../api/coroutine.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
+- [api.namespace](../api/namespace.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
 - [testing.bench_runner](../testing/bench_runner.md)
@@ -150,6 +151,7 @@ pub const Table = struct {
 | [deinit](#fn-table-deinit) | `self: *Table` | `void` |  |
 | [get](#fn-table-get) | `self: Table, key: anytype, comptime T: type` | `!T` | Reads &#96;t[key]&#96; honoring &#96;__index&#96;; metamethods cannot yield and fail with &#96;error.LuaError&#96;. A &#96;[]const u8&#96; result borrows VM memory; see &#96;Value.string&#96;. |
 | [set](#fn-table-set) | `self: Table, key: anytype, value: anytype` | `!void` | Assigns &#96;t[key]&#96; honoring &#96;__newindex&#96;; metamethods cannot yield. A nil or NaN key returns &#96;error.LuaError&#96;. |
+| [setFields](#fn-table-setfields) | `self: Table, values: anytype` | `!void` | Assigns &#96;t[key]&#96; as &#96;set&#96; does for each field of struct &#96;values&#96;, or for each tag and exported public declaration of struct or enum type &#96;values&#96;. |
 | [rawSet](#fn-table-rawset) | `self: Table, key: anytype, value: anytype` | `!void` | Like &#96;set&#96; without &#96;__newindex&#96;; a nil or NaN key returns &#96;error.LuaError&#96;. |
 | [append](#fn-table-append) | `self: Table, value: anytype` | `!void` | Raw-appends at &#96;rawLen() + 1&#96;; appending nil is a no-op. |
 | [len](#fn-table-len) | `self: Table` | `!i64` | Lua &#96;#t&#96; honoring &#96;__len&#96;, which cannot yield; a non-integer result returns &#96;error.LuaError&#96;. |
@@ -197,6 +199,19 @@ A nil or NaN key returns `error.LuaError`.
 
 ```zig
 pub fn set(self: Table, key: anytype, value: anytype) !void
+```
+
+References: [`Table`](#type-table)
+
+<a id="fn-table-setfields"></a>
+
+### Table.setFields
+
+Assigns `t[key]` as `set` does for each field of struct `values`, or for each tag and
+exported public declaration of struct or enum type `values`.
+
+```zig
+pub fn setFields(self: Table, values: anytype) !void
 ```
 
 References: [`Table`](#type-table)
