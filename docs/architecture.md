@@ -200,7 +200,7 @@ it can point to are:
 | --- | --- |
 | `String` | Length, cached hash, interning flags, the entry position where the string was last found as a field key, and GC state, followed by the bytes in the same allocation. |
 | `Closure` | Proto, its chunk (which holds the loaded constants), and debug-strip state, followed by its upvalue pointers in the same allocation. |
-| `Upvalue` | An open stack slot or a closed stored value. |
+| `Upvalue` | A pointer to its value, which is an open stack slot or the closed stored value. |
 | `Table` | Array part, hash entries and index, metatable, and GC flags. |
 | `Userdata` | Native pointer, type information, metatable, `__gc` registration, host finalizer, and deinit hook. |
 | `Thread` | Value stack, call frames, continuations, open upvalues, hooks, and coroutine status. |

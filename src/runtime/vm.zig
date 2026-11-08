@@ -494,17 +494,16 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             .set_upvalue => {
                 const op = instructions[pc].set_upvalue;
                 const upvalue = frame.closure.upvalues()[op.upvalue];
+                const value = stack[op.register];
                 switch (upvalue.cell) {
                     .open => |slot| {
-                        if (slot.owner.rollback) |record| if (!record.header.detached) break :fast_loop;
-                        rollback_mod.touch(upvalue);
-                        slot.owner.stack.items[slot.stack_index] = stack[op.register];
-                        if (slot.owner != thread) self.gc.rememberObject(.{ .thread = slot.owner });
+                        if (slot.owner != thread and !foreignUpvalueWritable(self, slot.owner)) break :fast_loop;
+                        upvalue.value.* = value;
                     },
-                    .closed => |*closed| {
+                    .closed => {
                         rollback_mod.touch(upvalue);
-                        closed.* = stack[op.register];
-                        self.gc.writeBarrier(upvalue, closed.*);
+                        upvalue.value.* = value;
+                        self.gc.writeBarrier(upvalue, value);
                     },
                 }
                 pc += 1;
@@ -1317,6 +1316,14 @@ inline fn fieldSlot(table_value: Value, key: *const String) ?*Value {
     const part = table.hash orelse return null;
     const slot = &(fieldEntry(part, key) orelse return null).value;
     return if (slot.* != .nil) slot else null;
+}
+
+/// Prepares a write to an open upvalue on another thread's stack; false when that stack
+/// must first be copied for rollback.
+noinline fn foreignUpvalueWritable(self: *State, owner: *Thread) bool {
+    if (owner.rollback) |record| if (!record.header.detached) return false;
+    self.gc.rememberObject(.{ .thread = owner });
+    return true;
 }
 
 /// True when the frame at `index` has a line-hook position that a backward jump must forget.

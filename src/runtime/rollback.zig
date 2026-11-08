@@ -94,6 +94,7 @@ pub fn threadWritable(thread: *types.Thread) !void {
     }
     touch(thread);
     thread.* = replacement;
+    thread.retargetOpenUpvalues();
     record.header.detached = true;
 }
 

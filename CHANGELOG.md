@@ -33,6 +33,7 @@
 - `string.find`, `string.match`, `string.gmatch`, and `string.gsub` match
   patterns faster.
 - Numeric `for` loops, backward jumps, and instruction dispatch are faster.
+- Reading and writing upvalues is faster.
 
 ### Packaging
 

@@ -29,7 +29,7 @@ pub fn captureUpvalue(self: *State, thread: *Thread, stack_index: usize) !*Upval
 
     const upvalue = try self.objects().create(Upvalue);
     errdefer self.objects().destroy(upvalue);
-    upvalue.* = .{ .cell = .{ .open = .{ .owner = thread, .stack_index = stack_index } }, .next = current };
+    upvalue.* = .{ .cell = .{ .open = .{ .owner = thread, .stack_index = stack_index } }, .value = &thread.stack.items[stack_index], .next = current };
     try self.registerAllocation("upvalue_allocations", upvalue);
     self.gc.noteAllocation(@sizeOf(Upvalue));
     if (previous) |prev| {
@@ -71,7 +71,7 @@ pub fn closeUpvalues(self: *State, thread: *Thread, first_stack_index: usize) vo
         rollback_mod.touch(upvalue);
         rollback_mod.touch(thread);
         const value = thread.stack.items[stack_index];
-        upvalue.cell = .{ .closed = value };
+        upvalue.close(value);
         self.gc.writeBarrier(upvalue, value);
         thread.open_upvalues = upvalue.next;
         upvalue.next = null;

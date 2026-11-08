@@ -233,6 +233,43 @@ test "snapshot preserves suspended coroutine continuations hooks and open upvalu
     }
 }
 
+test "snapshot keeps open upvalues readable after the owner's stack grows and resets" {
+    var lua = try api.State.init(a, .{ .stdlib = .full });
+    defer lua.deinit();
+    try lua.doString(
+        \\local function deep(k) if k == 0 then return 0 end return 1 + deep(k - 1) end
+        \\co = coroutine.create(function()
+        \\  local n = 10
+        \\  function read_n() return n end
+        \\  function write_n(v) n = v end
+        \\  while true do
+        \\    local depth = coroutine.yield(n)
+        \\    n = n + deep(depth)
+        \\  end
+        \\end)
+        \\assert(coroutine.resume(co))
+    , .{});
+    var snapshot = try lua.snapshot(a);
+    defer snapshot.deinit();
+    for (0..3) |_| {
+        try lua.doString(
+            \\assert(read_n() == 10)
+            \\local ok, n = coroutine.resume(co, 5000)
+            \\assert(ok and n == 5010 and read_n() == 5010)
+            \\write_n(3)
+            \\assert(select(2, coroutine.resume(co, 1)) == 4 and read_n() == 4)
+        , .{});
+        try lua.reset();
+    }
+    var copy = try snapshot.newState(a);
+    defer copy.deinit();
+    try copy.doString(
+        \\assert(read_n() == 10)
+        \\local ok, n = coroutine.resume(co, 5000)
+        \\assert(ok and n == 5010 and read_n() == 5010)
+    , .{});
+}
+
 test "snapshot survives origin and restores modules files iterators streams errors and random state" {
     var lua = try api.State.init(a, .{ .stdlib = .full, .debug = .{ .capture_output = true }, .capabilities = .{ .io = .{ .stdin = "first\nsecond\n" } } });
     try lua.addMemoryFile("m.lua", "return {value = 23}");

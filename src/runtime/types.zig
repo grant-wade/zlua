@@ -458,6 +458,8 @@ pub const Upvalue = struct {
     rollback: ?*@import("rollback.zig").Record(Upvalue) = null,
     /// Next open upvalue of the owner thread.
     next: ?*Upvalue = null,
+    /// The owner's stack slot while open, or `cell.closed`.
+    value: *Value,
     cell: Cell,
 
     pub const Cell = union(enum) {
@@ -472,10 +474,27 @@ pub const Upvalue = struct {
     };
 
     pub inline fn get(self: *const Upvalue) Value {
-        return switch (self.cell) {
-            .open => |slot| slot.owner.stack.items[slot.stack_index],
-            .closed => |value| value,
+        if (std.debug.runtime_safety) self.assertTargeted();
+        return self.value.*;
+    }
+
+    fn assertTargeted(self: *const Upvalue) void {
+        const expected: *const Value = switch (self.cell) {
+            .open => |slot| &slot.owner.stack.items[slot.stack_index],
+            .closed => |*closed| closed,
         };
+        std.debug.assert(self.value == expected);
+    }
+
+    pub fn close(self: *Upvalue, value: Value) void {
+        self.cell = .{ .closed = value };
+        self.value = &self.cell.closed;
+    }
+
+    /// The upvalue must be open.
+    pub fn retarget(self: *Upvalue) void {
+        const slot = self.cell.open;
+        self.value = &slot.owner.stack.items.ptr[slot.stack_index];
     }
 };
 
@@ -1100,8 +1119,10 @@ pub const Thread = struct {
         if (stress_stack_moves and self.stack.items.len <= stress_stack_limit) try self.moveStack(allocator);
         const old_len = self.stack.items.len;
         if (size <= old_len) return;
+        const old_storage = self.stack.items.ptr;
         try self.stack.resize(allocator, size);
         @memset(self.stack.items[old_len..], .nil);
+        if (self.stack.items.ptr != old_storage) self.retargetOpenUpvalues();
     }
 
     fn moveStack(self: *Thread, allocator: std.mem.Allocator) !void {
@@ -1110,6 +1131,15 @@ pub const Thread = struct {
         @memset(std.mem.sliceAsBytes(self.stack.allocatedSlice()), 0xaa);
         self.stack.deinit(allocator);
         self.stack = moved;
+        self.retargetOpenUpvalues();
+    }
+
+    pub fn retargetOpenUpvalues(self: *Thread) void {
+        var open = self.open_upvalues;
+        while (open) |upvalue| : (open = upvalue.next) {
+            @import("rollback.zig").touch(upvalue);
+            upvalue.retarget();
+        }
     }
 
     /// Register, relative to the top frame, for calls the runtime makes itself: above
