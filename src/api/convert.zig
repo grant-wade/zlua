@@ -91,7 +91,7 @@ pub fn toRuntimeValueNamed(state: *State, value: anytype, name: []const u8) !run
         else
             arrayToRuntimeValue(state, value[0..]),
         .vector => |vector| arrayToRuntimeValue(state, @as([vector.len]vector.child, value)[0..]),
-        .@"struct" => |info| structToRuntimeValue(state, value, info),
+        .@"struct" => structToRuntimeValue(state, value),
         .@"enum" => .{ .string = try state.raw_state.strings.intern(std.enums.tagName(T, value) orelse return error.UnsupportedType) },
         .enum_literal => .{ .string = try state.raw_state.strings.intern(@tagName(value)) },
         .@"fn" => .{ .api_callback = try callbacks.intern(state, name, callbacks.typedHostFn(value)) },
@@ -235,7 +235,8 @@ fn arrayToRuntimeValue(state: *State, values: anytype) !runtime.Value {
     return table;
 }
 
-fn structToRuntimeValue(state: *State, value: anytype, comptime info: std.builtin.Type.Struct) !runtime.Value {
+fn structToRuntimeValue(state: *State, value: anytype) !runtime.Value {
+    const info = @typeInfo(@TypeOf(value)).@"struct";
     if (info.is_tuple) return tupleToRuntimeValue(state, value, reflection.fieldNames(info).len);
 
     const hash_hint = std.math.cast(u32, reflection.fieldNames(info).len) orelse return error.IntegerOutOfRange;
