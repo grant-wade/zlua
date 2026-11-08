@@ -130,6 +130,12 @@
 
 </details>
 
+## Functions
+
+- [copyValue](#fn-copyvalue)
+- [loadValue](#fn-loadvalue)
+- [storeValue](#fn-storevalue)
+
 ## Types
 
 - [RuntimeError](#type-runtimeerror)
@@ -272,6 +278,38 @@ pub const Value = union(enum(u8)) {
 ```zig
 pub const NativeFn = @import("native_fn.zig").NativeFn;
 ```
+
+<a id="fn-copyvalue"></a>
+
+## copyValue
+
+Copies the 8-byte payload and the tag byte of `src`, but not its padding.
+
+```zig
+pub fn copyValue(dst: *Value, src: *const Value) void
+```
+
+References: [`Value`](#type-value)
+
+<a id="fn-loadvalue"></a>
+
+## loadValue
+
+```zig
+pub fn loadValue(src: *const Value) Value
+```
+
+References: [`Value`](#type-value)
+
+<a id="fn-storevalue"></a>
+
+## storeValue
+
+```zig
+pub fn storeValue(dst: *Value, value: Value) void
+```
+
+References: [`Value`](#type-value)
 
 <a id="type-string"></a>
 
@@ -1056,6 +1094,8 @@ pub const Upvalue = struct {
     rollback: ?*@import("rollback.zig").Record(Upvalue) = null,
     /// Next open upvalue of the owner thread.
     next: ?*Upvalue = null,
+    /// The owner's stack slot while open, or `cell.closed`.
+    value: *Value,
     cell: Cell,
 };
 ```
@@ -1067,6 +1107,8 @@ pub const Upvalue = struct {
 | [Cell](#type-upvalue-cell) |  |  |  |
 | [Slot](#type-upvalue-slot) |  |  | The owner thread's stack slot that an open upvalue refers to. |
 | [get](#fn-upvalue-get) | `self: *const Upvalue` | `Value` |  |
+| [close](#fn-upvalue-close) | `self: *Upvalue, value: Value` | `void` |  |
+| [retarget](#fn-upvalue-retarget) | `self: *Upvalue` | `void` | The upvalue must be open. |
 
 <a id="type-upvalue-cell"></a>
 
@@ -1101,6 +1143,28 @@ pub inline fn get(self: *const Upvalue) Value
 ```
 
 References: [`Upvalue`](#type-upvalue), [`Value`](#type-value)
+
+<a id="fn-upvalue-close"></a>
+
+### Upvalue.close
+
+```zig
+pub fn close(self: *Upvalue, value: Value) void
+```
+
+References: [`Upvalue`](#type-upvalue), [`Value`](#type-value)
+
+<a id="fn-upvalue-retarget"></a>
+
+### Upvalue.retarget
+
+The upvalue must be open.
+
+```zig
+pub fn retarget(self: *Upvalue) void
+```
+
+References: [`Upvalue`](#type-upvalue)
 
 <a id="type-tableentry"></a>
 
@@ -1813,6 +1877,7 @@ pub const Thread = struct {
 | [noteContinuation](#fn-thread-notecontinuation) | `self: *Thread, frame_count: usize` | `void` |  |
 | [refreshContinuationFrameCount](#fn-thread-refreshcontinuationframecount) | `self: *Thread` | `void` |  |
 | [ensureStack](#fn-thread-ensurestack) | `self: *Thread, allocator: std.mem.Allocator, size: usize, limit: usize` | `!void` |  |
+| [retargetOpenUpvalues](#fn-thread-retargetopenupvalues) | `self: *Thread` | `void` |  |
 | [scratchRegister](#fn-thread-scratchregister) | `self: *const Thread` | `u32` | Register, relative to the top frame, for calls the runtime makes itself: above the frame's registers and any running native function's arguments. |
 
 <a id="fn-thread-initroot"></a>
@@ -1917,6 +1982,16 @@ References: [`Thread`](#type-thread)
 
 ```zig
 pub inline fn ensureStack(self: *Thread, allocator: std.mem.Allocator, size: usize, limit: usize) !void
+```
+
+References: [`Thread`](#type-thread)
+
+<a id="fn-thread-retargetopenupvalues"></a>
+
+### Thread.retargetOpenUpvalues
+
+```zig
+pub fn retargetOpenUpvalues(self: *Thread) void
 ```
 
 References: [`Thread`](#type-thread)

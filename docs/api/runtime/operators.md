@@ -150,6 +150,7 @@
 - [compareValues](#fn-comparevalues)
 - [arithmeticVerb](#fn-arithmeticverb)
 - [rawNumericBinaryOpFast](#fn-rawnumericbinaryopfast)
+- [binarySlotOpFast](#fn-binaryslotopfast)
 - [rawIntegerBitwiseOpFast](#fn-rawintegerbitwiseopfast)
 - [equalityHasMetamethod](#fn-equalityhasmetamethod)
 - [rawCompareConstantResult](#fn-rawcompareconstantresult)
@@ -373,6 +374,18 @@ References: [`BinaryOp`](#type-binaryop)
 
 ```zig
 pub inline fn rawNumericBinaryOpFast(lhs: Value, rhs: Value, comptime op: BinaryOp) ?Value
+```
+
+References: [`BinaryOp`](#type-binaryop)
+
+<a id="fn-binaryslotopfast"></a>
+
+## binarySlotOpFast
+
+Stores `lhs op rhs` in `dst` for numbers and returns true, or returns false for the general path.
+
+```zig
+pub fn binarySlotOpFast(dst: *Value, lhs: *const Value, rhs: *const Value, comptime op: BinaryOp) bool
 ```
 
 References: [`BinaryOp`](#type-binaryop)

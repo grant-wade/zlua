@@ -145,6 +145,7 @@
 
 ## Types
 
+- [CaptureState](#type-capturestate)
 - [Match](#type-match)
 
 ## Constants
@@ -159,14 +160,27 @@
 pub const max_captures = 32;
 ```
 
+<a id="type-capturestate"></a>
+
+## CaptureState
+
+```zig
+pub const CaptureState = struct {
+    slots: [max_captures]CaptureSlot = undefined,
+    count: usize = 0,
+};
+```
+
 <a id="type-match"></a>
 
 ## Match
 
+A match whose captures point into caller-owned or empty capture storage.
+
 ```zig
 pub const Match = struct {
     range: MatchRange,
-    captures: CaptureState,
+    captures: *const CaptureState,
 };
 ```
 
@@ -200,21 +214,25 @@ References: [`Match`](#type-match)
 
 ## simplePatternFind
 
+`captures` receives the captures of a match that has any.
+
 ```zig
-pub fn simplePatternFind(state: *State, source: []const u8, pattern: []const u8, start: usize) !?Match
+pub fn simplePatternFind(state: *State, source: []const u8, pattern: []const u8, start: usize, captures: *CaptureState) !?Match
 ```
 
-References: [`Match`](#type-match)
+References: [`CaptureState`](#type-capturestate), [`Match`](#type-match)
 
 <a id="fn-unanchoredpatternfind"></a>
 
 ## unanchoredPatternFind
 
+`captures` receives the captures of a match that has any.
+
 ```zig
-pub fn unanchoredPatternFind(state: *State, source: []const u8, pattern: []const u8, start: usize) !?Match
+pub fn unanchoredPatternFind(state: *State, source: []const u8, pattern: []const u8, start: usize, captures: *CaptureState) !?Match
 ```
 
-References: [`Match`](#type-match)
+References: [`CaptureState`](#type-capturestate), [`Match`](#type-match)
 
 <a id="fn-invalidcaptureindex"></a>
 
@@ -249,8 +267,10 @@ References: [`Match`](#type-match)
 ## appendCaptureValues
 
 ```zig
-pub fn appendCaptureValues(state: *State, values: *std.ArrayList(Value), source: []const u8, captures: CaptureState) !void
+pub fn appendCaptureValues(state: *State, values: *std.ArrayList(Value), source: []const u8, captures: *const CaptureState) !void
 ```
+
+References: [`CaptureState`](#type-capturestate)
 
 <a id="fn-capturevalue"></a>
 
