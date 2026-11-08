@@ -37,6 +37,7 @@
 - Copying values between registers, upvalues, and tables is faster.
 - Float arithmetic is faster.
 - Lua function calls and returns are faster.
+- `pcall` and `xpcall` of a Lua function are faster.
 
 ### Packaging
 
