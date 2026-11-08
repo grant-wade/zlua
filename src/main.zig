@@ -307,6 +307,8 @@ fn parseStdlibLibrary(name: []const u8, libraries: *zlua.stdlib.LibrarySet) !voi
         libraries.msgpack = true;
     } else if (std.mem.eql(u8, name, "csv")) {
         libraries.csv = true;
+    } else if (std.mem.eql(u8, name, "datetime")) {
+        libraries.datetime = true;
     } else if (std.mem.eql(u8, name, "fs")) {
         libraries.fs = true;
     } else {

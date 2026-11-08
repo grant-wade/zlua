@@ -1,0 +1,20 @@
+offset	1979-05-27T07:32:00.5-07:00	1979	5	27	7	32	0	500000000	-420
+local_datetime	1979-05-27T07:32:00	1979	5	27	7	32	0	0	nil
+local_date	1979-05-27	1979	5	27	nil	nil	nil	nil	nil
+local_time	07:32:00.999999999	nil	nil	nil	7	32	0	999999999	nil
+offset = 1979-05-27T07:32:00.5-07:00
+local_datetime = 1979-05-27T07:32:00
+local_date = 1979-05-27
+local_time = 07:32:00.999999999
+{"when":"1979-05-27"}	when
+1979-05-27T07:32:00.5-07:00
+1970-01-01T00:00:00Z	1970-01-01T00:00:01.5Z	23:59:00
+2024-02-29T00:00:00+05:30
+bad argument #1 to 'datetime.parse' (invalid date at character 1)
+bad argument #1 to 'datetime.parse' (invalid time at character 1)
+bad argument #1 to 'datetime.parse' (unexpected text after the date or time at character 9)
+bad argument #1 to 'datetime.parse' (invalid time offset at character 1)
+bad argument #1 to 'datetime.parse' (invalid date or time at character 1)
+bad argument #1 to 'datetime.new' (day is out of range for the month)
+bad argument #1 to 'datetime.new' (only a date with a time can have an offset)
+toml.write: at $.edited: invalid datetime: month must be between 1 and 12

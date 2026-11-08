@@ -280,6 +280,11 @@ const Writer = struct {
     fn writeTable(self: *Writer, out: *std.Io.Writer, table: *Table) anyerror!void {
         switch (try self.walker.enter(table)) {
             .null => try out.writeAll("null"),
+            .datetime => |value| {
+                var buffer: [64]u8 = undefined;
+                try self.writeString(out, std.fmt.bufPrint(&buffer, "{f}", .{value}) catch unreachable);
+            },
+            .extension => return self.walker.fail("cannot encode a MessagePack extension", .{}),
             .array => |len| {
                 defer self.walker.leave();
                 try out.writeByte('[');

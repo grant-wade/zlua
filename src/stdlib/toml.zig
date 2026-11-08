@@ -2,6 +2,7 @@ const std = @import("std");
 const compile = @import("../compile.zig");
 const runtime = @import("../runtime.zig");
 const data = @import("data.zig");
+const datetime = @import("datetime.zig");
 const metatable_mod = @import("../runtime/metatable.zig");
 
 const bytecode = compile.bytecode;
@@ -476,77 +477,10 @@ const Parser = struct {
     }
 
     fn dateTime(self: *Parser) !Value {
-        const start = self.pos;
-        const rest = self.input[self.pos..];
-        if (rest.len >= 3 and rest[2] == ':') {
-            try self.time(start);
-            return self.stringValue(self.input[start..self.pos]);
-        }
-        try self.date(start);
-        const has_time = if (self.peek()) |byte|
-            byte == 'T' or byte == 't' or (byte == ' ' and self.input.len - self.pos >= 4 and std.ascii.isDigit(self.input[self.pos + 1]) and std.ascii.isDigit(self.input[self.pos + 2]) and self.input[self.pos + 3] == ':')
-        else
-            false;
-        if (has_time) {
-            self.pos += 1;
-            try self.time(start);
-            if (self.peek()) |byte| switch (byte) {
-                'Z', 'z' => self.pos += 1,
-                '+', '-' => {
-                    self.pos += 1;
-                    const hour = try self.fixedDigits(start, 2);
-                    try self.expectByte(start, ':');
-                    const minute = try self.fixedDigits(start, 2);
-                    if (hour > 23 or minute > 59) return self.fail(start, "invalid time offset", .{});
-                },
-                else => {},
-            };
-        }
-        return self.stringValue(self.input[start..self.pos]);
-    }
-
-    fn date(self: *Parser, start: usize) !void {
-        const year = try self.fixedDigits(start, 4);
-        try self.expectByte(start, '-');
-        const month = try self.fixedDigits(start, 2);
-        try self.expectByte(start, '-');
-        const day = try self.fixedDigits(start, 2);
-        if (month < 1 or month > 12 or day < 1 or day > daysInMonth(year, month)) return self.fail(start, "invalid date", .{});
-    }
-
-    fn time(self: *Parser, start: usize) !void {
-        const hour = try self.fixedDigits(start, 2);
-        try self.expectByte(start, ':');
-        const minute = try self.fixedDigits(start, 2);
-        if (self.peek() != ':') {
-            if (hour > 23 or minute > 59) return self.fail(start, "invalid time", .{});
-            return;
-        }
-        self.pos += 1;
-        const second = try self.fixedDigits(start, 2);
-        if (hour > 23 or minute > 59 or second > 60) return self.fail(start, "invalid time", .{});
-        if (self.peek() == '.') {
-            self.pos += 1;
-            const digits_start = self.pos;
-            while (self.pos < self.input.len and std.ascii.isDigit(self.input[self.pos])) self.pos += 1;
-            if (self.pos == digits_start) return self.fail(start, "expected digits after the decimal point in the time", .{});
-        }
-    }
-
-    fn fixedDigits(self: *Parser, start: usize, count: usize) !u32 {
-        if (self.input.len - self.pos < count) return self.fail(start, "invalid date or time", .{});
-        var result: u32 = 0;
-        for (self.input[self.pos..][0..count]) |byte| {
-            if (!std.ascii.isDigit(byte)) return self.fail(start, "invalid date or time", .{});
-            result = result * 10 + (byte - '0');
-        }
-        self.pos += count;
-        return result;
-    }
-
-    fn expectByte(self: *Parser, start: usize, byte: u8) !void {
-        if (self.peek() != byte) return self.fail(start, "invalid date or time", .{});
-        self.pos += 1;
+        var failure: datetime.Failure = undefined;
+        const parsed, const end = datetime.scan(self.input, self.pos, &failure) catch return self.fail(failure.offset, "{s}", .{failure.message});
+        self.pos = end;
+        return datetime.toLua(self.state, parsed);
     }
 
     /// Reads a basic string at its opening quote. The result is valid until the next call.
@@ -776,14 +710,6 @@ fn looksLikeDateTime(bytes: []const u8) bool {
     return bytes.len >= 3 and std.ascii.isDigit(bytes[1]) and bytes[2] == ':';
 }
 
-fn daysInMonth(year: u32, month: u32) u32 {
-    return switch (month) {
-        2 => if (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)) 29 else 28,
-        4, 6, 9, 11 => 30,
-        else => 31,
-    };
-}
-
 pub fn write(state: *State, thread: *Thread, op: bytecode.Call) !void {
     if (op.arg_count == 0) return state.failArgumentMessage("toml.write", 1, "value expected");
     var writer: Writer = .{ .walker = .init(state, "toml.write"), .value = runtime.argValue(state, thread, op, 0) };
@@ -817,6 +743,8 @@ const Writer = struct {
             .object => {},
             .array => |len| if (len != 0) return self.walker.fail("expected a table with named fields, got an array", .{}),
             .null => return self.walker.fail("TOML has no null value", .{}),
+            .datetime => return self.walker.fail("expected a table with named fields, got a datetime", .{}),
+            .extension => return self.walker.fail("cannot encode a MessagePack extension", .{}),
         }
         defer self.walker.leave();
         self.wrote_any = try self.writeBody(out, root, false);
@@ -892,7 +820,7 @@ const Writer = struct {
             else => return .inline_value,
         };
         switch (try self.walker.classify(table)) {
-            .null => return .inline_value,
+            .null, .datetime, .extension => return .inline_value,
             .object => return .section,
             .array => |len| {
                 if (len == 0) return .inline_value;
@@ -923,6 +851,11 @@ const Writer = struct {
             .string => |string| try self.writeStringChecked(out, string.bytes()),
             .table => |table| switch (try self.walker.enter(table)) {
                 .null => return self.walker.fail("TOML has no null value", .{}),
+                .datetime => |moment| {
+                    if (moment.date) |date| if (date.year < 0 or date.year > 9999) return self.walker.fail("TOML years must be between 0 and 9999", .{});
+                    try out.print("{f}", .{moment});
+                },
+                .extension => return self.walker.fail("cannot encode a MessagePack extension", .{}),
                 .array => |len| {
                     defer self.walker.leave();
                     try out.writeByte('[');

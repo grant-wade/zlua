@@ -1,0 +1,11 @@
+1	7f	extension
+c70305616263
+bad argument #1 to 'msgpack.extension' (type -1 is the timestamp extension; use a datetime)
+json.write: cannot encode a MessagePack extension
+1970-01-01T00:00:00Z	d6ff00000000	true
+2018-01-02T03:04:05.678901234Z	d7ffa1dcd7c85a4af6a5	true
+2514-05-30T01:53:04Z	c70cff000000000000000400000000	true
+1969-12-31T23:59:59Z	c70cff00000000ffffffffffffffff	true
+2000-01-01T00:00:00Z
+msgpack.write: a MessagePack timestamp needs a date, a time, and an offset
+ca3fc00000	cb3fb999999999999a	ca7f800000

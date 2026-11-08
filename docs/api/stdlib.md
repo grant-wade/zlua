@@ -3,7 +3,7 @@
 ## Navigation
 
 - [API Index](README.md)
-- Submodules: [stdlib.base](stdlib/base.md), [stdlib.static_strings](stdlib/static_strings.md), [stdlib.table](stdlib/table.md), [stdlib.string](stdlib/string.md), [stdlib.math](stdlib/math.md), [stdlib.utf8](stdlib/utf8.md), [stdlib.coroutine](stdlib/coroutine.md), [stdlib.debug](stdlib/debug.md), [stdlib.io](stdlib/io.md), [stdlib.os](stdlib/os.md), [stdlib.package](stdlib/package.md), [stdlib.json](stdlib/json.md), [stdlib.data](stdlib/data.md), [stdlib.toml](stdlib/toml.md), [stdlib.msgpack](stdlib/msgpack.md), [stdlib.csv](stdlib/csv.md), [stdlib.fs](stdlib/fs.md)
+- Submodules: [stdlib.base](stdlib/base.md), [stdlib.static_strings](stdlib/static_strings.md), [stdlib.table](stdlib/table.md), [stdlib.string](stdlib/string.md), [stdlib.math](stdlib/math.md), [stdlib.utf8](stdlib/utf8.md), [stdlib.coroutine](stdlib/coroutine.md), [stdlib.debug](stdlib/debug.md), [stdlib.io](stdlib/io.md), [stdlib.os](stdlib/os.md), [stdlib.package](stdlib/package.md), [stdlib.json](stdlib/json.md), [stdlib.data](stdlib/data.md), [stdlib.datetime](stdlib/datetime.md), [stdlib.toml](stdlib/toml.md), [stdlib.msgpack](stdlib/msgpack.md), [stdlib.csv](stdlib/csv.md), [stdlib.fs](stdlib/fs.md)
 
 <details>
 <summary>All documents</summary>
@@ -66,6 +66,7 @@
 - [stdlib.package](stdlib/package.md)
 - [stdlib.json](stdlib/json.md)
 - [stdlib.data](stdlib/data.md)
+- [stdlib.datetime](stdlib/datetime.md)
 - [stdlib.toml](stdlib/toml.md)
 - [stdlib.msgpack](stdlib/msgpack.md)
 - [stdlib.csv](stdlib/csv.md)
@@ -122,6 +123,7 @@
 - [testing.normalizer](testing/normalizer.md)
 - [testing.parallel](testing/parallel.md)
 - [testing.extension_runner](testing/extension_runner.md)
+- [testing.format_suite](testing/format_suite.md)
 - [testing.official_suite](testing/official_suite.md)
 - [testing.sandbox_runner](testing/sandbox_runner.md)
 - [testing.generators](testing/generators.md)
@@ -163,6 +165,7 @@
 - [toml](#import-toml) `@import("stdlib/toml.zig")`
 - [msgpack](#import-msgpack) `@import("stdlib/msgpack.zig")`
 - [csv](#import-csv) `@import("stdlib/csv.zig")`
+- [datetime](#import-datetime) `@import("stdlib/datetime.zig")`
 - [fs](#import-fs) `@import("stdlib/fs.zig")`
 - [static_strings](#import-static_strings) `@import("stdlib/static_strings.zig")`
 
@@ -278,6 +281,14 @@ pub const msgpack = @import("stdlib/msgpack.zig");
 pub const csv = @import("stdlib/csv.zig");
 ```
 
+<a id="import-datetime"></a>
+
+## datetime
+
+```zig
+pub const datetime = @import("stdlib/datetime.zig");
+```
+
 <a id="import-fs"></a>
 
 ## fs
@@ -355,6 +366,7 @@ pub const LibrarySet = struct {
     toml: bool = false,
     msgpack: bool = false,
     csv: bool = false,
+    datetime: bool = false,
     fs: bool = false,
 };
 ```
@@ -420,6 +432,8 @@ pub const LibraryTable = enum {
     data_null,
     data_array_metatable,
     data_object_metatable,
+    data_datetime_metatable,
+    data_extension_metatable,
     package,
     package_loaded,
     package_preload,

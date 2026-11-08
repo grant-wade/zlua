@@ -4,3 +4,6 @@ print(select(2, pcall(csv.read, "a,b\n1\n")))
 print(select(2, pcall(csv.read, 'a\n"x"y\n')))
 print(select(2, pcall(csv.write, { { a = 1 }, { a = 2, b = 3 } })))
 print(select(2, pcall(csv.write, { { a = { 1, 2 } } })))
+local blanks = csv.read('a,b\n"",\n')[1]
+print(blanks.a == "", blanks.b == csv.null)
+print((csv.write({ { a = "", b = csv.null } }, { record_terminator = "lf" })))

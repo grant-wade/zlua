@@ -2,6 +2,7 @@ const std = @import("std");
 const compile = @import("../compile.zig");
 const runtime = @import("../runtime.zig");
 const data = @import("data.zig");
+const metatable_mod = @import("../runtime/metatable.zig");
 
 const bytecode = compile.bytecode;
 const State = runtime.State;
@@ -49,6 +50,12 @@ pub fn read(state: *State, thread: *Thread, op: bytecode.Call) !void {
 const Reader = struct {
     const End = enum { cell, record, input };
 
+    const Cell = struct {
+        bytes: []const u8,
+        quoted: bool,
+        end: End,
+    };
+
     state: *State,
     input: []const u8,
     delimiter: u8,
@@ -75,8 +82,9 @@ const Reader = struct {
         if (has_header) {
             if (self.input.len == 0) return self.fail(0, "missing header row", .{});
             while (true) {
-                const cell, const end = try self.nextCell();
-                const name = try allocator.dupe(u8, cell);
+                const cell = try self.nextCell();
+                const end = cell.end;
+                const name = try allocator.dupe(u8, cell.bytes);
                 self.header.append(allocator, name) catch |err| {
                     allocator.free(name);
                     return err;
@@ -93,14 +101,15 @@ const Reader = struct {
             var column: usize = 0;
             while (true) : (column += 1) {
                 const cell_start = self.pos;
-                const cell, const end = try self.nextCell();
+                const cell = try self.nextCell();
+                const end = cell.end;
                 if (has_header) {
                     if (column == self.header.items.len) return self.fail(cell_start, "record has more fields than the header's {d}", .{self.header.items.len});
                     try b.setKey(self.header.items[column]);
                 } else {
                     try b.setKey(std.fmt.bufPrint(&key_buffer, "{d}", .{column}) catch unreachable);
                 }
-                if (cell.len == 0) try b.appendNull() else try b.appendString(cell);
+                if (cell.bytes.len == 0 and !cell.quoted) try b.appendNull() else try b.appendString(cell.bytes);
                 if (end != .cell) break;
             }
             if (has_header and column + 1 != self.header.items.len) {
@@ -113,11 +122,12 @@ const Reader = struct {
     }
 
     /// Reads one cell and the separator after it. The bytes are valid until the next call.
-    fn nextCell(self: *Reader) !struct { []const u8, End } {
+    fn nextCell(self: *Reader) !Cell {
         const input = self.input;
         const start = self.pos;
         var bytes: []const u8 = undefined;
-        if (self.pos < input.len and input[self.pos] == '"') {
+        const quoted = self.pos < input.len and input[self.pos] == '"';
+        if (quoted) {
             self.pos += 1;
             self.scratch.clearRetainingCapacity();
             while (true) {
@@ -142,15 +152,15 @@ const Reader = struct {
             bytes = input[start..self.pos];
         }
 
-        if (self.pos == input.len) return .{ bytes, .input };
+        if (self.pos == input.len) return .{ .bytes = bytes, .quoted = quoted, .end = .input };
         const separator = input[self.pos];
         self.pos += 1;
-        if (separator == self.delimiter) return .{ bytes, .cell };
+        if (separator == self.delimiter) return .{ .bytes = bytes, .quoted = quoted, .end = .cell };
         if (separator == '\r') {
             if (self.pos == input.len or input[self.pos] != '\n') return self.fail(self.pos - 1, "carriage return without a line feed", .{});
             self.pos += 1;
         }
-        return .{ bytes, .record };
+        return .{ .bytes = bytes, .quoted = quoted, .end = .record };
     }
 
     fn isSeparator(self: *const Reader, byte: u8) bool {
@@ -196,6 +206,7 @@ const Writer = struct {
             .array => |len| len,
             .object => |fields| if (fields == 0) 0 else return self.walker.fail("expected an array of rows, got a table with named fields", .{}),
             .null => return self.walker.fail("expected an array of rows, got null", .{}),
+            .datetime, .extension => return self.walker.fail("expected an array of rows, got a {s} value", .{metatable_mod.luaTypeNameForError(self.walker.state, self.value)}),
         };
         defer self.walker.leave();
         if (count == 0) return self.walker.fail("needs at least one row", .{});
@@ -246,6 +257,7 @@ const Writer = struct {
                 return self.walker.fail("nested arrays are not supported", .{});
             },
             .null => return self.walker.fail("row must be a table with named fields, got null", .{}),
+            .datetime, .extension => return self.walker.fail("row must be a table with named fields, got a {s} value", .{metatable_mod.luaTypeNameForError(self.walker.state, .{ .table = table })}),
         }
         defer self.walker.leave();
         const prefix_len = self.path.items.len;
@@ -259,10 +271,13 @@ const Writer = struct {
             if (prefix_len != 0) try self.path.append(allocator, '.');
             try self.path.appendSlice(allocator, name);
 
-            if (entry.value == .table and !self.walker.isNull(entry.value.table)) {
-                try self.walker.visit(entry.value);
-                try self.collect(entry.value.table, first);
-                continue;
+            if (entry.value == .table) {
+                const shape = try self.walker.classify(entry.value.table);
+                if (shape == .array or shape == .object) {
+                    try self.walker.visit(entry.value);
+                    try self.collect(entry.value.table, first);
+                    continue;
+                }
             }
             if (first) {
                 const gop = try self.column_index.getOrPut(allocator, self.path.items);
@@ -293,14 +308,21 @@ const Writer = struct {
                 try data.writeFloat(out, number);
             },
             .string => |string| try self.writeEscaped(out, string.bytes()),
-            .table => |table| if (!self.walker.isNull(table)) return self.walker.failValue(value),
+            .table => |table| switch (try self.walker.classify(table)) {
+                .null => {},
+                .datetime => |moment| {
+                    var buffer: [64]u8 = undefined;
+                    try self.writeEscaped(out, std.fmt.bufPrint(&buffer, "{f}", .{moment}) catch unreachable);
+                },
+                else => return self.walker.failValue(value),
+            },
             else => return self.walker.failValue(value),
         }
     }
 
     fn writeEscaped(self: *Writer, out: *std.Io.Writer, bytes: []const u8) !void {
         const specials = [_]u8{ self.options.delimiter, '"', '\r', '\n' };
-        if (std.mem.indexOfAny(u8, bytes, &specials) == null) return out.writeAll(bytes);
+        if (bytes.len != 0 and std.mem.indexOfAny(u8, bytes, &specials) == null) return out.writeAll(bytes);
         try out.writeByte('"');
         var rest = bytes;
         while (std.mem.indexOfScalar(u8, rest, '"')) |quote| {

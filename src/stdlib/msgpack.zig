@@ -2,6 +2,7 @@ const std = @import("std");
 const compile = @import("../compile.zig");
 const runtime = @import("../runtime.zig");
 const data = @import("data.zig");
+const datetime = @import("datetime.zig");
 
 const bytecode = compile.bytecode;
 const State = runtime.State;
@@ -52,7 +53,7 @@ const Reader = struct {
                 0xc4, 0xd9 => try self.stringValue(start, try self.int(start, u8)),
                 0xc5, 0xda => try self.stringValue(start, try self.int(start, u16)),
                 0xc6, 0xdb => try self.stringValue(start, try self.int(start, u32)),
-                0xc7, 0xc8, 0xc9, 0xd4...0xd8 => return self.extension(start, tag),
+                0xc7, 0xc8, 0xc9, 0xd4...0xd8 => try self.extension(start, tag),
                 0xca => try self.scalar(.{ .number = @as(f32, @bitCast(try self.int(start, u32))) }),
                 0xcb => try self.scalar(.{ .number = @bitCast(try self.int(start, u64)) }),
                 0xcc => try self.scalar(.{ .integer = try self.int(start, u8) }),
@@ -60,8 +61,7 @@ const Reader = struct {
                 0xce => try self.scalar(.{ .integer = try self.int(start, u32) }),
                 0xcf => {
                     const value = try self.int(start, u64);
-                    const integer = std.math.cast(i64, value) orelse return self.fail(start, "integer {d} is outside the 64-bit signed range", .{value});
-                    try self.scalar(.{ .integer = integer });
+                    try self.scalar(if (std.math.cast(i64, value)) |integer| .{ .integer = integer } else .{ .number = @floatFromInt(value) });
                 },
                 0xd0 => try self.scalar(.{ .integer = try self.int(start, i8) }),
                 0xd1 => try self.scalar(.{ .integer = try self.int(start, i16) }),
@@ -116,16 +116,45 @@ const Reader = struct {
         return self.take(start, len);
     }
 
-    fn extension(self: *Reader, start: usize, tag: u8) runtime.RuntimeError {
-        const header: usize = switch (tag) {
-            0xc7 => 2,
-            0xc8 => 3,
-            0xc9 => 5,
-            else => 1,
+    fn extension(self: *Reader, start: usize, tag: u8) !void {
+        const len: usize = switch (tag) {
+            0xd4 => 1,
+            0xd5 => 2,
+            0xd6 => 4,
+            0xd7 => 8,
+            0xd8 => 16,
+            0xc7 => try self.int(start, u8),
+            0xc8 => try self.int(start, u16),
+            else => try self.int(start, u32),
         };
-        if (self.input.len - self.pos < header) return self.fail(start, "unexpected end of input", .{});
-        const type_id: i8 = @bitCast(self.input[self.pos + header - 1]);
-        return self.fail(start, "unsupported extension type {d}", .{type_id});
+        const type_id: i8 = @bitCast(try self.byte(start));
+        const payload = try self.take(start, len);
+        const value = if (type_id == -1)
+            try datetime.toLua(self.state, try self.timestamp(start, payload))
+        else
+            try data.newExtension(self.state, .{ .type_id = type_id, .data = payload });
+        try self.scalar(value);
+    }
+
+    fn timestamp(self: *Reader, start: usize, payload: []const u8) !datetime.DateTime {
+        var seconds: i64 = undefined;
+        var nanosecond: u64 = 0;
+        switch (payload.len) {
+            4 => seconds = std.mem.readInt(u32, payload[0..4], .big),
+            8 => {
+                const packed_value = std.mem.readInt(u64, payload[0..8], .big);
+                nanosecond = packed_value >> 34;
+                seconds = @intCast(packed_value & ((1 << 34) - 1));
+            },
+            12 => {
+                nanosecond = std.mem.readInt(u32, payload[0..4], .big);
+                seconds = std.mem.readInt(i64, payload[4..12], .big);
+            },
+            else => return self.fail(start, "timestamp of {d} bytes; expected 4, 8, or 12", .{payload.len}),
+        }
+        if (nanosecond > 999_999_999) return self.fail(start, "timestamp nanoseconds out of range", .{});
+        if (@abs(seconds) > datetime.max_unix_seconds) return self.fail(start, "timestamp is out of range", .{});
+        return datetime.DateTime.fromUnix(seconds, @intCast(nanosecond));
     }
 
     fn byte(self: *Reader, start: usize) !u8 {
@@ -146,6 +175,17 @@ const Reader = struct {
         return bytes;
     }
 };
+
+pub fn extension(state: *State, thread: *Thread, op: bytecode.Call) !void {
+    const name = "msgpack.extension";
+    const type_arg = runtime.argValue(state, thread, op, 0);
+    const integer = runtime.toInteger(type_arg) orelse return state.failArgumentType(name, 1, "integer", type_arg);
+    const type_id = std.math.cast(i8, integer) orelse return state.failArgumentMessage(name, 1, "type must be between -128 and 127");
+    if (type_id == -1) return state.failArgumentMessage(name, 1, "type -1 is the timestamp extension; use a datetime");
+    const payload = runtime.argValue(state, thread, op, 1);
+    if (payload != .string) return state.failArgumentType(name, 2, "string", payload);
+    try data.returnValue(state, thread, op, try data.newExtension(state, .{ .type_id = type_id, .data = payload.string.bytes() }));
+}
 
 pub fn write(state: *State, thread: *Thread, op: bytecode.Call) !void {
     if (op.arg_count == 0) return state.failArgumentMessage("msgpack.write", 1, "value expected");
@@ -168,8 +208,14 @@ const Writer = struct {
             .boolean => |boolean| try out.writeByte(if (boolean) 0xc3 else 0xc2),
             .integer => |integer| try writeInteger(out, integer),
             .number => |number| {
-                try out.writeByte(0xcb);
-                try out.writeInt(u64, @bitCast(number), .big);
+                const narrow: f32 = @floatCast(number);
+                if (@as(f64, narrow) == number) {
+                    try out.writeByte(0xca);
+                    try out.writeInt(u32, @bitCast(narrow), .big);
+                } else {
+                    try out.writeByte(0xcb);
+                    try out.writeInt(u64, @bitCast(number), .big);
+                }
             },
             .string => |string| try self.writeString(out, string.bytes()),
             .table => |table| try self.writeTable(out, table),
@@ -180,6 +226,15 @@ const Writer = struct {
     fn writeTable(self: *Writer, out: *std.Io.Writer, table: *Table) anyerror!void {
         switch (try self.walker.enter(table)) {
             .null => try out.writeByte(0xc0),
+            .datetime => |value| {
+                if (value.date == null or value.time == null or value.offset == null) return self.walker.fail("a MessagePack timestamp needs a date, a time, and an offset", .{});
+                try writeTimestamp(out, value.unixSeconds(), value.time.?.nanosecond);
+            },
+            .extension => |value| {
+                try self.writeExtensionHeader(out, value.data.len);
+                try out.writeByte(@bitCast(value.type_id));
+                try out.writeAll(value.data);
+            },
             .array => |len| {
                 defer self.walker.leave();
                 try self.writeHeader(out, len, 0x90, 15, 0xdc);
@@ -235,7 +290,39 @@ const Writer = struct {
             return self.walker.fail("length {d} does not fit in MessagePack", .{len});
         }
     }
+
+    fn writeExtensionHeader(self: *Writer, out: *std.Io.Writer, len: usize) !void {
+        switch (len) {
+            1 => try out.writeByte(0xd4),
+            2 => try out.writeByte(0xd5),
+            4 => try out.writeByte(0xd6),
+            8 => try out.writeByte(0xd7),
+            16 => try out.writeByte(0xd8),
+            else => if (len <= std.math.maxInt(u8)) {
+                try out.writeByte(0xc7);
+                try out.writeByte(@intCast(len));
+            } else {
+                try self.writeHeader(out, len, 0, 0, 0xc8);
+            },
+        }
+    }
 };
+
+fn writeTimestamp(out: *std.Io.Writer, seconds: i64, nanosecond: u32) !void {
+    if (seconds >= 0 and seconds < 1 << 34) {
+        if (nanosecond == 0 and seconds < 1 << 32) {
+            try out.writeAll("\xd6\xff");
+            try out.writeInt(u32, @intCast(seconds), .big);
+        } else {
+            try out.writeAll("\xd7\xff");
+            try out.writeInt(u64, @as(u64, nanosecond) << 34 | @as(u64, @intCast(seconds)), .big);
+        }
+        return;
+    }
+    try out.writeAll("\xc7\x0c\xff");
+    try out.writeInt(u32, nanosecond, .big);
+    try out.writeInt(i64, seconds, .big);
+}
 
 fn writeInteger(out: *std.Io.Writer, value: i64) !void {
     if (value >= 0) {

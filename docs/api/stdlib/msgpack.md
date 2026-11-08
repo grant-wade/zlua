@@ -66,6 +66,7 @@
 - [stdlib.package](../stdlib/package.md)
 - [stdlib.json](../stdlib/json.md)
 - [stdlib.data](../stdlib/data.md)
+- [stdlib.datetime](../stdlib/datetime.md)
 - [stdlib.toml](../stdlib/toml.md)
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
@@ -122,6 +123,7 @@
 - [testing.normalizer](../testing/normalizer.md)
 - [testing.parallel](../testing/parallel.md)
 - [testing.extension_runner](../testing/extension_runner.md)
+- [testing.format_suite](../testing/format_suite.md)
 - [testing.official_suite](../testing/official_suite.md)
 - [testing.sandbox_runner](../testing/sandbox_runner.md)
 - [testing.generators](../testing/generators.md)
@@ -132,6 +134,7 @@
 
 - [nullValue](#fn-nullvalue)
 - [read](#fn-read)
+- [extension](#fn-extension)
 - [write](#fn-write)
 
 <a id="fn-nullvalue"></a>
@@ -148,6 +151,14 @@ pub fn nullValue(state: *State) !Value
 
 ```zig
 pub fn read(state: *State, thread: *Thread, op: bytecode.Call) !void
+```
+
+<a id="fn-extension"></a>
+
+## extension
+
+```zig
+pub fn extension(state: *State, thread: *Thread, op: bytecode.Call) !void
 ```
 
 <a id="fn-write"></a>

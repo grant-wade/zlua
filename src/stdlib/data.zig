@@ -3,6 +3,7 @@ const cost = @import("../runtime/budget.zig").cost;
 const compile = @import("../compile.zig");
 const runtime = @import("../runtime.zig");
 const io = @import("io.zig");
+const datetime = @import("datetime.zig");
 const metatable_mod = @import("../runtime/metatable.zig");
 
 const bytecode = compile.bytecode;
@@ -39,6 +40,29 @@ fn supportMetatable(state: *State, name: []const u8) !*Table {
     try state.setTableRaw(table, .{ .string = try state.strings.intern("__metatable") }, .{ .boolean = false });
     try state.setTableRaw(table, .{ .string = try state.strings.intern("__name") }, .{ .string = try state.strings.intern(name) });
     return table;
+}
+
+/// A MessagePack extension value that is not a timestamp.
+pub const Extension = struct {
+    type_id: i8,
+    data: []const u8,
+};
+
+fn extensionMetatable(state: *State) !*Table {
+    const tables = &state.library_tables;
+    if (tables.get(.data_extension_metatable)) |existing| return existing;
+    const created = try supportMetatable(state, "extension");
+    tables.set(.data_extension_metatable, created);
+    return created;
+}
+
+pub fn newExtension(state: *State, extension: Extension) !Value {
+    const metatable = try extensionMetatable(state);
+    const table = (try state.newTableWithHints(0, 2)).table;
+    try metatable_mod.setTableMetatableRaw(state, table, metatable);
+    try state.setTableRaw(table, .{ .string = try state.strings.intern("type") }, .{ .integer = extension.type_id });
+    try state.setTableRaw(table, .{ .string = try state.strings.intern("data") }, .{ .string = try state.strings.intern(extension.data) });
+    return .{ .table = table };
 }
 
 /// Peak bytes a reader allocates per input byte, for the format that needs the most.
@@ -235,6 +259,8 @@ pub const Shape = union(enum) {
     null,
     array: usize,
     object: usize,
+    datetime: datetime.DateTime,
+    extension: Extension,
 };
 
 /// One step from a table to the value being written, for error messages.
@@ -268,11 +294,11 @@ pub const Walker = struct {
         return self.state.library_tables.get(.data_null) == table;
     }
 
-    /// Classifies `table` and, unless it is the null sentinel, pushes it. Pair each
-    /// non-null result with `leave`.
+    /// Classifies `table` and pushes it when it is an array or object. Pair each
+    /// array or object result with `leave`.
     pub fn enter(self: *Walker, table: *Table) !Shape {
-        if (self.isNull(table)) return .null;
         const shape = try self.classify(table);
+        if (shape != .array and shape != .object) return shape;
         for (self.tables[0..self.depth]) |open| {
             if (open == table) return self.fail("cyclic table", .{});
         }
@@ -294,14 +320,29 @@ pub const Walker = struct {
 
     pub fn classify(self: *Walker, table: *Table) !Shape {
         if (self.isNull(table)) return .null;
-        const shape = tableShape(table);
         const tables = &self.state.library_tables;
+        if (table.metatable != null) {
+            if (table.metatable == tables.get(.data_datetime_metatable)) return switch (datetime.fromTable(table)) {
+                .ok => |value| .{ .datetime = value },
+                .invalid => |message| self.fail("invalid datetime: {s}", .{message}),
+            };
+            if (table.metatable == tables.get(.data_extension_metatable)) return .{ .extension = try self.extensionOf(table) };
+        }
+        const shape = tableShape(table);
         if (table.metatable != null and table.metatable == tables.get(.data_array_metatable)) return .{ .array = try self.arrayLen(shape) };
         if (table.metatable != null and table.metatable == tables.get(.data_object_metatable)) return .{ .object = try self.objectFieldCount(shape) };
         if (shape.other_count != 0) return self.fail("table has keys that are neither strings nor array indices", .{});
         if (shape.integer_count != 0 and shape.string_count != 0) return self.fail("table mixes array and object keys", .{});
         if (shape.integer_count != 0) return .{ .array = try self.arrayLen(shape) };
         return .{ .object = shape.string_count };
+    }
+
+    fn extensionOf(self: *Walker, table: *Table) !Extension {
+        const type_id = table.getLiteral("type");
+        const integer = runtime.toInteger(type_id) orelse return self.fail("extension type must be an integer", .{});
+        const data = table.getLiteral("data");
+        if (data != .string) return self.fail("extension data must be a string", .{});
+        return .{ .type_id = std.math.cast(i8, integer) orelse return self.fail("extension type must be between -128 and 127", .{}), .data = data.string.bytes() };
     }
 
     fn arrayLen(self: *Walker, shape: TableShape) !usize {

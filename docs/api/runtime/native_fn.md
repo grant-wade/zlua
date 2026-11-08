@@ -66,6 +66,7 @@
 - [stdlib.package](../stdlib/package.md)
 - [stdlib.json](../stdlib/json.md)
 - [stdlib.data](../stdlib/data.md)
+- [stdlib.datetime](../stdlib/datetime.md)
 - [stdlib.toml](../stdlib/toml.md)
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
@@ -122,6 +123,7 @@
 - [testing.normalizer](../testing/normalizer.md)
 - [testing.parallel](../testing/parallel.md)
 - [testing.extension_runner](../testing/extension_runner.md)
+- [testing.format_suite](../testing/format_suite.md)
 - [testing.official_suite](../testing/official_suite.md)
 - [testing.sandbox_runner](../testing/sandbox_runner.md)
 - [testing.generators](../testing/generators.md)
@@ -267,6 +269,27 @@ pub const NativeFn = enum {
     msgpack_write,
     csv_read,
     csv_write,
+    datetime_parse,
+    datetime_new,
+    datetime_unix,
+    datetime_now,
+    datetime_tostring,
+    datetime_eq,
+    datetime_lt,
+    datetime_le,
+    datetime_sub,
+    datetime_kind,
+    datetime_unix_method,
+    datetime_utc,
+    datetime_at_offset,
+    datetime_with,
+    datetime_add,
+    datetime_date,
+    datetime_time,
+    datetime_weekday,
+    datetime_yday,
+    datetime_format,
+    msgpack_extension,
     fs_read,
     fs_write,
     fs_open,

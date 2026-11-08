@@ -66,6 +66,7 @@
 - [stdlib.package](../stdlib/package.md)
 - [stdlib.json](../stdlib/json.md)
 - [stdlib.data](../stdlib/data.md)
+- [stdlib.datetime](../stdlib/datetime.md)
 - [stdlib.toml](../stdlib/toml.md)
 - [stdlib.msgpack](../stdlib/msgpack.md)
 - [stdlib.csv](../stdlib/csv.md)
@@ -122,6 +123,7 @@
 - [testing.normalizer](../testing/normalizer.md)
 - [testing.parallel](../testing/parallel.md)
 - [testing.extension_runner](../testing/extension_runner.md)
+- [testing.format_suite](../testing/format_suite.md)
 - [testing.official_suite](../testing/official_suite.md)
 - [testing.sandbox_runner](../testing/sandbox_runner.md)
 - [testing.generators](../testing/generators.md)
@@ -132,6 +134,7 @@
 
 - [ensureSupportTables](#fn-ensuresupporttables)
 - [nullValue](#fn-nullvalue)
+- [newExtension](#fn-newextension)
 - [inputBytes](#fn-inputbytes)
 - [optionsTable](#fn-optionstable)
 - [enumOption](#fn-enumoption)
@@ -145,6 +148,7 @@
 
 ## Types
 
+- [Extension](#type-extension)
 - [ByteText](#type-bytetext)
 - [Builder](#type-builder)
 - [Shape](#type-shape)
@@ -178,6 +182,29 @@ pub fn ensureSupportTables(state: *State) !void
 ```zig
 pub fn nullValue(state: *State) !Value
 ```
+
+<a id="type-extension"></a>
+
+## Extension
+
+A MessagePack extension value that is not a timestamp.
+
+```zig
+pub const Extension = struct {
+    type_id: i8,
+    data: []const u8,
+};
+```
+
+<a id="fn-newextension"></a>
+
+## newExtension
+
+```zig
+pub fn newExtension(state: *State, extension: Extension) !Value
+```
+
+References: [`Extension`](#type-extension)
 
 <a id="fn-inputbytes"></a>
 
@@ -455,6 +482,8 @@ pub const Shape = union(enum) {
     null,
     array: usize,
     object: usize,
+    datetime: datetime.DateTime,
+    extension: Extension,
 };
 ```
 
@@ -495,7 +524,7 @@ pub const Walker = struct {
 | [init](#fn-walker-init) | `state: *State, operation: []const u8` | `Walker` |  |
 | [visit](#fn-walker-visit) | `self: *Walker, value: Value` | `!void` | Call once per value written. |
 | [isNull](#fn-walker-isnull) | `self: *Walker, table: *Table` | `bool` |  |
-| [enter](#fn-walker-enter) | `self: *Walker, table: *Table` | `!Shape` | Classifies &#96;table&#96; and, unless it is the null sentinel, pushes it. Pair each non-null result with &#96;leave&#96;. |
+| [enter](#fn-walker-enter) | `self: *Walker, table: *Table` | `!Shape` | Classifies &#96;table&#96; and pushes it when it is an array or object. Pair each array or object result with &#96;leave&#96;. |
 | [leave](#fn-walker-leave) | `self: *Walker` | `void` |  |
 | [step](#fn-walker-step) | `self: *Walker, child: PathStep` | `void` | Records which child of the innermost open table is being written. |
 | [classify](#fn-walker-classify) | `self: *Walker, table: *Table` | `!Shape` |  |
@@ -538,8 +567,8 @@ References: [`Walker`](#type-walker)
 
 ### Walker.enter
 
-Classifies `table` and, unless it is the null sentinel, pushes it. Pair each
-non-null result with `leave`.
+Classifies `table` and pushes it when it is an array or object. Pair each
+array or object result with `leave`.
 
 ```zig
 pub fn enter(self: *Walker, table: *Table) !Shape

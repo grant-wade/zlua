@@ -2,6 +2,7 @@ pub const clua = @import("testing/clua.zig");
 pub const bench_runner = @import("testing/bench_runner.zig");
 pub const diff_runner = @import("testing/diff_runner.zig");
 pub const extension_runner = @import("testing/extension_runner.zig");
+pub const format_suite = @import("testing/format_suite.zig");
 pub const expected_failures = @import("testing/expected_failures.zig");
 pub const metadata = @import("testing/metadata.zig");
 pub const normalizer = @import("testing/normalizer.zig");

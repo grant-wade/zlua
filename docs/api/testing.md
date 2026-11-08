@@ -3,7 +3,7 @@
 ## Navigation
 
 - [API Index](README.md)
-- Submodules: [testing.process](testing/process.md), [testing.clua](testing/clua.md), [testing.bench_runner](testing/bench_runner.md), [testing.diff_runner](testing/diff_runner.md), [testing.fixtures](testing/fixtures.md), [testing.expected_failures](testing/expected_failures.md), [testing.metadata](testing/metadata.md), [testing.normalizer](testing/normalizer.md), [testing.parallel](testing/parallel.md), [testing.extension_runner](testing/extension_runner.md), [testing.official_suite](testing/official_suite.md), [testing.sandbox_runner](testing/sandbox_runner.md), [testing.generators](testing/generators.md)
+- Submodules: [testing.process](testing/process.md), [testing.clua](testing/clua.md), [testing.bench_runner](testing/bench_runner.md), [testing.diff_runner](testing/diff_runner.md), [testing.fixtures](testing/fixtures.md), [testing.expected_failures](testing/expected_failures.md), [testing.metadata](testing/metadata.md), [testing.normalizer](testing/normalizer.md), [testing.parallel](testing/parallel.md), [testing.extension_runner](testing/extension_runner.md), [testing.format_suite](testing/format_suite.md), [testing.official_suite](testing/official_suite.md), [testing.sandbox_runner](testing/sandbox_runner.md), [testing.generators](testing/generators.md)
 
 <details>
 <summary>All documents</summary>
@@ -66,6 +66,7 @@
 - [stdlib.package](stdlib/package.md)
 - [stdlib.json](stdlib/json.md)
 - [stdlib.data](stdlib/data.md)
+- [stdlib.datetime](stdlib/datetime.md)
 - [stdlib.toml](stdlib/toml.md)
 - [stdlib.msgpack](stdlib/msgpack.md)
 - [stdlib.csv](stdlib/csv.md)
@@ -122,6 +123,7 @@
 - [testing.normalizer](testing/normalizer.md)
 - [testing.parallel](testing/parallel.md)
 - [testing.extension_runner](testing/extension_runner.md)
+- [testing.format_suite](testing/format_suite.md)
 - [testing.official_suite](testing/official_suite.md)
 - [testing.sandbox_runner](testing/sandbox_runner.md)
 - [testing.generators](testing/generators.md)
@@ -134,6 +136,7 @@
 - [bench_runner](#import-bench_runner) `@import("testing/bench_runner.zig")`
 - [diff_runner](#import-diff_runner) `@import("testing/diff_runner.zig")`
 - [extension_runner](#import-extension_runner) `@import("testing/extension_runner.zig")`
+- [format_suite](#import-format_suite) `@import("testing/format_suite.zig")`
 - [expected_failures](#import-expected_failures) `@import("testing/expected_failures.zig")`
 - [metadata](#import-metadata) `@import("testing/metadata.zig")`
 - [normalizer](#import-normalizer) `@import("testing/normalizer.zig")`
@@ -172,6 +175,14 @@ pub const diff_runner = @import("testing/diff_runner.zig");
 
 ```zig
 pub const extension_runner = @import("testing/extension_runner.zig");
+```
+
+<a id="import-format_suite"></a>
+
+## format_suite
+
+```zig
+pub const format_suite = @import("testing/format_suite.zig");
 ```
 
 <a id="import-expected_failures"></a>

@@ -67,8 +67,10 @@ just --set zig /path/to/zig-0.16.0/zig fmt
 
 ## Dependency Cache
 
-`tools/fetch-lua.sh` downloads the Lua archives into `.zlua-deps/` and verifies
-them. If you use a local mirror, you can override the URLs:
+`zig build fetch-lua` and `zig build fetch-format-tests` run
+`tools/fetch_archive.zig`, which downloads the archives pinned in
+`tools/archives.zig`, verifies their SHA-256, and unpacks them into
+`.zlua-deps/`. If you use a local mirror, you can override the URLs:
 
 ```sh
 ZLUA_LUA_URL=https://example.invalid/lua-5.5.1.tar.gz \
