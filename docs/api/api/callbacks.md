@@ -98,6 +98,7 @@
 - [api.coroutine](../api/coroutine.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
+- [api.namespace](../api/namespace.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
 - [testing.bench_runner](../testing/bench_runner.md)
@@ -131,7 +132,10 @@
 
 - [bindDispatch](#fn-binddispatch)
 - [create](#fn-create)
+- [intern](#fn-intern)
+- [typedHostFn](#fn-typedhostfn)
 - [deinitNames](#fn-deinitnames)
+- [canReadParam](#fn-canreadparam)
 - [callTyped](#fn-calltyped)
 - [callUserdataInitializer](#fn-calluserdatainitializer)
 - [callUserdataFinalizer](#fn-calluserdatafinalizer)
@@ -184,12 +188,46 @@ pub fn create(state: *State, name: []const u8, callback: HostFn) !Function
 
 References: [`HostFn`](#const-hostfn)
 
+<a id="fn-intern"></a>
+
+## intern
+
+The id of the callback entry for `callback`, registering it under `name` if there is none.
+
+```zig
+pub fn intern(state: *State, name: []const u8, callback: HostFn) !usize
+```
+
+References: [`HostFn`](#const-hostfn)
+
+<a id="fn-typedhostfn"></a>
+
+## typedHostFn
+
+The untyped callback that calls `function` as `State.registerTyped` does.
+
+```zig
+pub fn typedHostFn(comptime function: anytype) HostFn
+```
+
+References: [`HostFn`](#const-hostfn)
+
 <a id="fn-deinitnames"></a>
 
 ## deinitNames
 
 ```zig
 pub fn deinitNames(state: *State, state_allocator: std.mem.Allocator) void
+```
+
+<a id="fn-canreadparam"></a>
+
+## canReadParam
+
+Whether a typed callback can take a parameter of type `T`.
+
+```zig
+pub fn canReadParam(comptime T: type) bool
 ```
 
 <a id="fn-calltyped"></a>

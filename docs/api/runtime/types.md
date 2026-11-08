@@ -98,6 +98,7 @@
 - [api.coroutine](../api/coroutine.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
+- [api.namespace](../api/namespace.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
 - [testing.bench_runner](../testing/bench_runner.md)
@@ -1913,7 +1914,7 @@ References: [`Thread`](#type-thread)
 ### Thread.ensureStack
 
 ```zig
-pub fn ensureStack(self: *Thread, allocator: std.mem.Allocator, size: usize, limit: usize) !void
+pub inline fn ensureStack(self: *Thread, allocator: std.mem.Allocator, size: usize, limit: usize) !void
 ```
 
 References: [`Thread`](#type-thread)

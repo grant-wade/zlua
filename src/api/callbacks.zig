@@ -9,7 +9,11 @@ const snapshot_mod = @import("snapshot.zig");
 const userdata_mod = @import("userdata.zig");
 const context_mod = @import("context.zig");
 const Context = context_mod.Context;
+const Coroutine = @import("coroutine.zig").Coroutine;
 const Function = @import("function.zig").Function;
+const Ref = @import("handle.zig").Ref;
+const Table = @import("table.zig").Table;
+const Value = @import("value.zig").Value;
 const State = @import("state.zig").State;
 const UserdataOptions = userdata_mod.UserdataOptions;
 
@@ -35,6 +39,28 @@ pub fn create(state: *State, name: []const u8, callback: HostFn) !Function {
     return convert.fromRuntimeValue(state, .{ .api_callback = state.callbacks.items.len }, Function);
 }
 
+/// The id of the callback entry for `callback`, registering it under `name` if there is none.
+pub fn intern(state: *State, name: []const u8, callback: HostFn) !usize {
+    for (state.callbacks.items, 1..) |entry, id| {
+        if (entry.callback == callback) return id;
+    }
+    try snapshot_mod.writableBindings(state);
+    bindDispatch(state);
+    const name_copy = try state.allocator().dupe(u8, name);
+    errdefer state.allocator().free(name_copy);
+    try state.callbacks.append(state.allocator(), .{ .name = name_copy, .callback = callback });
+    return state.callbacks.items.len;
+}
+
+/// The untyped callback that calls `function` as `State.registerTyped` does.
+pub fn typedHostFn(comptime function: anytype) HostFn {
+    return struct {
+        fn call(ctx: *Context) !void {
+            try callTyped(function, ctx);
+        }
+    }.call;
+}
+
 pub fn deinitNames(state: *State, state_allocator: std.mem.Allocator) void {
     for (state.callbacks.items) |entry| state_allocator.free(entry.name);
 }
@@ -50,6 +76,23 @@ fn apiCallbackDispatch(raw: *runtime.ApiCallbackContext) anyerror!void {
     raw.function_name = entry.name;
     var context = Context{ .lua = state, .raw = raw };
     try entry.callback(&context);
+}
+
+/// Whether a typed callback can take a parameter of type `T`.
+pub fn canReadParam(comptime T: type) bool {
+    if (T == *Context or context_mod.isHost(T)) return true;
+    if (@typeInfo(T) == .optional) return canReadParam(@typeInfo(T).optional.child);
+    if (decode_mod.needsDecoding(T)) return decode_mod.canDecode(T);
+    if (T == Value or T == Ref or T == Table or T == Function or T == Coroutine or T == userdata_mod.AnyUserdata or userdata_mod.isHandle(T)) return true;
+    return switch (@typeInfo(T)) {
+        .bool, .int, .float => true,
+        .pointer => |pointer| switch (pointer.size) {
+            .slice => pointer.child == u8,
+            .one => @typeInfo(pointer.child) == .@"struct",
+            else => false,
+        },
+        else => false,
+    };
 }
 
 pub fn callTyped(comptime function: anytype, ctx: *Context) !void {
@@ -81,6 +124,7 @@ pub fn callTyped(comptime function: anytype, ctx: *Context) !void {
     defer releaseArgs(reflection.paramTypes(function_info), &args, bound);
     inline for (reflection.paramTypes(function_info), 0..) |param, index| {
         const Param = param orelse @compileError("registerTyped requires typed parameters");
+        if (comptime !canReadParam(Param)) @compileError("typed callbacks cannot take a " ++ @typeName(Param) ++ " parameter from Lua");
         args[index] = try scopes.param(ctx, &lua_arg_index, Param);
         bound += 1;
     }

@@ -24,6 +24,8 @@ This guide covers each feature's main use and its rules. The
 - [Values and Handles](#values-and-handles)
   - [Borrowed Strings](#borrowed-strings)
 - [Tables and Modules](#tables-and-modules)
+  - [Globals and Tables from Structs](#globals-and-tables-from-structs)
+  - [Zig Namespaces](#zig-namespaces)
   - [Modules](#modules)
 - [Host Callbacks](#host-callbacks)
   - [Typed Callbacks](#typed-callbacks)
@@ -372,6 +374,8 @@ Zig values convert to Lua automatically:
 | non-byte array or slice | array table |
 | struct | table keyed by field name |
 | enum | its name |
+| function | function, called like a [typed callback](#typed-callbacks) |
+| struct type | table of its [public declarations](#zig-namespaces) |
 | `Table`, `Function`, `Ref`, `Value`, `Userdata(T)` | existing Lua value |
 
 Reads name the type they want. `zlua.Tuple` holds multiple return values, and
@@ -454,11 +458,86 @@ An iterator roots the table and the current entry, and owns each `Entry` until
 the next call. During traversal you may assign to existing fields; adding keys
 is undefined.
 
+### Globals and Tables from Structs
+
+`setGlobals` sets a global for each field of a struct. Functions become Lua
+functions, nested structs become tables, and other values are copied:
+
+```zig
+fn add(a: i64, b: i64) i64 {
+    return a + b;
+}
+
+try lua.setGlobals(.{
+    .add = add,
+    .VERSION = "1.2.0",
+    .game = .{
+        .max_players = 8,
+        .clamp = clamp,
+    },
+});
+```
+
+`createTableFrom` builds a `Table` the same way, for example as a chunk's
+`environment`. `Table.setFields` assigns each field to an existing table through
+`__newindex`.
+
+Converting the same Zig function again reuses its Lua function. A function must
+be passed directly; a function pointer is a compile error, and
+`registerTyped` wraps one.
+
+### Zig Namespaces
+
+A struct or enum type, including a Zig file, converts to a table of its public
+declarations:
+
+```zig
+// inventory.zig
+pub const max_items = 64;
+
+pub fn total(counts: []const i64) i64 { ... }
+
+pub const Item = struct {
+    count: i64,
+
+    pub fn add(self: *Item, amount: i64) i64 { ... }
+};
+```
+
+```zig
+try lua.setLoadedModule("inventory", @import("inventory.zig"));
+```
+
+| Declaration | Lua value |
+| --- | --- |
+| `pub fn` | function, called like a typed callback |
+| `pub const`, `pub var` | the current value, copied |
+| `pub const` struct type, such as `@import("math.zig")` | nested table, when it has public declarations |
+| `pub const` enum type | table mapping each tag to its name, plus its public declarations |
+| a type already being converted, such as `@This()` | left out |
+| other types, `lua` | left out |
+
+A struct's fields aren't exported; create instances as [userdata](#userdata).
+
+A generic function, a function whose parameters Lua can't pass or whose result
+has no Lua value, and a value with no Lua equivalent are compile errors, also
+inside nested namespaces. A re-exported library such as `std` must be left out.
+A namespace's `lua` declaration renames or leaves out declarations:
+
+```zig
+pub const lua = .{
+    .total = .{ .key = "sum" },
+    .debugDump = .{ .skip = true },
+};
+```
+
+`setGlobals(T)` sets a global for each declaration instead.
+
 ### Modules
 
 | Call | Effect |
 | --- | --- |
-| `setLoadedModule(name, module)` | Stores a value in `package.loaded[name]`. |
+| `setLoadedModule(name, module)` | Stores a value, such as a struct or [namespace](#zig-namespaces), in `package.loaded[name]`. |
 | `preloadModule(name, loader)` | Installs a Lua loader in `package.preload[name]`. |
 | `preloadModuleFn(name, function)` | Installs a Zig function as the loader. |
 | `require(name, T)` | Calls Lua's `require` and converts the result to `T`. |
@@ -512,6 +591,9 @@ var clamp_fn = try lua.registerTyped("clamp", clamp);
 defer clamp_fn.deinit();
 try lua.setGlobal("clamp", clamp_fn);
 ```
+
+`lua.setGlobal("clamp", clamp)` installs the same function without a handle. A
+parameter type Lua can't pass, such as `std.mem.Allocator`, is a compile error.
 
 Typed callbacks and userdata methods release handle parameters when they return.
 To keep one, wrap it in a `Value` and make another handle, as in

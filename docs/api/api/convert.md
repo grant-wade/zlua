@@ -98,6 +98,7 @@
 - [api.coroutine](../api/coroutine.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
+- [api.namespace](../api/namespace.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
 - [testing.bench_runner](../testing/bench_runner.md)
@@ -132,11 +133,18 @@
 - [expectedLuaType](#fn-expectedluatype)
 - [convertArgs](#fn-convertargs)
 - [toRuntimeValue](#fn-toruntimevalue)
+- [toRuntimeValueNamed](#fn-toruntimevaluenamed)
+- [canConvert](#fn-canconvert)
+- [writeEntries](#fn-writeentries)
 - [fromRuntimeResults](#fn-fromruntimeresults)
 - [fromRuntimeValue](#fn-fromruntimevalue)
 - [integerFromFloat](#fn-integerfromfloat)
 - [isOwnedApiValue](#fn-isownedapivalue)
 - [deinitIfOwned](#fn-deinitifowned)
+
+## Types
+
+- [TableSink](#type-tablesink)
 
 <a id="fn-expectedluatype"></a>
 
@@ -165,6 +173,67 @@ pub fn toRuntimeValue(state: *State, value: anytype) !runtime.Value
 ```
 
 References: [`runtime.Value`](../runtime.md#alias-value)
+
+<a id="fn-toruntimevaluenamed"></a>
+
+## toRuntimeValueNamed
+
+Like `toRuntimeValue`; `name` labels a Zig function in Lua error messages.
+
+```zig
+pub fn toRuntimeValueNamed(state: *State, value: anytype, name: []const u8) !runtime.Value
+```
+
+References: [`runtime.Value`](../runtime.md#alias-value)
+
+<a id="fn-canconvert"></a>
+
+## canConvert
+
+Whether `toRuntimeValue` accepts a `T`; pointers to structs are assumed convertible.
+
+```zig
+pub fn canConvert(comptime T: type) bool
+```
+
+<a id="type-tablesink"></a>
+
+## TableSink
+
+Receives entries for a fresh table.
+
+```zig
+pub const TableSink = struct {
+    table: runtime.Value,
+};
+```
+
+### Nested Declarations
+
+| Name | Parameters | Return Type | Description |
+| --- | --- | --- | --- |
+| [put](#fn-tablesink-put) | `self: TableSink, state: *State, key: []const u8, value: runtime.Value` | `!void` |  |
+
+<a id="fn-tablesink-put"></a>
+
+### TableSink.put
+
+```zig
+pub fn put(self: TableSink, state: *State, key: []const u8, value: runtime.Value) !void
+```
+
+References: [`TableSink`](#type-tablesink), [`runtime.Value`](../runtime.md#alias-value)
+
+<a id="fn-writeentries"></a>
+
+## writeEntries
+
+Converts the fields of struct `value`, or the tags and exported declarations of struct or enum
+type `value`, and passes each Lua key and value to `sink.put(state, key, value)`.
+
+```zig
+pub fn writeEntries(state: *State, sink: anytype, value: anytype) !void
+```
 
 <a id="fn-fromruntimeresults"></a>
 

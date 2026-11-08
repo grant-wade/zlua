@@ -20,8 +20,11 @@ pub inline fn fieldsOf(comptime T: type) []const [:0]const u8 {
 }
 
 pub inline fn declarationNames(comptime T: type) []const [:0]const u8 {
-    const info = @typeInfo(T).@"struct";
-    if (@hasField(Type.Struct, "decl_names")) return info.decl_names;
+    const info = switch (@typeInfo(T)) {
+        inline .@"struct", .@"enum", .@"union", .@"opaque" => |info| info,
+        else => @compileError("expected struct, enum, union, or opaque"),
+    };
+    if (@hasField(@TypeOf(info), "decl_names")) return info.decl_names;
     const names = comptime blk: {
         var names: [info.decls.len][:0]const u8 = undefined;
         for (info.decls, 0..) |decl, i| names[i] = decl.name;

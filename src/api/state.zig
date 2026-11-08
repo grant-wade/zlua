@@ -304,10 +304,25 @@ pub const State = struct {
     }
 
     pub fn setGlobal(self: *State, name: []const u8, value: anytype) !void {
-        const raw_name = try self.raw_state.strings.intern(name);
-        const raw_value = try convert.toRuntimeValue(self, value);
-        self.raw_state.setGlobalString(raw_name, raw_value) catch |err| return errors.captureLuaError(self, err);
+        try (GlobalSink{}).put(self, name, try convert.toRuntimeValueNamed(self, value, name));
         try gcBoundary(self);
+    }
+
+    /// Sets a global for each field of struct `values`, or for each tag and exported public
+    /// declaration of struct or enum type `values`.
+    pub fn setGlobals(self: *State, values: anytype) !void {
+        try convert.writeEntries(self, GlobalSink{}, values);
+        try gcBoundary(self);
+    }
+
+    /// Creates a table holding the fields of struct `values`, or the tags and exported public
+    /// declarations of struct or enum type `values`.
+    pub fn createTableFrom(self: *State, values: anytype) !Table {
+        const raw = try convert.toRuntimeValue(self, values);
+        var table = try convert.fromRuntimeValue(self, raw, Table);
+        errdefer table.deinit();
+        try gcBoundary(self);
+        return table;
     }
 
     /// A `[]const u8` result borrows VM memory; see `Value.string`.
@@ -322,13 +337,7 @@ pub const State = struct {
 
     /// Like `register`, reading parameters from Lua arguments by type; `*Context` is injected.
     pub fn registerTyped(self: *State, name: []const u8, comptime function: anytype) !Function {
-        const Wrapper = struct {
-            fn call(ctx: *Context) !void {
-                try callbacks.callTyped(function, ctx);
-            }
-        };
-
-        return self.register(name, Wrapper.call);
+        return self.register(name, callbacks.typedHostFn(function));
     }
 
     /// Registers a Lua constructor that reads `initializer`'s arguments by type (`*Context` is
@@ -588,6 +597,13 @@ pub const State = struct {
 };
 
 // Called after embedding writes have installed all temporary values in roots.
+const GlobalSink = struct {
+    pub fn put(_: GlobalSink, state: *State, name: []const u8, value: runtime.Value) !void {
+        const raw_name = try state.raw_state.strings.intern(name);
+        state.raw_state.setGlobalString(raw_name, value) catch |err| return errors.captureLuaError(state, err);
+    }
+};
+
 pub fn gcBoundary(state: *State) !void {
     if (state.raw_state.gc.running and state.raw_state.gc.shouldRunAuto()) {
         try state.raw_state.gc.autoStep(state.raw_state.current_thread);
