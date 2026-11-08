@@ -406,7 +406,20 @@ test "reset undoes what a script changed in shared state" {
     try std.testing.expectEqual(@as(u64, 0), lua.outputBytes());
 }
 
+/// Lowers the soft open-file limit to at most `max`. Returns the previous limits, or null when
+/// the platform has none to lower.
+fn lowerDescriptorLimit(max: u64) ?std.posix.rlimit {
+    if (@import("builtin").os.tag == .windows) return null;
+    const original = std.posix.getrlimit(.NOFILE) catch return null;
+    var lowered = original;
+    lowered.cur = @min(original.cur, max);
+    std.posix.setrlimit(.NOFILE, lowered) catch return null;
+    return original;
+}
+
 test "file handles fail cleanly when a script exhausts the descriptor limit" {
+    const previous_limit = lowerDescriptorLimit(256);
+    defer if (previous_limit) |limit| std.posix.setrlimit(.NOFILE, limit) catch {};
     var temporary = std.testing.tmpDir(.{});
     defer temporary.cleanup();
     const io = std.testing.io;
@@ -420,7 +433,7 @@ test "file handles fail cleanly when a script exhausts the descriptor limit" {
     defer lua.deinit();
     try lua.doString(
         \\local files = {}
-        \\for i = 1, 100000 do
+        \\for i = 1, 1000 do
         \\  local f, err = io.open("f.txt")
         \\  if not f then
         \\    assert(type(err) == "string")

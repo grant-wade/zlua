@@ -1,12 +1,17 @@
 const std = @import("std");
 const api = @import("../root.zig");
-const a = std.testing.allocator;
+/// Set by sweep workers, which each own an allocator.
+threadlocal var worker_allocator: ?std.mem.Allocator = null;
+
+fn alloc() std.mem.Allocator {
+    return worker_allocator orelse std.testing.allocator;
+}
 const Smith = std.testing.Smith;
 
 const limits: api.Options = .{ .limits = .{ .max_memory = 64 << 20, .max_instructions = 200_000 } };
 
 fn loadSource(source: []const u8) !void {
-    var lua = try api.State.init(a, limits);
+    var lua = try api.State.init(alloc(), limits);
     defer lua.deinit();
     var function = lua.loadString(source, .{ .name = "=fuzz" }) catch |err| switch (err) {
         error.LuaError, error.OutOfMemory => return,
@@ -29,7 +34,7 @@ const bytecode_seeds = [_][]const u8{
 const Mutation = struct { offset: usize, byte: u8 };
 
 fn runMutatedBytecode(seed: usize, mutations: []const Mutation, truncate: usize) !void {
-    var lua = try api.State.init(a, limits);
+    var lua = try api.State.init(alloc(), limits);
     defer lua.deinit();
 
     var original = try lua.loadString(bytecode_seeds[seed % bytecode_seeds.len], .{ .name = "=seed" });
@@ -37,8 +42,8 @@ fn runMutatedBytecode(seed: usize, mutations: []const Mutation, truncate: usize)
     original.deinit();
     defer lua.allocator().free(dump);
 
-    const bytes = try a.dupe(u8, dump[0 .. dump.len - @min(truncate, dump.len)]);
-    defer a.free(bytes);
+    const bytes = try alloc().dupe(u8, dump[0 .. dump.len - @min(truncate, dump.len)]);
+    defer alloc().free(bytes);
     for (mutations) |mutation| {
         if (bytes.len == 0) break;
         bytes[mutation.offset % bytes.len] = mutation.byte;
@@ -78,7 +83,7 @@ fn tooManyQuantifiers(pattern: []const u8) bool {
 
 fn runStringLibrary(subject: []const u8, pattern: []const u8, format: []const u8) !void {
     if (tooManyQuantifiers(pattern)) return;
-    var lua = try api.State.init(a, limits);
+    var lua = try api.State.init(alloc(), limits);
     defer lua.deinit();
     var function = try lua.loadString(string_library_chunk, .{ .name = "=fuzz" });
     defer function.deinit();
@@ -171,7 +176,7 @@ fn runGenerated(source: []const u8, options: api.Options) !void {
     var configured = options;
     configured.capabilities.io.stdout = &sink.writer;
     configured.capabilities.io.stderr = &sink.writer;
-    var lua = try api.State.init(a, configured);
+    var lua = try api.State.init(alloc(), configured);
     defer lua.deinit();
     run: {
         var function = lua.loadString(source, .{ .name = "=generated" }) catch break :run;
@@ -202,25 +207,25 @@ fn expectUsable(lua: *api.State) !void {
 }
 
 fn runProgram(picker: Picker) !void {
-    var out: std.Io.Writer.Allocating = .init(a);
+    var out: std.Io.Writer.Allocating = .init(alloc());
     defer out.deinit();
     try generators.writeProgram(picker, &out.writer);
     try runGenerated(out.written(), sandbox_limits);
 }
 
 fn runLibraryCalls(picker: Picker) !void {
-    var out: std.Io.Writer.Allocating = .init(a);
+    var out: std.Io.Writer.Allocating = .init(alloc());
     defer out.deinit();
     try generators.writeLibraryCalls(picker, &out.writer);
     try runGenerated(out.written(), sandbox_limits);
 }
 
 fn runFormatText(picker: Picker) !void {
-    var out: std.Io.Writer.Allocating = .init(a);
+    var out: std.Io.Writer.Allocating = .init(alloc());
     defer out.deinit();
     try generators.writeFormatText(picker, &out.writer);
 
-    var lua = try api.State.init(a, sandbox_limits);
+    var lua = try api.State.init(alloc(), sandbox_limits);
     defer lua.deinit();
     var function = try lua.loadString(
         \\local text = ...
@@ -241,23 +246,23 @@ fn runFormatText(picker: Picker) !void {
     try expectUsable(&lua);
 }
 
-var generated_chunks_loaded: usize = 0;
+var generated_chunks_loaded: std.atomic.Value(usize) = .init(0);
 
 fn runChunk(picker: Picker) !void {
     var bytes = std.ArrayList(u8).empty;
-    defer bytes.deinit(a);
-    try generators.appendChunk(picker, a, &bytes);
+    defer bytes.deinit(alloc());
+    try generators.appendChunk(picker, alloc(), &bytes);
 
     var options = sandbox_limits;
     options.binary_chunks = true;
-    var lua = try api.State.init(a, options);
+    var lua = try api.State.init(alloc(), options);
     defer lua.deinit();
     var function = lua.loadBytecode(bytes.items, .{}) catch |err| switch (err) {
         error.LuaError, error.OutOfMemory => return,
         else => return err,
     };
     defer function.deinit();
-    generated_chunks_loaded += 1;
+    _ = generated_chunks_loaded.fetchAdd(1, .monotonic);
     var result = function.protectedCallWith(.{ @as(i64, 1), @as(f64, 2.5), "s" }, void, .{ .max_instructions = 20_000 }) catch |err| switch (err) {
         error.OutOfMemory, error.Interrupted, error.LuaExit => return,
         else => return err,
@@ -298,10 +303,50 @@ test "fuzz verified binary chunks" {
     }.testOne, .{});
 }
 
+const max_sweep_workers = 8;
+
+/// Runs `count` random cases split across worker threads, each with its own seed derived from `seed`.
 fn sweep(comptime run: fn (Picker) anyerror!void, seed: u64, count: usize) !void {
-    var prng: std.Random.DefaultPrng = .init(seed);
-    var random = prng.random();
-    for (0..count) |_| try run(Picker.fromRandom(&random));
+    const workers: usize = if (@import("builtin").single_threaded) 1 else @max(1, @min(std.Thread.getCpuCount() catch 1, max_sweep_workers, count));
+    var failures: [max_sweep_workers]?anyerror = @splat(null);
+    var threads: [max_sweep_workers]std.Thread = undefined;
+    var spawned: usize = 0;
+    defer for (threads[0..spawned]) |thread| thread.join();
+    for (0..workers) |worker| {
+        const args = .{ seed, worker, workers, count, &failures[worker] };
+        if (workers == 1) {
+            @call(.auto, SweepWorker(run).cases, args);
+        } else {
+            threads[worker] = try std.Thread.spawn(.{}, SweepWorker(run).cases, args);
+            spawned += 1;
+        }
+    }
+    for (threads[0..spawned]) |thread| thread.join();
+    spawned = 0;
+    for (failures[0..workers]) |failure| if (failure) |err| return err;
+}
+
+fn SweepWorker(comptime run: fn (Picker) anyerror!void) type {
+    return struct {
+        /// Runs every `workers`th case starting at `worker`, and records the first error in `failure`.
+        fn cases(seed: u64, worker: usize, workers: usize, count: usize, failure: *?anyerror) void {
+            var debug_allocator: std.heap.DebugAllocator(.{ .stack_trace_frames = 0 }) = .init;
+            worker_allocator = debug_allocator.allocator();
+            defer {
+                worker_allocator = null;
+                if (debug_allocator.deinit() == .leak and failure.* == null) failure.* = error.MemoryLeak;
+            }
+            var prng: std.Random.DefaultPrng = .init(seed *% 0x9e3779b97f4a7c15 +% worker);
+            var random = prng.random();
+            var index = worker;
+            while (index < count) : (index += workers) {
+                run(Picker.fromRandom(&random)) catch |err| {
+                    failure.* = err;
+                    return;
+                };
+            }
+        }
+    };
 }
 
 fn runTimezone(picker: Picker) !void {
@@ -314,7 +359,7 @@ fn runTimezone(picker: Picker) !void {
         @memcpy(bytes[0..@min(header.len, length)], header[0..@min(header.len, length)]);
     }
     const timestamps = [_]i64{ 0, 1 << 32, -(1 << 40), std.math.maxInt(i64), std.math.minInt(i64) };
-    var zone = timezone.Zone.parseTzif(a, bytes[0..length]) catch null;
+    var zone = timezone.Zone.parseTzif(alloc(), bytes[0..length]) catch null;
     if (zone) |*parsed| {
         defer parsed.deinit();
         for (timestamps) |timestamp| _ = parsed.offsetAt(timestamp);
@@ -342,7 +387,7 @@ test "data format readers keep the state usable" {
 }
 
 test "verified binary chunks keep the state usable" {
-    generated_chunks_loaded = 0;
+    generated_chunks_loaded.store(0, .monotonic);
     try sweep(runChunk, 4, 1500);
-    try std.testing.expect(generated_chunks_loaded == 1500);
+    try std.testing.expect(generated_chunks_loaded.load(.monotonic) == 1500);
 }

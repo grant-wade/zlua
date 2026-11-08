@@ -669,6 +669,12 @@ test "api finalizers receive the state allocator and external bytes keep garbage
 }
 
 test "api external bytes keep garbage bounded while a large heap collects" {
+    var leak_check: std.heap.DebugAllocator(.{ .stack_trace_frames = 0 }) = .init;
+    try collectExternalBytes(leak_check.allocator());
+    try std.testing.expect(leak_check.deinit() == .ok);
+}
+
+fn collectExternalBytes(allocator: std.mem.Allocator) !void {
     const Buffer = struct {
         var live: usize = 0;
         var peak: usize = 0;
@@ -690,7 +696,7 @@ test "api external bytes keep garbage bounded while a large heap collects" {
     Buffer.live = 0;
     Buffer.peak = 0;
 
-    var lua = try State.init(std.testing.allocator, .{});
+    var lua = try State.init(allocator, .{});
     defer lua.deinit();
     var create = try lua.register("create", Buffer.create);
     defer create.deinit();
