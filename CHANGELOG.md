@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### Data Formats
+
+- JSON, TOML, MessagePack, and CSV are built into zlua, which has no package
+  dependencies.
+- Reader errors give the line and column, or the byte offset for MessagePack.
+- Writer errors give the path to the value, such as `$.servers[2].port`.
+- `toml.read` accepts TOML 1.1.
+- `toml.write` writes `inf`, `-inf`, and `nan`, and `msgpack.write` writes
+  non-finite floats.
+- `csv.write` writes floats with a fraction or exponent.
+- `csv.read` accepts cells that aren't valid UTF-8.
+- MessagePack map keys that aren't valid UTF-8 are written and read as `bin`.
+- `toml.write` writes an empty inline table as `{}`.
+- The null sentinel and the array and object metatables are named `null`,
+  `array`, and `object`.
+
+### Fixes
+
+- `msgpack.read` panicked on an array or map length longer than the input.
+
 ## 0.8.1
 
 ### Breaking changes

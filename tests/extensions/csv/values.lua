@@ -1,0 +1,6 @@
+print(csv.write({ { a = 1, b = 2.0, c = "x" } }, { record_terminator = "lf" }))
+print(#csv.read("a\n\xff\n")[1].a)
+print(select(2, pcall(csv.read, "a,b\n1\n")))
+print(select(2, pcall(csv.read, 'a\n"x"y\n')))
+print(select(2, pcall(csv.write, { { a = 1 }, { a = 2, b = 3 } })))
+print(select(2, pcall(csv.write, { { a = { 1, 2 } } })))

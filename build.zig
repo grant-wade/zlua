@@ -19,11 +19,6 @@ pub fn build(b: *std.Build) void {
     const official_timeout_ms = b.option(u64, "official-timeout-ms", "Timeout per official-suite child process in milliseconds (0 disables)") orelse 120_000;
 
     const lua_deps_step = addFetchLuaStep(b);
-    const zerde_dep = b.dependency("zerde", .{
-        .target = target,
-        .optimize = optimize,
-    });
-    const zerde_mod = zerde_dep.module("zerde");
 
     const clua_optimize: std.builtin.OptimizeMode = .ReleaseSafe;
     const bench_optimize: std.builtin.OptimizeMode = if (@hasField(std.builtin.OptimizeMode, "fast")) .fast else .ReleaseFast;
@@ -39,33 +34,21 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{.{ .name = "zerde", .module = zerde_mod }},
     });
-    const zerde_bench_dep = b.dependency("zerde", .{
-        .target = target,
-        .optimize = bench_optimize,
-    });
-    const zerde_bench_mod = zerde_bench_dep.module("zerde");
     const bench_mod = b.addModule("zlua-bench-release-fast", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = bench_optimize,
-        .imports = &.{.{ .name = "zerde", .module = zerde_bench_mod }},
     });
     const freestanding_target = b.resolveTargetQuery(.{
         .cpu_arch = .x86_64,
         .os_tag = .freestanding,
         .abi = .none,
     });
-    const freestanding_zerde_dep = b.dependency("zerde", .{
-        .target = freestanding_target,
-        .optimize = optimize,
-    });
     const freestanding_mod = b.addModule("zlua-freestanding", .{
         .root_source_file = b.path("src/root.zig"),
         .target = freestanding_target,
         .optimize = optimize,
-        .imports = &.{.{ .name = "zerde", .module = freestanding_zerde_dep.module("zerde") }},
     });
 
     const exe = b.addExecutable(.{
@@ -271,12 +254,10 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(freestanding_test_step);
 
     const wasm_target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .freestanding });
-    const wasm_zerde = b.dependency("zerde", .{ .target = wasm_target, .optimize = optimize });
     const wasm_mod = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
         .target = wasm_target,
         .optimize = optimize,
-        .imports = &.{.{ .name = "zerde", .module = wasm_zerde.module("zerde") }},
     });
     const wasm_test = b.addExecutable(.{
         .name = "zlua-test-wasm",
@@ -321,12 +302,10 @@ pub fn build(b: *std.Build) void {
 
     const sandbox_step = b.step("test-sandbox", "Run the sandbox attack fixtures in every optimize mode");
     inline for (.{ std.builtin.OptimizeMode.Debug, std.builtin.OptimizeMode.ReleaseSafe, bench_optimize }) |mode| {
-        const mode_zerde = b.dependency("zerde", .{ .target = target, .optimize = mode });
         const mode_mod = b.createModule(.{
             .root_source_file = b.path("src/root.zig"),
             .target = target,
             .optimize = mode,
-            .imports = &.{.{ .name = "zerde", .module = mode_zerde.module("zerde") }},
         });
         const run_mode = b.addRunArtifact(addSandboxExe(b, "zlua-test-sandbox-" ++ @tagName(mode), target, mode, mode_mod));
         addPassthruArgs(b, run_mode);

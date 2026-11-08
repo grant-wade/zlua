@@ -1,9 +1,8 @@
 # Development
 
-zlua supports Zig `0.16.0` and `0.17.1`. Its only package dependency is `zerde`.
-The build also downloads the Lua 5.5 source and official tests into
-`.zlua-deps/`, a directory Git ignores, so you don't need Lua installed on your
-system.
+zlua supports Zig `0.16.0` and `0.17.1` and has no package dependencies. The
+build downloads the Lua 5.5 source and official tests into `.zlua-deps/`, a
+directory Git ignores, so you don't need Lua installed on your system.
 
 [Architecture](architecture.md#main-boundaries) maps the source tree,
 [Commands](commands.md) lists build steps and harness options, and

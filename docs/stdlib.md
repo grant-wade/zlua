@@ -235,20 +235,30 @@ global tables through `package.loaded`.
 
 The four libraries share some conventions. Every reader accepts either a string
 (bytes for MessagePack) or a Lua file handle, and file input is consumed from
-the current position to EOF. Errors are prefixed with the library and operation
-name. `json.null`, `msgpack.null`, and `csv.null` are one shared value.
+the current position to EOF. `json.null`, `msgpack.null`, and `csv.null` are
+one shared value.
+
+Errors start with the library and operation name. Reader errors then give the
+line and column, or the byte offset for MessagePack. Writer errors give the
+path to the value, such as `$.servers[2].port`:
+
+```text
+json.read: line 3, column 7: expected ':' after object key, found '2'
+json.write: at $.servers[2].port: cannot encode a function value
+```
 
 The JSON, TOML, and MessagePack writers also agree on how a Lua table maps to
 the output:
 
 - Sequential positive integer keys become arrays.
-- Lua floats stay floats: JSON and TOML print `2.0` and `1e300`.
+- Lua floats stay floats: JSON, TOML, and CSV print `2.0` and `1e300`.
 - String-keyed tables and empty tables become objects/maps.
-- Cycles, sparse arrays, mixed array/object tables, unsupported values,
-  non-string object keys, and non-finite numbers are rejected.
+- Cycles, sparse arrays, mixed array/object tables, unsupported values, and
+  non-string object keys are rejected.
+- JSON and CSV reject non-finite numbers. TOML writes `inf`, `-inf`, and `nan`.
 
-Integers outside the 64-bit signed range raise an error rather than quietly
-becoming floats.
+Readers and writers reject nesting deeper than 64 levels. Integers outside the
+64-bit signed range raise an error rather than quietly becoming floats.
 
 ### JSON
 
@@ -273,7 +283,7 @@ print(toml.write(value, { layout = "sections" }))
 
 | Member | Behavior |
 | --- | --- |
-| `toml.read(input)` | Decodes scalars, arrays, and tables. Dates/datetimes remain token strings. |
+| `toml.read(input)` | Decodes TOML 1.1. Dates/datetimes remain token strings. |
 | `toml.write(table[, options])` | Encodes a table. `layout` accepts `inline_tables`/`inline` or `sections`. |
 
 ### MessagePack
@@ -285,8 +295,8 @@ assert(msgpack.read(bytes)[2] == msgpack.null)
 
 | Member | Behavior |
 | --- | --- |
-| `msgpack.read(input)` | Decodes exactly one complete value and rejects trailing bytes. `str` and `bin` become Lua strings. |
-| `msgpack.write(value)` | Uses `str` for UTF-8 strings and `bin` otherwise. |
+| `msgpack.read(input)` | Decodes exactly one complete value and rejects trailing bytes. `str` and `bin` become Lua strings. Map keys must be `str` or `bin`, and extension types are rejected. |
+| `msgpack.write(value)` | Uses `str` for UTF-8 strings and `bin` otherwise, for values and map keys. |
 | `msgpack.null` | Sentinel for MessagePack nil. Lua `nil` also encodes as nil. |
 
 ### CSV

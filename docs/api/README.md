@@ -61,7 +61,7 @@ Generated Markdown API documentation.
 - [stdlib.os](stdlib/os.md)
 - [stdlib.package](stdlib/package.md)
 - [stdlib.json](stdlib/json.md)
-- [stdlib.zerde_lua](stdlib/zerde_lua.md)
+- [stdlib.data](stdlib/data.md)
 - [stdlib.toml](stdlib/toml.md)
 - [stdlib.msgpack](stdlib/msgpack.md)
 - [stdlib.csv](stdlib/csv.md)

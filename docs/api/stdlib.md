@@ -3,7 +3,7 @@
 ## Navigation
 
 - [API Index](README.md)
-- Submodules: [stdlib.base](stdlib/base.md), [stdlib.static_strings](stdlib/static_strings.md), [stdlib.table](stdlib/table.md), [stdlib.string](stdlib/string.md), [stdlib.math](stdlib/math.md), [stdlib.utf8](stdlib/utf8.md), [stdlib.coroutine](stdlib/coroutine.md), [stdlib.debug](stdlib/debug.md), [stdlib.io](stdlib/io.md), [stdlib.os](stdlib/os.md), [stdlib.package](stdlib/package.md), [stdlib.json](stdlib/json.md), [stdlib.zerde_lua](stdlib/zerde_lua.md), [stdlib.toml](stdlib/toml.md), [stdlib.msgpack](stdlib/msgpack.md), [stdlib.csv](stdlib/csv.md), [stdlib.fs](stdlib/fs.md)
+- Submodules: [stdlib.base](stdlib/base.md), [stdlib.static_strings](stdlib/static_strings.md), [stdlib.table](stdlib/table.md), [stdlib.string](stdlib/string.md), [stdlib.math](stdlib/math.md), [stdlib.utf8](stdlib/utf8.md), [stdlib.coroutine](stdlib/coroutine.md), [stdlib.debug](stdlib/debug.md), [stdlib.io](stdlib/io.md), [stdlib.os](stdlib/os.md), [stdlib.package](stdlib/package.md), [stdlib.json](stdlib/json.md), [stdlib.data](stdlib/data.md), [stdlib.toml](stdlib/toml.md), [stdlib.msgpack](stdlib/msgpack.md), [stdlib.csv](stdlib/csv.md), [stdlib.fs](stdlib/fs.md)
 
 <details>
 <summary>All documents</summary>
@@ -65,7 +65,7 @@
 - [stdlib.os](stdlib/os.md)
 - [stdlib.package](stdlib/package.md)
 - [stdlib.json](stdlib/json.md)
-- [stdlib.zerde_lua](stdlib/zerde_lua.md)
+- [stdlib.data](stdlib/data.md)
 - [stdlib.toml](stdlib/toml.md)
 - [stdlib.msgpack](stdlib/msgpack.md)
 - [stdlib.csv](stdlib/csv.md)
@@ -417,9 +417,9 @@ slot without knowing what it holds, so a library adds a member here instead of a
 
 ```zig
 pub const LibraryTable = enum {
-    zerde_null,
-    zerde_array_metatable,
-    zerde_object_metatable,
+    data_null,
+    data_array_metatable,
+    data_object_metatable,
     package,
     package_loaded,
     package_preload,

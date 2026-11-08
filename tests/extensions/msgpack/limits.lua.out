@@ -1,0 +1,7 @@
+msgpack.read: byte 0: array of 4294967295 entries is longer than the input
+msgpack.read: byte 1: map keys must be strings
+msgpack.read: byte 0: unsupported extension type 1
+msgpack.read: byte 0: integer 18446744073709551615 is outside the 64-bit signed range
+msgpack.read: byte 64: nesting deeper than 64 levels
+true	inf	-inf
+1

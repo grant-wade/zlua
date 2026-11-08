@@ -1488,7 +1488,7 @@ test "module navigation lists all documents without previous and next" {
     const allocator = arena.allocator();
 
     var docs = PackageDocs{ .name = "pkg" };
-    try docs.modules.append(allocator, .{ .name = "root", .path = "/tmp/zerde.zig", .doc = "" });
+    try docs.modules.append(allocator, .{ .name = "root", .path = "/tmp/root.zig", .doc = "" });
     try docs.modules.append(allocator, .{ .name = "codec", .path = "/tmp/codec.zig", .doc = "" });
     try docs.modules.append(allocator, .{ .name = "codec.json", .path = "/tmp/codec/json.zig", .doc = "" });
 
