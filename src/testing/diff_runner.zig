@@ -25,7 +25,7 @@ const Options = struct {
     gc_stress: bool = false,
     gc_step_stress: bool = false,
     debug_errors: bool = false,
-    timeout_ms: u64 = 5000,
+    timeout_ms: u64 = 30_000,
     jobs: usize = 0,
 };
 

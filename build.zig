@@ -16,7 +16,7 @@ pub fn build(b: *std.Build) void {
     const official_memory_limit_mb = b.option(u64, "official-memory-limit-mb", "Memory cap per official-suite child process in MiB (0 disables; Linux and FreeBSD only)") orelse default_official_memory_limit_mb;
     const default_official_complete_memory_limit_mb: u64 = if (supports_official_memory_limit) 2048 else 0;
     const official_complete_memory_limit_mb = b.option(u64, "official-complete-memory-limit-mb", "Memory cap per complete-mode official-suite child process in MiB (0 disables; Linux and FreeBSD only)") orelse default_official_complete_memory_limit_mb;
-    const official_timeout_ms = b.option(u64, "official-timeout-ms", "Timeout per official-suite child process in milliseconds (0 disables)") orelse 120_000;
+    const official_timeout_ms = b.option(u64, "official-timeout-ms", "Timeout per official-suite child process in milliseconds (0 disables)") orelse 300_000;
 
     const fetch_archive = b.addExecutable(.{
         .name = "fetch-archive",

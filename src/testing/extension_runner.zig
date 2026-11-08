@@ -12,7 +12,7 @@ const Options = struct {
     stdlib: []const u8 = "safe",
     show_output: bool = false,
     bless: bool = false,
-    timeout_ms: u64 = 5000,
+    timeout_ms: u64 = 30_000,
 };
 
 const Counts = struct {

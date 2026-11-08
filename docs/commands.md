@@ -53,7 +53,7 @@ name:
 | `-Doptimize=<mode>` | Zig 0.16: `Debug`, `ReleaseSafe`, `ReleaseFast`, `ReleaseSmall`. Zig 0.17: `debug`, `safe`, `fast`, `small`, and the 0.16 names. |
 | `-Dofficial-memory-limit-mb=<n>` | Memory cap for each official-test child process. Defaults to `512` on Linux and FreeBSD and `0` elsewhere; `0` disables it, and a nonzero value fails on other platforms. |
 | `-Dofficial-complete-memory-limit-mb=<n>` | The same cap for `test-official-complete`. Defaults to `2048` on Linux and FreeBSD and `0` elsewhere. |
-| `-Dofficial-timeout-ms=<n>` | Timeout for each official-test child process. Defaults to `120000`; `0` disables it. |
+| `-Dofficial-timeout-ms=<n>` | Timeout for each official-test child process. Defaults to `300000`; `0` disables it. |
 
 ## Build Steps
 
@@ -152,7 +152,7 @@ just diff [options] [path]
 | `--clua PATH`, `--clua=PATH` | Reference interpreter. |
 | `--stage=STAGE` | `lex`, `parse`, `resolve`, `compile`, `runtime`, `stdlib`, or `official`. |
 | `--feature=TAG` | Filter on fixture metadata. |
-| `--timeout-ms=N` | Timeout for the CLua child; default `5000`. zlua runs in-process with no timeout. |
+| `--timeout-ms=N` | Timeout for the CLua child; default `30000`. zlua runs in-process with no timeout. |
 | `--jobs=N` | Parallel fixtures; `0`, the default, uses the CPU count. Windows builds from Zig 0.16 use one worker. |
 | `--show-clua`, `--show-zlua` | Print each engine's output. |
 | `--gc-stress` | Collect aggressively while zlua runs. |
@@ -174,7 +174,7 @@ just extensions [options] [path]
 | `path` | File or directory to run; defaults to `tests/extensions`. |
 | `--zlua PATH`, `--zlua=PATH` | zlua executable. |
 | `--stdlib MODE`, `--stdlib=MODE` | Library selection; defaults to `safe`. `fs` fixtures use `full`. |
-| `--timeout-ms=N` | Per-process timeout; default `5000`. |
+| `--timeout-ms=N` | Per-process timeout; default `30000`. |
 | `--show-output` | Print fixture stdout and stderr. |
 | `--bless` | Rewrite the `.out`, `.err`, and `.exit` expectations from the actual run and list the files that changed. |
 

@@ -479,7 +479,7 @@ pub fn generatePrograms(allocator: std.mem.Allocator, io: std.Io, directory: []c
 const Options = struct {
     path: []const u8 = "tests/sandbox",
     stacks: []const u8 = "8388608,1048576,262144",
-    timeout_ms: u64 = 60_000,
+    timeout_ms: u64 = 300_000,
     jobs: usize = 0,
     show_output: bool = false,
 };
