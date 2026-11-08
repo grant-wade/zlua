@@ -14,7 +14,7 @@ You choose which libraries a state gets with one of these selections:
 | --- | --- |
 | `none` | No libraries; the global environment and `_G` still exist. |
 | `base` | Base globals. |
-| `safe` | Base, table, string, math, utf8, coroutine, json, toml, msgpack, and csv. |
+| `safe` | Base, table, string, math, utf8, coroutine, json, toml, msgpack, csv, and datetime. |
 | `full` | Safe plus io, os, debug, package, and fs. |
 | Explicit set | Any combination of the libraries above. |
 
@@ -235,20 +235,31 @@ global tables through `package.loaded`.
 
 The four libraries share some conventions. Every reader accepts either a string
 (bytes for MessagePack) or a Lua file handle, and file input is consumed from
-the current position to EOF. Errors are prefixed with the library and operation
-name. `json.null`, `msgpack.null`, and `csv.null` are one shared value.
+the current position to EOF. `json.null`, `msgpack.null`, and `csv.null` are
+one shared value.
+
+Errors start with the library and operation name. Reader errors then give the
+line and column, or the byte offset for MessagePack. Writer errors give the
+path to the value, such as `$.servers[2].port`:
+
+```text
+json.read: line 3, column 7: expected ':' after object key, found '2'
+json.write: at $.servers[2].port: cannot encode a function value
+```
 
 The JSON, TOML, and MessagePack writers also agree on how a Lua table maps to
 the output:
 
 - Sequential positive integer keys become arrays.
-- Lua floats stay floats: JSON and TOML print `2.0` and `1e300`.
+- Lua floats stay floats: JSON, TOML, and CSV print `2.0` and `1e300`.
 - String-keyed tables and empty tables become objects/maps.
-- Cycles, sparse arrays, mixed array/object tables, unsupported values,
-  non-string object keys, and non-finite numbers are rejected.
+- Cycles, sparse arrays, mixed array/object tables, unsupported values, and
+  non-string object keys are rejected.
+- JSON and CSV reject non-finite numbers. TOML writes `inf`, `-inf`, and `nan`.
+- Only MessagePack can write extension values.
 
-Integers outside the 64-bit signed range raise an error rather than quietly
-becoming floats.
+Readers and writers reject nesting deeper than 64 levels. Integers outside the
+64-bit signed range raise an error rather than quietly becoming floats.
 
 ### JSON
 
@@ -273,7 +284,7 @@ print(toml.write(value, { layout = "sections" }))
 
 | Member | Behavior |
 | --- | --- |
-| `toml.read(input)` | Decodes scalars, arrays, and tables. Dates/datetimes remain token strings. |
+| `toml.read(input)` | Decodes TOML 1.1. Dates and times become `datetime` values. |
 | `toml.write(table[, options])` | Encodes a table. `layout` accepts `inline_tables`/`inline` or `sections`. |
 
 ### MessagePack
@@ -285,9 +296,10 @@ assert(msgpack.read(bytes)[2] == msgpack.null)
 
 | Member | Behavior |
 | --- | --- |
-| `msgpack.read(input)` | Decodes exactly one complete value and rejects trailing bytes. `str` and `bin` become Lua strings. |
-| `msgpack.write(value)` | Uses `str` for UTF-8 strings and `bin` otherwise. |
+| `msgpack.read(input)` | Decodes exactly one complete value and rejects trailing bytes. `str` and `bin` become Lua strings, timestamps become `datetime` values, and other extension types become extension values. Map keys must be `str` or `bin`. A `uint64` above the integer range becomes a float. |
+| `msgpack.write(value)` | Uses `str` for UTF-8 strings and `bin` otherwise, for values and map keys. Floats use `float32` when it holds the value exactly. |
 | `msgpack.null` | Sentinel for MessagePack nil. Lua `nil` also encodes as nil. |
+| `msgpack.extension(type, data)` | Creates an extension value with fields `type` (-128 to 127, except the timestamp type -1) and `data`. |
 
 ### CSV
 
@@ -298,8 +310,8 @@ assert(rows[2].age == csv.null)
 local text = csv.write(rows, { record_terminator = "lf" })
 ```
 
-`csv.read(input[, options])` returns an array of row tables. Cells are strings,
-with empty cells set to `csv.null`. With `header=false`, the keys are strings
+`csv.read(input[, options])` returns an array of row tables. Cells are strings.
+An empty cell is `csv.null`, and a quoted empty cell (`""`) is `""`. With `header=false`, the keys are strings
 starting at `"0"`.
 
 `csv.write(rows[, options])` needs at least one row with named fields. It takes
@@ -318,3 +330,60 @@ Both functions accept these options:
 | `final_record_terminator` | Boolean, default false. |
 
 `csv.read` accepts both line endings whatever these last two options say.
+
+## Datetime
+
+`datetime` is available in both `safe` and `full`. `datetime.now` exists only
+when `os` is open.
+
+A datetime is a table with a protected metatable. Its fields follow
+`os.date("*t")`, so `os.time` accepts it, and which fields are present gives
+its kind:
+
+| Kind | Fields |
+| --- | --- |
+| `datetime` | `year`, `month`, `day`, `hour`, `min`, `sec`, `nsec`, and `offset` in minutes east of UTC. |
+| `local datetime` | The same without `offset`. |
+| `date` | `year`, `month`, `day`. |
+| `time` | `hour`, `min`, `sec`, `nsec`. |
+
+```lua
+local launch = datetime.parse("1979-05-27T07:32:00-07:00")
+print(launch.year, launch:kind(), launch:unix())  --> 1979  datetime  296663520
+
+local due = launch:add{ months = 1, days = 3 }
+print(due:utc(), due:format("%Y-%m-%d %H:%M"))    --> 1979-06-30T14:32:00Z  1979-06-30 07:32
+
+local config = toml.read("deadline = 2026-11-07T17:00:00-08:00")
+config.deadline = config.deadline:add{ weeks = 1 }
+```
+
+| Member | Behavior |
+| --- | --- |
+| `datetime.parse(text)` | Parses any kind in TOML/RFC 3339 form. Seconds are optional, and a space may separate the date and time. |
+| `datetime.new(fields)` | Builds from fields. `min` and `sec` default to 0, and unknown fields such as `isdst` are ignored. |
+| `datetime.unix(seconds[, nsec])` | A UTC datetime. A float's fraction becomes nanoseconds. |
+| `datetime.now([offset])` | The current time from the state's clock, at UTC, at `offset` minutes, or at the local offset with `"local"`. |
+
+| Method | Behavior |
+| --- | --- |
+| `d:kind()` | `"datetime"`, `"local datetime"`, `"date"`, or `"time"`. |
+| `d:unix()` | Seconds and nanoseconds since the Unix epoch. Needs an offset. |
+| `d:utc()`, `d:at_offset(minutes)` | The same instant at another offset. |
+| `d:with(fields)` | A copy with some fields changed. |
+| `d:add(amounts)` | Adds `years`, `months`, `weeks`, `days`, `hours`, `minutes`, `seconds`, and `nanoseconds`, each an integer and possibly negative. Months and years clamp to the end of the month, a date adds only whole days, and a time wraps at midnight. |
+| `d:date()`, `d:time()` | The date or time part. |
+| `d:weekday()`, `d:yday()` | ISO weekday (Monday is 1) and day of the year. |
+| `d:format([pattern])` | `os.date` conversions plus `%f` for nanoseconds. Without a pattern it returns the same text as `tostring`. |
+
+`tostring` gives RFC 3339 text. `==` compares instants for datetimes, so
+`07:32-07:00` equals `14:32Z`, and compares fields for other kinds. Values of
+different kinds are never equal. `<` and `<=` need values of the same kind, and
+`a - b` gives the difference in seconds as a float.
+
+Fields can be changed directly. A value with invalid fields raises an error when
+it is used.
+
+`toml.read` and `toml.write` read and write every kind, `msgpack.read` and
+`msgpack.write` use datetimes for timestamps, and JSON and CSV write the text.
+

@@ -1,0 +1,15 @@
+local function err(f, ...)
+  local ok, message = pcall(f, ...)
+  assert(not ok)
+  print(message)
+end
+
+err(json.read, '{\n  "a": 1,\n  "b" 2\n}')
+err(json.read, '[1, 2,]')
+err(json.read, '"\\ud800"')
+err(json.read, '9223372036854775808')
+err(json.read, '1 2')
+err(json.read, ("["):rep(65) .. ("]"):rep(65))
+err(json.write, { servers = { { port = 1 }, { port = print } } })
+err(json.write, { list = { 1, 0 / 0 } })
+err(json.write, { ["a key"] = { [true] = 1 } })

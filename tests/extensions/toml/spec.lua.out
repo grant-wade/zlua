@@ -1,0 +1,15 @@
+1	2	Aé😀	07:30:00	1979-05-27T07:32:00Z
+255	15	5	1000000	6.626e-34
+inf	-inf	C:\path	one two
+apple	red	banana
+true	inf	-inf
+toml.read: line 2, column 1: duplicate key 'a'
+toml.read: line 2, column 2: table 'a' is already defined
+toml.read: line 2, column 2: table 'a' is already defined
+toml.read: line 2, column 1: inline table 'a' cannot be extended
+toml.read: line 2, column 2: 'a' is an array of tables; use [[a]] to add an element
+toml.read: line 3, column 1: table 'b' is defined by a header and cannot be extended with dotted keys
+toml.read: line 1, column 5: leading zeros are not allowed in '01'
+toml.read: line 1, column 5: invalid date
+toml.read: line 1, column 5: unterminated string
+toml.write: at $.a.b: TOML has no null value

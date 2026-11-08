@@ -17,13 +17,14 @@ The Full check row lists what `zig build ci` runs.
 | Embedding examples | `zig build examples` | Compiles and runs all registered embedding examples. |
 | Differential fixtures | `zig build test-diff` | Runs `tests/diff/**/*.lua` under Lua 5.5 and zlua. |
 | Extension fixtures | `zig build test-extensions` | Checks zlua-only libraries and functions against checked-in output. |
+| Format conformance | `zig build test-formats` | Runs toml-test, msgpack-test-suite, JSONTestSuite, and csv-spectrum against the data-format libraries. |
 | Official suite | `zig build test-official` | Runs downloaded Lua 5.5 tests under both interpreters. |
 | Complete official suite | `zig build test-official-complete` | Runs the same tests with their full-size and non-portable sections enabled. |
 | GC stress | `zig build test-gc-stress` | Runs the differential fixtures under both GC stress modes. |
 | Stack stress | `zig build test-stack-stress` | Runs the differential fixtures, moving the Lua stack on every growth check. |
 | Sandbox attacks | `zig build test-sandbox` | Runs `tests/sandbox/**/*.lua` as hostile scripts in Debug, ReleaseSafe, and ReleaseFast. |
 | Generated differential | `zig build test-diff-generated` | Compares generated programs under Lua 5.5 and zlua. |
-| Full check | `zig build ci` | Unit tests, freestanding smoke builds, examples, differential fixtures, extension fixtures, and official suite. |
+| Full check | `zig build ci` | Unit tests, freestanding smoke builds, examples, differential fixtures, extension fixtures, format conformance, and official suite. |
 
 `just test` and `just ci` wrap the same steps. `just diff`, `just extensions`,
 and `just official` wrap the `run-test-*` steps. `zig build ci` does not include
@@ -39,8 +40,7 @@ crashes, run the fuzzer with an optional iteration limit. Run one fuzzer at a
 time per cache directory. Fuzzing requires Zig `0.17.1` and an LLVM build such as
 ReleaseSafe; the command fails to compile on `0.16.0` and fails with
 `pcs_len was zero` in a default Debug build. A crash prints its stack trace and
-saves its input to `.zig-cache/f/crash`, and the command still exits 0. The
-`Fuzz` workflow runs it on a schedule and fails when that file exists.
+saves its input to `.zig-cache/f/crash`, and the command still exits 0.
 
 ```sh
 zig build test --fuzz=100K -Doptimize=ReleaseSafe
@@ -68,7 +68,7 @@ The minimum Zig version in `build.zig.zon` stays at `0.16.0`, and CI tests both
 supported versions explicitly. To keep runs fast, the setup action caches Zig
 downloads and build outputs, with a separate build cache for each compiler
 version, OS, architecture, and dependency manifest. Full-suite and extended jobs
-also cache the Lua source and test downloads. A new commit cancels older runs
+also cache the downloaded archives. A new commit cancels older runs
 for the same event and branch.
 
 ## Lua 5.5 Reference
@@ -174,6 +174,23 @@ When you have changed output on purpose, `--bless` rewrites the expected `.out`,
 ```sh
 just extensions --bless tests/extensions/string/split_edges.lua
 ```
+
+## Format Conformance
+
+`zig build test-formats` checks the data-format libraries against upstream
+suites. `fetch-format-tests` downloads toml-test, msgpack-test-suite, and
+csv-spectrum into `.zlua-deps/`, and JSONTestSuite's `test_parsing` files are
+checked in under `tests/formats/json/`.
+
+| Suite | Checks |
+| --- | --- |
+| toml-test (TOML 1.1) | Valid documents decode to the expected values and invalid ones are rejected. Each valid document is also written in both layouts and read back. |
+| msgpack-test-suite | Every listed encoding decodes to the expected value, and writing that value produces one of the listed encodings. |
+| JSONTestSuite | `y_` files decode to the same values as `std.json` and survive a write and read, and `n_` files are rejected. `i_` files are counted, not checked. |
+| csv-spectrum | Each file decodes to its expected rows and survives a write and read. |
+
+Known failures are listed in `tests/formats/expected_failures.toml` with a
+reason, in the same format as the differential list.
 
 ## Sandbox Attacks
 

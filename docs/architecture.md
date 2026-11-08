@@ -158,10 +158,10 @@ standard libraries and the Zig API use everywhere: lifecycle, roots, object
 allocation, globals, and argument and library errors. Subsystems that own their
 own fields are facets on the state (`state.gc`, `state.budget`,
 `state.strings`), and everything else lives in modules that take `*State`
-explicitly. Libraries that need private per-state tables, such as the zerde null
-sentinel, get rooted, snapshot-safe slots in `state.library_tables`, keyed by
-`stdlib.LibraryTable`. The `io` file metatables and default files are `State`
-fields:
+explicitly. Libraries that need private per-state tables, such as the shared
+`json.null` sentinel, get rooted, snapshot-safe slots in `state.library_tables`,
+keyed by `stdlib.LibraryTable`. The `io` file metatables and default files are
+`State` fields:
 
 | Module | Contents |
 | --- | --- |

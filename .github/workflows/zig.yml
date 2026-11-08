@@ -39,11 +39,11 @@ jobs:
         with:
           version: ${{ matrix.zig }}
           cache-key: ${{ matrix.zig }}-${{ runner.arch }}-${{ hashFiles('build.zig.zon') }}
-      - name: Cache Lua dependencies
+      - name: Cache test dependencies
         uses: actions/cache@v6.1.0
         with:
           path: .zlua-deps
-          key: ${{ runner.os }}-lua-${{ hashFiles('tools/fetch-lua.sh') }}
+          key: ${{ runner.os }}-deps-${{ hashFiles('tools/archives.zig') }}
       - name: Full test suite, sandbox attacks, and WASM smoke test
         run: zig build ci test-sandbox test-wasm check-tools --summary all
       - name: Downstream embedding project
@@ -64,11 +64,11 @@ jobs:
         with:
           version: ${{ matrix.zig }}
           cache-key: ${{ matrix.zig }}-${{ runner.arch }}-${{ hashFiles('build.zig.zon') }}
-      - name: Cache Lua dependencies
+      - name: Cache test dependencies
         uses: actions/cache@v6.1.0
         with:
           path: .zlua-deps
-          key: ${{ runner.os }}-lua-${{ hashFiles('tools/fetch-lua.sh') }}
+          key: ${{ runner.os }}-deps-${{ hashFiles('tools/archives.zig') }}
       - name: Complete official suite, stress modes, and generated differential
         run: zig build test-official-complete test-gc-stress test-stack-stress test-diff-generated --summary all
       - name: Unit and differential tests in ReleaseSafe

@@ -1,9 +1,8 @@
 # Development
 
-zlua supports Zig `0.16.0` and `0.17.1`. Its only package dependency is `zerde`.
-The build also downloads the Lua 5.5 source and official tests into
-`.zlua-deps/`, a directory Git ignores, so you don't need Lua installed on your
-system.
+zlua supports Zig `0.16.0` and `0.17.1` and has no package dependencies. The
+build downloads the Lua 5.5 source and official tests into `.zlua-deps/`, a
+directory Git ignores, so you don't need Lua installed on your system.
 
 [Architecture](architecture.md#main-boundaries) maps the source tree,
 [Commands](commands.md) lists build steps and harness options, and
@@ -68,8 +67,10 @@ just --set zig /path/to/zig-0.16.0/zig fmt
 
 ## Dependency Cache
 
-`tools/fetch-lua.sh` downloads the Lua archives into `.zlua-deps/` and verifies
-them. If you use a local mirror, you can override the URLs:
+`zig build fetch-lua` and `zig build fetch-format-tests` run
+`tools/fetch_archive.zig`, which downloads the archives pinned in
+`tools/archives.zig`, verifies their SHA-256, and unpacks them into
+`.zlua-deps/`. If you use a local mirror, you can override the URLs:
 
 ```sh
 ZLUA_LUA_URL=https://example.invalid/lua-5.5.1.tar.gz \

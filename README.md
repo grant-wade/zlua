@@ -119,5 +119,5 @@ in the [changelog](CHANGELOG.md).
 zlua is available under the [MIT License](LICENSE).
 
 zlua builds on [Lua](https://www.lua.org/) by PUC-Rio, and parts of it are
-translated from the Lua sources. Lua's license is in
-[THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES).
+translated from the Lua sources. Lua's license and those of the test suites
+zlua uses are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

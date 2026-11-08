@@ -7,6 +7,6 @@ local sparse = {1, nil, 3}
 local ok_sparse, sparse_err = pcall(msgpack.write, sparse)
 
 print(ok_read, tostring(read_err):find("msgpack.read") ~= nil)
-print(ok_trailing, tostring(trailing_err):find("Trailing") ~= nil)
+print(ok_trailing, tostring(trailing_err):find("trailing data") ~= nil)
 print(ok_cycle, tostring(cycle_err):find("cyclic") ~= nil)
 print(ok_sparse, tostring(sparse_err):find("nil hole") ~= nil)

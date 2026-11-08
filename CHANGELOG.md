@@ -1,5 +1,51 @@
 # Changelog
 
+## Unreleased
+
+### Data Formats
+
+- JSON, TOML, MessagePack, and CSV are built into zlua, which has no package
+  dependencies.
+- Reader errors give the line and column, or the byte offset for MessagePack.
+- Writer errors give the path to the value, such as `$.servers[2].port`.
+- `toml.read` accepts TOML 1.1 and reads dates and times as `datetime` values.
+- MessagePack timestamps read and write as `datetime` values, and other
+  extension types as values from `msgpack.extension`.
+- `msgpack.read` reads a `uint64` above the integer range as a float.
+- `msgpack.write` writes floats as `float32` when that is exact.
+- `toml.write` writes `inf`, `-inf`, and `nan`, and `msgpack.write` writes
+  non-finite floats.
+- `csv.write` writes floats with a fraction or exponent.
+- `csv.read` accepts cells that aren't valid UTF-8 and reads a quoted empty
+  cell as `""`, and `csv.write` writes an empty string as `""`.
+- MessagePack map keys that aren't valid UTF-8 are written and read as `bin`.
+- `toml.write` writes an empty inline table as `{}`.
+- The null sentinel and the array and object metatables are named `null`,
+  `array`, and `object`.
+
+### Datetime
+
+- The `datetime` library parses, builds, compares, formats, and adds to dates and
+  times. It is in `safe` and `full`, and `datetime.now` needs `os`.
+
+### Packaging
+
+- `THIRD_PARTY_NOTICES` is now `THIRD_PARTY_NOTICES.md`, installed to
+  `share/licenses/zlua/THIRD_PARTY_NOTICES.md`, and also lists the conformance
+  suites.
+
+### Testing
+
+- `zig build test-formats` runs toml-test, msgpack-test-suite, JSONTestSuite,
+  and csv-spectrum, and `zig build ci` includes it.
+- `fetch-lua` and `fetch-format-tests` download archives with a Zig tool instead
+  of a shell script.
+- The scheduled fuzz workflow is removed.
+
+### Fixes
+
+- `msgpack.read` panicked on an array or map length longer than the input.
+
 ## 0.8.1
 
 ### Breaking changes

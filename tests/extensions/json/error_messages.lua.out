@@ -1,0 +1,9 @@
+json.read: line 3, column 7: expected ':' after object key, found '2'
+json.read: line 1, column 7: expected a value, found ']'
+json.read: line 1, column 2: unpaired surrogate in \u escape
+json.read: line 1, column 1: integer 9223372036854775808 is outside the 64-bit range
+json.read: line 1, column 3: unexpected '2' after the document
+json.read: line 1, column 65: nesting deeper than 64 levels
+json.write: at $.servers[2].port: cannot encode a function value
+json.write: at $.list[2]: non-finite number
+json.write: at $["a key"]: table has keys that are neither strings nor array indices

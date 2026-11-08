@@ -48,7 +48,7 @@ pub fn date(state: *State, thread: *Thread, op: bytecode.Call) !void {
 
     var out = std.ArrayList(u8).empty;
     defer out.deinit(state.allocator);
-    try formatDate(state, &out, format, parts);
+    try formatDate(state, &out, format, parts, "os.date", null);
     try state.returnValues(thread, op.base, op.return_count, &.{.{ .string = try state.strings.intern(out.items) }});
 }
 
@@ -295,7 +295,8 @@ const month_names = [_][]const u8{ "January", "February", "March", "April", "May
 const single_conversions = "aAbBcCdDeFgGhHIjmMnprRStTuUVwWxXyYzZ%";
 const double_conversions = [_][]const u8{ "Ec", "EC", "Ex", "EX", "Ey", "EY", "Od", "Oe", "OH", "OI", "Om", "OM", "OS", "Ou", "OU", "OV", "Ow", "OW", "Oy" };
 
-fn formatDate(state: *State, out: *std.ArrayList(u8), format: []const u8, parts: DateParts) !void {
+/// `function_name` names the caller in errors. A non-null `nanosecond` enables `%f`.
+pub fn formatDate(state: *State, out: *std.ArrayList(u8), format: []const u8, parts: DateParts, function_name: []const u8, nanosecond: ?u32) !void {
     var index: usize = 0;
     while (index < format.len) : (index += 1) {
         if (format[index] != '%') {
@@ -311,20 +312,26 @@ fn formatDate(state: *State, out: *std.ArrayList(u8), format: []const u8, parts:
                     try appendConversion(state, out, rest[1], parts);
                     break;
                 }
-            } else return invalidConversion(state, rest[0..@min(rest.len, 2)]);
+            } else return invalidConversion(state, function_name, rest[0..@min(rest.len, 2)]);
             continue;
         }
+        if (rest.len != 0 and rest[0] == 'f') {
+            if (nanosecond) |value| {
+                try runtime.appendFmt(state.allocator, out, "{d:0>9}", .{value});
+                continue;
+            }
+        }
         if (rest.len == 0 or std.mem.indexOfScalar(u8, single_conversions, rest[0]) == null) {
-            return invalidConversion(state, rest[0..@min(rest.len, 1)]);
+            return invalidConversion(state, function_name, rest[0..@min(rest.len, 1)]);
         }
         try appendConversion(state, out, rest[0], parts);
     }
 }
 
-fn invalidConversion(state: *State, conversion: []const u8) anyerror {
+fn invalidConversion(state: *State, function_name: []const u8, conversion: []const u8) anyerror {
     const message = try std.fmt.allocPrint(state.allocator, "invalid conversion specifier '%{s}'", .{conversion});
     defer state.allocator.free(message);
-    return state.failArgumentMessage("os.date", 1, message);
+    return state.failArgumentMessage(function_name, 1, message);
 }
 
 fn appendConversion(state: *State, out: *std.ArrayList(u8), conversion: u8, parts: DateParts) anyerror!void {

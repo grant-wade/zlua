@@ -1,0 +1,25 @@
+new parse unix
+1979-05-27T07:32:00.5-07:00	datetime	1979	-420	296663520	500000000
+1979-05-27T14:32:00.5Z	1979-05-27T20:02:00.5+05:30	1979-05-27T09:32:00.5-07:00	1979-05-27	07:32:00.5
+Sunday 27 May 1979 07:32:00.500000000 -0700	Thu Jan  1 00:00:00 1970 UTC	1979-05-27T07:32:00.5-07:00
+2026-11-07	date	6	311
+time	local datetime
+1970-01-01T00:00:00Z	1970-01-01T00:00:01.25Z	1970-01-01T00:00:10.000000005Z
+1979-06-30T05:32:00.5-07:00	1979-06-03T08:02:02-07:00
+2024-02-29	2023-02-28	2025-02-28
+01:30:00	2024-02-29
+true
+true	false
+true	true	296663520.5	1800.0
+attempt to compare a date with a time
+attempt to subtract a number from a datetime
+bad argument #1 to 'add' ('day' is not a known amount)
+bad argument #1 to 'add' ('days' must be an integer)
+bad argument #1 to 'add' (a date can only add whole days)
+calling 'add' on bad self (a time has no date to add months or years to)
+calling 'format' on bad self (a time has no date)
+calling 'unix' on bad self (a local datetime has no offset)
+bad argument #1 to 'parse' (invalid time at character 1)
+bad argument #1 to 'new' (year must be an integer)
+bad argument #1 to 'unix' (number out of range)
+deadline = 2026-11-14T17:00:00-08:00	{"deadline":"2026-11-14T17:00:00-08:00"}

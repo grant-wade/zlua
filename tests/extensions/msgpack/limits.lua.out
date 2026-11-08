@@ -1,0 +1,7 @@
+msgpack.read: byte 0: array of 4294967295 entries is longer than the input
+msgpack.read: byte 1: map keys must be strings
+float
+msgpack.read: byte 0: unexpected end of input
+msgpack.read: byte 64: nesting deeper than 64 levels
+true	inf	-inf
+1

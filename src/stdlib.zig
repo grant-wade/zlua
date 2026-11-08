@@ -16,6 +16,7 @@ pub const json = @import("stdlib/json.zig");
 pub const toml = @import("stdlib/toml.zig");
 pub const msgpack = @import("stdlib/msgpack.zig");
 pub const csv = @import("stdlib/csv.zig");
+pub const datetime = @import("stdlib/datetime.zig");
 pub const fs = @import("stdlib/fs.zig");
 pub const static_strings = @import("stdlib/static_strings.zig");
 
@@ -64,6 +65,7 @@ pub const LibrarySet = struct {
     toml: bool = false,
     msgpack: bool = false,
     csv: bool = false,
+    datetime: bool = false,
     fs: bool = false,
 
     pub fn merged(self: LibrarySet, other: LibrarySet) LibrarySet {
@@ -82,6 +84,7 @@ pub const LibrarySet = struct {
             .toml = self.toml or other.toml,
             .msgpack = self.msgpack or other.msgpack,
             .csv = self.csv or other.csv,
+            .datetime = self.datetime or other.datetime,
             .fs = self.fs or other.fs,
         };
     }
@@ -98,6 +101,7 @@ pub const LibrarySet = struct {
             .toml = true,
             .msgpack = true,
             .csv = true,
+            .datetime = true,
         };
     }
 
@@ -112,16 +116,18 @@ pub const LibrarySet = struct {
     }
 
     pub fn isEmpty(self: LibrarySet) bool {
-        return !self.base and !self.table and !self.string and !self.math and !self.utf8 and !self.coroutine and !self.io and !self.os and !self.debug and !self.package and !self.json and !self.toml and !self.msgpack and !self.csv and !self.fs;
+        return !self.base and !self.table and !self.string and !self.math and !self.utf8 and !self.coroutine and !self.io and !self.os and !self.debug and !self.package and !self.json and !self.toml and !self.msgpack and !self.csv and !self.datetime and !self.fs;
     }
 };
 
 /// Tables a library keeps for itself on each state. The runtime roots and snapshots every
 /// slot without knowing what it holds, so a library adds a member here instead of a `State` field.
 pub const LibraryTable = enum {
-    zerde_null,
-    zerde_array_metatable,
-    zerde_object_metatable,
+    data_null,
+    data_array_metatable,
+    data_object_metatable,
+    data_datetime_metatable,
+    data_extension_metatable,
     package,
     package_loaded,
     package_preload,
@@ -190,6 +196,10 @@ pub fn initHints(selection: LibrarySelection) InitHints {
         tables += 1;
     }
     if (libraries.json or libraries.msgpack or libraries.csv) tables += 4;
+    if (libraries.datetime) {
+        globals += 1;
+        tables += 1;
+    }
     if (libraries.fs) {
         globals += 1;
         tables += 2;
@@ -248,6 +258,7 @@ pub fn openLibraries(state: *State, selection: LibrarySelection) !void {
     if (libraries.toml) try openToml(state);
     if (libraries.msgpack) try openMsgpack(state);
     if (libraries.csv) try openCsv(state);
+    if (libraries.datetime) try openDatetime(state, state.opened_libraries.merged(libraries).os);
     if (libraries.fs) try openFs(state);
     state.opened_libraries = state.opened_libraries.merged(libraries);
     if (libraries.package) {
@@ -497,10 +508,22 @@ fn openMsgpack(state: *State) !void {
     const fields = comptime [_]StaticField{
         .{ .name = "read", .value = .{ .native = .msgpack_read } },
         .{ .name = "write", .value = .{ .native = .msgpack_write } },
+        .{ .name = "extension", .value = .{ .native = .msgpack_extension } },
     };
     const msgpack_lib = try newStaticTable(state, &fields, 1);
     try setStaticField(state, msgpack_lib, "null", try msgpack.nullValue(state));
     try putStaticGlobal(state, "msgpack", msgpack_lib);
+}
+
+fn openDatetime(state: *State, with_clock: bool) !void {
+    const fields = comptime [_]StaticField{
+        .{ .name = "parse", .value = .{ .native = .datetime_parse } },
+        .{ .name = "new", .value = .{ .native = .datetime_new } },
+        .{ .name = "unix", .value = .{ .native = .datetime_unix } },
+    };
+    const datetime_lib = try newStaticTable(state, &fields, 1);
+    if (with_clock) try setStaticField(state, datetime_lib, "now", .{ .native = .datetime_now });
+    try putStaticGlobal(state, "datetime", datetime_lib);
 }
 
 fn openCsv(state: *State) !void {
@@ -579,6 +602,7 @@ fn registerLoadedLibraries(state: *State, libraries: LibrarySet) !void {
     if (libraries.toml) try setStaticField(state, loaded, "toml", state.getGlobal("toml"));
     if (libraries.msgpack) try setStaticField(state, loaded, "msgpack", state.getGlobal("msgpack"));
     if (libraries.csv) try setStaticField(state, loaded, "csv", state.getGlobal("csv"));
+    if (libraries.datetime) try setStaticField(state, loaded, "datetime", state.getGlobal("datetime"));
     if (libraries.fs) try setStaticField(state, loaded, "fs", state.getGlobal("fs"));
 }
 
@@ -587,7 +611,7 @@ fn createPackageTables(state: *State, libraries: LibrarySet) !void {
         @as(u32, @intFromBool(libraries.io)) + @as(u32, @intFromBool(libraries.math)) + @as(u32, @intFromBool(libraries.os)) +
         @as(u32, @intFromBool(libraries.string)) + @as(u32, @intFromBool(libraries.table)) + @as(u32, @intFromBool(libraries.utf8)) +
         @as(u32, @intFromBool(libraries.json)) + @as(u32, @intFromBool(libraries.toml)) + @as(u32, @intFromBool(libraries.msgpack)) +
-        @as(u32, @intFromBool(libraries.csv)) + @as(u32, @intFromBool(libraries.fs));
+        @as(u32, @intFromBool(libraries.csv)) + @as(u32, @intFromBool(libraries.datetime)) + @as(u32, @intFromBool(libraries.fs));
     const package_lib = try state.newTableWithHints(0, 8);
     const loaded = try state.newTableWithHints(0, loaded_count);
     const preload = try state.newTableWithHints(0, 4);
@@ -743,6 +767,27 @@ pub fn callNative(state: *State, native: NativeFn, thread: *Thread, op: bytecode
         .msgpack_write => try msgpack.write(state, thread, op),
         .csv_read => try csv.read(state, thread, op),
         .csv_write => try csv.write(state, thread, op),
+        .datetime_parse => try datetime.parseText(state, thread, op),
+        .datetime_new => try datetime.new(state, thread, op),
+        .datetime_unix => try datetime.unix(state, thread, op),
+        .datetime_now => try datetime.now(state, thread, op),
+        .datetime_tostring => try datetime.tostring(state, thread, op),
+        .datetime_eq => try datetime.eq(state, thread, op),
+        .datetime_lt => try datetime.lt(state, thread, op),
+        .datetime_le => try datetime.le(state, thread, op),
+        .datetime_sub => try datetime.sub(state, thread, op),
+        .datetime_kind => try datetime.kindMethod(state, thread, op),
+        .datetime_unix_method => try datetime.unixMethod(state, thread, op),
+        .datetime_utc => try datetime.utc(state, thread, op),
+        .datetime_at_offset => try datetime.atOffset(state, thread, op),
+        .datetime_with => try datetime.with(state, thread, op),
+        .datetime_add => try datetime.add(state, thread, op),
+        .datetime_date => try datetime.dateMethod(state, thread, op),
+        .datetime_time => try datetime.timeMethod(state, thread, op),
+        .datetime_weekday => try datetime.weekday(state, thread, op),
+        .datetime_yday => try datetime.yday(state, thread, op),
+        .datetime_format => try datetime.formatMethod(state, thread, op),
+        .msgpack_extension => try msgpack.extension(state, thread, op),
         .fs_read => try fs.read(state, thread, op),
         .fs_write => try fs.write(state, thread, op),
         .fs_open => try fs.open(state, thread, op),
@@ -852,6 +897,7 @@ test {
     _ = toml;
     _ = msgpack;
     _ = csv;
+    _ = datetime;
     _ = fs;
 }
 

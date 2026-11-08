@@ -1,0 +1,11 @@
+[[failure]]
+path = "msgpack encode 23.number-bignum.yaml#7"
+reason = "uint64 above Lua's integer range reads as a float and writes back as a float"
+
+[[failure]]
+path = "msgpack encode 23.number-bignum.yaml#9"
+reason = "uint64 above Lua's integer range reads as a float and writes back as a float"
+
+[[failure]]
+path = "csv decode location_coordinates.csv"
+reason = "the fixture puts a quote inside an unquoted field, which RFC 4180 forbids, and its expected JSON doesn't match the input"

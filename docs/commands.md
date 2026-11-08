@@ -61,6 +61,7 @@ name:
 | --- | --- |
 | `zig build` | Install `zlua`, `lua5.5`, and the differential, extension, official, and benchmark harnesses. |
 | `fetch-lua` | Download and verify the Lua 5.5 source and official tests. |
+| `fetch-format-tests` | Download and verify the toml-test, msgpack-test-suite, and csv-spectrum conformance suites. |
 | `run -- [args...]` | Run the zlua CLI. |
 | `docs` | Generate the Zig HTML docs under `zig-out/docs`. |
 | `docs-md` | Regenerate the Markdown API docs under `docs/api/`. |
@@ -74,6 +75,7 @@ name:
 | `run-test-diff -- [args...]` | Run the differential harness with your own filters and options. |
 | `test-extensions` | Run all zlua extension fixtures. |
 | `run-test-extensions -- [args...]` | Run the extension harness with your own filters and options. |
+| `test-formats -- [args...]` | Run the JSON, TOML, MessagePack, and CSV conformance suites. |
 | `test-official` | Run the full official-suite dashboard in basic mode. |
 | `test-official-complete` | Run the official suite in complete mode, with full-size and non-portable sections enabled. |
 | `test-gc-stress` | Run the differential fixtures under `--gc-stress` and `--gc-step-stress`. |
@@ -83,7 +85,7 @@ name:
 | `run-test-sandbox -- [args...]` | Run selected sandbox fixtures in the current optimize mode. |
 | `test-stack-stress` | Run the differential fixtures, moving the Lua stack on every growth check. |
 | `test-diff-generated` | Compare generated programs under Lua 5.5 and zlua. |
-| `ci` | Run the tests, examples, and the differential, extension, and official checks. |
+| `ci` | Run the tests, examples, and the differential, extension, format, and official checks. |
 
 ## zlua CLI
 
@@ -113,7 +115,7 @@ around: a state starts sandboxed, and the host opts in to what it needs.
 
 The library names you can list explicitly are `base`, `table`, `string`, `math`,
 `utf8`, `coroutine`, `io`, `os`, `debug`, `package`, `json`, `toml`, `msgpack`,
-`csv`, and `fs`.
+`csv`, `datetime`, and `fs`.
 
 If you give zlua no input, it starts a REPL when stdin is a TTY and otherwise
 executes whatever is piped in. Script and stdin reads are capped at 256 MiB, and
@@ -231,13 +233,16 @@ zig build bench -- --json /tmp/bench.json
 ## Dependency Environment
 
 These variables point harnesses run directly at a different reference
-interpreter, and the fetch script at a local mirror of the Lua archives:
+interpreter, and the fetch steps at local mirrors of the archives they download:
 
 | Variable | Meaning |
 | --- | --- |
 | `ZLUA_CLUA` | Reference interpreter for harnesses run from `zig-out/bin` without `--clua`. `zig build` steps and `just` recipes pass the built `lua5.5`. |
 | `ZLUA_LUA_URL` | Override the Lua source archive URL. |
 | `ZLUA_LUA_TESTS_URL` | Override the official-tests archive URL. |
+| `ZLUA_TOML_TEST_URL` | Override the toml-test archive URL. |
+| `ZLUA_MSGPACK_TEST_SUITE_URL` | Override the msgpack-test-suite archive URL. |
+| `ZLUA_CSV_SPECTRUM_URL` | Override the csv-spectrum archive URL. |
 
-Downloaded Lua files are kept under `.zlua-deps/`, and build outputs go to
+Downloaded files are kept under `.zlua-deps/`, and build outputs go to
 `zig-out/` and `.zig-cache/`.
