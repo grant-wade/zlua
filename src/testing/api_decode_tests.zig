@@ -39,7 +39,7 @@ const Weapon = struct {
 const Decoded = struct {
     arena: std.heap.ArenaAllocator,
     diagnostic: api.Diagnostic,
-    lua: State,
+    lua: *State,
 
     fn init() !Decoded {
         return .{ .arena = .init(a), .diagnostic = .{ .gpa = a }, .lua = try State.init(a, .{}) };
@@ -133,7 +133,7 @@ test "decode rejects floats outside the integer range" {
 }
 
 test "converted results reject floats outside the integer range" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
     var function = try lua.loadString("return 2^63", .{});
     defer function.deinit();
@@ -274,7 +274,7 @@ const Typed = struct {
 };
 
 test "typed callbacks decode aggregate parameters" {
-    var lua = try State.init(a, .{});
+    const lua = try State.init(a, .{});
     defer lua.deinit();
 
     var describe = try lua.registerTyped("describe", Typed.describe);
@@ -327,7 +327,7 @@ test "values convert to tables by the same field options" {
         };
     };
 
-    var lua = try State.init(a, .{});
+    const lua = try State.init(a, .{});
     defer lua.deinit();
     var hero = Hero{};
     hero.usable.insert(.spear);
@@ -400,7 +400,7 @@ test "typed callbacks can set their own return values" {
         }
     };
 
-    var lua = try State.init(a, .{});
+    const lua = try State.init(a, .{});
     defer lua.deinit();
     var pair = try lua.registerTyped("pair", Host.pair);
     defer pair.deinit();

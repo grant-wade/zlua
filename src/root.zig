@@ -29,7 +29,6 @@ pub const Function = api.Function;
 pub const Coroutine = api.Coroutine;
 pub const CoroutineStatus = api.CoroutineStatus;
 pub const ResumeResult = api.ResumeResult;
-pub const CallResult = api.CallResult;
 pub const ErrorRef = api.ErrorRef;
 pub const CallOptions = api.CallOptions;
 pub const ResumeOptions = api.ResumeOptions;

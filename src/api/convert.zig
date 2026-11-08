@@ -39,16 +39,16 @@ pub fn expectedLuaType(comptime T: type) []const u8 {
     };
 }
 
-pub fn convertArgs(state: *State, args: anytype) ![]runtime.Value {
-    const Args = @TypeOf(args);
+pub fn convertArgs(state: *State, args: anytype) ![argCount(@TypeOf(args))]runtime.Value {
+    var raw_args: [argCount(@TypeOf(args))]runtime.Value = undefined;
+    inline for (0..raw_args.len) |index| raw_args[index] = try toRuntimeValue(state, args[index]);
+    return raw_args;
+}
+
+fn argCount(comptime Args: type) usize {
     const info = @typeInfo(Args);
     if (info != .@"struct" or !info.@"struct".is_tuple) @compileError("calls require tuple arguments: .{ ... }");
-
-    const fields = reflection.fieldNames(info.@"struct");
-    const raw_args = try state.allocator().alloc(runtime.Value, fields.len);
-    errdefer state.allocator().free(raw_args);
-    inline for (fields, 0..) |_, index| raw_args[index] = try toRuntimeValue(state, args[index]);
-    return raw_args;
+    return reflection.fieldNames(info.@"struct").len;
 }
 
 pub fn toRuntimeValue(state: *State, value: anytype) !runtime.Value {

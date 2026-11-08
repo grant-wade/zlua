@@ -49,7 +49,7 @@ fn hostAudit(ctx: *zlua.Context) !void {
 pub fn main() !void {
     const allocator = std.heap.smp_allocator;
 
-    var lua = try zlua.State.init(allocator, .{});
+    const lua = try zlua.State.init(allocator, .{});
     defer lua.deinit();
 
     try lua.setGlobal("settings", .{
@@ -160,14 +160,10 @@ pub fn main() !void {
     var failing = try lua.loadString("return host_audit('refund', -1)", .{ .name = "=zlua_test_protected_error" });
     defer failing.deinit();
 
-    switch (try failing.protectedCall(.{}, void)) {
-        .ok => return error.ExpectedLuaError,
-        .lua_error => |err_ref| {
-            var err = err_ref;
-            defer err.deinit();
-            const message = try err.message();
-            defer lua.allocator().free(message);
-            std.debug.print("protected error: {s}\n", .{message});
-        },
+    if (failing.call(.{}, void)) |_| return error.ExpectedLuaError else |err| {
+        var message: std.Io.Writer.Allocating = .init(allocator);
+        defer message.deinit();
+        try lua.writeError(err, &message.writer);
+        std.debug.print("lua error: {s}\n", .{message.written()});
     }
 }

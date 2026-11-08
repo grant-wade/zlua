@@ -198,10 +198,9 @@ pub const Context = struct {
         try handle.validate(function.ref, self.lua);
         callbacks.bindDispatch(self.lua);
         const raw_args = try convert.convertArgs(self.lua, args);
-        defer self.lua.allocator().free(raw_args);
         self.raw.thread.native_call_depth += 1;
         defer self.raw.thread.native_call_depth -= 1;
-        const result = try call_mod.protectedCall(self.raw.state, self.raw.thread, try handle.rawValue(function.ref), raw_args);
+        const result = try call_mod.protectedCall(self.raw.state, self.raw.thread, try handle.rawValue(function.ref), &raw_args);
         return switch (result) {
             .success => |values| blk: {
                 defer self.lua.allocator().free(values);

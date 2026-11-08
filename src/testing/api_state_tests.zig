@@ -1,5 +1,9 @@
 const std = @import("std");
 const api = @import("../api.zig");
+const dumpBytecode = @import("api_expect.zig").dumpBytecode;
+const describeError = @import("api_expect.zig").describeError;
+const errorMessage = @import("api_expect.zig").errorMessage;
+const callError = @import("api_expect.zig").callError;
 const expectString = @import("api_expect.zig").expectString;
 const handle = @import("../api/handle.zig");
 const userdata_mod = @import("../api/userdata.zig");
@@ -14,19 +18,19 @@ const Tuple = api.Tuple;
 const Userdata = api.Userdata;
 
 test "api state initializes with safe defaults" {
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
     try lua.doString("assert(_VERSION == 'Lua 5.5')", .{});
     try std.testing.expectError(error.LuaError, lua.doFile("missing.lua", .{}));
 
-    const message = try lua.errorMessage();
+    const message = try describeError(lua, error.LuaError);
     defer lua.allocator().free(message);
     try std.testing.expect(std.mem.indexOf(u8, message, "filesystem access disabled") != null);
 }
 
 test "api safe stdlib excludes ambient capability libraries" {
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
     try lua.doString(
@@ -39,7 +43,7 @@ test "api safe stdlib excludes ambient capability libraries" {
 }
 
 test "api none stdlib keeps a global environment without libraries" {
-    var lua = try State.init(std.testing.allocator, .{ .stdlib = .none });
+    const lua = try State.init(std.testing.allocator, .{ .stdlib = .none });
     defer lua.deinit();
 
     try lua.setGlobal("host_value", 41);
@@ -54,7 +58,7 @@ test "api none stdlib keeps a global environment without libraries" {
 }
 
 test "api can open custom libraries after none" {
-    var lua = try State.init(std.testing.allocator, .{ .stdlib = .none });
+    const lua = try State.init(std.testing.allocator, .{ .stdlib = .none });
     defer lua.deinit();
 
     try lua.setGlobal("host_value", 81);
@@ -66,7 +70,7 @@ test "api can open custom libraries after none" {
 }
 
 test "api custom stdlib opens only selected libraries" {
-    var lua = try State.init(std.testing.allocator, .{
+    const lua = try State.init(std.testing.allocator, .{
         .stdlib = .{ .custom = .{ .math = true, .json = true } },
     });
     defer lua.deinit();
@@ -81,7 +85,7 @@ test "api custom stdlib opens only selected libraries" {
 }
 
 test "api load string, do string, and protected error" {
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
     var chunk = try lua.loadString("assert(1 + 1 == 2)", .{ .name = "=unit" });
@@ -91,17 +95,11 @@ test "api load string, do string, and protected error" {
     var failing = try lua.loadString("error('boom')", .{ .name = "=unit" });
     defer failing.deinit();
 
-    const result = try failing.protectedCall(.{}, void);
-    switch (result) {
-        .ok => return error.TestExpectedLuaError,
-        .lua_error => |err_ref| {
-            var err = err_ref;
-            defer err.deinit();
-            const message = try err.message();
-            defer lua.allocator().free(message);
-            try std.testing.expect(std.mem.indexOf(u8, message, "boom") != null);
-        },
-    }
+    var err = try callError(failing, .{}, void);
+    defer err.deinit();
+    const message = try errorMessage(err);
+    defer lua.allocator().free(message);
+    try std.testing.expect(std.mem.indexOf(u8, message, "boom") != null);
 }
 
 test "api do file uses memory filesystem and reports source names" {
@@ -109,7 +107,7 @@ test "api do file uses memory filesystem and reports source names" {
         .{ .path = "ok.lua", .contents = "assert(2 * 3 == 6)" },
         .{ .path = "bad.lua", .contents = "return (" },
     };
-    var lua = try State.init(std.testing.allocator, .{
+    const lua = try State.init(std.testing.allocator, .{
         .capabilities = .{ .filesystem = .{ .memory = &files } },
     });
     defer lua.deinit();
@@ -117,13 +115,13 @@ test "api do file uses memory filesystem and reports source names" {
     try lua.doFile("ok.lua", .{ .name = "@ok.lua" });
     try std.testing.expectError(error.LuaError, lua.doFile("bad.lua", .{ .name = "@bad.lua" }));
 
-    const message = try lua.errorMessage();
+    const message = try describeError(lua, error.LuaError);
     defer lua.allocator().free(message);
     try std.testing.expect(std.mem.indexOf(u8, message, "bad.lua") != null);
 }
 
 test "api primitive values round trip through calls and conversion" {
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
     var identity = try lua.loadString("return ...", .{ .name = "=identity" });
@@ -140,7 +138,7 @@ test "api primitive values round trip through calls and conversion" {
 }
 
 test "api tuple helper reads multiple returns" {
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
     var chunk = try lua.loadString("return true, 42, 'ok'", .{ .name = "=tuple" });
@@ -160,7 +158,7 @@ test "api public handles survive forced GC" {
         value: i64,
     };
 
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
     var ref_chunk = try lua.loadString("return { answer = 42 }", .{ .name = "=ref-handle" });
@@ -236,21 +234,15 @@ test "api public handles survive forced GC" {
 }
 
 test "api error refs survive forced GC" {
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
     var failing = try lua.loadString("error({ message = 'boom' }, 0)", .{ .name = "=error-ref-gc" });
-    var err = blk: {
-        const result = try failing.protectedCall(.{}, void);
-        switch (result) {
-            .ok => return error.TestExpectedLuaError,
-            .lua_error => |err_ref| break :blk err_ref,
-        }
-    };
+    var err = try callError(failing, .{}, void);
     failing.deinit();
     defer err.deinit();
 
-    if (lua.takeErrorValue()) |last_error_ref| {
+    if (lua.takeError()) |last_error_ref| {
         var last = last_error_ref;
         last.deinit();
     }
@@ -295,7 +287,7 @@ test "api callback argument roots survive forced GC through weak tables" {
         }
     };
 
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
     var tracker = try lua.newUserdata(Tracker, .{ .id = 7 }, .{});
@@ -339,7 +331,7 @@ test "api native callback dispatch tolerates forced GC" {
         }
     };
 
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
     var stress = try lua.register("stress_callback_gc", Callbacks.stress);
@@ -366,7 +358,7 @@ test "api userdata handles root weak values until finalizers can run" {
         }
     };
 
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
     var finalized: usize = 0;
@@ -390,7 +382,7 @@ test "api userdata handles root weak values until finalizers can run" {
 }
 
 test "api error value refs root weak-table values through forced GC" {
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
     var failing = try lua.loadString(
@@ -399,16 +391,10 @@ test "api error value refs root weak-table values through forced GC" {
         \\weak_errors.err = err
         \\error(err, 0)
     , .{ .name = "=api-error-root-weak" });
-    var err = blk: {
-        const result = try failing.protectedCall(.{}, void);
-        switch (result) {
-            .ok => return error.TestExpectedLuaError,
-            .lua_error => |err_ref| break :blk err_ref,
-        }
-    };
+    var err = try callError(failing, .{}, void);
     failing.deinit();
 
-    if (lua.takeErrorValue()) |last_error_ref| {
+    if (lua.takeError()) |last_error_ref| {
         var last = last_error_ref;
         last.deinit();
     }
@@ -432,7 +418,7 @@ test "api error value refs root weak-table values through forced GC" {
 }
 
 test "api released handles remove runtime roots" {
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
     try std.testing.expectEqual(@as(usize, 0), lua.raw_state.activeRootCount());
@@ -455,7 +441,7 @@ test "api released handles remove runtime roots" {
 }
 
 test "api globals tables arrays and structs build Lua environments" {
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
     try lua.setGlobal("answer", 42);
@@ -495,7 +481,7 @@ test "api globals tables arrays and structs build Lua environments" {
 }
 
 test "api loaded module is returned by require" {
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
     var host = try lua.createTable(.{});
@@ -512,7 +498,7 @@ test "api loaded module is returned by require" {
 }
 
 test "api package path loads memory backed Lua modules" {
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
     try lua.addMemoryFile("plugins/mathx.lua",
@@ -529,7 +515,7 @@ test "api package path loads memory backed Lua modules" {
 }
 
 test "api load options support environments and binary modes" {
-    var lua = try State.init(std.testing.allocator, .{ .stdlib = .full });
+    const lua = try State.init(std.testing.allocator, .{ .stdlib = .full });
     defer lua.deinit();
 
     var env = try lua.createTable(.{ .hash_hint = 1 });
@@ -555,16 +541,16 @@ test "api load options support environments and binary modes" {
 }
 
 test "api dumps and loads zlua bytecode" {
-    var source_state = try State.init(std.testing.allocator, .{});
+    const source_state = try State.init(std.testing.allocator, .{});
     defer source_state.deinit();
 
     var source_chunk = try source_state.loadString("return secret, ...", .{ .name = "=api-bytecode" });
     defer source_chunk.deinit();
 
-    const dumped = try source_chunk.dumpBytecode(.{ .strip_debug = true });
+    const dumped = try dumpBytecode(source_chunk, .{ .strip_debug = true });
     defer source_state.allocator().free(dumped);
 
-    var target_state = try State.init(std.testing.allocator, .{});
+    const target_state = try State.init(std.testing.allocator, .{});
     defer target_state.deinit();
 
     var env = try target_state.createTable(.{ .hash_hint = 1 });
@@ -590,7 +576,7 @@ fn ownedChunkCount(lua: *const State) usize {
 }
 
 test "collections free chunk prototypes once their closures are unreachable" {
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
     try lua.doString(
@@ -602,7 +588,7 @@ test "collections free chunk prototypes once their closures are unreachable" {
         \\end
         \\collectgarbage()
     , .{});
-    try std.testing.expect(ownedChunkCount(&lua) < 20);
+    try std.testing.expect(ownedChunkCount(lua) < 20);
     try std.testing.expectEqual(lua.raw_state.gc.allocationStats().total(), lua.raw_state.gc.known_total);
 
     try lua.doString(
@@ -615,7 +601,7 @@ test "collections free chunk prototypes once their closures are unreachable" {
 }
 
 test "fast field stores keep their keys after the chunk prototype is freed" {
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
     try lua.doString(
@@ -628,7 +614,7 @@ test "fast field stores keep their keys after the chunk prototype is freed" {
         \\end
         \\collectgarbage()
     , .{});
-    try std.testing.expect(ownedChunkCount(&lua) < 20);
+    try std.testing.expect(ownedChunkCount(lua) < 20);
 
     try lua.doString(
         \\for i, t in pairs(keep) do
@@ -642,7 +628,7 @@ test "fast field stores keep their keys after the chunk prototype is freed" {
 }
 
 test "rooted nil values leave other handles intact" {
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
     var missing = try lua.getGlobal("missing", api.Ref);
@@ -668,17 +654,17 @@ test "rooted nil values leave other handles intact" {
 }
 
 test "later openLibs calls register libraries in package.loaded" {
-    var package_first = try State.init(std.testing.allocator, .{ .stdlib = .{ .custom = .{ .base = true, .package = true } } });
+    const package_first = try State.init(std.testing.allocator, .{ .stdlib = .{ .custom = .{ .base = true, .package = true } } });
     defer package_first.deinit();
     try package_first.openLibs(.{ .custom = .{ .json = true } });
     try package_first.doString("assert(require('json') == json and package.loaded._G == _G)", .{});
 
-    var package_last = try State.init(std.testing.allocator, .{ .stdlib = .{ .custom = .{ .base = true, .json = true } } });
+    const package_last = try State.init(std.testing.allocator, .{ .stdlib = .{ .custom = .{ .base = true, .json = true } } });
     defer package_last.deinit();
     try package_last.openLibs(.{ .custom = .{ .package = true } });
     try package_last.doString("assert(require('json') == json and require('_G') == _G)", .{});
 
-    var no_base = try State.init(std.testing.allocator, .{ .stdlib = .{ .custom = .{ .package = true } } });
+    const no_base = try State.init(std.testing.allocator, .{ .stdlib = .{ .custom = .{ .package = true } } });
     defer no_base.deinit();
     var check = try no_base.loadString("return package.loaded._G == nil", .{});
     defer check.deinit();
@@ -686,7 +672,7 @@ test "later openLibs calls register libraries in package.loaded" {
 }
 
 test "strings read from Lua stay valid until deinit" {
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
     try lua.doString("function make() return string.rep('a', 128) end t = { s = string.rep('c', 128) }", .{});
     var make = try lua.getGlobal("make", Function);

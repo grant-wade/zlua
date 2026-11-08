@@ -1,5 +1,9 @@
 const std = @import("std");
 const api = @import("../api.zig");
+const dumpBytecode = @import("api_expect.zig").dumpBytecode;
+const describeError = @import("api_expect.zig").describeError;
+const errorMessage = @import("api_expect.zig").errorMessage;
+const callError = @import("api_expect.zig").callError;
 const expectString = @import("api_expect.zig").expectString;
 const Context = api.Context;
 const Function = api.Function;
@@ -11,19 +15,13 @@ const Value = api.Value;
 const memory_limit_error_message = "memory limit exceeded";
 
 fn expectProtectedErrorContains(lua: *State, function: Function, needle: []const u8) !void {
-    const result = try function.protectedCall(.{}, void);
-    switch (result) {
-        .ok => return error.TestExpectedLuaError,
-        .lua_error => |err_ref| {
-            var err = err_ref;
-            defer err.deinit();
-            const message = try err.message();
-            defer lua.allocator().free(message);
-            if (std.mem.indexOf(u8, message, needle) == null) {
-                std.debug.print("expected \"{s}\" in \"{s}\"\n", .{ needle, message });
-                return error.TestUnexpectedMessage;
-            }
-        },
+    var err = try callError(function, .{}, void);
+    defer err.deinit();
+    const message = try errorMessage(err);
+    defer lua.allocator().free(message);
+    if (std.mem.indexOf(u8, message, needle) == null) {
+        std.debug.print("expected \"{s}\" in \"{s}\"\n", .{ needle, message });
+        return error.TestUnexpectedMessage;
     }
 }
 
@@ -36,7 +34,7 @@ test "api host callbacks read arguments and return multiple values" {
         }
     };
 
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
     var host_add = try lua.register("host_add", Callbacks.add);
@@ -61,7 +59,7 @@ test "api host callback functions can be installed as globals" {
         }
     };
 
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
     var host_add = try lua.register("host_add", Callbacks.add);
@@ -82,7 +80,7 @@ test "api host callback argument errors become Lua errors" {
         }
     };
 
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
     var need_integer = try lua.register("need_integer", Callbacks.needInteger);
@@ -91,18 +89,12 @@ test "api host callback argument errors become Lua errors" {
     var chunk = try lua.loadString("return need_integer('nope')", .{ .name = "=api-21.4-arg-error" });
     defer chunk.deinit();
 
-    const result = try chunk.protectedCall(.{}, void);
-    switch (result) {
-        .ok => return error.TestExpectedLuaError,
-        .lua_error => |err_ref| {
-            var err = err_ref;
-            defer err.deinit();
-            const message = try err.message();
-            defer lua.allocator().free(message);
-            try std.testing.expect(std.mem.indexOf(u8, message, "need_integer") != null);
-            try std.testing.expect(std.mem.indexOf(u8, message, "number") != null);
-        },
-    }
+    var err = try callError(chunk, .{}, void);
+    defer err.deinit();
+    const message = try errorMessage(err);
+    defer lua.allocator().free(message);
+    try std.testing.expect(std.mem.indexOf(u8, message, "need_integer") != null);
+    try std.testing.expect(std.mem.indexOf(u8, message, "number") != null);
 }
 
 test "api host callback can raise Lua error values" {
@@ -112,7 +104,7 @@ test "api host callback can raise Lua error values" {
         }
     };
 
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
     var host_fail = try lua.register("host_fail", Callbacks.fail);
@@ -121,17 +113,11 @@ test "api host callback can raise Lua error values" {
     var chunk = try lua.loadString("host_fail()", .{ .name = "=api-21.4-raise" });
     defer chunk.deinit();
 
-    const result = try chunk.protectedCall(.{}, void);
-    switch (result) {
-        .ok => return error.TestExpectedLuaError,
-        .lua_error => |err_ref| {
-            var err = err_ref;
-            defer err.deinit();
-            const message = try err.message();
-            defer lua.allocator().free(message);
-            try std.testing.expect(std.mem.indexOf(u8, message, "host boom") != null);
-        },
-    }
+    var err = try callError(chunk, .{}, void);
+    defer err.deinit();
+    const message = try errorMessage(err);
+    defer lua.allocator().free(message);
+    try std.testing.expect(std.mem.indexOf(u8, message, "host boom") != null);
 }
 
 test "api memory limit applies to host callback return conversion" {
@@ -143,7 +129,7 @@ test "api memory limit applies to host callback return conversion" {
         }
     };
 
-    var lua = try State.init(std.testing.allocator, .{
+    const lua = try State.init(std.testing.allocator, .{
         .stdlib = .base,
         .limits = .{ .max_memory = 128 * 1024 },
     });
@@ -155,17 +141,11 @@ test "api memory limit applies to host callback return conversion" {
     var chunk = try lua.loadString("return large()", .{ .name = "=api-memory-callback-limit" });
     defer chunk.deinit();
 
-    const result = try chunk.protectedCall(.{}, void);
-    switch (result) {
-        .ok => return error.TestExpectedLuaError,
-        .lua_error => |err_ref| {
-            var err = err_ref;
-            defer err.deinit();
-            const message = try err.message();
-            defer lua.allocator().free(message);
-            try std.testing.expect(std.mem.indexOf(u8, message, memory_limit_error_message) != null);
-        },
-    }
+    var err = try callError(chunk, .{}, void);
+    defer err.deinit();
+    const message = try errorMessage(err);
+    defer lua.allocator().free(message);
+    try std.testing.expect(std.mem.indexOf(u8, message, memory_limit_error_message) != null);
 }
 
 test "api host callback can hold and call Lua callback function" {
@@ -180,7 +160,7 @@ test "api host callback can hold and call Lua callback function" {
         }
     };
 
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
     var host_each = try lua.register("host_each", Callbacks.each);
@@ -202,7 +182,7 @@ test "api typed host callback wrapper compiles and runs" {
         }
     };
 
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
     var clamp = try lua.registerTyped("clamp", Callbacks.clamp);
@@ -222,7 +202,7 @@ test "host registration is native and does not compile or execute Lua" {
             try ctx.returnValues(.{ try ctx.arg(0, i64), try ctx.arg(1, ?i64), try ctx.arg(2, []const u8) });
         }
     };
-    var lua = try State.init(std.testing.allocator, .{ .stdlib = .none });
+    const lua = try State.init(std.testing.allocator, .{ .stdlib = .none });
     defer lua.deinit();
     var first = try lua.register("echo", Callbacks.echo);
     defer first.deinit();
@@ -232,7 +212,7 @@ test "host registration is native and does not compile or execute Lua" {
     try std.testing.expectEqual(@as(usize, 0), lua.raw_state.closure_allocations.items.len);
     try std.testing.expectEqual(@as(usize, 0), lua.raw_state.source_allocations.items.len);
     try std.testing.expect(lua.raw_state.getGlobal("__zlua_api_callback") == .nil);
-    try std.testing.expectError(error.TypeMismatch, first.dumpBytecode(.{}));
+    try std.testing.expectError(error.TypeMismatch, dumpBytecode(first, .{}));
     try lua.setGlobal("first", first);
     try lua.setGlobal("second", second);
     const Result = Tuple(&.{ i64, ?i64, api.String });
@@ -276,7 +256,7 @@ test "native callback handles roundtrip and protect direct errors" {
             return ctx.raise("native failure");
         }
     };
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
     var function = try lua.register("fail", Callbacks.fail);
     defer function.deinit();
@@ -287,23 +267,17 @@ test "native callback handles roundtrip and protect direct errors" {
     var alias = try lua.getGlobal("alias", Function);
     defer alias.deinit();
     try std.testing.expectError(error.LuaError, alias.call(.{}, void));
-    const result = try alias.protectedCall(.{}, void);
-    switch (result) {
-        .ok => return error.TestExpectedLuaError,
-        .lua_error => |error_ref| {
-            var err = error_ref;
-            defer err.deinit();
-            const message = try err.message();
-            defer lua.allocator().free(message);
-            try std.testing.expectEqualStrings("native failure", message);
-        },
-    }
+    var err = try callError(alias, .{}, void);
+    defer err.deinit();
+    const message = try errorMessage(err);
+    defer lua.allocator().free(message);
+    try std.testing.expectEqualStrings("native failure", message);
 }
 
 test "native callback registration rolls back on allocation failure" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, struct {
         fn check(allocator: std.mem.Allocator) !void {
-            var lua = try State.init(allocator, .{ .stdlib = .none });
+            const lua = try State.init(allocator, .{ .stdlib = .none });
             defer lua.deinit();
             var function = lua.registerTyped("identity", identity) catch |err| {
                 try std.testing.expectEqual(@as(usize, 0), lua.callbacks.items.len);
@@ -341,7 +315,7 @@ test "native callback arguments and pending returns survive reentrant collection
             try ctx.state().doString("inner(); assert(weak.result ~= nil)", .{});
         }
     };
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
     var retain = try lua.register("retain", Callbacks.retain);
     defer retain.deinit();
@@ -375,7 +349,7 @@ test "native callbacks work as library callbacks and iterators" {
             return if (value <= limit) value else null;
         }
     };
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
     var twice = try lua.registerTyped("twice", Callbacks.twice);
     defer twice.deinit();
@@ -451,9 +425,9 @@ const expect_testing_io =
 ;
 
 test "api callback context io is null without configured io" {
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
-    try installIoCallbacks(&lua);
+    try installIoCallbacks(lua);
     try lua.doString(expect_no_io, .{ .name = "=no-io" });
 }
 
@@ -463,9 +437,9 @@ test "api callback context io returns configured runtime io" {
     try temporary.dir.writeFile(std.testing.io, .{ .sub_path = "data.txt", .data = "from host" });
     IoCallbacks.dir = temporary.dir;
 
-    var lua = try State.init(std.testing.allocator, .{ .capabilities = .{ .io = .{ .runtime = std.testing.io } } });
+    const lua = try State.init(std.testing.allocator, .{ .capabilities = .{ .io = .{ .runtime = std.testing.io } } });
     defer lua.deinit();
-    try installIoCallbacks(&lua);
+    try installIoCallbacks(lua);
     try lua.doString(expect_testing_io, .{ .name = "=io" });
 }
 
@@ -475,15 +449,15 @@ test "api callback context io carries across snapshot states and reset" {
     try temporary.dir.writeFile(std.testing.io, .{ .sub_path = "data.txt", .data = "from host" });
     IoCallbacks.dir = temporary.dir;
 
-    var lua = try State.init(std.testing.allocator, .{ .capabilities = .{ .io = .{ .runtime = std.testing.io } } });
+    const lua = try State.init(std.testing.allocator, .{ .capabilities = .{ .io = .{ .runtime = std.testing.io } } });
     defer lua.deinit();
-    try installIoCallbacks(&lua);
+    try installIoCallbacks(lua);
     var snapshot = try lua.snapshot(std.testing.allocator);
     defer snapshot.deinit();
 
-    var first = try snapshot.newState(std.testing.allocator);
+    const first = try snapshot.newState(std.testing.allocator);
     defer first.deinit();
-    var second = try snapshot.newState(std.testing.allocator);
+    const second = try snapshot.newState(std.testing.allocator);
     defer second.deinit();
     try first.doString(expect_testing_io, .{ .name = "=first" });
     try second.doString(expect_testing_io, .{ .name = "=second" });
@@ -492,13 +466,13 @@ test "api callback context io carries across snapshot states and reset" {
 }
 
 test "api callback context io stays null across snapshot states and reset" {
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
-    try installIoCallbacks(&lua);
+    try installIoCallbacks(lua);
     var snapshot = try lua.snapshot(std.testing.allocator);
     defer snapshot.deinit();
 
-    var worker = try snapshot.newState(std.testing.allocator);
+    const worker = try snapshot.newState(std.testing.allocator);
     defer worker.deinit();
     try worker.doString(expect_no_io, .{ .name = "=worker" });
     try worker.reset();
@@ -506,7 +480,7 @@ test "api callback context io stays null across snapshot states and reset" {
 }
 
 test "api function handles accept every callable lua value" {
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
     var chunk = try lua.loadString(
@@ -523,7 +497,7 @@ test "api function handles accept every callable lua value" {
 }
 
 test "api value type names match lua" {
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
     var chunk = try lua.loadString(
@@ -556,7 +530,7 @@ test "api integer arguments report numbers without an integer representation" {
         }
     };
 
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
     var integer = try lua.register("integer", Host.takesInteger);
     defer integer.deinit();
@@ -567,16 +541,16 @@ test "api integer arguments report numbers without an integer representation" {
 
     var fraction = try lua.loadString("return integer(1.5)", .{});
     defer fraction.deinit();
-    try expectProtectedErrorContains(&lua, fraction, "bad argument #1 to 'integer' (number has no integer representation)");
+    try expectProtectedErrorContains(lua, fraction, "bad argument #1 to 'integer' (number has no integer representation)");
     var optional_fraction = try lua.loadString("return optional(1.5)", .{});
     defer optional_fraction.deinit();
-    try expectProtectedErrorContains(&lua, optional_fraction, "number has no integer representation");
+    try expectProtectedErrorContains(lua, optional_fraction, "number has no integer representation");
     var too_large = try lua.loadString("return integer(2^63)", .{});
     defer too_large.deinit();
-    try expectProtectedErrorContains(&lua, too_large, "number has no integer representation");
+    try expectProtectedErrorContains(lua, too_large, "number has no integer representation");
     var text = try lua.loadString("return integer('x')", .{});
     defer text.deinit();
-    try expectProtectedErrorContains(&lua, text, "number expected, got string");
+    try expectProtectedErrorContains(lua, text, "number expected, got string");
     var whole = try lua.loadString("return integer(2.0)", .{});
     defer whole.deinit();
     try std.testing.expectEqual(@as(i64, 2), try whole.call(.{}, i64));
@@ -602,7 +576,7 @@ test "api callbacks reach host data through the context and typed parameters" {
     };
     const Other = struct { unused: u8 };
 
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
     var game = Game{ .gold = 5 };
 
@@ -618,7 +592,7 @@ test "api callbacks reach host data through the context and typed parameters" {
 
     var unset = try lua.loadString("return give(1)", .{});
     defer unset.deinit();
-    try expectProtectedErrorContains(&lua, unset, "no host");
+    try expectProtectedErrorContains(lua, unset, "no host");
 
     try lua.setHost(&game);
     try std.testing.expect(lua.host(Other) == null);
@@ -644,7 +618,7 @@ test "api host data follows snapshots and reset" {
         }
     };
 
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
     var original = Game{ .id = 1 };
     var replacement = Game{ .id = 2 };
@@ -655,7 +629,7 @@ test "api host data follows snapshots and reset" {
 
     var snapshot = try lua.snapshot(std.testing.allocator);
     defer snapshot.deinit();
-    var worker = try snapshot.newState(std.testing.allocator);
+    const worker = try snapshot.newState(std.testing.allocator);
     defer worker.deinit();
     try worker.doString("assert(id() == 1)", .{});
     try worker.setHost(&replacement);
@@ -676,7 +650,7 @@ test "api raisef prefixes the lua position and argError names the argument" {
         }
     };
 
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
     var fail = try lua.register("fail", Host.fail);
     defer fail.deinit();
@@ -687,28 +661,22 @@ test "api raisef prefixes the lua position and argError names the argument" {
 
     var chunk = try lua.loadString("\nfail(7)", .{ .name = "@scripts/thing.lua" });
     defer chunk.deinit();
-    try expectProtectedErrorContains(&lua, chunk, "scripts/thing.lua:2: bad value 7");
+    try expectProtectedErrorContains(lua, chunk, "scripts/thing.lua:2: bad value 7");
 
     var long = try lua.loadString("fail(1)", .{ .name = "@a/long/directory/path/that/does/not/fit/in/a/chunk/id/at/all/end.lua" });
     defer long.deinit();
-    try expectProtectedErrorContains(&lua, long, "...");
-    try expectProtectedErrorContains(&lua, long, "end.lua:1: bad value 1");
+    try expectProtectedErrorContains(lua, long, "...");
+    try expectProtectedErrorContains(lua, long, "end.lua:1: bad value 1");
 
-    const direct = try fail.protectedCall(.{@as(i64, 3)}, void);
-    switch (direct) {
-        .ok => return error.TestExpectedLuaError,
-        .lua_error => |failure| {
-            var err = failure;
-            defer err.deinit();
-            const message = try err.message();
-            defer lua.allocator().free(message);
-            try std.testing.expectEqualStrings("bad value 3", message);
-        },
-    }
+    var err = try callError(fail, .{@as(i64, 3)}, void);
+    defer err.deinit();
+    const message = try errorMessage(err);
+    defer lua.allocator().free(message);
+    try std.testing.expectEqualStrings("bad value 3", message);
 
     var argument = try lua.loadString("bad(1, 2)", .{});
     defer argument.deinit();
-    try expectProtectedErrorContains(&lua, argument, "bad argument #2 to 'bad' (not a color)");
+    try expectProtectedErrorContains(lua, argument, "bad argument #2 to 'bad' (not a color)");
 }
 
 test "api caller walks the lua functions of a coroutine" {
@@ -728,7 +696,7 @@ test "api caller walks the lua functions of a coroutine" {
         }
     };
 
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
     var record = try lua.register("record", Host.record);
     defer record.deinit();
@@ -760,7 +728,7 @@ test "api caller walks the lua functions of a coroutine" {
     try std.testing.expectEqualStrings("=co", std.mem.sliceTo(&Host.sources[0], 0));
     try std.testing.expectEqual(@as(?usize, 3), Host.lines[0]);
 
-    const stripped_bytes = try chunk.dumpBytecode(.{ .strip_debug = true });
+    const stripped_bytes = try dumpBytecode(chunk, .{ .strip_debug = true });
     defer lua.allocator().free(stripped_bytes);
     var stripped = try lua.loadBytecode(stripped_bytes, .{});
     defer stripped.deinit();
@@ -769,7 +737,7 @@ test "api caller walks the lua functions of a coroutine" {
 }
 
 test "api describeError gives the lua message or the error name" {
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
     var chunk = try lua.loadString("return setmetatable({}, { __index = function() error('boom', 0) end })", .{});
@@ -777,11 +745,11 @@ test "api describeError gives the lua message or the error name" {
     var table = try chunk.call(.{}, Table);
     defer table.deinit();
     const failure = if (table.get("x", Value)) |_| error.TestExpectedLuaError else |err| err;
-    const message = try lua.describeError(failure);
+    const message = try describeError(lua, failure);
     defer lua.allocator().free(message);
     try std.testing.expectEqualStrings("boom", message);
 
-    const name = try lua.describeError(error.TypeMismatch);
+    const name = try describeError(lua, error.TypeMismatch);
     defer lua.allocator().free(name);
     try std.testing.expectEqualStrings("TypeMismatch", name);
 }
@@ -816,9 +784,9 @@ fn installLineCallbacks(lua: *State) !void {
 }
 
 test "api callback context currentLine reports the calling Lua line" {
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
-    try installLineCallbacks(&lua);
+    try installLineCallbacks(lua);
     try lua.doString(
         \\assert(line() == 1)
         \\
@@ -837,9 +805,9 @@ test "api callback context currentLine reports the calling Lua line" {
 }
 
 test "api callback context currentLine tracks each line within a function" {
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
-    try installLineCallbacks(&lua);
+    try installLineCallbacks(lua);
     try lua.doString(
         \\local seen = {}
         \\for i = 1, 3 do
@@ -852,9 +820,9 @@ test "api callback context currentLine tracks each line within a function" {
 }
 
 test "api callback context currentLine works from metamethods and iterators" {
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
-    try installLineCallbacks(&lua);
+    try installLineCallbacks(lua);
     try lua.doString(
         \\local t = setmetatable({}, { __index = line, __add = line, __call = line })
         \\local a = t.x
@@ -871,9 +839,9 @@ test "api callback context currentLine works from metamethods and iterators" {
 }
 
 test "api callback context currentLine follows the running coroutine" {
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
-    try installLineCallbacks(&lua);
+    try installLineCallbacks(lua);
     try lua.doString(
         \\local co = coroutine.wrap(function()
         \\  coroutine.yield(line())
@@ -886,9 +854,9 @@ test "api callback context currentLine follows the running coroutine" {
 }
 
 test "api callback context currentLine is null without a Lua frame" {
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
-    try installLineCallbacks(&lua);
+    try installLineCallbacks(lua);
 
     var line = try lua.getGlobal("line", Function);
     defer line.deinit();
@@ -900,9 +868,9 @@ test "api callback context currentLine is null without a Lua frame" {
 }
 
 test "api callback context currentLine reports the nearest Lua frame through nested callbacks" {
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
-    try installLineCallbacks(&lua);
+    try installLineCallbacks(lua);
     try lua.doString(
         \\local function inner()
         \\  return (line())
@@ -913,9 +881,9 @@ test "api callback context currentLine reports the nearest Lua frame through nes
 }
 
 test "api callback context currentLine is null for stripped functions" {
-    var lua = try State.init(std.testing.allocator, .{ .binary_chunks = true });
+    const lua = try State.init(std.testing.allocator, .{ .binary_chunks = true });
     defer lua.deinit();
-    try installLineCallbacks(&lua);
+    try installLineCallbacks(lua);
     try lua.doString(
         \\local function f() return (line()) end
         \\assert(f() == 1)
@@ -951,7 +919,7 @@ test "api typed callbacks release handle parameters" {
         }
     };
 
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
     var size = try lua.registerTyped("size", Host.size);
     defer size.deinit();
@@ -963,7 +931,7 @@ test "api typed callbacks release handle parameters" {
     defer keep.deinit();
     try lua.setGlobal("keep", keep);
 
-    const before = liveRoots(&lua);
+    const before = liveRoots(lua);
     try lua.doString(
         \\local t = { 1, 2 }
         \\for _ = 1, 100 do
@@ -982,13 +950,13 @@ test "api typed callbacks release handle parameters" {
         try std.testing.expectEqual(@as(i64, 7), try kept.call(.{}, i64));
     }
     Host.kept = null;
-    try std.testing.expectEqual(before, liveRoots(&lua));
+    try std.testing.expectEqual(before, liveRoots(lua));
 }
 
 test "api handle scopes release handles and keep what they are told to" {
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
-    const before = liveRoots(&lua);
+    const before = liveRoots(lua);
 
     var outer = try lua.createTable(.{});
     defer outer.deinit();
@@ -1010,13 +978,13 @@ test "api handle scopes release handles and keep what they are told to" {
             _ = try lua.createTable(.{});
             outer.deinit();
             outer = try lua.createTable(.{});
-            try std.testing.expectEqual(before + 6, liveRoots(&lua));
+            try std.testing.expectEqual(before + 6, liveRoots(lua));
             outer = inner.keep(outer);
         }
-        try std.testing.expectEqual(before + 4, liveRoots(&lua));
+        try std.testing.expectEqual(before + 4, liveRoots(lua));
         break :blk scope.keep(a);
     };
-    try std.testing.expectEqual(before + 2, liveRoots(&lua));
+    try std.testing.expectEqual(before + 2, liveRoots(lua));
     var table = kept;
     defer table.deinit();
     var reused = try table.rawGet("reused", Table);
@@ -1025,7 +993,7 @@ test "api handle scopes release handles and keep what they are told to" {
 }
 
 test "api handle scopes leave roots outside handles alone" {
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
     var t = try lua.createTable(.{});
     defer t.deinit();
@@ -1049,7 +1017,7 @@ test "api handle scopes leave roots outside handles alone" {
 }
 
 test "api handle scopes end quietly after a reset" {
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
     var snapshot = try lua.snapshot(std.testing.allocator);
     defer snapshot.deinit();
@@ -1077,7 +1045,7 @@ test "registering a callback again reuses its entry" {
     const Callbacks = struct {
         fn noop(_: *Context) !void {}
     };
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
     var metatable = try lua.createTable(.{});
     defer metatable.deinit();

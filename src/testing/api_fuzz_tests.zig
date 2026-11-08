@@ -1,5 +1,6 @@
 const std = @import("std");
 const api = @import("../root.zig");
+const dumpBytecode = @import("api_expect.zig").dumpBytecode;
 /// Set by sweep workers, which each own an allocator.
 threadlocal var worker_allocator: ?std.mem.Allocator = null;
 
@@ -11,7 +12,7 @@ const Smith = std.testing.Smith;
 const limits: api.Options = .{ .limits = .{ .max_memory = 64 << 20, .max_instructions = 200_000 } };
 
 fn loadSource(source: []const u8) !void {
-    var lua = try api.State.init(alloc(), limits);
+    const lua = try api.State.init(alloc(), limits);
     defer lua.deinit();
     var function = lua.loadString(source, .{ .name = "=fuzz" }) catch |err| switch (err) {
         error.LuaError, error.OutOfMemory => return,
@@ -34,11 +35,11 @@ const bytecode_seeds = [_][]const u8{
 const Mutation = struct { offset: usize, byte: u8 };
 
 fn runMutatedBytecode(seed: usize, mutations: []const Mutation, truncate: usize) !void {
-    var lua = try api.State.init(alloc(), limits);
+    const lua = try api.State.init(alloc(), limits);
     defer lua.deinit();
 
     var original = try lua.loadString(bytecode_seeds[seed % bytecode_seeds.len], .{ .name = "=seed" });
-    const dump = try original.dumpBytecode(.{ .strip_debug = seed % 2 == 1 });
+    const dump = try dumpBytecode(original, .{ .strip_debug = seed % 2 == 1 });
     original.deinit();
     defer lua.allocator().free(dump);
 
@@ -54,11 +55,11 @@ fn runMutatedBytecode(seed: usize, mutations: []const Mutation, truncate: usize)
         else => return err,
     };
     defer function.deinit();
-    var result = function.protectedCallWith(.{}, void, .{ .max_instructions = 20_000 }) catch |err| switch (err) {
+    function.callWith(.{}, void, .{ .max_instructions = 20_000 }) catch |err| switch (err) {
+        error.LuaError => {},
         error.OutOfMemory, error.Interrupted, error.LuaExit => return,
         else => return err,
     };
-    if (result == .lua_error) result.lua_error.deinit();
 }
 
 const string_library_chunk =
@@ -83,15 +84,15 @@ fn tooManyQuantifiers(pattern: []const u8) bool {
 
 fn runStringLibrary(subject: []const u8, pattern: []const u8, format: []const u8) !void {
     if (tooManyQuantifiers(pattern)) return;
-    var lua = try api.State.init(alloc(), limits);
+    const lua = try api.State.init(alloc(), limits);
     defer lua.deinit();
     var function = try lua.loadString(string_library_chunk, .{ .name = "=fuzz" });
     defer function.deinit();
-    var result = function.protectedCall(.{ subject, pattern, format }, void) catch |err| switch (err) {
+    function.call(.{ subject, pattern, format }, void) catch |err| switch (err) {
+        error.LuaError => {},
         error.OutOfMemory => return,
         else => return err,
     };
-    if (result == .lua_error) result.lua_error.deinit();
 }
 
 test "fuzz source loading" {
@@ -176,15 +177,14 @@ fn runGenerated(source: []const u8, options: api.Options) !void {
     var configured = options;
     configured.capabilities.io.stdout = &sink.writer;
     configured.capabilities.io.stderr = &sink.writer;
-    var lua = try api.State.init(alloc(), configured);
+    const lua = try api.State.init(alloc(), configured);
     defer lua.deinit();
     run: {
         var function = lua.loadString(source, .{ .name = "=generated" }) catch break :run;
         defer function.deinit();
-        var result = function.protectedCallWith(.{}, void, .{ .max_instructions = 200_000 }) catch break :run;
-        if (result == .lua_error) result.lua_error.deinit();
+        function.callWith(.{}, void, .{ .max_instructions = 200_000 }) catch break :run;
     }
-    try expectUsable(&lua);
+    try expectUsable(lua);
 }
 
 fn expectUsable(lua: *api.State) !void {
@@ -196,14 +196,11 @@ fn expectUsable(lua: *api.State) !void {
         else => return err,
     };
     defer probe.deinit();
-    var result = probe.protectedCall(.{}, i64) catch |err| switch (err) {
-        error.OutOfMemory => return,
+    const value = probe.call(.{}, i64) catch |err| switch (err) {
+        error.OutOfMemory, error.LuaError => return,
         else => return err,
     };
-    switch (result) {
-        .ok => |value| try std.testing.expectEqual(@as(i64, 2), value),
-        .lua_error => |*lua_error| lua_error.deinit(),
-    }
+    try std.testing.expectEqual(@as(i64, 2), value);
 }
 
 fn runProgram(picker: Picker) !void {
@@ -225,7 +222,7 @@ fn runFormatText(picker: Picker) !void {
     defer out.deinit();
     try generators.writeFormatText(picker, &out.writer);
 
-    var lua = try api.State.init(alloc(), sandbox_limits);
+    const lua = try api.State.init(alloc(), sandbox_limits);
     defer lua.deinit();
     var function = try lua.loadString(
         \\local text = ...
@@ -238,12 +235,12 @@ fn runFormatText(picker: Picker) !void {
         \\end
     , .{ .name = "=formats" });
     defer function.deinit();
-    var result = function.protectedCallWith(.{out.written()}, void, .{ .max_instructions = 200_000 }) catch |err| switch (err) {
+    function.callWith(.{out.written()}, void, .{ .max_instructions = 200_000 }) catch |err| switch (err) {
+        error.LuaError => {},
         error.OutOfMemory => return,
         else => return err,
     };
-    if (result == .lua_error) result.lua_error.deinit();
-    try expectUsable(&lua);
+    try expectUsable(lua);
 }
 
 var generated_chunks_loaded: std.atomic.Value(usize) = .init(0);
@@ -255,7 +252,7 @@ fn runChunk(picker: Picker) !void {
 
     var options = sandbox_limits;
     options.binary_chunks = true;
-    var lua = try api.State.init(alloc(), options);
+    const lua = try api.State.init(alloc(), options);
     defer lua.deinit();
     var function = lua.loadBytecode(bytes.items, .{}) catch |err| switch (err) {
         error.LuaError, error.OutOfMemory => return,
@@ -263,12 +260,12 @@ fn runChunk(picker: Picker) !void {
     };
     defer function.deinit();
     _ = generated_chunks_loaded.fetchAdd(1, .monotonic);
-    var result = function.protectedCallWith(.{ @as(i64, 1), @as(f64, 2.5), "s" }, void, .{ .max_instructions = 20_000 }) catch |err| switch (err) {
+    function.callWith(.{ @as(i64, 1), @as(f64, 2.5), "s" }, void, .{ .max_instructions = 20_000 }) catch |err| switch (err) {
+        error.LuaError => {},
         error.OutOfMemory, error.Interrupted, error.LuaExit => return,
         else => return err,
     };
-    if (result == .lua_error) result.lua_error.deinit();
-    try expectUsable(&lua);
+    try expectUsable(lua);
 }
 
 test "fuzz generated programs" {

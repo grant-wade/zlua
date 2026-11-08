@@ -19,6 +19,14 @@
   `wrapUserdata` wraps host-owned storage. `newUserdataAuto`, `newUserdataPtr`,
   `newUserdataPtrAuto`, and `UserdataPtrOptions` are removed.
 - `registerUserdataInitializerWith` is `registerConstructor`.
+- `State.init` and `Snapshot.newState` return `*State`, and `deinit` frees it.
+- `protectedCall`, `protectedCallWith`, `protectedResume`,
+  `protectedResumeWith`, `protectedClose`, and `CallResult` are removed. Lua
+  failures return `error.LuaError`, and `State.takeError` returns the error.
+- `Coroutine.resumeCoroutineWith` takes `ResumeOptions`.
+- `State.errorMessage`, `describeError`, and `takeErrorValue` are
+  `writeError` and `takeError`, and `ErrorRef.message` is `writeMessage`.
+- `Function.dumpBytecode` writes to a `std.Io.Writer`.
 
 ### Data Formats
 
@@ -56,6 +64,7 @@
 - Float arithmetic is faster.
 - Lua function calls and returns are faster.
 - `pcall` and `xpcall` of a Lua function are faster.
+- Calls from Zig into Lua pass their arguments without allocating.
 
 ### Packaging
 

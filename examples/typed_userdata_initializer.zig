@@ -17,7 +17,7 @@ fn newBudget(ctx: *zlua.Context, amount: i64) !zlua.Userdata(Budget) {
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
 
-    var lua = try zlua.State.init(allocator, .{});
+    const lua = try zlua.State.init(allocator, .{});
     defer lua.deinit();
 
     var new_budget = try lua.registerTyped("new_budget", newBudget);

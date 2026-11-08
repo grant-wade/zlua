@@ -26,7 +26,6 @@ const value = @import("api/value.zig");
 pub const Error = errors.Error;
 pub const UnsupportedOption = errors.UnsupportedOption;
 pub const ConversionError = errors.ConversionError;
-pub const CallResult = errors.CallResult;
 pub const ErrorRef = errors.ErrorRef;
 
 pub const State = state.State;

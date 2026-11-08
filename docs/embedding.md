@@ -48,15 +48,15 @@ const std = @import("std");
 const zlua = @import("zlua");
 
 pub fn main(init: std.process.Init) !void {
-    var lua = try zlua.State.init(init.gpa, .{});
+    const lua = try zlua.State.init(init.gpa, .{});
     defer lua.deinit();
 
     try lua.doString("assert(_VERSION == 'Lua 5.5')", .{ .name = "=main" });
 }
 ```
 
-The allocator must outlive the state, and rooted handles must be destroyed
-before it.
+`init` returns a `*State` allocated with the given allocator, which must
+outlive the state. Rooted handles must be destroyed before it.
 
 A state opens the safe libraries by default. The `stdlib` option takes `.none`,
 `.base`, `.safe`, `.full`, or `.custom` with a `LibrarySet`; see
@@ -92,7 +92,7 @@ defer plugin_root.close(io);
 var output = std.Io.Writer.Allocating.init(allocator);
 defer output.deinit();
 
-var lua = try zlua.State.init(allocator, .{
+const lua = try zlua.State.init(allocator, .{
     .stdlib = .full,
     .capabilities = .{
         .io = .{ .runtime = io, .stdout = &output.writer },
@@ -150,7 +150,7 @@ const files = [_]zlua.MemoryFile{
     },
 };
 
-var lua = try zlua.State.init(allocator, .{
+const lua = try zlua.State.init(allocator, .{
     .stdlib = .full,
     .capabilities = .{ .filesystem = .{ .memory = &files } },
 });
@@ -198,7 +198,7 @@ operation returns `error.OperationUnsupported`, which Lua sees as
 ## Resource Limits
 
 ```zig
-var lua = try zlua.State.init(allocator, .{
+const lua = try zlua.State.init(allocator, .{
     .limits = .{
         .max_memory = 16 * 1024 * 1024,
         .max_stack_values = 4096,
@@ -222,19 +222,17 @@ var lua = try zlua.State.init(allocator, .{
 `Limits.untrusted` is a starting point for running code you don't trust. See
 [Running Untrusted Lua](security.md).
 
-`CallOptions.max_instructions` limits one `Function.callWith` or
-`Function.protectedCallWith`, and `ResumeOptions.max_instructions` limits one
-`Coroutine.protectedResumeWith`. Each covers nested calls and resumed
-coroutines, and the tightest enclosing limit applies:
+`CallOptions.max_instructions` limits one `Function.callWith`, and
+`ResumeOptions.max_instructions` limits one `Coroutine.resumeCoroutineWith`.
+Each covers nested calls and resumed coroutines, and the tightest enclosing
+limit applies:
 
 ```zig
-const result = try handler.protectedCallWith(.{event}, void, .{
-    .max_instructions = 100_000,
-});
+try handler.callWith(.{event}, void, .{ .max_instructions = 100_000 });
 ```
 
-An exhausted budget returns `error.LuaError`, or `.lua_error` from a protected
-call, with `instruction limit exceeded`, and `pcall` cannot catch it. The
+An exhausted budget returns `error.LuaError` with `instruction limit exceeded`,
+and `pcall` cannot catch it. The
 state-wide budget keeps failing every call until `resetInstructionBudget`, and a
 coroutine stopped by a budget ends up `.dead`.
 
@@ -267,7 +265,7 @@ Collection runs automatically in generational mode. Incremental mode with
 automatic collection stopped lets the host advance collection itself:
 
 ```zig
-var lua = try zlua.State.init(allocator, .{
+const lua = try zlua.State.init(allocator, .{
     .gc = .{ .mode = .incremental, .running = false },
 });
 defer lua.deinit();
@@ -349,10 +347,11 @@ message; `State.loadString` gives one.
 `Function.dumpBytecode` and `State.loadBytecode` round-trip a loaded function:
 
 ```zig
-const bytes = try chunk.dumpBytecode(.{ .strip_debug = true });
-defer lua.allocator().free(bytes);
+var bytes: std.Io.Writer.Allocating = .init(allocator);
+defer bytes.deinit();
+try chunk.dumpBytecode(&bytes.writer, .{ .strip_debug = true });
 
-var cached = try lua.loadBytecode(bytes, .{});
+var cached = try lua.loadBytecode(bytes.written(), .{});
 defer cached.deinit();
 ```
 
@@ -728,35 +727,30 @@ defer add.deinit();
 const sum = try add.call(.{ 20, 22 }, i64);
 ```
 
-`call` and the convenience APIs report Lua failures as `error.LuaError`.
-Afterward:
+`call` and the other state calls report Lua failures as `error.LuaError`, and
+the state keeps the error until the next one:
 
-| Call | Returns |
+| Call | Effect |
 | --- | --- |
-| `errorMessage` | An allocated copy of the message. |
-| `takeErrorValue` | Ownership of the rooted Lua error. |
-| `describeError(err)` | The message for `error.LuaError`, or the error's name for any other error from a state call. |
-
-`protectedCall` returns a Lua failure as a value:
+| `takeError()` | Returns the rooted Lua error as an `ErrorRef`, which the caller deinits. |
+| `writeError(err, writer)` | Writes the message for `error.LuaError`, or the error's name for any other error. |
+| `ErrorRef.writeMessage(writer)` | Writes the error's message. |
+| `ErrorRef.value()` | Returns the error value. |
 
 ```zig
-const result = try add.protectedCall(.{ "bad", 1 }, i64);
-switch (result) {
-    .ok => |number| _ = number,
-    .lua_error => |error_ref| {
-        var err = error_ref;
-        defer err.deinit();
-        const message = try err.message();
-        defer lua.allocator().free(message);
-    },
-}
+add.call(.{ "bad", 1 }, i64) catch |err| {
+    if (err != error.LuaError) return err;
+    var lua_error = lua.takeError().?;
+    defer lua_error.deinit();
+    try lua_error.writeMessage(stderr);
+};
 ```
 
-`protectedCallWith` takes `CallOptions`:
+`callWith` takes `CallOptions`:
 
 | Option | Effect |
 | --- | --- |
-| `.traceback = true` | Captures a traceback where the error was raised, read with `err.traceback()`. `ErrorRef.deinit` frees it. |
+| `.traceback = true` | Captures a traceback where the error was raised, read with `ErrorRef.traceback()`. `ErrorRef.deinit` frees it. |
 | `.message_handler` | Runs a Lua `Function` with `xpcall` semantics. |
 | `.max_instructions` | Limits this call. |
 
@@ -792,16 +786,16 @@ while (try story.status() == .suspended) {
 
 - `status()` returns `.suspended`, `.running`, `.normal`, or `.dead`. Only
   suspended coroutines resume.
-- Lua failures return `error.LuaError`. `protectedResume` returns them as a
-  value, and `protectedResumeWith` takes `ResumeOptions` for `.traceback` and
+- Lua failures return `error.LuaError`, and `takeError` returns them.
+  `resumeCoroutineWith` takes `ResumeOptions` for `.traceback` and
   `.max_instructions`.
 - `switch` on the result. The inactive field is undefined.
 - `deinit` each result to release its handles.
 - A conversion error leaves the coroutine wherever Lua stopped, and side effects
   stay.
 - A coroutine handle's `deinit` only drops the handle. To abandon a suspended
-  coroutine, call `close()` first to run its pending `__close` handlers.
-  `protectedClose()` returns a Lua error raised during closing as an `ErrorRef`.
+  coroutine, call `close()` first to run its pending `__close` handlers. A Lua
+  error raised during closing returns `error.LuaError`.
 - `ctx.coroutine()` returns the running coroutine inside a callback.
 
 ### Yielding from Callbacks
@@ -904,7 +898,7 @@ it are independent, and each resets to its baseline:
 var snapshot = try lua.snapshot(snapshot_allocator);
 defer snapshot.deinit();
 
-var worker = try snapshot.newState(worker_allocator);
+const worker = try snapshot.newState(worker_allocator);
 defer worker.deinit();
 try worker.doString("results = {42}", .{});
 try worker.reset();

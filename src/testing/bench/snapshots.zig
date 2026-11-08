@@ -13,8 +13,8 @@ const trivial_chunk = "";
 const host_chunk = "return host_tag(host_add(host_double(20), 2))";
 const SnapshotWorkload = enum { bare_library, callbacks, modules, coroutines, no_op_small, no_op_large, sparse, dense, large_table, gc, resources, scoped_resources };
 
-fn initializeSnapshotWorkload(allocator: std.mem.Allocator, workload: SnapshotWorkload) !zlua.State {
-    var lua = try zlua.State.init(allocator, .{});
+fn initializeSnapshotWorkload(allocator: std.mem.Allocator, workload: SnapshotWorkload) !*zlua.State {
+    const lua = try zlua.State.init(allocator, .{});
     errdefer lua.deinit();
     switch (workload) {
         .bare_library => {},
@@ -107,7 +107,7 @@ const Sample = struct { capture: Metric, new_state: Metric, mutation: Metric, re
 fn measureNewState(io: std.Io, snapshot: *const zlua.Snapshot, counter: *CountingAllocator) !Metric {
     const before = counter.beginPhase();
     const start = Timestamp.now(io, .awake);
-    var new_state = try snapshot.newState(counter.allocator());
+    const new_state = try snapshot.newState(counter.allocator());
     const elapsed = elapsedSince(io, start);
     defer new_state.deinit();
     var metric = phaseMetric(counter, before, elapsed, new_state.raw_state.gc.allocationStats().bytes);
@@ -150,11 +150,11 @@ fn measureResetCycle(io: std.Io, lua: *zlua.State, counter: *CountingAllocator) 
     return phaseMetric(counter, before, elapsed, lua.raw_state.gc.allocationStats().bytes);
 }
 
-fn measureRebuildCycle(io: std.Io, lua: *?zlua.State, workload: SnapshotWorkload, counter: *CountingAllocator) !Metric {
-    try snapshotWork(&lua.*.?, "work");
+fn measureRebuildCycle(io: std.Io, lua: *?*zlua.State, workload: SnapshotWorkload, counter: *CountingAllocator) !Metric {
+    try snapshotWork(lua.*.?, "work");
     const before = counter.beginPhase();
     const start = Timestamp.now(io, .awake);
-    try snapshotWork(&lua.*.?, "teardown");
+    try snapshotWork(lua.*.?, "teardown");
     lua.*.?.deinit();
     lua.* = null;
     lua.* = try initializeSnapshotWorkload(counter.allocator(), workload);
@@ -166,7 +166,7 @@ fn measureBareInit(io: std.Io) !Metric {
     var counter: CountingAllocator = .{ .backing = std.heap.smp_allocator };
     const before = counter.beginPhase();
     const start = Timestamp.now(io, .awake);
-    var lua = try zlua.State.init(counter.allocator(), .{});
+    const lua = try zlua.State.init(counter.allocator(), .{});
     const elapsed = elapsedSince(io, start);
     defer lua.deinit();
     return phaseMetric(&counter, before, elapsed, lua.raw_state.gc.allocationStats().bytes);
@@ -241,26 +241,26 @@ fn collectCase(allocator: std.mem.Allocator, io: std.Io, workload: SnapshotWorkl
     const name = @tagName(workload);
     var vm_counter: CountingAllocator = .{ .backing = std.heap.smp_allocator };
     var snapshot_counter: CountingAllocator = .{ .backing = std.heap.smp_allocator };
-    var lua: ?zlua.State = try initializeSnapshotWorkload(vm_counter.allocator(), workload);
-    defer if (lua) |*state| state.deinit();
+    var lua: ?*zlua.State = try initializeSnapshotWorkload(vm_counter.allocator(), workload);
+    defer if (lua) |state| state.deinit();
     var snapshot = try lua.?.snapshot(snapshot_counter.allocator());
     defer snapshot.deinit();
     const samples = try allocator.alloc(Sample, iterations);
     defer allocator.free(samples);
     for (0..try std.math.add(usize, iterations, warmup)) |index| {
         var sample: Sample = undefined;
-        sample.capture = try measureCapture(io, &lua.?, &snapshot_counter);
+        sample.capture = try measureCapture(io, lua.?, &snapshot_counter);
         sample.new_state = try measureNewState(io, &snapshot, &vm_counter);
         // Capture changes lua's backing; start every sample from the frozen image with fresh storage.
         const worker = try snapshot.newState(vm_counter.allocator());
         lua.?.deinit();
         lua = worker;
         try lua.?.reset();
-        sample.noop_reset = try measureOperation(io, &lua.?, &vm_counter, false, true);
-        sample.mutation = try measureOperation(io, &lua.?, &vm_counter, true, false);
-        sample.reset_only = try measureOperation(io, &lua.?, &vm_counter, false, true);
-        sample.cycle = try measureOperation(io, &lua.?, &vm_counter, true, true);
-        sample.reset = try measureResetCycle(io, &lua.?, &vm_counter);
+        sample.noop_reset = try measureOperation(io, lua.?, &vm_counter, false, true);
+        sample.mutation = try measureOperation(io, lua.?, &vm_counter, true, false);
+        sample.reset_only = try measureOperation(io, lua.?, &vm_counter, false, true);
+        sample.cycle = try measureOperation(io, lua.?, &vm_counter, true, true);
+        sample.reset = try measureResetCycle(io, lua.?, &vm_counter);
         sample.rebuild = try measureRebuildCycle(io, &lua, workload, &vm_counter);
         if (index >= warmup) samples[index - warmup] = sample;
     }

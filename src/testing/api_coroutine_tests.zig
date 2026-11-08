@@ -1,5 +1,7 @@
 const std = @import("std");
 const api = @import("../root.zig");
+const takeError = @import("api_expect.zig").takeError;
+const errorMessage = @import("api_expect.zig").errorMessage;
 const a = std.testing.allocator;
 
 fn ask(ctx: *api.Context) !void {
@@ -12,7 +14,7 @@ fn ask(ctx: *api.Context) !void {
 }
 
 test "thread lifecycle converts only active branches and preserves resume arguments" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
     var chunk = try lua.loadString(
         \\local first = ...
@@ -55,7 +57,7 @@ test "thread lifecycle converts only active branches and preserves resume argume
 }
 
 test "thread handles round trip through globals tables dynamic values tuples and callbacks" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
     try lua.doString("co = coroutine.create(function(t) coroutine.yield(t); return t end)", .{});
     var thread = try lua.getGlobal("co", api.Coroutine);
@@ -88,14 +90,14 @@ test "thread handles round trip through globals tables dynamic values tuples and
     var last = try thread.resumeCoroutine(.{}, Threads, api.Coroutine);
     defer last.deinit();
     try std.testing.expectEqual(try thread.identity(), try last.returned.identity());
-    var other = try api.State.init(a, .{});
+    const other = try api.State.init(a, .{});
     defer other.deinit();
     try std.testing.expectError(error.InvalidHandle, other.setGlobal("thread", value));
     try std.testing.expectError(error.InvalidHandle, other.newCoroutine(echo));
 }
 
 test "callback current thread survives host retirement and rejects main lifecycle operations" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
     var callback = try lua.register("current", struct {
         fn call(ctx: *api.Context) !void {
@@ -117,7 +119,7 @@ test "callback current thread survives host retirement and rejects main lifecycl
 }
 
 test "plain typed and entry callbacks yield after defers without reentering Zig" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
     var plain = try lua.register("ask", ask);
     defer plain.deinit();
@@ -155,7 +157,7 @@ test "plain typed and entry callbacks yield after defers without reentering Zig"
 }
 
 test "host yield preserves Lua protected iterator metamethod tail and scope close continuations" {
-    var lua = try api.State.init(a, .{ .stdlib = .full });
+    const lua = try api.State.init(a, .{ .stdlib = .full });
     defer lua.deinit();
     var callback = try lua.register("ask", ask);
     defer callback.deinit();
@@ -201,7 +203,7 @@ fn uncheckedYield(ctx: *api.Context) !void {
 }
 
 test "non yielding host native close and finalizer boundaries reject callback yields" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
     var callback = try lua.register("ask", uncheckedYield);
     defer callback.deinit();
@@ -245,21 +247,20 @@ test "non yielding host native close and finalizer boundaries reject callback yi
 }
 
 test "coroutine close retains arbitrary errors and deinit only releases its root" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
     try lua.doString("marker={}; co=coroutine.create(function() error(marker) end)", .{});
     var thread = try lua.getGlobal("co", api.Coroutine);
     defer thread.deinit();
-    var result = try thread.protectedResume(.{}, void, void);
-    try std.testing.expect(result == .lua_error);
-    defer result.lua_error.deinit();
-    var value = try result.lua_error.value();
+    var result = try takeError(lua, thread.resumeCoroutine(.{}, void, void));
+    defer result.deinit();
+    var value = try result.value();
     defer value.deinit();
     var marker = try lua.getGlobal("marker", api.Table);
     defer marker.deinit();
     try std.testing.expectEqual(try marker.identity(), try value.table.identity());
     try std.testing.expectError(error.LuaError, thread.close());
-    var captured = lua.takeErrorValue().?;
+    var captured = lua.takeError().?;
     defer captured.deinit();
     var captured_value = try captured.value();
     defer captured_value.deinit();
@@ -272,21 +273,20 @@ test "coroutine close retains arbitrary errors and deinit only releases its root
     try std.testing.expectEqual(null, try lua.getGlobal("closed", ?bool));
     pending = try lua.getGlobal("co", api.Coroutine);
     defer pending.deinit();
-    var close_result = try pending.protectedClose();
-    try std.testing.expect(close_result == .lua_error);
-    defer close_result.lua_error.deinit();
-    var close_value = try close_result.lua_error.value();
+    var close_result = try takeError(lua, pending.close());
+    defer close_result.deinit();
+    var close_value = try close_result.value();
     defer close_value.deinit();
     try lua.collect();
     try std.testing.expectEqual(try marker.identity(), try close_value.table.identity());
     try std.testing.expect(try lua.getGlobal("closed", bool));
     try std.testing.expectEqual(api.CoroutineStatus.dead, try pending.status());
-    try std.testing.expect((try pending.protectedClose()) == .ok);
+    try pending.close();
     try pending.close();
 }
 
 test "conversion failures advance thread and release partial tuple handles" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
     var chunk = try lua.loadString("coroutine.yield({}, {}, 'bad'); return {}, nil", .{});
     defer chunk.deinit();
@@ -305,7 +305,7 @@ test "conversion failures advance thread and release partial tuple handles" {
 }
 
 test "suspended host yield values survive GC snapshots independent resumes and reset" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
     var callback = try lua.register("ask", struct {
         fn run(ctx: *api.Context) !void {
@@ -330,7 +330,7 @@ test "suspended host yield values survive GC snapshots independent resumes and r
     var snapshot = try lua.snapshot(a);
     defer snapshot.deinit();
     for (0..2) |i| {
-        var worker = try snapshot.newState(a);
+        const worker = try snapshot.newState(a);
         defer worker.deinit();
         var co = try worker.getGlobal("co", api.Coroutine);
         defer co.deinit();
@@ -354,7 +354,7 @@ test "suspended host yield values survive GC snapshots independent resumes and r
 }
 
 test "running and normal threads reject host lifecycle changes while Lua self close still works" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
     var check = try lua.register("check", struct {
         fn call(ctx: *api.Context) !void {
@@ -402,7 +402,7 @@ test "userdata method scopes finish before host yield and rejected conversion ne
             return self.value;
         }
     };
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
     var payload = try lua.newUserdata(Payload, .{}, .{ .snapshot = .{ .copy = Payload.copy, .dispose = Payload.dispose, .tracking = .scoped } });
     defer payload.deinit();
@@ -440,22 +440,21 @@ test "userdata method scopes finish before host yield and rejected conversion ne
 }
 
 test "thread startup stack limits and cumulative instruction failures become Lua errors" {
-    var lua = try api.State.init(a, .{ .limits = .{ .max_stack_values = 2 } });
+    const lua = try api.State.init(a, .{ .limits = .{ .max_stack_values = 2 } });
     defer lua.deinit();
     var chunk = try lua.loadString("return 1,2,3,4,5", .{});
     defer chunk.deinit();
     var thread = try lua.newCoroutine(chunk);
     defer thread.deinit();
-    var failure = try thread.protectedResume(.{}, void, void);
-    try std.testing.expect(failure == .lua_error);
-    defer failure.lua_error.deinit();
+    var failure = try takeError(lua, thread.resumeCoroutine(.{}, void, void));
+    defer failure.deinit();
     try std.testing.expectEqual(api.CoroutineStatus.dead, try thread.status());
-    const message = try failure.lua_error.message();
+    const message = try errorMessage(failure);
     defer a.free(message);
     try std.testing.expect(std.mem.indexOf(u8, message, "stack overflow") != null);
     try std.testing.expectError(error.LuaError, thread.close());
 
-    var budgeted = try api.State.init(a, .{ .limits = .{ .max_instructions = 30 } });
+    const budgeted = try api.State.init(a, .{ .limits = .{ .max_instructions = 30 } });
     defer budgeted.deinit();
     var loop = try budgeted.loadString("while true do coroutine.yield(1) end", .{});
     defer loop.deinit();
@@ -476,7 +475,7 @@ test "allocation failures during thread creation resume and suspension leave val
     var offset: usize = 0;
     while (offset < 200) : (offset += 1) {
         var failing = std.testing.FailingAllocator.init(a, .{});
-        var lua = try api.State.init(failing.allocator(), .{});
+        const lua = try api.State.init(failing.allocator(), .{});
         defer lua.deinit();
         var callback = try lua.register("ask", struct {
             fn call(ctx: *api.Context) !void {
@@ -503,7 +502,7 @@ test "allocation failures during thread creation resume and suspension leave val
                 try std.testing.expectEqual(api.CoroutineStatus.dead, try thread.status());
             }
         }.call;
-        run(&lua, callback) catch |err| {
+        run(lua, callback) catch |err| {
             try std.testing.expectEqual(error.OutOfMemory, err);
         };
         if (!failing.has_induced_failure) break;
@@ -512,7 +511,7 @@ test "allocation failures during thread creation resume and suspension leave val
 }
 
 test "callback yield memory limit errors are protected Lua failures without suspension" {
-    var lua = try api.State.init(a, .{ .stdlib = .base, .limits = .{ .max_memory = 128 * 1024 } });
+    const lua = try api.State.init(a, .{ .stdlib = .base, .limits = .{ .max_memory = 128 * 1024 } });
     defer lua.deinit();
     var callback = try lua.register("large", struct {
         const payload: [512 * 1024]u8 = @splat('x');
@@ -523,10 +522,9 @@ test "callback yield memory limit errors are protected Lua failures without susp
     defer callback.deinit();
     var thread = try lua.newCoroutine(callback);
     defer thread.deinit();
-    var result = try thread.protectedResume(.{}, void, void);
-    try std.testing.expect(result == .lua_error);
-    defer result.lua_error.deinit();
-    const message = try result.lua_error.message();
+    var result = try takeError(lua, thread.resumeCoroutine(.{}, void, void));
+    defer result.deinit();
+    const message = try errorMessage(result);
     defer lua.allocator().free(message);
     try std.testing.expect(std.mem.indexOf(u8, message, "memory limit") != null);
     try std.testing.expectEqual(api.CoroutineStatus.dead, try thread.status());
@@ -535,7 +533,7 @@ test "callback yield memory limit errors are protected Lua failures without susp
 test "interleaved host yields survive repeated collection without leaking roots" {
     const thread_count = 16;
     const rounds = 64;
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
     var ask_fn = try lua.register("ask", struct {
         fn call(ctx: *api.Context) !void {
@@ -597,7 +595,7 @@ test "interleaved host yields survive repeated collection without leaking roots"
 }
 
 test "coroutine.resume reports memory errors like pcall" {
-    var lua = try api.State.init(a, .{ .stdlib = .safe, .limits = .{ .max_memory = 1024 * 1024 } });
+    const lua = try api.State.init(a, .{ .stdlib = .safe, .limits = .{ .max_memory = 1024 * 1024 } });
     defer lua.deinit();
     try lua.doString(
         \\local co = coroutine.create(string.rep)
@@ -609,7 +607,7 @@ test "coroutine.resume reports memory errors like pcall" {
 }
 
 test "api protected resume options capture a traceback and bound one resume" {
-    var lua = try api.State.init(std.testing.allocator, .{});
+    const lua = try api.State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
     var failing = try lua.loadString(
@@ -620,27 +618,17 @@ test "api protected resume options capture a traceback and bound one resume" {
     defer failing.deinit();
     var co = try lua.newCoroutine(failing);
     defer co.deinit();
-    const first = try co.protectedResumeWith(.{}, void, void, .{ .traceback = true });
-    try std.testing.expect(first == .ok);
-    var second = try co.protectedResumeWith(.{}, void, void, .{ .traceback = true });
-    switch (second) {
-        .ok => return error.TestExpectedLuaError,
-        .lua_error => |*err| {
-            defer err.deinit();
-            const text = err.traceback() orelse return error.TestExpectedTraceback;
-            try std.testing.expect(std.mem.startsWith(u8, text, "stack traceback:"));
-            try std.testing.expect(std.mem.indexOf(u8, text, "failing:1") != null);
-            try std.testing.expect(std.mem.indexOf(u8, text, "failing:3") != null);
-        },
-    }
-    var dead = try co.protectedResumeWith(.{}, void, void, .{ .traceback = true });
-    switch (dead) {
-        .ok => return error.TestExpectedLuaError,
-        .lua_error => |*err| {
-            defer err.deinit();
-            try std.testing.expect(err.traceback() == null);
-        },
-    }
+    var first = try co.resumeCoroutineWith(.{}, void, void, .{ .traceback = true });
+    first.deinit();
+    var second = try takeError(lua, co.resumeCoroutineWith(.{}, void, void, .{ .traceback = true }));
+    defer second.deinit();
+    const text = second.traceback() orelse return error.TestExpectedTraceback;
+    try std.testing.expect(std.mem.startsWith(u8, text, "stack traceback:"));
+    try std.testing.expect(std.mem.indexOf(u8, text, "failing:1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "failing:3") != null);
+    var dead = try takeError(lua, co.resumeCoroutineWith(.{}, void, void, .{ .traceback = true }));
+    defer dead.deinit();
+    try std.testing.expect(dead.traceback() == null);
 
     var spinning = try lua.loadString(
         \\coroutine.yield()
@@ -649,17 +637,12 @@ test "api protected resume options capture a traceback and bound one resume" {
     defer spinning.deinit();
     var loop = try lua.newCoroutine(spinning);
     defer loop.deinit();
-    const started = try loop.protectedResumeWith(.{}, void, void, .{ .max_instructions = 1000 });
-    try std.testing.expect(started == .ok);
-    var spun = try loop.protectedResumeWith(.{}, void, void, .{ .max_instructions = 1000 });
-    switch (spun) {
-        .ok => return error.TestExpectedLuaError,
-        .lua_error => |*err| {
-            defer err.deinit();
-            const message = try err.message();
-            defer lua.allocator().free(message);
-            try std.testing.expect(std.mem.indexOf(u8, message, "instruction limit exceeded") != null);
-        },
-    }
+    var started = try loop.resumeCoroutineWith(.{}, void, void, .{ .max_instructions = 1000 });
+    started.deinit();
+    var spun = try takeError(lua, loop.resumeCoroutineWith(.{}, void, void, .{ .max_instructions = 1000 }));
+    defer spun.deinit();
+    const message = try errorMessage(spun);
+    defer lua.allocator().free(message);
+    try std.testing.expect(std.mem.indexOf(u8, message, "instruction limit exceeded") != null);
     try lua.doString("for _ = 1, 10000 do end", .{});
 }

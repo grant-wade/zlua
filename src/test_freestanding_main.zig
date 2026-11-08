@@ -43,7 +43,7 @@ fn runWithInstructionLimit(max_instructions: ?u64) !void {
     try host.filesystem.writeFile("boot/init.lua", "return 'booted'");
     try host.filesystem.writeFile("mod.lua", "return { answer = 42 }");
 
-    var lua = try zlua.State.init(fixed.allocator(), .{
+    const lua = try zlua.State.init(fixed.allocator(), .{
         .stdlib = .full,
         .capabilities = .{
             .io = .{ .stdin = "kernel input\n" },

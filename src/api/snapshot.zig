@@ -31,7 +31,9 @@ pub const Snapshot = struct {
     }
 
     /// Creates an independent State with this snapshot as its baseline; it keeps the snapshot alive.
-    pub fn newState(self: *const Snapshot, state_allocator: std.mem.Allocator) !State {
+    pub fn newState(self: *const Snapshot, state_allocator: std.mem.Allocator) !*State {
+        const result = try state_allocator.create(State);
+        errdefer state_allocator.destroy(result);
         var limit: ?*MemoryLimitAllocator = null;
         {
             const p = try state_allocator.create(MemoryLimitAllocator);
@@ -39,9 +41,9 @@ pub const Snapshot = struct {
             limit = p;
         }
         errdefer if (limit) |p| p.lifetime.release();
-        var result = try copyFrozenImage(&self.backing.image, state_allocator, if (limit) |p| p.allocator() else state_allocator, if (limit) |p| &p.lifetime else null);
-        errdefer discardImage(&result);
-        try installRollback(&result, &self.backing.image.raw_state);
+        result.* = try copyFrozenImage(&self.backing.image, state_allocator, if (limit) |p| p.allocator() else state_allocator, if (limit) |p| &p.lifetime else null);
+        errdefer discardImage(result);
+        try installRollback(result, &self.backing.image.raw_state);
         result.memory_limit_allocator = limit;
         self.backing.retain();
         result.baseline = self.backing;

@@ -96,8 +96,10 @@ pub const State = struct {
     open_handle_scopes: usize = 0,
 
     /// `state_allocator` must remain valid until `deinit`.
-    pub fn init(state_allocator: std.mem.Allocator, options: Options) !State {
+    pub fn init(state_allocator: std.mem.Allocator, options: Options) !*State {
         inline for (reflection.fieldsOf(GcParam)) |f| try options_mod.validateGcParam(options.gc.params.get(@field(GcParam, f)));
+        const state = try state_allocator.create(State);
+        errdefer state_allocator.destroy(state);
         var memory_limit_allocator: ?*MemoryLimitAllocator = null;
         errdefer if (memory_limit_allocator) |allocator_ptr| state_allocator.destroy(allocator_ptr);
 
@@ -108,7 +110,7 @@ pub const State = struct {
             break :blk allocator_ptr.allocator();
         };
 
-        var state = State{
+        state.* = .{
             .base_allocator = state_allocator,
             .memory_limit_allocator = memory_limit_allocator,
             .raw_state = try runtime.State.initWithOptions(runtime_allocator, options_mod.runtimeOptions(options)),
@@ -119,11 +121,11 @@ pub const State = struct {
         state.raw_state.gc.resetAutoThreshold();
         if (memory_limit_allocator) |limit| state.raw_state.allocator_lifetime = &limit.lifetime;
         memory_limit_allocator = null;
-        errdefer state.deinit();
+        errdefer state.release();
 
         if (options.capabilities.filesystem == .memory) {
             const files = options.capabilities.filesystem.memory;
-            for (files) |file| try appendMemoryFile(&state, file.path, file.contents, false);
+            for (files) |file| try appendMemoryFile(state, file.path, file.contents, false);
             state.raw_state.options.filesystem = .{ .memory = state.memory_files.items };
         }
 
@@ -133,6 +135,12 @@ pub const State = struct {
     /// Runs pending finalizers like `lua_close` (errors ignored, open files flushed), then
     /// frees the state and invalidates all handles. `reset` runs no finalizers.
     pub fn deinit(self: *State) void {
+        const base_allocator = self.base_allocator;
+        self.release();
+        base_allocator.destroy(self);
+    }
+
+    fn release(self: *State) void {
         const state_allocator = self.allocator();
         if (self.last_error_traceback) |text| state_allocator.free(text);
         snapshot_mod.abandonRollbackMetadata(self);
@@ -515,24 +523,15 @@ pub const State = struct {
         self.raw_state.warnings_on = on;
     }
 
-    /// Formats the last Lua error; the caller frees the result with `allocator()`.
-    pub fn errorMessage(self: *State) ![]const u8 {
-        const value = errors.lastErrorValue(self);
-        var out = std.ArrayList(u8).empty;
-        defer out.deinit(self.allocator());
-        try runtime.appendErrorValue(self.allocator(), &out, value);
-        return self.allocator().dupe(u8, out.items);
+    /// Writes the last Lua error's message for `error.LuaError`, otherwise the name of `err`.
+    pub fn writeError(self: *State, err: anyerror, writer: *std.Io.Writer) !void {
+        if (err != error.LuaError) return writer.writeAll(@errorName(err));
+        try errors.writeErrorValue(self, errors.lastErrorValue(self), writer);
     }
 
-    /// The last Lua error's message for `error.LuaError`, otherwise the name of `err`; the caller
-    /// frees the result with `allocator()`.
-    pub fn describeError(self: *State, err: anyerror) ![]const u8 {
-        if (err == error.LuaError) return self.errorMessage();
-        return self.allocator().dupe(u8, @errorName(err));
-    }
-
-    /// Takes ownership of the last Lua error value; the caller must `deinit` it.
-    pub fn takeErrorValue(self: *State) ?ErrorRef {
+    /// Takes the last Lua error value, with its traceback when one was captured; the caller must
+    /// `deinit` it.
+    pub fn takeError(self: *State) ?ErrorRef {
         const index = self.last_error_root orelse return null;
         self.last_error_root = null;
         const traceback_text = self.last_error_traceback;

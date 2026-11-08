@@ -50,24 +50,24 @@ pub const Limits = struct {
     max_file_bytes: usize = runtime.default_max_file_bytes,
 };
 
-/// Options for `Function.callWith` and `Function.protectedCallWith`.
+/// Options for `Function.callWith`.
 pub const CallOptions = struct {
     /// Per-call instruction budget covering nested calls and coroutines; nested budgets keep
     /// the tighter limit, and `Limits.max_instructions` still applies.
     max_instructions: ?u64 = null,
-    /// Capture a traceback before failing frames unwind; read it via `ErrorRef.traceback`.
+    /// Capture a traceback before failing frames unwind; read it from `State.takeError`.
     traceback: bool = false,
     /// `xpcall`-style handler run at the error point before `__close` handlers; its first
     /// result becomes the error value. Must belong to the called state.
     message_handler: ?Function = null,
 };
 
-/// Options for `Coroutine.protectedResumeWith`.
+/// Options for `Coroutine.resumeCoroutineWith`.
 pub const ResumeOptions = struct {
     /// Instruction budget for this resume, covering nested calls and coroutines; nested budgets
     /// keep the tighter limit, and `Limits.max_instructions` still applies.
     max_instructions: ?u64 = null,
-    /// Capture a traceback of the failed coroutine; read it via `ErrorRef.traceback`.
+    /// Capture a traceback of the failed coroutine; read it from `State.takeError`.
     traceback: bool = false,
 };
 

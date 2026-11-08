@@ -34,7 +34,7 @@ pub fn runCli(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8
     var registry = try expected_failures.load(allocator, io, options.expected);
     defer registry.deinit();
 
-    var lua = try api.State.init(allocator, .{});
+    const lua = try api.State.init(allocator, .{});
     defer lua.deinit();
 
     var buffer: [8192]u8 = undefined;
@@ -45,8 +45,8 @@ pub fn runCli(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8
         .io = io,
         .out = &writer.interface,
         .registry = registry,
-        .lua = &lua,
-        .codecs = try Codecs.init(&lua),
+        .lua = lua,
+        .codecs = try Codecs.init(lua),
     };
     defer suite.codecs.deinit();
 
@@ -187,32 +187,26 @@ const Suite = struct {
     }
 
     fn call(self: *Suite, function: api.Function, args: anytype) !Outcome {
-        var result = try function.protectedCall(args, handle.Ref);
-        switch (result) {
-            .ok => |ref| return .{ .ok = .{ .ref = ref } },
-            .lua_error => |*err| {
-                defer err.deinit();
-                const message = try err.message();
-                defer self.lua.allocator().free(message);
-                return .{ .lua_error = try self.arena.allocator().dupe(u8, message) };
-            },
-        }
+        const ref = function.call(args, handle.Ref) catch |err| {
+            if (err != error.LuaError) return err;
+            return .{ .lua_error = try self.lastError() };
+        };
+        return .{ .ok = .{ .ref = ref } };
     }
 
     fn encode(self: *Suite, function: api.Function, args: anytype) !Encoded {
-        var result = try function.protectedCall(args, api.String);
-        switch (result) {
-            .ok => |*string| {
-                defer string.deinit();
-                return .{ .ok = try self.arena.allocator().dupe(u8, try string.bytes()) };
-            },
-            .lua_error => |*err| {
-                defer err.deinit();
-                const message = try err.message();
-                defer self.lua.allocator().free(message);
-                return .{ .lua_error = try self.arena.allocator().dupe(u8, message) };
-            },
-        }
+        var string = function.call(args, api.String) catch |err| {
+            if (err != error.LuaError) return err;
+            return .{ .lua_error = try self.lastError() };
+        };
+        defer string.deinit();
+        return .{ .ok = try self.arena.allocator().dupe(u8, try string.bytes()) };
+    }
+
+    fn lastError(self: *Suite) ![]const u8 {
+        var out: std.Io.Writer.Allocating = .init(self.arena.allocator());
+        try self.lua.writeError(error.LuaError, &out.writer);
+        return out.written();
     }
 
     fn readFile(self: *Suite, path: []const u8) ![]u8 {

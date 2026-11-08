@@ -8,7 +8,7 @@ fn askUser(ctx: *zlua.Context) !void {
 }
 
 pub fn main() !void {
-    var lua = try zlua.State.init(std.heap.smp_allocator, .{});
+    const lua = try zlua.State.init(std.heap.smp_allocator, .{});
     defer lua.deinit();
 
     var chunk = try lua.loadString(

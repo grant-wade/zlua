@@ -72,7 +72,7 @@ With a thread-safe allocator `a` that outlives the joined workers:
 const Worker = struct {
     fn run(owned: zlua.Snapshot, allocator: std.mem.Allocator) void {
         var snapshot = owned; // ownership moved from the spawning thread
-        var vm = snapshot.newState(allocator) catch {
+        const vm = snapshot.newState(allocator) catch {
             snapshot.deinit();
             return;
         };

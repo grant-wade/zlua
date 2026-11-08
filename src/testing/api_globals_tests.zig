@@ -88,7 +88,7 @@ const Api = struct {
 };
 
 test "setGlobals converts functions, values, and nested structs" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
 
     var players: i64 = 4;
@@ -115,7 +115,7 @@ test "setGlobals converts functions, values, and nested structs" {
 }
 
 test "functions converted from Zig keep typed arguments and their errors" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
 
     var wallet = Wallet{ .gold = 5 };
@@ -134,7 +134,7 @@ test "functions converted from Zig keep typed arguments and their errors" {
 }
 
 test "a Zig function converts to one callback however often it is converted" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
 
     try lua.setGlobal("add", add);
@@ -149,7 +149,7 @@ test "a Zig function converts to one callback however often it is converted" {
 }
 
 test "functions convert wherever Zig values go to Lua" {
-    var lua = try api.State.init(a, .{ .stdlib = .full });
+    const lua = try api.State.init(a, .{ .stdlib = .full });
     defer lua.deinit();
 
     var t = try lua.createTable(.{});
@@ -171,7 +171,7 @@ test "functions convert wherever Zig values go to Lua" {
 }
 
 test "Table.setFields assigns through __newindex" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
 
     try lua.doString(
@@ -188,7 +188,7 @@ test "Table.setFields assigns through __newindex" {
 }
 
 test "createTableFrom builds a sandboxed environment" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
 
     var env = try lua.createTableFrom(.{ .add = add, .base = 10 });
@@ -203,7 +203,7 @@ test "createTableFrom builds a sandboxed environment" {
 }
 
 test "a struct type converts to a table of its exported public declarations" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
 
     Api.counter = 40;
@@ -248,7 +248,7 @@ const Right = struct {
 };
 
 test "namespaces that refer to each other stop at the first repeat" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
 
     try lua.setGlobal("left", Left);
@@ -259,7 +259,7 @@ test "namespaces that refer to each other stop at the first repeat" {
 }
 
 test "a Zig file converts to a Lua module" {
-    var lua = try api.State.init(a, .{ .stdlib = .full });
+    const lua = try api.State.init(a, .{ .stdlib = .full });
     defer lua.deinit();
 
     const Local = struct {
@@ -289,7 +289,7 @@ test "a Zig file converts to a Lua module" {
 }
 
 test "globals set after a snapshot are gone after reset" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
 
     try lua.setGlobals(.{ .add = add });
@@ -306,7 +306,7 @@ test "globals set after a snapshot are gone after reset" {
 }
 
 test "setGlobals fails when memory runs out and leaves the state usable" {
-    var lua = try api.State.init(a, .{ .limits = .{ .max_memory = 512 * 1024 } });
+    const lua = try api.State.init(a, .{ .limits = .{ .max_memory = 512 * 1024 } });
     defer lua.deinit();
 
     const big: [100_000]i64 = @splat(7);

@@ -20,7 +20,7 @@ pub fn main() !void {
     defer filesystem.deinit();
     try filesystem.writeFile("worker.lua", script);
 
-    var lua = try zlua.State.init(allocator, .{
+    const lua = try zlua.State.init(allocator, .{
         .stdlib = .full,
         .capabilities = .{
             .filesystem = .{ .memory_rw = &filesystem },

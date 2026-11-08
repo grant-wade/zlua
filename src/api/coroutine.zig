@@ -6,7 +6,6 @@ const handle = @import("handle.zig");
 const coroutine_mod = @import("../runtime/coroutine.zig");
 const debug_mod = @import("../runtime/debug.zig");
 const CallBudget = @import("function.zig").CallBudget;
-const CallResult = errors.CallResult;
 const Ref = handle.Ref;
 const ResumeOptions = @import("options.zig").ResumeOptions;
 
@@ -39,57 +38,37 @@ pub const Coroutine = struct {
         self.* = undefined;
     }
 
-    /// Converts yields to `Y` and returns to `R`; Lua failures return `error.LuaError`.
+    /// Converts yields to `Y` and returns to `R`; Lua failures return `error.LuaError`, and
+    /// `State.takeError` returns the error value.
     pub fn resumeCoroutine(self: Coroutine, args: anytype, comptime Y: type, comptime R: type) !ResumeResult(Y, R) {
-        const result = try self.protectedResume(args, Y, R);
-        return switch (result) {
-            .ok => |value| value,
-            .lua_error => |value| blk: {
-                var failure = value;
-                failure.deinit();
-                break :blk error.LuaError;
-            },
-        };
+        return self.resumeCoroutineWith(args, Y, R, .{});
     }
 
-    /// Like `resumeCoroutine`, returning Lua errors as an `ErrorRef`.
-    pub fn protectedResume(self: Coroutine, args: anytype, comptime Y: type, comptime R: type) !CallResult(ResumeResult(Y, R)) {
-        return self.protectedResumeWith(args, Y, R, .{});
-    }
-
-    /// `protectedResume` with `ResumeOptions`; a captured traceback is owned by the `ErrorRef`.
-    pub fn protectedResumeWith(self: Coroutine, args: anytype, comptime Y: type, comptime R: type, options: ResumeOptions) !CallResult(ResumeResult(Y, R)) {
+    pub fn resumeCoroutineWith(self: Coroutine, args: anytype, comptime Y: type, comptime R: type, options: ResumeOptions) !ResumeResult(Y, R) {
         const raw = try self.rawThread();
         const state = self.ref.state;
         const raw_args = try convert.convertArgs(state, args);
-        defer state.allocator().free(raw_args);
         _ = errors.takeMemoryLimitExceeded(state);
         const resumable = raw.status == .suspended;
         const budget = CallBudget.begin(state, options.max_instructions);
         defer budget.end(state);
-        const result = coroutine_mod.resumeCoroutine(&state.raw_state, raw, raw_args) catch |err| {
-            if (err == error.OutOfMemory and errors.takeMemoryLimitExceeded(state)) {
-                return .{ .lua_error = try errors.memoryLimitErrorRef(state) };
-            }
+        const result = coroutine_mod.resumeCoroutine(&state.raw_state, raw, &raw_args) catch |err| {
+            if (err == error.OutOfMemory and errors.takeMemoryLimitExceeded(state)) return errors.memoryLimitError(state);
             return err;
         };
-        return switch (result) {
-            .success => |values| blk: {
+        switch (result) {
+            .success => |values| {
                 defer state.allocator().free(values);
-                break :blk .{ .ok = if (raw.status == .suspended)
-                    .{ .yielded = try convert.fromRuntimeResults(state, values, Y) }
-                else
-                    .{ .returned = try convert.fromRuntimeResults(state, values, R) } };
+                if (raw.status == .suspended) return .{ .yielded = try convert.fromRuntimeResults(state, values, Y) };
+                return .{ .returned = try convert.fromRuntimeResults(state, values, R) };
             },
-            .failure => |value| blk: {
-                if (errors.takeMemoryLimitExceeded(state)) break :blk .{ .lua_error = try errors.memoryLimitErrorRef(state) };
+            .failure => |value| {
+                if (errors.takeMemoryLimitExceeded(state)) return errors.memoryLimitError(state);
                 try errors.setLastErrorValue(state, value);
-                var error_ref = try errors.refFromRuntime(state, value);
-                errdefer error_ref.deinit();
-                if (options.traceback and resumable) error_ref.traceback_text = try debug_mod.formatTraceback(&state.raw_state, raw, false);
-                break :blk .{ .lua_error = error_ref };
+                if (options.traceback and resumable) state.last_error_traceback = try debug_mod.formatTraceback(&state.raw_state, raw, false);
+                return error.LuaError;
             },
-        };
+        }
     }
 
     pub fn status(self: Coroutine) !CoroutineStatus {
@@ -102,32 +81,19 @@ pub const Coroutine = struct {
     }
 
     /// Unwinds pending frames and `__close` handlers; rejects main, running, and normal coroutines.
+    /// A Lua error raised while closing returns `error.LuaError`.
     pub fn close(self: Coroutine) !void {
-        const result = try self.protectedClose();
-        switch (result) {
-            .ok => {},
-            .lua_error => |value| {
-                var failure = value;
-                failure.deinit();
-                return error.LuaError;
-            },
-        }
-    }
-
-    /// Like `close`, returning Lua errors as an `ErrorRef` the caller must `deinit`.
-    pub fn protectedClose(self: Coroutine) !CallResult(void) {
         const raw = try self.rawThread();
         const state = self.ref.state;
         const failure = coroutine_mod.closeCoroutineFromHost(&state.raw_state, raw, null) catch |err| switch (err) {
             error.RuntimeError, error.StackOverflow, error.UnsupportedOpcode => state.raw_state.currentErrorValue(),
-            error.OutOfMemory => if (errors.takeMemoryLimitExceeded(state)) return .{ .lua_error = try errors.memoryLimitErrorRef(state) } else return err,
+            error.OutOfMemory => if (errors.takeMemoryLimitExceeded(state)) return errors.memoryLimitError(state) else return err,
             else => return err,
         };
         if (failure) |value| {
             try errors.setLastErrorValue(state, value);
-            return .{ .lua_error = try errors.refFromRuntime(state, value) };
+            return error.LuaError;
         }
-        return .{ .ok = {} };
     }
 
     fn rawThread(self: Coroutine) !*runtime.Thread {

@@ -30,7 +30,7 @@ bug in zlua.
 ## Configuration
 
 ```zig
-var lua = try zlua.State.init(allocator, .{
+const lua = try zlua.State.init(allocator, .{
     .limits = zlua.Limits.untrusted,
 });
 ```

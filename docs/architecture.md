@@ -47,9 +47,9 @@ source bytes
 The CLI, the embedding API, and the test harnesses all share this pipeline and
 differ only in how they wrap it. The CLI deals with files, stdin, shebangs,
 `arg`, and host-oriented defaults. The Zig API turns load results into rooted
-`Function` handles and maps Lua failures to API errors or protected-call
-results. Differential tests can stop after lexing, parsing, resolving, or
-compiling, or carry on through execution.
+`Function` handles and maps Lua failures to API errors. Differential tests can
+stop after lexing, parsing, resolving, or compiling, or carry on through
+execution.
 
 ### Frontend
 
@@ -229,8 +229,7 @@ value + arguments
 
 A protected call saves enough state to restore the stacks, frames, results,
 prior error information, and the thread's message handler if something fails.
-The same path backs Lua's `pcall` and `xpcall` and Zig's
-`Function.protectedCall`.
+The same path backs Lua's `pcall` and `xpcall`.
 
 That message handler plays the role of Lua's `errfunc`, and each thread has one.
 `xpcall` and host calls that supply a handler install it, and it runs at the
@@ -347,7 +346,7 @@ it.
 | `options.zig`, `capabilities.zig` | State, load, call, and GC options, and host capability types. |
 | `handle.zig` | `Ref` and the validation and rooting shared by every handle. |
 | `value.zig`, `table.zig`, `function.zig`, `coroutine.zig`, `userdata.zig` | `Value`, `Tuple`, and the handle types. |
-| `errors.zig` | Error sets, `ErrorRef`, `CallResult`, and last-error capture. |
+| `errors.zig` | Error sets, `ErrorRef`, and last-error capture. |
 | `convert.zig` | Conversion between Zig values, API handles, and runtime values. |
 | `callbacks.zig`, `context.zig` | Host callback registration and dispatch, typed adapters, and `Context`. |
 | `decode.zig` | `decode`, `Decoder`, `Diagnostic`, and per-field `lua` options. |
@@ -366,8 +365,7 @@ reference; your host handle stays valid and still needs its own cleanup.
 
 Failures come in two kinds. Load-time failures use `errors.Diagnostic`. Runtime
 failures carry a `RuntimeErrorPayload`, an error value, and traceback and debug
-context. The Zig API surfaces both as `error.LuaError` or as protected-call
-results.
+context. The Zig API surfaces both as `error.LuaError`.
 
 zlua's binary chunks serialize protos for zlua-to-zlua use, and `string.dump`,
 `Function.dumpBytecode`, and `State.loadBytecode` all use this format. It is

@@ -15,7 +15,7 @@ pub fn main() !void {
     var output = std.Io.Writer.Allocating.init(allocator);
     defer output.deinit();
 
-    var lua = try zlua.State.init(allocator, .{
+    const lua = try zlua.State.init(allocator, .{
         .stdlib = .safe,
         .capabilities = .{
             .io = .{ .stdout = &output.writer },

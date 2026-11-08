@@ -42,7 +42,7 @@ fn add(a: i64, b: i64) i64 {
 }
 
 pub fn main(init: std.process.Init) !void {
-    var lua = try zlua.State.init(init.gpa, .{
+    const lua = try zlua.State.init(init.gpa, .{
         .limits = .{ .max_instructions = 1_000_000 },
     });
     defer lua.deinit();

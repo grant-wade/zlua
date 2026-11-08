@@ -4,7 +4,7 @@ const zlua = @import("zlua");
 
 pub fn main() !void {
     const allocator = std.heap.smp_allocator;
-    var lua = try zlua.State.init(allocator, .{ .stdlib = .full });
+    const lua = try zlua.State.init(allocator, .{ .stdlib = .full });
     defer lua.deinit();
     try lua.doString(
         \\box = {secret = 'baseline'}; box.self = box
@@ -55,7 +55,7 @@ pub fn main() !void {
         var steal = try lua.getGlobal("steal", zlua.Function);
         defer steal.deinit();
         try rejected(error.LuaError, lua.doString("error(escape)", .{}));
-        var old_error = lua.takeErrorValue() orelse return error.MissingError;
+        var old_error = lua.takeError() orelse return error.MissingError;
         defer old_error.deinit();
 
         try lua.reset();
@@ -103,7 +103,7 @@ pub fn main() !void {
     }
     std.debug.print("PASS: 20 rounds of stale-handle, root-reuse, closure, coroutine, module, weak-table and metatable probes\n", .{});
 
-    var worker = try snapshot.newState(allocator);
+    const worker = try snapshot.newState(allocator);
     defer worker.deinit();
     var foreign = try lua.getGlobal("box", zlua.Table);
     defer foreign.deinit();
@@ -130,7 +130,7 @@ const Payload = struct {
 
 fn userdataBoundary(allocator: std.mem.Allocator) !void {
     var backing = Payload{ .value = 7 };
-    var lua = try zlua.State.init(allocator, .{});
+    const lua = try zlua.State.init(allocator, .{});
     defer lua.deinit();
     var shared = try lua.wrapUserdata(Payload, &backing, .{});
     defer shared.deinit();

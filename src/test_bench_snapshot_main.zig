@@ -16,7 +16,7 @@ fn run(init: std.process.Init) !u8 {
     if (args.len != script_index + 1) return error.ExpectedScript;
     const path = args[script_index];
     const allocator = std.heap.smp_allocator;
-    var baseline = try zlua.State.init(allocator, .{
+    const baseline = try zlua.State.init(allocator, .{
         .stdlib = .full,
         .capabilities = .{
             .io = .{ .runtime = init.io },
@@ -39,7 +39,7 @@ fn run(init: std.process.Init) !u8 {
     // Capture libraries and CLI globals before loading; the whole worker lifecycle is timed.
     var snapshot = try baseline.snapshot(allocator);
     defer snapshot.deinit();
-    var worker = try snapshot.newState(allocator);
+    const worker = try snapshot.newState(allocator);
     defer worker.deinit();
     const source = try std.Io.Dir.cwd().readFileAlloc(init.io, path, allocator, .limited(1024 * 1024));
     defer allocator.free(source);

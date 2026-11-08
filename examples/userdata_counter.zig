@@ -15,7 +15,7 @@ const CounterMethods = struct {
 pub fn main() !void {
     const allocator = std.heap.smp_allocator;
 
-    var lua = try zlua.State.init(allocator, .{});
+    const lua = try zlua.State.init(allocator, .{});
     defer lua.deinit();
 
     try lua.defineUserdata(Counter, .{ .name = "Counter", .methods = CounterMethods });

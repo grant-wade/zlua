@@ -4,7 +4,7 @@ const zlua = @import("zlua");
 pub fn main() !void {
     const allocator = std.heap.smp_allocator;
 
-    var lua = try zlua.State.init(allocator, .{});
+    const lua = try zlua.State.init(allocator, .{});
     defer lua.deinit();
 
     var host_add = try lua.registerTyped("host_add", hostAdd);
