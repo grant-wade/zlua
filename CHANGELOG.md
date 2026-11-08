@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.1
 
 ### Breaking changes
 
@@ -9,11 +9,15 @@
 ### Performance
 
 - Instructions are 8 bytes instead of 16.
-- Table stores, returns, and conditions read local registers without copying them.
-- Method lookups, upvalue table fields, integer-constant indexes, and constant field stores each take one instruction.
+- Table stores, returns, and conditions read local registers without copying
+  them.
+- Method lookups, upvalue table fields, integer-constant indexes, and constant
+  field stores each take one instruction.
 - Entering a Lua function clears only its missing parameters.
-- Lua tail calls, closure creation, returns that close upvalues, and returns to multiple-result calls run in the fast loop.
-- Natives such as `table.sort` and `pcall` push fixed-parameter Lua frames directly.
+- Lua tail calls, closure creation, returns that close upvalues, and returns to
+  multiple-result calls run in the fast loop.
+- Natives such as `table.sort` and `pcall` push fixed-parameter Lua frames
+  directly.
 
 ### Lua Compatibility
 
@@ -27,9 +31,12 @@
   `__index`, `__newindex`, comparators, and errors see the same table states.
 - `table.sort` accepts up to `INT_MAX - 1` elements instead of 1,000,000.
 - Line hooks reported line 1 for table constructor instructions.
-- Multiple assignments store from right to left, and indexed targets read local keys and tables when the store runs.
-- Error messages name `t["k"]`, `t[1]`, other indexed values, and a nil `_ENV` like Lua 5.5.
-- Long chains of left-associative operators compile instead of failing with too many registers.
+- Multiple assignments store from right to left, and indexed targets read local
+  keys and tables when the store runs.
+- Error messages name `t["k"]`, `t[1]`, other indexed values, and a nil `_ENV`
+  like Lua 5.5.
+- Long chains of left-associative operators compile instead of failing with too
+  many registers.
 
 ### Embedding API
 
@@ -49,7 +56,8 @@
 
 - `table.remove` could free the removed value when removing the last element
   of a proxy table ran `__newindex`.
-- Growing a table's array part past integer keys held in its hash part hid those keys, and `pairs` over the table never finished.
+- Growing a table's array part past integer keys held in its hash part hid those
+  keys, and `pairs` over the table never finished.
 
 ## 0.8.0
 
