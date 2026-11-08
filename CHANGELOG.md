@@ -52,6 +52,8 @@
 - `fetch-lua` and `fetch-format-tests` download archives with a Zig tool instead
   of a shell script.
 - The scheduled fuzz workflow is removed.
+- Harness steps build only the binaries they run.
+- Unit test fuzz sweeps run across threads.
 
 ### Fixes
 

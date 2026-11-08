@@ -196,7 +196,6 @@ pub fn build(b: *std.Build) void {
 
     const run_diff_step = b.step("run-test-diff", "Run CLua differential harness");
     const run_diff_cmd = b.addRunArtifact(diff_exe);
-    run_diff_cmd.step.dependOn(b.getInstallStep());
     run_diff_cmd.addArg("--clua");
     run_diff_cmd.addArtifactArg(clua_exe);
     addPassthruArgs(b, run_diff_cmd);
@@ -204,7 +203,6 @@ pub fn build(b: *std.Build) void {
 
     const run_extensions_step = b.step("run-test-extensions", "Run zlua extension fixture harness");
     const run_extensions_cmd = b.addRunArtifact(extensions_exe);
-    run_extensions_cmd.step.dependOn(b.getInstallStep());
     run_extensions_cmd.addArg("--zlua");
     run_extensions_cmd.addArtifactArg(exe);
     addPassthruArgs(b, run_extensions_cmd);
@@ -217,7 +215,6 @@ pub fn build(b: *std.Build) void {
 
     const run_official_step = b.step("run-test-official", "Run official Lua 5.5 suite harness");
     const run_official_cmd = b.addRunArtifact(official_exe);
-    run_official_cmd.step.dependOn(b.getInstallStep());
     run_official_cmd.addArg("--clua");
     run_official_cmd.addArtifactArg(clua_exe);
     run_official_cmd.addArg("--zlua");
@@ -306,14 +303,12 @@ pub fn build(b: *std.Build) void {
 
     const diff_step = b.step("test-diff", "Run CLua differential tests");
     const diff_cmd = b.addRunArtifact(diff_exe);
-    diff_cmd.step.dependOn(b.getInstallStep());
     diff_cmd.addArg("--clua");
     diff_cmd.addArtifactArg(clua_exe);
     diff_step.dependOn(&diff_cmd.step);
 
     const extensions_step = b.step("test-extensions", "Run zlua extension tests");
     const extensions_cmd = b.addRunArtifact(extensions_exe);
-    extensions_cmd.step.dependOn(b.getInstallStep());
     extensions_cmd.addArg("--zlua");
     extensions_cmd.addArtifactArg(exe);
     addPassthruArgs(b, extensions_cmd);
@@ -339,7 +334,6 @@ pub fn build(b: *std.Build) void {
 
     const official_step = b.step("test-official", "Run full official Lua 5.5 suite dashboard under a memory cap");
     const official_cmd = b.addRunArtifact(official_exe);
-    official_cmd.step.dependOn(b.getInstallStep());
     official_cmd.addArg("--clua");
     official_cmd.addArtifactArg(clua_exe);
     official_cmd.addArg("--zlua");
@@ -352,7 +346,6 @@ pub fn build(b: *std.Build) void {
 
     const official_complete_step = b.step("test-official-complete", "Run the official Lua 5.5 suite with its full-size and non-portable sections enabled");
     const official_complete_cmd = b.addRunArtifact(official_exe);
-    official_complete_cmd.step.dependOn(b.getInstallStep());
     official_complete_cmd.addArg("--clua");
     official_complete_cmd.addArtifactArg(clua_exe);
     official_complete_cmd.addArg("--zlua");
@@ -367,7 +360,6 @@ pub fn build(b: *std.Build) void {
     const gc_stress_step = b.step("test-gc-stress", "Run CLua differential tests under both GC stress modes");
     inline for (.{ "--gc-stress", "--gc-step-stress" }) |mode| {
         const gc_stress_cmd = b.addRunArtifact(diff_exe);
-        gc_stress_cmd.step.dependOn(b.getInstallStep());
         gc_stress_cmd.addArg("--clua");
         gc_stress_cmd.addArtifactArg(clua_exe);
         gc_stress_cmd.addArg(mode);
@@ -376,7 +368,6 @@ pub fn build(b: *std.Build) void {
 
     const stack_stress_step = b.step("test-stack-stress", "Run CLua differential tests moving the Lua stack on every growth check");
     const stack_stress_cmd = b.addRunArtifact(diff_exe);
-    stack_stress_cmd.step.dependOn(b.getInstallStep());
     stack_stress_cmd.addArg("--clua");
     stack_stress_cmd.addArtifactArg(clua_exe);
     stack_stress_cmd.addArg("--stack-stress");
@@ -388,7 +379,6 @@ pub fn build(b: *std.Build) void {
     const generated_directory = generate_programs.addOutputDirectoryArg("generated");
     generate_programs.addArgs(&.{ "500", "1" });
     const generated_diff_cmd = b.addRunArtifact(diff_exe);
-    generated_diff_cmd.step.dependOn(b.getInstallStep());
     generated_diff_cmd.addArg("--clua");
     generated_diff_cmd.addArtifactArg(clua_exe);
     generated_diff_cmd.addDirectoryArg(generated_directory);
