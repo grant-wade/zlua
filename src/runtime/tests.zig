@@ -69,6 +69,35 @@ fn tableGrowthAllocationScenario(allocator: std.mem.Allocator) !void {
     }
 }
 
+test "payload and tag copies reproduce every kind of value" {
+    const types = @import("types.zig");
+    const samples = [_]Value{
+        .nil,
+        .{ .boolean = true },
+        .{ .boolean = false },
+        .{ .integer = std.math.minInt(i64) },
+        .{ .integer = 0x0102030405060708 },
+        .{ .number = -0.0 },
+        .{ .number = std.math.inf(f64) },
+        .{ .string = @ptrFromInt(0x10008) },
+        .{ .table = @ptrFromInt(0x20010) },
+        .{ .closure = @ptrFromInt(0x30018) },
+        .native_print,
+        .native_coroutine_wrap,
+        .{ .native = comptime std.enums.values(runtime.NativeFn)[std.enums.values(runtime.NativeFn).len - 1] },
+        .{ .api_callback = std.math.maxInt(usize) },
+    };
+    for (samples) |sample| {
+        var copied: Value = .{ .number = 1.5 };
+        types.copyValue(&copied, &sample);
+        try std.testing.expect(std.meta.eql(sample, copied));
+        try std.testing.expect(std.meta.eql(sample, types.loadValue(&sample)));
+        var stored: Value = .{ .integer = -1 };
+        types.storeValue(&stored, sample);
+        try std.testing.expect(std.meta.eql(sample, stored));
+    }
+}
+
 test "executes basic print and arithmetic" {
     var result = try executeSource(std.testing.allocator,
         \\print(1 + 2)

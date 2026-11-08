@@ -63,6 +63,30 @@ pub const Value = union(enum(u8)) {
 
 pub const NativeFn = @import("native_fn.zig").NativeFn;
 
+comptime {
+    std.debug.assert(@sizeOf(Value) == 16);
+}
+
+/// Copies the 8-byte payload and the tag byte of `src`, but not its padding.
+pub inline fn copyValue(dst: *Value, src: *const Value) void {
+    const from: *const [9]u8 = @ptrCast(src);
+    const to: *[9]u8 = @ptrCast(dst);
+    @as(*u64, @ptrCast(@alignCast(to))).* = @as(*const u64, @ptrCast(@alignCast(from))).*;
+    to[8] = from[8];
+}
+
+pub inline fn loadValue(src: *const Value) Value {
+    var value: Value = undefined;
+    copyValue(&value, src);
+    return value;
+}
+
+pub inline fn storeValue(dst: *Value, value: Value) void {
+    var source = value;
+    _ = &source;
+    copyValue(dst, &source);
+}
+
 /// A Lua string, followed by its bytes in the same allocation. Strings of at most
 /// `short_limit` bytes are always interned.
 pub const String = extern struct {
@@ -695,20 +719,20 @@ pub const Table = struct {
 
     pub fn get(self: *const Table, key: Value) Value {
         if (value_mod.arrayIndex(key)) |index| {
-            if (index <= self.array.len) return self.array.items()[index - 1];
+            if (index <= self.array.len) return loadValue(&self.array.items()[index - 1]);
         }
-        if (self.findEntry(key)) |index| return self.entries()[index].value;
+        if (self.findEntry(key)) |index| return loadValue(&self.entries()[index].value);
         return .nil;
     }
 
     /// Raw read of a string key whose `table_index.hashStringKey` the caller already knows.
     pub inline fn getStringHashed(self: *const Table, key: []const u8, hash: u32) Value {
-        if (self.findStringEntry(key, hash)) |index| return self.entries()[index].value;
+        if (self.findStringEntry(key, hash)) |index| return loadValue(&self.entries()[index].value);
         return .nil;
     }
 
     pub inline fn getString(self: *const Table, key: *const String) Value {
-        if (self.findStringKey(key)) |index| return self.entries()[index].value;
+        if (self.findStringKey(key)) |index| return loadValue(&self.entries()[index].value);
         return .nil;
     }
 

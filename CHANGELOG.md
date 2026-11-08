@@ -34,6 +34,7 @@
   patterns faster.
 - Numeric `for` loops, backward jumps, and instruction dispatch are faster.
 - Reading and writing upvalues is faster.
+- Copying values between registers, upvalues, and tables is faster.
 
 ### Packaging
 

@@ -24,6 +24,9 @@ const proto_mod = compile.proto;
 const lua_max_c_calls = state_mod.lua_max_c_calls;
 const Value = types.Value;
 const valuesEqual = value_mod.valuesEqual;
+const copyValue = types.copyValue;
+const loadValue = types.loadValue;
+const storeValue = types.storeValue;
 const truthy = value_mod.truthy;
 const toInteger = value_mod.toInteger;
 const toNumber = value_mod.toNumber;
@@ -462,47 +465,47 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
         fast_loop: switch (std.meta.activeTag(instructions[pc])) {
             .load_nil => {
                 const dest = instructions[pc].load_nil;
-                stack[dest] = .nil;
+                storeValue(&stack[dest], .nil);
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .load_bool => {
                 const op = instructions[pc].load_bool;
-                stack[op.dest] = .{ .boolean = op.value };
+                storeValue(&stack[op.dest], .{ .boolean = op.value });
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .load_const => {
                 const op = instructions[pc].load_const;
                 const decoded = proto.constant_values[op.constant];
-                stack[op.dest] = if (decoded != .string) decoded else frame.closure.constants()[op.constant];
+                storeValue(&stack[op.dest], if (decoded != .string) decoded else frame.closure.constants()[op.constant]);
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .move => {
                 const op = instructions[pc].move;
-                stack[op.dest] = stack[op.source];
+                copyValue(&stack[op.dest], &stack[op.source]);
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .get_upvalue => {
                 const op = instructions[pc].get_upvalue;
-                stack[op.register] = frame.closure.upvalues()[op.upvalue].get();
+                copyValue(&stack[op.register], frame.closure.upvalues()[op.upvalue].value);
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .set_upvalue => {
                 const op = instructions[pc].set_upvalue;
                 const upvalue = frame.closure.upvalues()[op.upvalue];
-                const value = stack[op.register];
+                const value = loadValue(&stack[op.register]);
                 switch (upvalue.cell) {
                     .open => |slot| {
                         if (slot.owner != thread and !foreignUpvalueWritable(self, slot.owner)) break :fast_loop;
-                        upvalue.value.* = value;
+                        copyValue(upvalue.value, &stack[op.register]);
                     },
                     .closed => {
                         rollback_mod.touch(upvalue);
-                        upvalue.value.* = value;
+                        storeValue(upvalue.value, value);
                         self.gc.writeBarrier(upvalue, value);
                     },
                 }
@@ -511,117 +514,117 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             },
             .add => {
                 const op = instructions[pc].add;
-                const value = operators_mod.rawNumericBinaryOpFast(stack[op.left], stack[op.right], .add) orelse break :fast_loop;
-                stack[op.dest] = value;
+                const value = operators_mod.rawNumericBinaryOpFast(loadValue(&stack[op.left]), loadValue(&stack[op.right]), .add) orelse break :fast_loop;
+                storeValue(&stack[op.dest], value);
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .sub => {
                 const op = instructions[pc].sub;
-                const value = operators_mod.rawNumericBinaryOpFast(stack[op.left], stack[op.right], .sub) orelse break :fast_loop;
-                stack[op.dest] = value;
+                const value = operators_mod.rawNumericBinaryOpFast(loadValue(&stack[op.left]), loadValue(&stack[op.right]), .sub) orelse break :fast_loop;
+                storeValue(&stack[op.dest], value);
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .mul => {
                 const op = instructions[pc].mul;
-                const value = operators_mod.rawNumericBinaryOpFast(stack[op.left], stack[op.right], .mul) orelse break :fast_loop;
-                stack[op.dest] = value;
+                const value = operators_mod.rawNumericBinaryOpFast(loadValue(&stack[op.left]), loadValue(&stack[op.right]), .mul) orelse break :fast_loop;
+                storeValue(&stack[op.dest], value);
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .div => {
                 const op = instructions[pc].div;
-                const value = operators_mod.rawNumericBinaryOpFast(stack[op.left], stack[op.right], .div) orelse break :fast_loop;
-                stack[op.dest] = value;
+                const value = operators_mod.rawNumericBinaryOpFast(loadValue(&stack[op.left]), loadValue(&stack[op.right]), .div) orelse break :fast_loop;
+                storeValue(&stack[op.dest], value);
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .idiv => {
                 const op = instructions[pc].idiv;
-                const value = operators_mod.rawNumericBinaryOpFast(stack[op.left], stack[op.right], .idiv) orelse break :fast_loop;
-                stack[op.dest] = value;
+                const value = operators_mod.rawNumericBinaryOpFast(loadValue(&stack[op.left]), loadValue(&stack[op.right]), .idiv) orelse break :fast_loop;
+                storeValue(&stack[op.dest], value);
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .mod => {
                 const op = instructions[pc].mod;
-                const value = operators_mod.rawNumericBinaryOpFast(stack[op.left], stack[op.right], .mod) orelse break :fast_loop;
-                stack[op.dest] = value;
+                const value = operators_mod.rawNumericBinaryOpFast(loadValue(&stack[op.left]), loadValue(&stack[op.right]), .mod) orelse break :fast_loop;
+                storeValue(&stack[op.dest], value);
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .band => {
                 const op = instructions[pc].band;
-                const value = operators_mod.rawIntegerBitwiseOpFast(stack[op.left], stack[op.right], .band) orelse break :fast_loop;
-                stack[op.dest] = value;
+                const value = operators_mod.rawIntegerBitwiseOpFast(loadValue(&stack[op.left]), loadValue(&stack[op.right]), .band) orelse break :fast_loop;
+                storeValue(&stack[op.dest], value);
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .bor => {
                 const op = instructions[pc].bor;
-                const value = operators_mod.rawIntegerBitwiseOpFast(stack[op.left], stack[op.right], .bor) orelse break :fast_loop;
-                stack[op.dest] = value;
+                const value = operators_mod.rawIntegerBitwiseOpFast(loadValue(&stack[op.left]), loadValue(&stack[op.right]), .bor) orelse break :fast_loop;
+                storeValue(&stack[op.dest], value);
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .bxor => {
                 const op = instructions[pc].bxor;
-                const value = operators_mod.rawIntegerBitwiseOpFast(stack[op.left], stack[op.right], .bxor) orelse break :fast_loop;
-                stack[op.dest] = value;
+                const value = operators_mod.rawIntegerBitwiseOpFast(loadValue(&stack[op.left]), loadValue(&stack[op.right]), .bxor) orelse break :fast_loop;
+                storeValue(&stack[op.dest], value);
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .shl => {
                 const op = instructions[pc].shl;
-                const value = operators_mod.rawIntegerBitwiseOpFast(stack[op.left], stack[op.right], .shl) orelse break :fast_loop;
-                stack[op.dest] = value;
+                const value = operators_mod.rawIntegerBitwiseOpFast(loadValue(&stack[op.left]), loadValue(&stack[op.right]), .shl) orelse break :fast_loop;
+                storeValue(&stack[op.dest], value);
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .shr => {
                 const op = instructions[pc].shr;
-                const value = operators_mod.rawIntegerBitwiseOpFast(stack[op.left], stack[op.right], .shr) orelse break :fast_loop;
-                stack[op.dest] = value;
+                const value = operators_mod.rawIntegerBitwiseOpFast(loadValue(&stack[op.left]), loadValue(&stack[op.right]), .shr) orelse break :fast_loop;
+                storeValue(&stack[op.dest], value);
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .eq => {
                 const op = instructions[pc].eq;
-                const lhs = stack[op.left];
-                const rhs = stack[op.right];
+                const lhs = loadValue(&stack[op.left]);
+                const rhs = loadValue(&stack[op.right]);
                 if (operators_mod.comparesLongStrings(lhs, rhs)) break :fast_loop;
                 if (operators_mod.equalityHasMetamethod(lhs, rhs) and !valuesEqual(lhs, rhs)) break :fast_loop;
-                stack[op.dest] = .{ .boolean = valuesEqual(lhs, rhs) };
+                storeValue(&stack[op.dest], .{ .boolean = valuesEqual(lhs, rhs) });
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .lt => {
                 const op = instructions[pc].lt;
-                if (operators_mod.comparesLongStrings(stack[op.left], stack[op.right])) break :fast_loop;
-                const result = operators_mod.rawCompare(stack[op.left], stack[op.right], .lt) orelse break :fast_loop;
-                stack[op.dest] = .{ .boolean = result };
+                if (operators_mod.comparesLongStrings(loadValue(&stack[op.left]), loadValue(&stack[op.right]))) break :fast_loop;
+                const result = operators_mod.rawCompare(loadValue(&stack[op.left]), loadValue(&stack[op.right]), .lt) orelse break :fast_loop;
+                storeValue(&stack[op.dest], .{ .boolean = result });
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .le => {
                 const op = instructions[pc].le;
-                if (operators_mod.comparesLongStrings(stack[op.left], stack[op.right])) break :fast_loop;
-                const result = operators_mod.rawCompare(stack[op.left], stack[op.right], .le) orelse break :fast_loop;
-                stack[op.dest] = .{ .boolean = result };
+                if (operators_mod.comparesLongStrings(loadValue(&stack[op.left]), loadValue(&stack[op.right]))) break :fast_loop;
+                const result = operators_mod.rawCompare(loadValue(&stack[op.left]), loadValue(&stack[op.right]), .le) orelse break :fast_loop;
+                storeValue(&stack[op.dest], .{ .boolean = result });
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .not => {
                 const op = instructions[pc].not;
-                const result = !truthy(stack[op.source]);
-                stack[op.dest] = .{ .boolean = result };
+                const result = !truthy(loadValue(&stack[op.source]));
+                storeValue(&stack[op.dest], .{ .boolean = result });
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .unm => {
                 const op = instructions[pc].unm;
-                stack[op.dest] = switch (stack[op.source]) {
+                stack[op.dest] = switch (loadValue(&stack[op.source])) {
                     .integer => |value| .{ .integer = -%value },
                     .number => |value| .{ .number = -value },
                     else => break :fast_loop,
@@ -631,30 +634,30 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             },
             .bnot => {
                 const op = instructions[pc].bnot;
-                const value = stack[op.source];
+                const value = loadValue(&stack[op.source]);
                 if (value != .integer) break :fast_loop;
-                stack[op.dest] = .{ .integer = ~value.integer };
+                storeValue(&stack[op.dest], .{ .integer = ~value.integer });
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .len => {
                 const op = instructions[pc].len;
-                const value = fastLengthNoMetamethod(stack[op.source]) orelse break :fast_loop;
-                stack[op.dest] = value;
+                const value = fastLengthNoMetamethod(loadValue(&stack[op.source])) orelse break :fast_loop;
+                storeValue(&stack[op.dest], value);
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .get_table => {
                 const op = instructions[pc].get_table;
-                const table_value = stack[op.table];
-                const key = stack[op.key];
+                const table_value = loadValue(&stack[op.table]);
+                const key = loadValue(&stack[op.key]);
                 const value = if (frame.named_vararg_readonly and op.table == proto.param_count)
                     call_mod.namedVarargRead(frame.varargs(thread.stack.items), key)
                 else if (arrayValue(table_value, key)) |hit|
                     hit
                 else
                     fastTableRawGet(table_value, key) orelse break :fast_loop;
-                stack[op.dest] = value;
+                storeValue(&stack[op.dest], value);
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
@@ -662,43 +665,43 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 const op = instructions[pc].get_field;
                 const key = frame.closure.constants()[op.name].string;
                 const named_vararg = frame.named_vararg_readonly and op.table == proto.param_count;
-                if (!named_vararg) if (fieldValue(stack[op.table], key)) |hit| {
-                    stack[op.dest] = hit.*;
+                if (!named_vararg) if (fieldValue(loadValue(&stack[op.table]), key)) |hit| {
+                    copyValue(&stack[op.dest], hit);
                     pc += 1;
                     continue :fast_loop std.meta.activeTag(instructions[pc]);
                 };
                 const value = if (named_vararg)
                     call_mod.namedVarargField(frame.varargs(thread.stack.items), key.bytes())
-                else if (stack[op.table] == .string)
+                else if (loadValue(&stack[op.table]) == .string)
                     stringMethod(self, key) orelse break :fast_loop
                 else
-                    fastTableFieldGet(stack[op.table], key) orelse break :fast_loop;
-                stack[op.dest] = value;
+                    fastTableFieldGet(loadValue(&stack[op.table]), key) orelse break :fast_loop;
+                storeValue(&stack[op.dest], value);
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .set_table => {
                 const op = instructions[pc].set_table;
-                if (arraySlot(stack[op.table], stack[op.key])) |slot| {
+                if (arraySlot(loadValue(&stack[op.table]), loadValue(&stack[op.key]))) |slot| {
                     const table = stack[op.table].table;
-                    slot.* = stack[op.value];
-                    self.gc.writeTableBarrier(table, stack[op.key], stack[op.value]);
+                    slot.* = loadValue(&stack[op.value]);
+                    self.gc.writeTableBarrier(table, loadValue(&stack[op.key]), loadValue(&stack[op.value]));
                     pc += 1;
                     continue :fast_loop std.meta.activeTag(instructions[pc]);
                 }
-                if (!fastTableArraySetExistingNoAlloc(self, stack[op.table], stack[op.key], stack[op.value]) and
-                    !fastTableDynamicKeySetNoAlloc(self, stack[op.table], stack[op.key], stack[op.value])) break :fast_loop;
+                if (!fastTableArraySetExistingNoAlloc(self, loadValue(&stack[op.table]), loadValue(&stack[op.key]), loadValue(&stack[op.value])) and
+                    !fastTableDynamicKeySetNoAlloc(self, loadValue(&stack[op.table]), loadValue(&stack[op.key]), loadValue(&stack[op.value]))) break :fast_loop;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .set_array => {
                 const op = instructions[pc].set_array;
-                const table_value = stack[op.table];
+                const table_value = loadValue(&stack[op.table]);
                 if (table_value != .table or op.index == 0) break :fast_loop;
                 const table = table_value.table;
                 if (table.rollback) |record| if (!record.header.detached) break :fast_loop;
                 const index: usize = op.index;
-                const value = stack[op.value];
+                const value = loadValue(&stack[op.value]);
                 if (index <= table.array.len) {
                     table.array.items()[index - 1] = value;
                 } else if (value != .nil) {
@@ -712,13 +715,13 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             },
             .set_field => {
                 const op = instructions[pc].set_field;
-                if (!fastFieldStore(self, stack[op.table], frame.closure.constants()[op.name], stack[op.value])) break :fast_loop;
+                if (!fastFieldStore(self, loadValue(&stack[op.table]), frame.closure.constants()[op.name], loadValue(&stack[op.value]))) break :fast_loop;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .get_method => {
                 const op = instructions[pc].get_method;
-                const table_value = stack[op.table];
+                const table_value = loadValue(&stack[op.table]);
                 const key = frame.closure.constants()[op.name].string;
                 const value = if (fieldValue(table_value, key)) |hit|
                     hit.*
@@ -726,8 +729,8 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     stringMethod(self, key) orelse break :fast_loop
                 else
                     fastTableFieldGet(table_value, key) orelse break :fast_loop;
-                stack[op.dest + 1] = table_value;
-                stack[op.dest] = value;
+                storeValue(&stack[op.dest + 1], table_value);
+                storeValue(&stack[op.dest], value);
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
@@ -736,14 +739,14 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 const table_value = frame.closure.upvalues()[op.upvalue].get();
                 const key = frame.closure.constants()[op.name].string;
                 const value = if (fieldValue(table_value, key)) |hit| hit.* else fastTableFieldGet(table_value, key) orelse break :fast_loop;
-                stack[op.dest] = value;
+                storeValue(&stack[op.dest], value);
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .set_upvalue_field => {
                 const op = instructions[pc].set_upvalue_field;
                 const table_value = frame.closure.upvalues()[op.upvalue].get();
-                if (!fastFieldStore(self, table_value, frame.closure.constants()[op.name], stack[op.value])) break :fast_loop;
+                if (!fastFieldStore(self, table_value, frame.closure.constants()[op.name], loadValue(&stack[op.value]))) break :fast_loop;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
@@ -751,13 +754,13 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 const op = instructions[pc].set_field_k;
                 const decoded = proto.constant_values[op.constant];
                 const value = if (decoded != .string) decoded else frame.closure.constants()[op.constant];
-                if (!fastFieldStore(self, stack[op.table], frame.closure.constants()[op.name], value)) break :fast_loop;
+                if (!fastFieldStore(self, loadValue(&stack[op.table]), frame.closure.constants()[op.name], value)) break :fast_loop;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .get_index => {
                 const op = instructions[pc].get_index;
-                const table_value = stack[op.table];
+                const table_value = loadValue(&stack[op.table]);
                 const key: Value = .{ .integer = op.index };
                 const value = if (frame.named_vararg_readonly and op.table == proto.param_count)
                     call_mod.namedVarargRead(frame.varargs(thread.stack.items), key)
@@ -765,15 +768,15 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     hit
                 else
                     fastTableRawGet(table_value, key) orelse break :fast_loop;
-                stack[op.dest] = value;
+                storeValue(&stack[op.dest], value);
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .set_index => {
                 const op = instructions[pc].set_index;
-                const table_value = stack[op.table];
+                const table_value = loadValue(&stack[op.table]);
                 const key: Value = .{ .integer = op.index };
-                const value = stack[op.value];
+                const value = loadValue(&stack[op.value]);
                 if (arraySlot(table_value, key)) |slot| {
                     slot.* = value;
                     self.gc.writeTableBarrier(table_value.table, key, value);
@@ -784,15 +787,15 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             inline .add_k, .sub_k, .mul_k, .div_k, .idiv_k, .mod_k, .band_k, .bor_k, .bxor_k, .shl_k, .shr_k => |tag| {
                 const op = @field(instructions[pc], @tagName(tag));
                 const kind = comptime operators_mod.constantBinaryOp(tag);
-                const value = operators_mod.rawBinaryOpFast(stack[op.left], proto.constant_values[op.constant], kind) orelse break :fast_loop;
-                stack[op.dest] = value;
+                const value = operators_mod.rawBinaryOpFast(loadValue(&stack[op.left]), proto.constant_values[op.constant], kind) orelse break :fast_loop;
+                storeValue(&stack[op.dest], value);
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .compare_branch_k => {
                 if (proto.jumpExitsToBeClosed(pc)) break :fast_loop;
                 const op = instructions[pc].compare_branch_k;
-                const value = stack[op.register];
+                const value = loadValue(&stack[op.register]);
                 const constant = proto.constant_values[op.constant];
                 if (operators_mod.comparesLongStrings(value, constant)) break :fast_loop;
                 const result = if (value == .integer and constant == .integer) switch (op.branch.op) {
@@ -819,8 +822,8 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             .compare_branch => {
                 if (proto.jumpExitsToBeClosed(pc)) break :fast_loop;
                 const op = instructions[pc].compare_branch;
-                const lhs = stack[op.left];
-                const rhs = stack[op.right];
+                const lhs = loadValue(&stack[op.left]);
+                const rhs = loadValue(&stack[op.right]);
                 if (operators_mod.comparesLongStrings(lhs, rhs)) break :fast_loop;
                 const result = if (lhs == .integer and rhs == .integer) switch (op.branch.op) {
                     .eq => lhs.integer == rhs.integer,
@@ -860,7 +863,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 if (proto.jumpExitsToBeClosed(pc)) break :fast_loop;
                 const op = instructions[pc].test_op;
                 pc += 1;
-                if (truthy(stack[op.register]) == op.jump_if_truthy) {
+                if (truthy(loadValue(&stack[op.register])) == op.jump_if_truthy) {
                     const source_pc = pc;
                     pc = jumpTarget(source_pc, op.offset);
                     count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
@@ -876,8 +879,8 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             .test_set => {
                 if (proto.jumpExitsToBeClosed(pc)) break :fast_loop;
                 const op = instructions[pc].test_set;
-                const value = stack[op.source];
-                stack[op.dest] = value;
+                const value = loadValue(&stack[op.source]);
+                storeValue(&stack[op.dest], value);
                 pc += 1;
                 if (truthy(value) == op.jump_if_truthy) {
                     const source_pc = pc;
@@ -943,14 +946,14 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     const result_end = thread.last_result_base + thread.last_result_count;
                     op.arg_count = @intCast(result_end -| expected_base);
                 }
-                const callee = stack[op.base];
+                const callee = loadValue(&stack[op.base]);
                 if (callee == .native and !thread.hook_return and op.arg_count != 0 and @as(usize, op.base) + 1 < stack.len) math: {
-                    const result = stdlib.math.fastUnaryResult(callee.native, stack[op.base + 1]) orelse break :math;
+                    const result = stdlib.math.fastUnaryResult(callee.native, loadValue(&stack[op.base + 1])) orelse break :math;
                     const return_count: usize = if (op.return_count == bytecode.multret_count) 1 else op.return_count;
                     const absolute_base = base + op.base;
                     const stored_end = absolute_base + @max(return_count, 1);
                     if (stored_end > stack_limit) break :math;
-                    stack[op.base] = result;
+                    storeValue(&stack[op.base], result);
                     if (return_count > 1) @memset(thread.stack.items[absolute_base + 1 .. stored_end], .nil);
                     thread.last_result_base = absolute_base;
                     thread.last_result_count = return_count;
@@ -1036,7 +1039,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 const count: usize = if (op.count == bytecode.multret_count) available else op.count;
                 if (count > fast_vararg_limit or base + op.dest + count > stack_limit) break :fast_loop;
                 const copied = @min(count, available);
-                for (0..copied) |index| stack[op.dest + index] = thread.stack.items[frame.vararg_base + index];
+                for (0..copied) |index| copyValue(&stack[op.dest + index], &thread.stack.items[frame.vararg_base + index]);
                 clearRegisters(stack[op.dest + copied .. op.dest + count]);
                 pc += 1;
                 if (op.count == bytecode.multret_count) {
@@ -1051,7 +1054,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 const op = instructions[pc].new_table;
                 pc += 1;
                 frame.pc = @intCast(pc);
-                stack[op.dest] = try self.newTableWithHints(op.array_hint, op.hash_hint);
+                storeValue(&stack[op.dest], try self.newTableWithHints(op.array_hint, op.hash_hint));
                 if (self.gc.running and self.gc.autoStepDue()) {
                     resync = pc +% count_bias;
                     continue :frames;
@@ -1062,7 +1065,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 const op = instructions[pc].closure;
                 pc += 1;
                 frame.pc = @intCast(pc);
-                stack[op.dest] = try self.newClosure(thread, proto.children.items[op.proto]);
+                storeValue(&stack[op.dest], try self.newClosure(thread, proto.children.items[op.proto]));
                 if (self.gc.running and self.gc.autoStepDue()) {
                     resync = pc +% count_bias;
                     continue :frames;
@@ -1089,7 +1092,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                         if (thread.last_result_base < expected_base) break :lua_tail;
                         arg_count = @intCast((thread.last_result_base + thread.last_result_count) -| expected_base);
                     }
-                    const callee = stack[op.base];
+                    const callee = loadValue(&stack[op.base]);
                     if (callee != .closure or !callee.closure.proto.fast_loop_call or proto.has_to_close_locals or frame.has_extra or
                         thread.next_call_name != null or thread.next_call_namewhat != null) break :lua_tail;
                     const closure = callee.closure;
@@ -1104,7 +1107,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     const source = base + op.base + 1;
                     const copied = @min(arg_count, param_count);
                     const moved = if (vararg_count != 0) arg_count else copied;
-                    for (0..moved) |index| thread.stack.items[argument_base + index] = thread.stack.items[source + index];
+                    for (0..moved) |index| copyValue(&thread.stack.items[argument_base + index], &thread.stack.items[source + index]);
                     if (vararg_count != 0) shiftParameters(thread.stack.items, argument_base, callee_base, param_count);
                     const cleared_end = param_count + @intFromBool(callee_proto.named_vararg_readonly);
                     if (copied < cleared_end) clearRegisters(thread.stack.items[callee_base + copied .. callee_base + cleared_end]);
@@ -1173,7 +1176,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 if (thread.open_upvalues) |upvalue| if (upvalue.cell.open.stack_index >= base) upvalue_mod.closeUpvalues(self, thread, base);
                 const executed_count = pc +% count_bias -% segment_start;
                 const copied = @min(return_count, op.count);
-                for (0..copied) |index| thread.stack.items[return_start + index] = stack[op.first + index];
+                for (0..copied) |index| copyValue(&thread.stack.items[return_start + index], &stack[op.first + index]);
                 clearRegisters(thread.stack.items[return_start + copied .. return_start + return_count]);
                 thread.frames.items.len = frame_index;
                 thread.last_result_base = return_start;
@@ -1192,8 +1195,8 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             },
             .tfor_prep => {
                 const op = instructions[pc].tfor_prep;
-                const pair = fastGenericForStep(stack[op.base], stack[op.base + 1], stack[op.base + 2]) orelse break :fast_loop;
-                stack[op.base + 2] = pair[0];
+                const pair = fastGenericForStep(loadValue(&stack[op.base]), loadValue(&stack[op.base + 1]), loadValue(&stack[op.base + 2])) orelse break :fast_loop;
+                storeValue(&stack[op.base + 2], pair[0]);
                 for (0..op.variable_count) |index| stack[op.base + 4 + index] = if (index < pair.len) pair[index] else .nil;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
@@ -1250,7 +1253,7 @@ inline fn fastGenericForStep(iterator: Value, state: Value, control: Value) ?[2]
 
 /// Small frames clear their registers inline; a `memset` call costs more than the stores.
 noinline fn shiftParameters(stack: []Value, source: usize, dest: usize, count: usize) void {
-    for (0..count) |index| stack[dest + index] = stack[source + index];
+    for (0..count) |index| copyValue(&stack[dest + index], &stack[source + index]);
 }
 
 inline fn clearRegisters(registers: []Value) void {
@@ -1263,7 +1266,7 @@ inline fn arrayValue(table_value: Value, key: Value) ?Value {
     const table = table_value.table;
     const index: u64 = @bitCast(key.integer -% 1);
     if (index >= table.array.len) return null;
-    const value = table.array.items()[@intCast(index)];
+    const value = loadValue(&table.array.items()[@intCast(index)]);
     return if (value != .nil) value else null;
 }
 
@@ -1815,7 +1818,7 @@ fn fastTableArrayGet(table_value: Value, key_value: Value) ?Value {
     const index = arrayIndex(key_value) orelse return null;
     const table = table_value.table;
     if (index > table.array.len) return null;
-    const value = table.array.items()[index - 1];
+    const value = loadValue(&table.array.items()[index - 1]);
     if (value != .nil or index_mod.noIndexMetamethod(table)) return value;
     return null;
 }
