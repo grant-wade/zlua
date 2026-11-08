@@ -28,6 +28,11 @@
 - The `datetime` library parses, builds, compares, formats, and adds to dates and
   times. It is in `safe` and `full`, and `datetime.now` needs `os`.
 
+### Performance
+
+- `string.find`, `string.match`, `string.gmatch`, and `string.gsub` match
+  patterns faster.
+
 ### Packaging
 
 - `THIRD_PARTY_NOTICES` is now `THIRD_PARTY_NOTICES.md`, installed to

@@ -103,8 +103,9 @@ pub fn gmatchNext(state: *State, state_value: Value) !GmatchValues {
     const previous_match_end = runtime.toInteger(state_table.getLiteral("last"));
     const capture_pattern = positionAndWholeCapturePattern(pattern);
     const search_pattern = capture_pattern orelse pattern;
+    var captures: pattern_mod.CaptureState = .{};
     const found = while (true) {
-        const current = (try pattern_mod.unanchoredPatternFind(state, source, search_pattern, @intCast(@max(pos, 0)))) orelse return .{};
+        const current = (try pattern_mod.unanchoredPatternFind(state, source, search_pattern, @intCast(@max(pos, 0)), &captures)) orelse return .{};
         if (current.range.start == current.range.end and previous_match_end != null and previous_match_end.? == current.range.start) {
             if (current.range.end >= source.len) return .{};
             pos = @intCast(current.range.end + 1);
@@ -160,10 +161,11 @@ pub fn gsub(state: *State, thread: *Thread, op: bytecode.Call) !void {
     var count: i64 = 0;
     var changed = false;
     var previous_match_end: ?usize = null;
+    var captures: pattern_mod.CaptureState = .{};
     while (pos <= source.len and count < max_count) {
         try state.budget.charge(2);
         try state.gc.reserve(thread, out.buffer.items.len *| 2);
-        const found = (try pattern_mod.simplePatternFind(state, source, pattern, pos)) orelse break;
+        const found = (try pattern_mod.simplePatternFind(state, source, pattern, pos, &captures)) orelse break;
         try out.appendSlice(source[pos..found.range.start]);
         if (found.range.start == found.range.end and previous_match_end != null and previous_match_end.? == found.range.start) {
             if (found.range.end < source.len) {
@@ -557,7 +559,8 @@ fn findImpl(state: *State, thread: *Thread, op: bytecode.Call, positions: bool) 
         return;
     }
     const start = if (initial <= 1) 0 else @min(initial - 1, source.len);
-    const found = if (plain) pattern_mod.plainFind(source, pattern, start) else try pattern_mod.simplePatternFind(state, source, pattern, start);
+    var captures: pattern_mod.CaptureState = .{};
+    const found = if (plain) pattern_mod.plainFind(source, pattern, start) else try pattern_mod.simplePatternFind(state, source, pattern, start, &captures);
     if (plain) {
         const scanned_to = if (found) |matched| matched.range.end else source.len;
         state.budget.note(cost.scanned(scanned_to -| start));

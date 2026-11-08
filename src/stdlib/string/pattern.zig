@@ -12,12 +12,13 @@ const CaptureSlot = union(enum) {
     range: MatchRange,
     position: usize,
 };
-const CaptureState = struct {
+pub const CaptureState = struct {
     slots: [max_captures]CaptureSlot = undefined,
     count: usize = 0,
 };
-pub const Match = struct { range: MatchRange, captures: CaptureState };
-const MatchResult = struct { end: usize, captures: CaptureState };
+/// A match whose captures point into caller-owned or empty capture storage.
+pub const Match = struct { range: MatchRange, captures: *const CaptureState };
+const no_captures: CaptureState = .{};
 const pattern_match_max_depth: usize = 200;
 const MatchError = runtime.RuntimeError || error{ Interrupted, OutOfMemory };
 
@@ -36,12 +37,12 @@ pub fn patternHasMagic(pattern: []const u8) bool {
 }
 
 pub fn plainFind(source: []const u8, pattern: []const u8, start: usize) ?Match {
-    if (pattern.len == 0) return .{ .range = .{ .start = @min(start, source.len), .end = @min(start, source.len) }, .captures = .{} };
+    if (pattern.len == 0) return .{ .range = .{ .start = @min(start, source.len), .end = @min(start, source.len) }, .captures = &no_captures };
     if (start > source.len) return null;
     if (pattern.len > source.len - start) return null;
     if (pattern.len == 1) {
         const index = std.mem.indexOfScalarPos(u8, source, start, pattern[0]) orelse return null;
-        return .{ .range = .{ .start = index, .end = index + 1 }, .captures = .{} };
+        return .{ .range = .{ .start = index, .end = index + 1 }, .captures = &no_captures };
     }
 
     const last_start = source.len - pattern.len;
@@ -50,30 +51,32 @@ pub fn plainFind(source: []const u8, pattern: []const u8, start: usize) ?Match {
         const haystack = source[candidate .. last_start + 1];
         const relative = std.mem.indexOfScalar(u8, haystack, pattern[0]) orelse return null;
         candidate += relative;
-        if (std.mem.eql(u8, source[candidate .. candidate + pattern.len], pattern)) return .{ .range = .{ .start = candidate, .end = candidate + pattern.len }, .captures = .{} };
+        if (std.mem.eql(u8, source[candidate .. candidate + pattern.len], pattern)) return .{ .range = .{ .start = candidate, .end = candidate + pattern.len }, .captures = &no_captures };
         candidate += 1;
     }
     return null;
 }
 
-pub fn simplePatternFind(state: *State, source: []const u8, pattern: []const u8, start: usize) !?Match {
-    const found = try simplePatternSearch(state, source, pattern, start);
+/// `captures` receives the captures of a match that has any.
+pub fn simplePatternFind(state: *State, source: []const u8, pattern: []const u8, start: usize, captures: *CaptureState) !?Match {
+    const found = try simplePatternSearch(state, source, pattern, start, captures);
     const scanned_to = if (found) |matched| matched.range.end else source.len;
     state.budget.note(budget_mod.cost.scanned(scanned_to -| start));
     return found;
 }
 
-fn simplePatternSearch(state: *State, source: []const u8, pattern: []const u8, start: usize) !?Match {
+fn simplePatternSearch(state: *State, source: []const u8, pattern: []const u8, start: usize, captures: *CaptureState) !?Match {
     if (pattern.len > 0 and pattern[0] == '^') {
         const anchored_start = @min(start, source.len);
-        const matched = (try matchSimplePatternAt(state, source, pattern[1..], anchored_start)) orelse return null;
-        return .{ .range = .{ .start = anchored_start, .end = matched.end }, .captures = matched.captures };
+        const end = (try matchSimplePatternAt(state, source, pattern[1..], anchored_start, captures)) orelse return null;
+        return .{ .range = .{ .start = anchored_start, .end = end }, .captures = captures };
     }
-    return unanchoredPatternFind(state, source, pattern, start);
+    return unanchoredPatternFind(state, source, pattern, start, captures);
 }
 
-pub fn unanchoredPatternFind(state: *State, source: []const u8, pattern: []const u8, start: usize) !?Match {
-    if (pattern.len == 0) return .{ .range = .{ .start = @min(start, source.len), .end = @min(start, source.len) }, .captures = .{} };
+/// `captures` receives the captures of a match that has any.
+pub fn unanchoredPatternFind(state: *State, source: []const u8, pattern: []const u8, start: usize, captures: *CaptureState) !?Match {
+    if (pattern.len == 0) return .{ .range = .{ .start = @min(start, source.len), .end = @min(start, source.len) }, .captures = &no_captures };
     if (repeatedEscapePattern(pattern)) |repeated| return findRepeatedEscape(source, repeated, start);
     if (simpleOneOrMoreEscape(pattern)) |code| return findOneOrMoreEscape(source, code, start);
     switch (findFixedWidthPattern(source, pattern, start)) {
@@ -84,7 +87,7 @@ pub fn unanchoredPatternFind(state: *State, source: []const u8, pattern: []const
     var candidate = start;
     while (candidate <= source.len) : (candidate += 1) {
         try state.budget.charge(1);
-        if (try matchSimplePatternAt(state, source, pattern, candidate)) |matched| return .{ .range = .{ .start = candidate, .end = matched.end }, .captures = matched.captures };
+        if (try matchSimplePatternAt(state, source, pattern, candidate, captures)) |end| return .{ .range = .{ .start = candidate, .end = end }, .captures = captures };
     }
     return null;
 }
@@ -108,7 +111,7 @@ fn findFixedWidthPattern(source: []const u8, pattern: []const u8, start: usize) 
     while (candidate <= last_start) {
         candidate = findFixedAtom(source, first_atom, candidate, last_start) orelse return .not_found;
         const end = matchFixedWidthPatternAt(source, pattern, candidate).?;
-        if (end != 0) return .{ .found = .{ .range = .{ .start = candidate, .end = end }, .captures = .{} } };
+        if (end != 0) return .{ .found = .{ .range = .{ .start = candidate, .end = end }, .captures = &no_captures } };
         candidate += 1;
     }
     return .not_found;
@@ -150,7 +153,7 @@ fn findRepeatedEscape(source: []const u8, repeated: RepeatedEscapePattern, start
         candidate = findEscapeMatch(source, repeated.code, candidate, last_start) orelse return null;
         var offset: usize = 1;
         while (offset < repeated.count and patternEscapeMatches(repeated.code, source[candidate + offset])) : (offset += 1) {}
-        if (offset == repeated.count) return .{ .range = .{ .start = candidate, .end = candidate + repeated.count }, .captures = .{} };
+        if (offset == repeated.count) return .{ .range = .{ .start = candidate, .end = candidate + repeated.count }, .captures = &no_captures };
         candidate += 1;
     }
     return null;
@@ -259,15 +262,17 @@ fn findOneOrMoreEscape(source: []const u8, code: u8, start: usize) ?Match {
 
     var end = candidate + 1;
     while (end < source.len and patternEscapeMatches(code, source[end])) : (end += 1) {}
-    return .{ .range = .{ .start = candidate, .end = end }, .captures = .{} };
+    return .{ .range = .{ .start = candidate, .end = end }, .captures = &no_captures };
 }
 
-fn matchSimplePatternAt(state: *State, source: []const u8, pattern: []const u8, start: usize) !?MatchResult {
-    return matchPatternFrom(state, source, pattern, start, 0, 0, .{});
+fn matchSimplePatternAt(state: *State, source: []const u8, pattern: []const u8, start: usize, captures: *CaptureState) !?usize {
+    captures.count = 0;
+    return matchPatternFrom(state, source, pattern, start, 0, 0, captures);
 }
 
 /// Mirrors `match` in lstrlib.c; `depth` counts nested calls toward Lua's limit.
-fn matchPatternFrom(state: *State, source: []const u8, pattern: []const u8, source_start: usize, pattern_start: usize, depth: usize, captures: CaptureState) MatchError!?MatchResult {
+/// Returns the match end, and leaves `captures` unchanged when there is no match.
+fn matchPatternFrom(state: *State, source: []const u8, pattern: []const u8, source_start: usize, pattern_start: usize, depth: usize, captures: *CaptureState) MatchError!?usize {
     if (depth >= pattern_match_max_depth or state.native_stack.exceeded()) return state.failLibrary("pattern too complex");
     var s = source_start;
     var p = pattern_start;
@@ -275,17 +280,17 @@ fn matchPatternFrom(state: *State, source: []const u8, pattern: []const u8, sour
         try state.budget.charge(1);
         if (p >= pattern.len) {
             if (capturesHaveUnfinished(captures)) return state.failLibrary("unfinished capture");
-            return .{ .end = s, .captures = captures };
+            return s;
         }
         switch (pattern[p]) {
             '(' => {
                 if (p + 1 < pattern.len and pattern[p + 1] == ')') {
-                    return matchPatternFrom(state, source, pattern, s, p + 2, depth + 1, try appendCapture(state, captures, .{ .position = s }));
+                    return startCapture(state, source, pattern, s, p + 2, depth, captures, .{ .position = s });
                 }
-                return matchPatternFrom(state, source, pattern, s, p + 1, depth + 1, try appendCapture(state, captures, .{ .unfinished = s }));
+                return startCapture(state, source, pattern, s, p + 1, depth, captures, .{ .unfinished = s });
             },
-            ')' => return matchPatternFrom(state, source, pattern, s, p + 1, depth + 1, try closeCapture(state, captures, s)),
-            '$' => if (p + 1 == pattern.len) return if (s == source.len) .{ .end = s, .captures = captures } else null,
+            ')' => return endCapture(state, source, pattern, s, p + 1, depth, captures),
+            '$' => if (p + 1 == pattern.len) return if (s == source.len) s else null,
             '%' => if (p + 1 < pattern.len) switch (pattern[p + 1]) {
                 'b' => {
                     if (p + 3 >= pattern.len) return state.failLibrary("malformed pattern (missing arguments to '%b')");
@@ -342,7 +347,7 @@ fn matchPatternFrom(state: *State, source: []const u8, pattern: []const u8, sour
     }
 }
 
-fn maxExpand(state: *State, source: []const u8, pattern: []const u8, start: usize, item: []const u8, rest: usize, depth: usize, captures: CaptureState) MatchError!?MatchResult {
+fn maxExpand(state: *State, source: []const u8, pattern: []const u8, start: usize, item: []const u8, rest: usize, depth: usize, captures: *CaptureState) MatchError!?usize {
     var count: usize = 0;
     while (singleMatch(source, start + count, item)) count += 1;
     try state.budget.charge(budget_mod.cost.scanned(count));
@@ -354,7 +359,7 @@ fn maxExpand(state: *State, source: []const u8, pattern: []const u8, start: usiz
     }
 }
 
-fn minExpand(state: *State, source: []const u8, pattern: []const u8, start: usize, item: []const u8, rest: usize, depth: usize, captures: CaptureState) MatchError!?MatchResult {
+fn minExpand(state: *State, source: []const u8, pattern: []const u8, start: usize, item: []const u8, rest: usize, depth: usize, captures: *CaptureState) MatchError!?usize {
     var s = start;
     while (true) {
         try state.budget.charge(1);
@@ -383,31 +388,31 @@ fn singleItemEnd(state: *State, pattern: []const u8, index: usize) !usize {
     }
 }
 
-fn appendCapture(state: *State, captures: CaptureState, slot: CaptureSlot) !CaptureState {
+fn startCapture(state: *State, source: []const u8, pattern: []const u8, s: usize, p: usize, depth: usize, captures: *CaptureState, slot: CaptureSlot) MatchError!?usize {
     if (captures.count >= max_captures) return state.failLibrary("too many captures");
-    var updated = captures;
-    updated.slots[updated.count] = slot;
-    updated.count += 1;
-    return updated;
+    captures.slots[captures.count] = slot;
+    captures.count += 1;
+    const matched = try matchPatternFrom(state, source, pattern, s, p, depth + 1, captures);
+    if (matched == null) captures.count -= 1;
+    return matched;
 }
 
-fn closeCapture(state: *State, captures: CaptureState, end: usize) !CaptureState {
-    var updated = captures;
-    var index = updated.count;
-    while (index > 0) {
+fn endCapture(state: *State, source: []const u8, pattern: []const u8, s: usize, p: usize, depth: usize, captures: *CaptureState) MatchError!?usize {
+    var index = captures.count;
+    const start = while (index > 0) {
         index -= 1;
-        switch (updated.slots[index]) {
-            .unfinished => |start| {
-                updated.slots[index] = .{ .range = .{ .start = start, .end = end } };
-                return updated;
-            },
+        switch (captures.slots[index]) {
+            .unfinished => |start| break start,
             else => {},
         }
-    }
-    return state.failLibrary("invalid pattern capture");
+    } else return state.failLibrary("invalid pattern capture");
+    captures.slots[index] = .{ .range = .{ .start = start, .end = s } };
+    const matched = try matchPatternFrom(state, source, pattern, s, p, depth + 1, captures);
+    if (matched == null) captures.slots[index] = .{ .unfinished = start };
+    return matched;
 }
 
-fn capturesHaveUnfinished(captures: CaptureState) bool {
+fn capturesHaveUnfinished(captures: *const CaptureState) bool {
     for (captures.slots[0..captures.count]) |slot| switch (slot) {
         .unfinished => return true,
         else => {},
@@ -430,7 +435,7 @@ fn matchBalanced(source: []const u8, source_index: usize, open: u8, close: u8) ?
     return null;
 }
 
-fn matchCaptureReference(state: *State, source: []const u8, source_index: usize, captures: CaptureState, digit: u8) !?usize {
+fn matchCaptureReference(state: *State, source: []const u8, source_index: usize, captures: *const CaptureState, digit: u8) !?usize {
     const one_based = digit - '0';
     if (one_based == 0 or one_based > captures.count) {
         try invalidCaptureIndex(state, one_based);
@@ -545,7 +550,7 @@ pub fn appendMatchValues(state: *State, values: *std.ArrayList(Value), source: [
     try appendCaptureValues(state, values, source, matched.captures);
 }
 
-pub fn appendCaptureValues(state: *State, values: *std.ArrayList(Value), source: []const u8, captures: CaptureState) !void {
+pub fn appendCaptureValues(state: *State, values: *std.ArrayList(Value), source: []const u8, captures: *const CaptureState) !void {
     for (captures.slots[0..captures.count]) |slot| try values.append(state.allocator, try captureValue(state, source, slot));
 }
 
