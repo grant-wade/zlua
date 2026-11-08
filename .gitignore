@@ -8,4 +8,4 @@ zig-pkg/
 # Downloaded Lua oracle sources and official tests
 .zlua-deps/
 vendor/
-tests/official/lua-5.5.0-tests/
+tests/official/lua-5.5.1-tests/

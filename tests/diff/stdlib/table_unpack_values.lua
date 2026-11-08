@@ -3,8 +3,8 @@
 -- feature: stdlib-table
 -- normalize: none
 
--- table.unpack accepts any value: it takes the length and indexes it like
--- luaL_len and lua_geti, so errors come from those operations.
+-- table.unpack takes a table or a value whose metatable has __index and, for
+-- non-strings, __len.
 
 local function try(...)
   local r = table.pack(pcall(table.unpack, ...))
@@ -44,5 +44,8 @@ string_meta.__index = function(s, i) return s .. i end
 print(table.unpack("ab", 1, 3))
 string_meta.__index = string_index
 
-print(pcall(function() local t = nil; return table.unpack(t) end))
-print(pcall(function() local x = 5; return table.unpack(x, 1, 2) end))
+local function message(ok, err)
+  return ok, (string.gsub(err, "^[^:]*:%d+: ", ""))
+end
+print(message(pcall(function() local t = nil; return table.unpack(t) end)))
+print(message(pcall(function() local x = 5; return table.unpack(x, 1, 2) end)))

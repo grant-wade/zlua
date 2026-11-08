@@ -2,13 +2,13 @@
 set -eu
 
 root=${1:-.zlua-deps}
-version=5.5.0
+version=5.5.1
 
 lua_url=${ZLUA_LUA_URL:-https://www.lua.org/ftp/lua-${version}.tar.gz}
 tests_url=${ZLUA_LUA_TESTS_URL:-https://www.lua.org/tests/lua-${version}-tests.tar.gz}
 
-lua_sha=57ccc32bbbd005cab75bcc52444052535af691789dba2b9016d5c50640d68b3d
-tests_sha=5e47bbfad7db2965d69580e918ee64edeb8d8d32de404b8dae9ce5c6d76a1472
+lua_sha=1c4b4068d67061f2a2231ad2b5422e77acea1487ea9890f6320af614f4373dce
+tests_sha=da07b543872dc0bb2ff12aabd0c248578d78df3eb6b67efdc537a46d455c7f31
 
 lua_archive=${root}/lua-${version}.tar.gz
 tests_archive=${root}/lua-${version}-tests.tar.gz

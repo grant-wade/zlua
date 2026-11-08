@@ -125,7 +125,7 @@ do
   try("unpack all", function() return table.unpack(t, minint, maxint) end)
   try("unpack from", function() return table.unpack(t, 1) end)
   try("unpack minint len", function() return table.unpack(with_len(minint, { 1 })) end)
-  try("unpack explicit skips len", function()
+  try("unpack explicit calls len", function()
     return table.unpack(setmetatable({ 1, 2 }, { __len = function() error("len called") end }), 1, 2)
   end)
 end

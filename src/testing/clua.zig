@@ -45,7 +45,7 @@ pub fn detect(
         ) };
     }
 
-    const candidates = [_][]const u8{ "zig-out/bin/lua5.5", "lua5.5", "lua5.5.0", "lua" };
+    const candidates = [_][]const u8{ "zig-out/bin/lua5.5", "lua5.5", "lua5.5.1", "lua" };
     for (candidates) |candidate| {
         if (try isLua55(allocator, io, candidate)) {
             return .{ .found = try allocator.dupe(u8, candidate) };

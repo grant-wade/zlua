@@ -4,7 +4,7 @@ zlua is a source-compatible Lua 5.5 implementation written in Zig. You can use
 it as a command-line interpreter, or embed it in a Zig application and decide
 exactly what Lua code is allowed to touch.
 
-zlua is pre-1.0 and supports Zig `0.16.0` and `0.17.0`. The Zig embedding API is
+zlua is pre-1.0 and supports Zig `0.16.0` and `0.17.1`. The Zig embedding API is
 the main public interface. Internals and the binary chunk format may still
 change between releases.
 
@@ -31,60 +31,48 @@ const zlua_dep = b.dependency("zlua", .{
 exe.root_module.addImport("zlua", zlua_dep.module("zlua"));
 ```
 
-3. Import zlua from Zig and run a Lua chunk:
+3. Call Zig from Lua, and Lua from Zig:
 
 ```zig
 const std = @import("std");
 const zlua = @import("zlua");
 
-const Budget = struct {
-    remaining: i64,
-
-    pub fn init(amount: i64) @This() {
-        return .{ .remaining = amount };
-    }
-
-    pub fn spend(self: *@This(), amount: i64) i64 {
-        self.remaining = @max(self.remaining - amount, 0);
-        return self.remaining;
-    }
-};
+fn add(a: i64, b: i64) i64 {
+    return a + b;
+}
 
 pub fn main(init: std.process.Init) !void {
-    const allocator = init.gpa;
-
-    var lua = try zlua.State.init(allocator, .{});
+    var lua = try zlua.State.init(init.gpa, .{
+        .limits = .{ .max_instructions = 1_000_000 },
+    });
     defer lua.deinit();
 
-    var new_budget = try lua.registerUserdataInitializerWith(
-        Budget,
-        "new_budget",
-        Budget.init,
-        .{},
-    );
-    defer new_budget.deinit();
-    try lua.setGlobal("new_budget", new_budget);
+    var add_fn = try lua.registerTyped("add", add);
+    defer add_fn.deinit();
+    try lua.setGlobal("add", add_fn);
 
-    var chunk = try lua.loadString(
-        \\local budget = new_budget(25)
-        \\budget:spend(7)
-        \\budget:spend(20)
-        \\return budget
+    try lua.doString(
+        \\function greet(name)
+        \\  return "hello, " .. name .. "! 2 + 3 = " .. add(2, 3)
+        \\end
     , .{ .name = "=readme" });
-    defer chunk.deinit();
 
-    var budget = try chunk.call(.{}, zlua.Userdata(Budget));
-    defer budget.deinit();
-
-    std.debug.print("remaining={d}\n", .{(try budget.ptr()).remaining});
+    var greet = try lua.getGlobal("greet", zlua.Function);
+    defer greet.deinit();
+    const message = try greet.call(.{"zlua"}, []const u8);
+    std.debug.print("{s}\n", .{message});
 }
 ```
 
 Output:
 
 ```text
-remaining=0
+hello, zlua! 2 + 3 = 5
 ```
+
+The [embedding guide](docs/embedding.md) covers decoding tables into Zig
+structs, userdata, coroutines, snapshots, and more, with runnable programs in
+[`examples/`](examples).
 
 By default, a new state opens only the sandbox-friendly standard libraries.
 Everything else is up to the host: filesystem access, output, clocks, processes,
@@ -129,8 +117,6 @@ in the [changelog](CHANGELOG.md).
 
 zlua is available under the [MIT License](LICENSE).
 
-zlua gratefully acknowledges [Lua](https://www.lua.org/), created and maintained
-by the Lua team at PUC-Rio. The Lua language and reference implementation guide
-zlua's compatibility, and the project uses the official implementation and test
-suite for validation. Lua's copyright and MIT license are reproduced in
+zlua builds on [Lua](https://www.lua.org/) by PUC-Rio, and parts of it are
+translated from the Lua sources. Lua's license is in
 [THIRD_PARTY_NOTICES](THIRD_PARTY_NOTICES).

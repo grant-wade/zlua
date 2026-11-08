@@ -36,7 +36,7 @@ binary chunk verification, verifier-valid generated chunks, library calls with
 hostile arguments, data format readers, and string library inputs. A normal test
 run checks their seed inputs and a seeded sweep of each generator. To search for
 crashes, run the fuzzer with an optional iteration limit. Run one fuzzer at a
-time per cache directory. Fuzzing requires Zig `0.17.0` and an LLVM build such as
+time per cache directory. Fuzzing requires Zig `0.17.1` and an LLVM build such as
 ReleaseSafe; the command fails to compile on `0.16.0` and fails with
 `pcs_len was zero` in a default Debug build. A crash prints its stack trace and
 saves its input to `.zig-cache/f/crash`, and the command still exits 0. The
@@ -49,7 +49,7 @@ zig build test --fuzz=100K -Doptimize=ReleaseSafe
 ## GitHub Actions
 
 Every push runs `zig build ci test-sandbox test-wasm check-tools` with Zig
-`0.16.0` and `0.17.0` on Linux and macOS (x64 and ARM64), plus Windows and
+`0.16.0` and `0.17.1` on Linux and macOS (x64 and ARM64), plus Windows and
 FreeBSD x64. You
 can also start the full matrix manually. Each job then builds, runs, and tests
 the downstream embedding project in `examples/project` against the current
@@ -82,7 +82,7 @@ order:
 ZLUA_CLUA
 zig-out/bin/lua5.5
 lua5.5
-lua5.5.0
+lua5.5.1
 lua
 ```
 
@@ -220,7 +220,7 @@ zig build run-test-sandbox -Doptimize=ReleaseFast -- --stacks=1048576 --show-out
 
 ## Official Suite
 
-The upstream Lua 5.5 tests are downloaded to `.zlua-deps/lua-5.5.0-tests`. By
+The upstream Lua 5.5 tests are downloaded to `.zlua-deps/lua-5.5.1-tests`. By
 default the harness runs every top-level `.lua` file except `all.lua`, using the
 basic compatibility prelude.
 

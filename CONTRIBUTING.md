@@ -6,7 +6,7 @@ match it, and add a regression test so the behavior stays put.
 
 ## Setup
 
-You need Zig `0.16.0` or `0.17.0`, and compatibility changes should be validated
+You need Zig `0.16.0` or `0.17.1`, and compatibility changes should be validated
 with both.
 
 ```sh

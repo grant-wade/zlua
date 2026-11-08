@@ -4,7 +4,6 @@
 -- normalize: none
 
 do
-  -- Lua 5.5.0 can crash on this chain in generational mode.
   collectgarbage("incremental")
   local parent = {}
   parent.__newindex = parent

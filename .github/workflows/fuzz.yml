@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@v7.0.1
       - uses: grant-wade/zig-setup@v1.0.1
         with:
-          version: "0.17.0"
+          version: "0.17.1"
           cache-key: fuzz-${{ runner.arch }}-${{ hashFiles('build.zig.zon') }}
       - name: Cache fuzz corpus
         uses: actions/cache@v6.1.0

@@ -850,6 +850,7 @@ lifetimes, allocators, and userdata payloads.
 
 | Topic | Example |
 | --- | --- |
+| Overview | [`readme.zig`](../examples/readme.zig) |
 | Scripts | [`run_script.zig`](../examples/run_script.zig) |
 | Library selection | [`select_libraries.zig`](../examples/select_libraries.zig) |
 | Sandboxing | [`plugin_sandbox.zig`](../examples/plugin_sandbox.zig) |
