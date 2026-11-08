@@ -299,7 +299,7 @@ fn prepareProto(proto: *proto_mod.Proto, constant_count: *u32) !void {
         else => false,
     };
     if (proto.has_to_close_locals) proto.close_exit_jumps = try closeExitJumps(proto);
-    proto.fast_loop_entry = last_stops and jumpTargetsInBounds(instructions);
+    proto.fast_loop_entry = last_stops and jumpTargetsInBounds(instructions) and numericLoopsAreSimple(proto);
     proto.fast_loop_call = proto.fast_loop_entry and (!proto.named_vararg or proto.named_vararg_readonly);
     proto.runtime_prepared = true;
 }
@@ -310,6 +310,20 @@ fn jumpTargetsInBounds(instructions: []const bytecode.Instruction) bool {
         const source = index + 1;
         const target = if (offset >= 0) source + @as(usize, @intCast(offset)) else source -% @as(usize, @intCast(-offset));
         if (target >= instructions.len) return false;
+    }
+    return true;
+}
+
+/// True when every `for_prep` jumps forward, every `for_loop` jumps backward, and neither leaves
+/// a to-be-closed variable's scope.
+fn numericLoopsAreSimple(proto: *const proto_mod.Proto) bool {
+    for (proto.instructions.items, 0..) |instruction, index| {
+        const expected = switch (instruction) {
+            .for_prep => |op| op.offset >= 0,
+            .for_loop => |op| op.offset < 0,
+            else => continue,
+        };
+        if (!expected or proto.jumpExitsToBeClosed(index)) return false;
     }
     return true;
 }

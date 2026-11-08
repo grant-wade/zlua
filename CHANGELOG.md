@@ -28,6 +28,17 @@
 - The `datetime` library parses, builds, compares, formats, and adds to dates and
   times. It is in `safe` and `full`, and `datetime.now` needs `os`.
 
+### Performance
+
+- `string.find`, `string.match`, `string.gmatch`, and `string.gsub` match
+  patterns faster.
+- Numeric `for` loops, backward jumps, and instruction dispatch are faster.
+- Reading and writing upvalues is faster.
+- Copying values between registers, upvalues, and tables is faster.
+- Float arithmetic is faster.
+- Lua function calls and returns are faster.
+- `pcall` and `xpcall` of a Lua function are faster.
+
 ### Packaging
 
 - `THIRD_PARTY_NOTICES` is now `THIRD_PARTY_NOTICES.md`, installed to
@@ -41,9 +52,13 @@
 - `fetch-lua` and `fetch-format-tests` download archives with a Zig tool instead
   of a shell script.
 - The scheduled fuzz workflow is removed.
+- Harness steps build only the binaries they run.
+- Unit test fuzz sweeps run across threads.
 
 ### Fixes
 
+- Setting a numeric `for` variable with `debug.setlocal` changed how many times
+  the loop ran.
 - `msgpack.read` panicked on an array or map length longer than the input.
 
 ## 0.8.1

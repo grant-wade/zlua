@@ -432,6 +432,56 @@ pub inline fn rawNumericBinaryOpFast(lhs: Value, rhs: Value, comptime op: Binary
     };
 }
 
+/// Stores `lhs op rhs` in `dst` for numbers and returns true, or returns false for the general path.
+pub fn binarySlotOpFast(dst: *Value, lhs: *const Value, rhs: *const Value, comptime op: BinaryOp) bool {
+    switch (op) {
+        .band, .bor, .bxor, .shl, .shr => {
+            if (lhs.* != .integer or rhs.* != .integer) return false;
+            types.storeValue(dst, .{ .integer = rawBitwise(lhs.integer, rhs.integer, op) });
+            return true;
+        },
+        .add, .sub, .mul, .div, .idiv, .mod => {},
+        else => return false,
+    }
+    if (lhs.* == .integer and rhs.* == .integer) {
+        const left = lhs.integer;
+        const right = rhs.integer;
+        types.storeValue(dst, switch (op) {
+            .add => .{ .integer = left +% right },
+            .sub => .{ .integer = left -% right },
+            .mul => .{ .integer = left *% right },
+            .idiv => if (right == 0) return false else .{ .integer = floorDiv(left, right) },
+            .mod => if (right == 0) return false else .{ .integer = floorMod(left, right) },
+            .div => {
+                dst.* = .{ .number = @as(f64, @floatFromInt(left)) / @as(f64, @floatFromInt(right)) };
+                return true;
+            },
+            else => unreachable,
+        });
+        return true;
+    }
+    const left: f64 = switch (lhs.*) {
+        .number => lhs.number,
+        .integer => @floatFromInt(lhs.integer),
+        else => return false,
+    };
+    const right: f64 = switch (rhs.*) {
+        .number => rhs.number,
+        .integer => @floatFromInt(rhs.integer),
+        else => return false,
+    };
+    dst.* = .{ .number = switch (op) {
+        .add => left + right,
+        .sub => left - right,
+        .mul => left * right,
+        .div => left / right,
+        .idiv => @floor(left / right),
+        .mod => floorModNumber(left, right),
+        else => unreachable,
+    } };
+    return true;
+}
+
 pub inline fn rawIntegerBitwiseOpFast(lhs: Value, rhs: Value, comptime op: BinaryOp) ?Value {
     if (lhs != .integer or rhs != .integer) return null;
     return .{ .integer = rawBitwise(lhs.integer, rhs.integer, op) };

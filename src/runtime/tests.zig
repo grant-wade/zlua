@@ -69,6 +69,35 @@ fn tableGrowthAllocationScenario(allocator: std.mem.Allocator) !void {
     }
 }
 
+test "payload and tag copies reproduce every kind of value" {
+    const types = @import("types.zig");
+    const samples = [_]Value{
+        .nil,
+        .{ .boolean = true },
+        .{ .boolean = false },
+        .{ .integer = std.math.minInt(i64) },
+        .{ .integer = 0x0102030405060708 },
+        .{ .number = -0.0 },
+        .{ .number = std.math.inf(f64) },
+        .{ .string = @ptrFromInt(0x10008) },
+        .{ .table = @ptrFromInt(0x20010) },
+        .{ .closure = @ptrFromInt(0x30018) },
+        .native_print,
+        .native_coroutine_wrap,
+        .{ .native = comptime std.enums.values(runtime.NativeFn)[std.enums.values(runtime.NativeFn).len - 1] },
+        .{ .api_callback = std.math.maxInt(usize) },
+    };
+    for (samples) |sample| {
+        var copied: Value = .{ .number = 1.5 };
+        types.copyValue(&copied, &sample);
+        try std.testing.expect(std.meta.eql(sample, copied));
+        try std.testing.expect(std.meta.eql(sample, types.loadValue(&sample)));
+        var stored: Value = .{ .integer = -1 };
+        types.storeValue(&stored, sample);
+        try std.testing.expect(std.meta.eql(sample, stored));
+    }
+}
+
 test "executes basic print and arithmetic" {
     var result = try executeSource(std.testing.allocator,
         \\print(1 + 2)
@@ -1007,21 +1036,27 @@ const corrupted_chunk_program =
 ;
 
 test "randomly corrupted zlua binary chunks load safely or fail" {
+    var leak_check: std.heap.DebugAllocator(.{ .stack_trace_frames = 0 }) = .init;
+    try loadCorruptedChunks(leak_check.allocator());
+    try std.testing.expect(leak_check.deinit() == .ok);
+}
+
+fn loadCorruptedChunks(allocator: std.mem.Allocator) !void {
     var dump = std.ArrayList(u8).empty;
-    defer dump.deinit(std.testing.allocator);
+    defer dump.deinit(allocator);
     {
-        var state = try State.initWithOptions(std.testing.allocator, .{ .stdlib = .none });
+        var state = try State.initWithOptions(allocator, .{ .stdlib = .none });
         defer state.deinit();
         const loaded = try load_mod.loadSourceAsClosure(&state, corrupted_chunk_program);
-        try dumpClosureBinary(std.testing.allocator, &dump, loaded.closure, false);
+        try dumpClosureBinary(allocator, &dump, loaded.closure, false);
     }
     var header = std.ArrayList(u8).empty;
-    defer header.deinit(std.testing.allocator);
-    try appendBinaryChunkHeader(std.testing.allocator, &header);
+    defer header.deinit(allocator);
+    try appendBinaryChunkHeader(allocator, &header);
     const payload_start = header.items.len + binary_chunk_payload_magic.len;
 
-    const mutated = try std.testing.allocator.alloc(u8, dump.items.len);
-    defer std.testing.allocator.free(mutated);
+    const mutated = try allocator.alloc(u8, dump.items.len);
+    defer allocator.free(mutated);
     var prng = std.Random.DefaultPrng.init(0x7a6c_7561_6263);
     const random = prng.random();
     var loaded_count: usize = 0;
@@ -1036,7 +1071,7 @@ test "randomly corrupted zlua binary chunks load safely or fail" {
             }
         }
 
-        var state = try State.initWithOptions(std.testing.allocator, .{
+        var state = try State.initWithOptions(allocator, .{
             .stdlib = .none,
             .max_instructions = 10_000,
             .max_call_frames = 64,

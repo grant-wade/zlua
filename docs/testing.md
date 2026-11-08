@@ -263,7 +263,7 @@ coroutine, and `files.lua` expects a non-seekable stdin.
 
 Limits differ depending on how you run the suite. The build step caps each child
 process at 512 MiB on Linux and FreeBSD by default, with no cap elsewhere, and
-limits each child to 120 seconds (`-Dofficial-timeout-ms=0` disables the
+limits each child to 300 seconds (`-Dofficial-timeout-ms=0` disables the
 timeout). The complete-mode step caps children at 2048 MiB instead
 (`-Dofficial-complete-memory-limit-mb`), because its full-size sections need
 more memory under zlua than under C Lua. Running the harness directly applies no

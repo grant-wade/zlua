@@ -309,7 +309,8 @@ fn newLoadedClosure(self: *State, chunk: *types.Chunk, environment: Value, strip
     for (proto.upvalues.items, upvalues) |desc, *slot| {
         const upvalue = try self.objects().create(Upvalue);
         errdefer self.objects().destroy(upvalue);
-        upvalue.* = .{ .cell = .{ .closed = if (std.mem.eql(u8, desc.name, "_ENV")) environment else .nil } };
+        upvalue.* = .{ .cell = undefined, .value = undefined };
+        upvalue.close(if (std.mem.eql(u8, desc.name, "_ENV")) environment else .nil);
         try self.registerAllocation("upvalue_allocations", upvalue);
         self.gc.noteAllocation(@sizeOf(Upvalue));
         slot.* = upvalue;

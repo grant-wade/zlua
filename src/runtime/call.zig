@@ -221,7 +221,10 @@ fn callProtected(self: *State, thread: *Thread, context: ProtectedCallContext, a
 
 fn callProtectedBody(self: *State, thread: *Thread, context: ProtectedCallContext, arg_count: usize) anyerror!?Value {
     const callee = thread.stack.items[context.absolute_base];
-    invokeValue(self, thread, .{ .base = context.relative_base, .arg_count = @intCast(arg_count), .return_count = bytecode.multret_count }, 0) catch |err| {
+    const op: bytecode.Call = .{ .base = context.relative_base, .arg_count = @intCast(arg_count), .return_count = bytecode.multret_count };
+    const pushed = callee == .closure and thread.next_call_name == null and thread.next_call_namewhat == null and
+        pushPlainClosureFrame(self, thread, op, callee.closure);
+    if (!pushed) invokeValue(self, thread, op, 0) catch |err| {
         return try protectedCallFailure(self, thread, context, callee, err);
     };
     if (thread.frames.items.len > context.frame_count) vm_mod.runThreadUntil(self, thread, context.frame_count) catch |err| {

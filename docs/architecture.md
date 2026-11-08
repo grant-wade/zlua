@@ -200,7 +200,7 @@ it can point to are:
 | --- | --- |
 | `String` | Length, cached hash, interning flags, the entry position where the string was last found as a field key, and GC state, followed by the bytes in the same allocation. |
 | `Closure` | Proto, its chunk (which holds the loaded constants), and debug-strip state, followed by its upvalue pointers in the same allocation. |
-| `Upvalue` | An open stack slot or a closed stored value. |
+| `Upvalue` | A pointer to its value, which is an open stack slot or the closed stored value. |
 | `Table` | Array part, hash entries and index, metatable, and GC flags. |
 | `Userdata` | Native pointer, type information, metatable, `__gc` registration, host finalizer, and deinit hook. |
 | `Thread` | Value stack, call frames, continuations, open upvalues, hooks, and coroutine status. |
@@ -254,8 +254,8 @@ Several limits keep running code in check:
   and reset it through the Zig API, and host calls can narrow it further with
   per-call deadlines.
 - Metered dispatch checks budgets and interrupts at one checkpoint. The fast
-  loop runs up to an allowance short of the budget's end and polls interrupts at
-  backward jumps and calls.
+  loop runs up to an allowance short of the budget's end and polls interrupts
+  when it starts, after native calls, and at least every 16,384 instructions.
 - Interrupts use an atomic flag that survives state moves and resets.
   `error.Interrupted` bypasses `pcall`, `xpcall`, and `__close` handlers.
 - `max_memory` is enforced by the embedding API's bounded allocator, which sees

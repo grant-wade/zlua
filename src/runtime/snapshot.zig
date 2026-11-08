@@ -219,7 +219,7 @@ const Copier = struct {
         try self.shells(types.Table, source.table_allocations.items, &d.table_allocations, .{});
         try self.shells(types.Thread, source.thread_allocations.items, &d.thread_allocations, .{});
         try self.shells(types.Closure, source.closure_allocations.items, &d.closure_allocations, .{ .proto = undefined });
-        try self.shells(types.Upvalue, source.upvalue_allocations.items, &d.upvalue_allocations, .{ .cell = .{ .closed = .nil } });
+        try self.shells(types.Upvalue, source.upvalue_allocations.items, &d.upvalue_allocations, .{ .cell = .{ .closed = .nil }, .value = undefined });
         try self.shells(types.Userdata, source.userdata_allocations.items, &d.userdata_allocations, .{ .ptr = undefined, .type_id = 0, .type_name = "", .finalized = true });
         for (source.table_allocations.items, d.table_allocations.items) |old, new| {
             new.array = try self.tableArray(old.array);
@@ -245,10 +245,11 @@ const Copier = struct {
                     new.cell = .{ .open = .{ .owner = try self.mapped(slot.owner), .stack_index = slot.stack_index } };
                     new.next = try self.remap(old.next);
                 },
-                .closed => |closed| new.cell = .{ .closed = try self.value(closed) },
+                .closed => |closed| new.close(try self.value(closed)),
             }
         }
         for (source.thread_allocations.items, d.thread_allocations.items) |old, new| try self.thread(old, new);
+        for (d.upvalue_allocations.items) |upvalue| if (upvalue.cell == .open) upvalue.retarget();
         for (source.userdata_allocations.items, d.userdata_allocations.items) |old, new| try self.userdata(old, new);
         inline for (.{ "output_bytes", "opened_libraries", "global_table", "userdata_pending_finalizer_head", "userdata_lua_pending_head", "table_finalizer_serial", "stdin_pos", "file_generation", "last_error", "error_handled", "warnings_on", "string_metatable", "number_metatable", "boolean_metatable", "nil_metatable", "file_metatable", "fs_file_metatable", "io_input", "io_output", "random_state" }) |name| @field(d, name) = try self.remap(@field(source, name));
         inline for (.{ "running", "mode", "params" }) |name| @field(d.gc, name) = @field(source.gc, name);
@@ -450,6 +451,7 @@ comptime {
     });
     review(types.Upvalue, .{
         .remapped = "cell next",
+        .rebuilt = "value",
         .transient = "rollback gc",
     });
     review(types.Userdata, .{
