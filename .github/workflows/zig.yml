@@ -45,10 +45,10 @@ jobs:
           path: .zlua-deps
           key: ${{ runner.os }}-deps-${{ hashFiles('tools/archives.zig') }}
       - name: Full test suite, sandbox attacks, and WASM smoke test
-        run: zig build ci test-sandbox test-wasm check-tools --summary all
+        run: zig build --test-timeout 15m ci test-sandbox test-wasm check-tools --summary all
       - name: Downstream embedding project
         working-directory: examples/project
-        run: zig build run test --summary all
+        run: zig build --test-timeout 15m run test --summary all
 
   extended:
     name: Extended checks (Zig ${{ matrix.zig }})
@@ -70,9 +70,9 @@ jobs:
           path: .zlua-deps
           key: ${{ runner.os }}-deps-${{ hashFiles('tools/archives.zig') }}
       - name: Complete official suite, stress modes, and generated differential
-        run: zig build test-official-complete test-gc-stress test-stack-stress test-diff-generated --summary all
+        run: zig build --test-timeout 15m test-official-complete test-gc-stress test-stack-stress test-diff-generated --summary all
       - name: Unit and differential tests in ReleaseSafe
-        run: zig build test test-diff -Doptimize=ReleaseSafe --summary all
+        run: zig build --test-timeout 15m test test-diff -Doptimize=ReleaseSafe --summary all
 
   pr-check:
     name: PR checks

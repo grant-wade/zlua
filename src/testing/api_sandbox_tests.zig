@@ -406,20 +406,30 @@ test "reset undoes what a script changed in shared state" {
     try std.testing.expectEqual(@as(u64, 0), lua.outputBytes());
 }
 
+const DescriptorLimit = if (@import("builtin").os.tag == .windows) void else std.posix.rlimit;
+
 /// Lowers the soft open-file limit to at most `max`. Returns the previous limits, or null when
 /// the platform has none to lower.
-fn lowerDescriptorLimit(max: u64) ?std.posix.rlimit {
-    if (@import("builtin").os.tag == .windows) return null;
-    const original = std.posix.getrlimit(.NOFILE) catch return null;
-    var lowered = original;
-    lowered.cur = @min(original.cur, max);
-    std.posix.setrlimit(.NOFILE, lowered) catch return null;
-    return original;
+fn lowerDescriptorLimit(max: u64) ?DescriptorLimit {
+    if (DescriptorLimit == void) {
+        return null;
+    } else {
+        const original = std.posix.getrlimit(.NOFILE) catch return null;
+        var lowered = original;
+        lowered.cur = @min(original.cur, max);
+        std.posix.setrlimit(.NOFILE, lowered) catch return null;
+        return original;
+    }
+}
+
+fn restoreDescriptorLimit(previous: ?DescriptorLimit) void {
+    if (DescriptorLimit == void) return;
+    if (previous) |limit| std.posix.setrlimit(.NOFILE, limit) catch {};
 }
 
 test "file handles fail cleanly when a script exhausts the descriptor limit" {
     const previous_limit = lowerDescriptorLimit(256);
-    defer if (previous_limit) |limit| std.posix.setrlimit(.NOFILE, limit) catch {};
+    defer restoreDescriptorLimit(previous_limit);
     var temporary = std.testing.tmpDir(.{});
     defer temporary.cleanup();
     const io = std.testing.io;

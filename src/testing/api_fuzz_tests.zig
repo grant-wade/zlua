@@ -307,7 +307,8 @@ const max_sweep_workers = 8;
 
 /// Runs `count` random cases split across worker threads, each with its own seed derived from `seed`.
 fn sweep(comptime run: fn (Picker) anyerror!void, seed: u64, count: usize) !void {
-    const workers: usize = if (@import("builtin").single_threaded) 1 else @max(1, @min(std.Thread.getCpuCount() catch 1, max_sweep_workers, count));
+    const cpus = std.Thread.getCpuCount() catch 1;
+    const workers: usize = if (@import("builtin").single_threaded) 1 else @max(1, @min(cpus / 2, max_sweep_workers, count));
     var failures: [max_sweep_workers]?anyerror = @splat(null);
     var threads: [max_sweep_workers]std.Thread = undefined;
     var spawned: usize = 0;
