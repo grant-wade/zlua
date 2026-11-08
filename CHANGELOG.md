@@ -32,6 +32,7 @@
 
 - `string.find`, `string.match`, `string.gmatch`, and `string.gsub` match
   patterns faster.
+- Numeric `for` loops, backward jumps, and instruction dispatch are faster.
 
 ### Packaging
 
@@ -49,6 +50,8 @@
 
 ### Fixes
 
+- Setting a numeric `for` variable with `debug.setlocal` changed how many times
+  the loop ran.
 - `msgpack.read` panicked on an array or map length longer than the input.
 
 ## 0.8.1

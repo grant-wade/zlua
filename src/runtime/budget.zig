@@ -5,8 +5,11 @@ const types = @import("types.zig");
 
 const Thread = types.Thread;
 
-/// Instructions between interrupt polls; the fast loop also polls at backward jumps and calls.
+/// Instructions between interrupt polls in metered execution.
 const interrupt_poll_interval: u64 = 1024;
+
+/// Instructions the fast loop runs between interrupt polls.
+const fast_interrupt_poll_interval: u64 = 16 * 1024;
 
 /// Instructions before a budget's end that run metered.
 const metered_margin: u64 = 1024;
@@ -190,14 +193,16 @@ pub const Budget = struct {
         return true;
     }
 
-    /// Instructions the fast loop may run before leaving the rest of a budget to metered execution.
+    /// Instructions the fast loop may run before it polls for interrupts or leaves the
+    /// rest of a budget to metered execution.
     pub fn fastLoopAllowance(budget: *const Budget) u64 {
         if (budget.stop_message != null) return 0;
         var deadline: u64 = std.math.maxInt(u64);
         if (budget.constParentState().options.max_instructions) |max| deadline = @min(deadline, budget.base +| max);
         if (budget.call_deadline) |call_deadline| deadline = @min(deadline, call_deadline);
-        if (deadline == std.math.maxInt(u64)) return deadline;
-        return (deadline -| budget.instructions) -| metered_margin;
+        var allowance: u64 = if (deadline == std.math.maxInt(u64)) deadline else (deadline -| budget.instructions) -| metered_margin;
+        if (budget.interrupt != null) allowance = @min(allowance, fast_interrupt_poll_interval);
+        return allowance;
     }
 
     pub fn used(budget: *const Budget) u64 {

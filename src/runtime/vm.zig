@@ -408,8 +408,8 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
     if (self.stressPending()) return false;
     if (thread.hook != .nil and (thread.hook_line or thread.hook_count != 0 or thread.hook_running)) return false;
     if (self.gc.running and self.gc.shouldRunAuto()) return false;
-    var allowance = self.budget.fastLoopAllowance();
-    if (allowance == 0) return false;
+    var budget_allowance = self.budget.fastLoopAllowance();
+    if (budget_allowance == 0) return false;
 
     var stack_limit = @min(thread.stack.items.len, self.stackValueLimit());
     var frame_limit = @min(thread.frames.capacity, self.callFrameLimit());
@@ -417,6 +417,8 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
 
     var frame_index = thread.frames.items.len - 1;
     var frame = &thread.frames.items[frame_index];
+    // Lowered to the executed count while the frame has a line-hook position to forget.
+    var allowance = if (hookLineSet(thread, frame_index)) 0 else budget_allowance;
     var proto = frame.closure.proto;
     var pc: usize = frame.pc;
     var base: usize = frame.base;
@@ -438,13 +440,14 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 count_bias = flushed;
                 return true;
             }
-            allowance = flushed +| self.budget.fastLoopAllowance();
+            budget_allowance = flushed +| self.budget.fastLoopAllowance();
             frame_index = thread.frames.items.len - 1;
             frame = &thread.frames.items[frame_index];
             proto = frame.closure.proto;
             pc = frame.pc;
             count_bias = executed -% pc;
-            if (executed >= allowance) return true;
+            if (executed >= budget_allowance) return true;
+            allowance = if (hookLineSet(thread, frame_index)) executed else budget_allowance;
             base = frame.base;
             stack_limit = @min(thread.stack.items.len, self.stackValueLimit());
             frame_limit = @min(thread.frames.capacity, self.callFrameLimit());
@@ -806,8 +809,10 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     pc = jumpTarget(source_pc, op.branch.offset);
                     count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                     if (pc < source_pc) {
-                        if (frame.has_extra) thread.frame_extras.items[frame_index].last_hook_line = null;
-                        if (pc +% count_bias >= allowance or self.budget.fastLoopInterrupted()) break :fast_loop;
+                        if (pc +% count_bias >= allowance) {
+                            allowance = backwardJumpAllowance(thread, frame_index, budget_allowance);
+                            if (pc +% count_bias >= allowance) break :fast_loop;
+                        }
                     }
                 }
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
@@ -829,8 +834,10 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     pc = jumpTarget(source_pc, op.branch.offset);
                     count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                     if (pc < source_pc) {
-                        if (frame.has_extra) thread.frame_extras.items[frame_index].last_hook_line = null;
-                        if (pc +% count_bias >= allowance or self.budget.fastLoopInterrupted()) break :fast_loop;
+                        if (pc +% count_bias >= allowance) {
+                            allowance = backwardJumpAllowance(thread, frame_index, budget_allowance);
+                            if (pc +% count_bias >= allowance) break :fast_loop;
+                        }
                     }
                 }
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
@@ -843,8 +850,10 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 pc = jumpTarget(source_pc, offset);
                 count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                 if (pc < source_pc) {
-                    if (frame.has_extra) thread.frame_extras.items[frame_index].last_hook_line = null;
-                    if (pc +% count_bias >= allowance or self.budget.fastLoopInterrupted()) break :fast_loop;
+                    if (pc +% count_bias >= allowance) {
+                        allowance = backwardJumpAllowance(thread, frame_index, budget_allowance);
+                        if (pc +% count_bias >= allowance) break :fast_loop;
+                    }
                 }
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
@@ -857,8 +866,10 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     pc = jumpTarget(source_pc, op.offset);
                     count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                     if (pc < source_pc) {
-                        if (frame.has_extra) thread.frame_extras.items[frame_index].last_hook_line = null;
-                        if (pc +% count_bias >= allowance or self.budget.fastLoopInterrupted()) break :fast_loop;
+                        if (pc +% count_bias >= allowance) {
+                            allowance = backwardJumpAllowance(thread, frame_index, budget_allowance);
+                            if (pc +% count_bias >= allowance) break :fast_loop;
+                        }
                     }
                 }
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
@@ -874,38 +885,51 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     pc = jumpTarget(source_pc, op.offset);
                     count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                     if (pc < source_pc) {
-                        if (frame.has_extra) thread.frame_extras.items[frame_index].last_hook_line = null;
-                        if (pc +% count_bias >= allowance or self.budget.fastLoopInterrupted()) break :fast_loop;
+                        if (pc +% count_bias >= allowance) {
+                            allowance = backwardJumpAllowance(thread, frame_index, budget_allowance);
+                            if (pc +% count_bias >= allowance) break :fast_loop;
+                        }
                     }
                 }
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
-            .for_loop => {
-                if (proto.jumpExitsToBeClosed(pc)) break :fast_loop;
-                const op = instructions[pc].for_loop;
-                const absolute_base: usize = op.base;
-                const current = stack[absolute_base];
-                const limit = stack[absolute_base + 1];
-                const step = stack[absolute_base + 2];
-                const continues = if (current == .integer and limit == .integer and step == .integer) blk: {
-                    const next = current.integer +% step.integer;
-                    stack[absolute_base] = .{ .integer = next };
-                    const wrapped = (step.integer > 0 and next < current.integer) or (step.integer < 0 and next > current.integer);
-                    break :blk !wrapped and forLoopContinuesInteger(next, limit.integer, step.integer);
-                } else if (current == .number and limit == .number and step == .number) blk: {
-                    const next = current.number + step.number;
-                    stack[absolute_base] = .{ .number = next };
-                    break :blk forLoopContinuesNumber(next, limit.number, step.number);
-                } else break :fast_loop;
+            .for_prep => {
+                const op = instructions[pc].for_prep;
+                const loop = stack[op.base..][0..3];
+                if (loop[0] != .integer or loop[1] != .integer or loop[2] != .integer or loop[2].integer == 0) break :fast_loop;
                 pc += 1;
-                if (continues) {
+                if (integerForCount(loop[0].integer, loop[1].integer, loop[2].integer)) |count| {
+                    loop[1].integer = @bitCast(count);
+                } else {
                     const source_pc = pc;
                     pc = jumpTarget(source_pc, op.offset);
                     count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
-                    if (pc < source_pc) {
-                        if (frame.has_extra) thread.frame_extras.items[frame_index].last_hook_line = null;
-                        if (pc +% count_bias >= allowance or self.budget.fastLoopInterrupted()) break :fast_loop;
-                    }
+                }
+                continue :fast_loop std.meta.activeTag(instructions[pc]);
+            },
+            .for_loop => {
+                const op = instructions[pc].for_loop;
+                const loop = stack[op.base..][0..3];
+                pc += 1;
+                if (loop[0] == .integer and loop[1] == .integer and loop[2] == .integer) {
+                    const count: u64 = @bitCast(loop[1].integer);
+                    if (count == 0) continue :fast_loop std.meta.activeTag(instructions[pc]);
+                    loop[1].integer = @bitCast(count - 1);
+                    loop[0].integer +%= loop[2].integer;
+                } else if (loop[0] == .number and loop[1] == .number and loop[2] == .number) {
+                    const next = loop[0].number + loop[2].number;
+                    loop[0].number = next;
+                    if (!forLoopContinuesNumber(next, loop[1].number, loop[2].number)) continue :fast_loop std.meta.activeTag(instructions[pc]);
+                } else {
+                    pc -= 1;
+                    break :fast_loop;
+                }
+                const source_pc = pc;
+                pc = jumpTarget(source_pc, op.offset);
+                count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
+                if (pc +% count_bias >= allowance) {
+                    allowance = backwardJumpAllowance(thread, frame_index, budget_allowance);
+                    if (pc +% count_bias >= allowance) break :fast_loop;
                 }
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
@@ -1003,7 +1027,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 count_bias = segment_start;
                 pc = 0;
                 base = callee_base;
-                if (pc +% count_bias >= allowance or self.budget.fastLoopInterrupted()) return true;
+                if (pc +% count_bias >= allowance) return true;
                 continue :frames;
             },
             .vararg => {
@@ -1107,7 +1131,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     count_bias = segment_start;
                     pc = 0;
                     base = callee_base;
-                    if (pc +% count_bias >= allowance or self.budget.fastLoopInterrupted()) return true;
+                    if (pc +% count_bias >= allowance) return true;
                     continue :frames;
                 }
                 if (pc +% count_bias != segment_start) {
@@ -1163,7 +1187,8 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 pc = frame.pc;
                 count_bias = segment_start -% pc;
                 base = frame.base;
-                if (frame_index + 1 == return_floor or pc +% count_bias >= allowance or self.budget.fastLoopInterrupted()) return true;
+                if (frame_index + 1 == return_floor or pc +% count_bias >= allowance) return true;
+                if (hookLineSet(thread, frame_index)) allowance = pc +% count_bias;
                 continue :frames;
             },
             .tfor_prep => {
@@ -1182,8 +1207,10 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 pc = jumpTarget(source_pc, op.offset);
                 count_bias +%= @as(u64, source_pc) -% @as(u64, pc);
                 if (pc < source_pc) {
-                    if (frame.has_extra) thread.frame_extras.items[frame_index].last_hook_line = null;
-                    if (pc +% count_bias >= allowance or self.budget.fastLoopInterrupted()) break :fast_loop;
+                    if (pc +% count_bias >= allowance) {
+                        allowance = backwardJumpAllowance(thread, frame_index, budget_allowance);
+                        if (pc +% count_bias >= allowance) break :fast_loop;
+                    }
                 }
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
@@ -1194,7 +1221,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 if (pc >= instructions.len) break :fast_loop;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
-            else => break :fast_loop,
+            .get_global, .set_global, .declare_global, .pow, .concat, .check_close, .close_tbc, .tfor_call, .concat_range => break :fast_loop,
         }
 
         if (pc +% count_bias == segment_start) return segment_start != 0;
@@ -1290,6 +1317,19 @@ inline fn fieldSlot(table_value: Value, key: *const String) ?*Value {
     const part = table.hash orelse return null;
     const slot = &(fieldEntry(part, key) orelse return null).value;
     return if (slot.* != .nil) slot else null;
+}
+
+/// True when the frame at `index` has a line-hook position that a backward jump must forget.
+inline fn hookLineSet(thread: *const Thread, index: usize) bool {
+    return thread.frames.items[index].has_extra and thread.frame_extras.items[index].last_hook_line != null;
+}
+
+/// Forgets the line-hook position of the frame at `index` after a backward jump and
+/// returns the allowance to continue with.
+noinline fn backwardJumpAllowance(thread: *Thread, index: usize, budget_allowance: u64) u64 {
+    @branchHint(.cold);
+    if (hookLineSet(thread, index)) thread.frame_extras.items[index].last_hook_line = null;
+    return budget_allowance;
 }
 
 fn fastReturnFloor(thread: *const Thread, target_frame_count: usize) usize {
@@ -1530,10 +1570,11 @@ fn forPrep(self: *State, thread: *Thread, op: bytecode.ForLoop) !void {
                     return;
                 };
             };
+            const count = integerForCount(initial_integer, limit_integer, step_integer);
             set(self, thread, op.base, .{ .integer = initial_integer });
-            set(self, thread, op.base + 1, .{ .integer = limit_integer });
+            set(self, thread, op.base + 1, .{ .integer = @bitCast(count orelse 0) });
             set(self, thread, op.base + 2, .{ .integer = step_integer });
-            if (!forLoopContinuesInteger(initial_integer, limit_integer, step_integer)) try jumpThread(self, thread, op.offset, false);
+            if (count == null) try jumpThread(self, thread, op.offset, false);
             return;
         }
     }
@@ -1557,10 +1598,10 @@ fn forLoop(self: *State, thread: *Thread, op: bytecode.ForLoop) !void {
     const limit = stack[absolute_base + 1];
     const step = stack[absolute_base + 2];
     if (current == .integer and limit == .integer and step == .integer) {
-        const next = current.integer +% step.integer;
-        stack[absolute_base] = .{ .integer = next };
-        const wrapped = (step.integer > 0 and next < current.integer) or (step.integer < 0 and next > current.integer);
-        if (!wrapped and forLoopContinuesInteger(next, limit.integer, step.integer)) {
+        const count: u64 = @bitCast(limit.integer);
+        if (count != 0) {
+            stack[absolute_base + 1] = .{ .integer = @bitCast(count - 1) };
+            stack[absolute_base] = .{ .integer = current.integer +% step.integer };
             if (frame.closure.proto.has_to_close_locals) {
                 try jumpThread(self, thread, op.offset, false);
             } else {
@@ -1649,7 +1690,7 @@ pub fn forValueName(kind: ForValueKind) []const u8 {
 }
 
 fn jumpTarget(pc: usize, offset: bytecode.JumpOffset) usize {
-    return if (offset >= 0) pc + @as(usize, @intCast(offset)) else pc - @as(usize, @intCast(-offset));
+    return pc +% @as(usize, @bitCast(@as(isize, offset)));
 }
 
 fn instructionPreservesLastResult(instruction: bytecode.Instruction) bool {
@@ -1712,6 +1753,7 @@ fn plainFastLoopCanStart(instruction: bytecode.Instruction) bool {
         .jmp,
         .test_op,
         .test_set,
+        .for_prep,
         .for_loop,
         .tfor_prep,
         .tfor_loop,
@@ -1727,8 +1769,16 @@ fn plainFastLoopCanStart(instruction: bytecode.Instruction) bool {
     };
 }
 
-fn forLoopContinuesInteger(current: i64, limit: i64, step: i64) bool {
-    return if (step > 0) current <= limit else current >= limit;
+/// Iterations after the first of an integer loop, or null when it runs none. `step` must not be zero.
+inline fn integerForCount(initial: i64, limit: i64, step: i64) ?u64 {
+    if (step > 0) {
+        if (initial > limit) return null;
+        const span = @as(u64, @bitCast(limit)) -% @as(u64, @bitCast(initial));
+        return if (step == 1) span else span / @as(u64, @bitCast(step));
+    }
+    if (initial < limit) return null;
+    const span = @as(u64, @bitCast(initial)) -% @as(u64, @bitCast(limit));
+    return span / (@as(u64, @bitCast(-(step + 1))) + 1);
 }
 
 fn integerForLimit(limit: f64, step: i64) ?i64 {
