@@ -34,7 +34,7 @@ for _, attempt in ipairs({
   function() return datetime.new{ month = 1 } end,
   function() return datetime.unix(1e300) end,
 }) do
-  print(select(2, pcall(attempt)))
+  print((select(2, pcall(attempt)):gsub("^[^:]*:%d+: ", "")))
 end
 
 local config = toml.read("deadline = 2026-11-07T17:00:00-08:00")

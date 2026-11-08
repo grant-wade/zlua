@@ -13,13 +13,13 @@ true	false
 true	true	296663520.5	1800.0
 attempt to compare a date with a time
 attempt to subtract a number from a datetime
-tests/extensions/datetime/library.lua:27: bad argument #1 to 'add' ('day' is not a known amount)
-tests/extensions/datetime/library.lua:28: bad argument #1 to 'add' ('days' must be an integer)
-tests/extensions/datetime/library.lua:29: bad argument #1 to 'add' (a date can only add whole days)
-tests/extensions/datetime/library.lua:30: calling 'add' on bad self (a time has no date to add months or years to)
-tests/extensions/datetime/library.lua:31: calling 'format' on bad self (a time has no date)
-tests/extensions/datetime/library.lua:32: calling 'unix' on bad self (a local datetime has no offset)
-tests/extensions/datetime/library.lua:33: bad argument #1 to 'parse' (invalid time at character 1)
-tests/extensions/datetime/library.lua:34: bad argument #1 to 'new' (year must be an integer)
-tests/extensions/datetime/library.lua:35: bad argument #1 to 'unix' (number out of range)
+bad argument #1 to 'add' ('day' is not a known amount)
+bad argument #1 to 'add' ('days' must be an integer)
+bad argument #1 to 'add' (a date can only add whole days)
+calling 'add' on bad self (a time has no date to add months or years to)
+calling 'format' on bad self (a time has no date)
+calling 'unix' on bad self (a local datetime has no offset)
+bad argument #1 to 'parse' (invalid time at character 1)
+bad argument #1 to 'new' (year must be an integer)
+bad argument #1 to 'unix' (number out of range)
 deadline = 2026-11-14T17:00:00-08:00	{"deadline":"2026-11-14T17:00:00-08:00"}

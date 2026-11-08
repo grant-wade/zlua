@@ -480,7 +480,7 @@ fn addFetchStep(b: *std.Build, tool: *std.Build.Step.Compile, name: []const u8, 
     inline for (list) |archive| {
         const run = b.addRunArtifact(tool);
         run.has_side_effects = true;
-        run.addArgs(&.{ b.graph.environ_map.get(archive.url_env) orelse archive.url, archive.sha256, archives.deps_root ++ "/" ++ archive.dir });
+        run.addArgs(&.{ archive.url, archive.sha256, archives.deps_root ++ "/" ++ archive.dir, archive.url_env });
         step.dependOn(&run.step);
     }
     return step;

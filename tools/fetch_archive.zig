@@ -5,14 +5,16 @@ const Sha256 = std.crypto.hash.sha2.Sha256;
 
 const stamp_name = ".sha256";
 const max_archive_bytes = 64 * 1024 * 1024;
+const max_attempts = 4;
 
-/// Usage: `fetch_archive <url> <sha256> <dest>`. Unpacks the archive's top directory into `dest`.
+/// Usage: `fetch_archive <url> <sha256> <dest> [url_env]`. Unpacks the archive's top directory
+/// into `dest`. The environment variable `url_env`, when set, replaces `url`.
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const io = init.io;
     const args = try init.minimal.args.toSlice(arena);
-    if (args.len != 4) fatal("usage: fetch_archive <url> <sha256> <dest>", .{});
-    const url = args[1];
+    if (args.len != 4 and args.len != 5) fatal("usage: fetch_archive <url> <sha256> <dest> [url_env]", .{});
+    const url = if (args.len == 5) init.environ_map.get(args[4]) orelse args[1] else args[1];
     const expected = args[2];
     const dest = args[3];
 
@@ -24,9 +26,19 @@ pub fn main(init: std.process.Init) !void {
 
     var body = std.Io.Writer.Allocating.init(init.gpa);
     defer body.deinit();
-    const result = client.fetch(.{ .location = .{ .url = url }, .response_writer = &body.writer }) catch |err|
-        fatal("fetch_archive: downloading {s} failed: {s}", .{ url, @errorName(err) });
-    if (result.status != .ok) fatal("fetch_archive: downloading {s} returned HTTP {d}", .{ url, @intFromEnum(result.status) });
+    var attempt: u6 = 1;
+    while (true) : (attempt += 1) {
+        body.clearRetainingCapacity();
+        if (client.fetch(.{ .location = .{ .url = url }, .response_writer = &body.writer })) |result| {
+            if (result.status == .ok) break;
+            if (attempt == max_attempts) fatal("fetch_archive: downloading {s} returned HTTP {d}", .{ url, @intFromEnum(result.status) });
+            std.debug.print("fetch_archive: {s} returned HTTP {d}; retrying\n", .{ url, @intFromEnum(result.status) });
+        } else |err| {
+            if (attempt == max_attempts) fatal("fetch_archive: downloading {s} failed: {s}", .{ url, @errorName(err) });
+            std.debug.print("fetch_archive: downloading {s} failed: {s}; retrying\n", .{ url, @errorName(err) });
+        }
+        try io.sleep(.fromSeconds(@as(i64, 1) << attempt), .awake);
+    }
     const archive = body.written();
     if (archive.len > max_archive_bytes) fatal("fetch_archive: {s} is larger than {d} bytes", .{ url, max_archive_bytes });
 
