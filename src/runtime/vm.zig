@@ -514,78 +514,67 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             },
             .add => {
                 const op = instructions[pc].add;
-                const value = operators_mod.rawNumericBinaryOpFast(loadValue(&stack[op.left]), loadValue(&stack[op.right]), .add) orelse break :fast_loop;
-                storeValue(&stack[op.dest], value);
+                if (!operators_mod.binarySlotOpFast(&stack[op.dest], &stack[op.left], &stack[op.right], .add)) break :fast_loop;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .sub => {
                 const op = instructions[pc].sub;
-                const value = operators_mod.rawNumericBinaryOpFast(loadValue(&stack[op.left]), loadValue(&stack[op.right]), .sub) orelse break :fast_loop;
-                storeValue(&stack[op.dest], value);
+                if (!operators_mod.binarySlotOpFast(&stack[op.dest], &stack[op.left], &stack[op.right], .sub)) break :fast_loop;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .mul => {
                 const op = instructions[pc].mul;
-                const value = operators_mod.rawNumericBinaryOpFast(loadValue(&stack[op.left]), loadValue(&stack[op.right]), .mul) orelse break :fast_loop;
-                storeValue(&stack[op.dest], value);
+                if (!operators_mod.binarySlotOpFast(&stack[op.dest], &stack[op.left], &stack[op.right], .mul)) break :fast_loop;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .div => {
                 const op = instructions[pc].div;
-                const value = operators_mod.rawNumericBinaryOpFast(loadValue(&stack[op.left]), loadValue(&stack[op.right]), .div) orelse break :fast_loop;
-                storeValue(&stack[op.dest], value);
+                if (!operators_mod.binarySlotOpFast(&stack[op.dest], &stack[op.left], &stack[op.right], .div)) break :fast_loop;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .idiv => {
                 const op = instructions[pc].idiv;
-                const value = operators_mod.rawNumericBinaryOpFast(loadValue(&stack[op.left]), loadValue(&stack[op.right]), .idiv) orelse break :fast_loop;
-                storeValue(&stack[op.dest], value);
+                if (!operators_mod.binarySlotOpFast(&stack[op.dest], &stack[op.left], &stack[op.right], .idiv)) break :fast_loop;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .mod => {
                 const op = instructions[pc].mod;
-                const value = operators_mod.rawNumericBinaryOpFast(loadValue(&stack[op.left]), loadValue(&stack[op.right]), .mod) orelse break :fast_loop;
-                storeValue(&stack[op.dest], value);
+                if (!operators_mod.binarySlotOpFast(&stack[op.dest], &stack[op.left], &stack[op.right], .mod)) break :fast_loop;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .band => {
                 const op = instructions[pc].band;
-                const value = operators_mod.rawIntegerBitwiseOpFast(loadValue(&stack[op.left]), loadValue(&stack[op.right]), .band) orelse break :fast_loop;
-                storeValue(&stack[op.dest], value);
+                if (!operators_mod.binarySlotOpFast(&stack[op.dest], &stack[op.left], &stack[op.right], .band)) break :fast_loop;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .bor => {
                 const op = instructions[pc].bor;
-                const value = operators_mod.rawIntegerBitwiseOpFast(loadValue(&stack[op.left]), loadValue(&stack[op.right]), .bor) orelse break :fast_loop;
-                storeValue(&stack[op.dest], value);
+                if (!operators_mod.binarySlotOpFast(&stack[op.dest], &stack[op.left], &stack[op.right], .bor)) break :fast_loop;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .bxor => {
                 const op = instructions[pc].bxor;
-                const value = operators_mod.rawIntegerBitwiseOpFast(loadValue(&stack[op.left]), loadValue(&stack[op.right]), .bxor) orelse break :fast_loop;
-                storeValue(&stack[op.dest], value);
+                if (!operators_mod.binarySlotOpFast(&stack[op.dest], &stack[op.left], &stack[op.right], .bxor)) break :fast_loop;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .shl => {
                 const op = instructions[pc].shl;
-                const value = operators_mod.rawIntegerBitwiseOpFast(loadValue(&stack[op.left]), loadValue(&stack[op.right]), .shl) orelse break :fast_loop;
-                storeValue(&stack[op.dest], value);
+                if (!operators_mod.binarySlotOpFast(&stack[op.dest], &stack[op.left], &stack[op.right], .shl)) break :fast_loop;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .shr => {
                 const op = instructions[pc].shr;
-                const value = operators_mod.rawIntegerBitwiseOpFast(loadValue(&stack[op.left]), loadValue(&stack[op.right]), .shr) orelse break :fast_loop;
-                storeValue(&stack[op.dest], value);
+                if (!operators_mod.binarySlotOpFast(&stack[op.dest], &stack[op.left], &stack[op.right], .shr)) break :fast_loop;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
@@ -787,8 +776,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             inline .add_k, .sub_k, .mul_k, .div_k, .idiv_k, .mod_k, .band_k, .bor_k, .bxor_k, .shl_k, .shr_k => |tag| {
                 const op = @field(instructions[pc], @tagName(tag));
                 const kind = comptime operators_mod.constantBinaryOp(tag);
-                const value = operators_mod.rawBinaryOpFast(loadValue(&stack[op.left]), proto.constant_values[op.constant], kind) orelse break :fast_loop;
-                storeValue(&stack[op.dest], value);
+                if (!operators_mod.binarySlotOpFast(&stack[op.dest], &stack[op.left], &proto.constant_values[op.constant], kind)) break :fast_loop;
                 pc += 1;
                 continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
