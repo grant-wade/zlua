@@ -433,6 +433,8 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
     var segment_start: u64 = 0;
     // Executed-instruction total after a general operation, which may have changed frames.
     var resync: ?u64 = null;
+    var instructions: []const bytecode.Instruction = undefined;
+    var stack: []Value = undefined;
     frames: while (true) {
         if (resync) |executed| {
             @branchHint(.unlikely);
@@ -457,9 +459,9 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             return_floor = fastReturnFloor(thread, target_frame_count);
         }
         if (!proto.fast_loop_entry) return segment_start != 0;
-        const instructions = proto.instructions.items;
+        instructions = proto.instructions.items;
         if (pc >= instructions.len) return segment_start != 0;
-        const stack = thread.stack.items[base..];
+        stack = thread.stack.items[base..];
 
         // Per-opcode dispatch on the tag only; handlers decode operands so the union is never copied.
         fast_loop: switch (std.meta.activeTag(instructions[pc])) {
@@ -1018,7 +1020,9 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 pc = 0;
                 base = callee_base;
                 if (pc +% count_bias >= allowance) return true;
-                continue :frames;
+                instructions = proto.instructions.items;
+                stack = thread.stack.items[base..];
+                continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .vararg => {
                 const op = instructions[pc].vararg;
@@ -1164,8 +1168,12 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 if (thread.open_upvalues) |upvalue| if (upvalue.cell.open.stack_index >= base) upvalue_mod.closeUpvalues(self, thread, base);
                 const executed_count = pc +% count_bias -% segment_start;
                 const copied = @min(return_count, op.count);
-                for (0..copied) |index| copyValue(&thread.stack.items[return_start + index], &stack[op.first + index]);
-                clearRegisters(thread.stack.items[return_start + copied .. return_start + return_count]);
+                if (copied == 1 and return_count == 1) {
+                    copyValue(&(stack.ptr - base)[return_start], &stack[op.first]);
+                } else {
+                    for (0..copied) |index| copyValue(&thread.stack.items[return_start + index], &stack[op.first + index]);
+                    clearRegisters(thread.stack.items[return_start + copied .. return_start + return_count]);
+                }
                 thread.frames.items.len = frame_index;
                 thread.last_result_base = return_start;
                 thread.last_result_count = return_count;
@@ -1179,7 +1187,10 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                 base = frame.base;
                 if (frame_index + 1 == return_floor or pc +% count_bias >= allowance) return true;
                 if (hookLineSet(thread, frame_index)) allowance = pc +% count_bias;
-                continue :frames;
+                if (!proto.fast_loop_entry) continue :frames;
+                instructions = proto.instructions.items;
+                stack = thread.stack.items[base..];
+                continue :fast_loop std.meta.activeTag(instructions[pc]);
             },
             .tfor_prep => {
                 const op = instructions[pc].tfor_prep;
