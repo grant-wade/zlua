@@ -96,6 +96,7 @@
 - [api.context](api/context.md)
 - [api.decode](api/decode.md)
 - [api.coroutine](api/coroutine.md)
+- [api.string](api/string.md)
 - [api.snapshot](api/snapshot.md)
 - [api.memory_limit](api/memory_limit.md)
 - [api.namespace](api/namespace.md)
@@ -144,12 +145,12 @@
 - [GcParam](#alias-gcparam)
 - [GcParams](#alias-gcparams)
 - [GcOptions](#alias-gcoptions)
-- [GcBudget](#alias-gcbudget)
 - [GcStepResult](#alias-gcstepresult)
 - [Stdlib](#alias-stdlib)
 - [LibrarySet](#alias-libraryset)
 - [Value](#alias-value)
 - [Ref](#alias-ref)
+- [String](#alias-string)
 - [HandleScope](#alias-handlescope)
 - [Table](#alias-table)
 - [Function](#alias-function)
@@ -210,7 +211,6 @@
 - [DebugOptions](#alias-debugoptions)
 - [LoadMode](#alias-loadmode)
 - [LoadOptions](#alias-loadoptions)
-- [DoOptions](#alias-dooptions)
 - [TableOptions](#alias-tableoptions)
 - [IoCapability](#alias-iocapability)
 - [FixedClock](#alias-fixedclock)
@@ -384,16 +384,6 @@ pub const GcOptions = api.GcOptions;
 
 References: [`api.GcOptions`](api.md#alias-gcoptions)
 
-<a id="alias-gcbudget"></a>
-
-## GcBudget
-
-```zig
-pub const GcBudget = api.GcBudget;
-```
-
-References: [`api.GcBudget`](api.md#alias-gcbudget)
-
 <a id="alias-gcstepresult"></a>
 
 ## GcStepResult
@@ -443,6 +433,16 @@ pub const Ref = api.Ref;
 ```
 
 References: [`api.Ref`](api.md#alias-ref)
+
+<a id="alias-string"></a>
+
+## String
+
+```zig
+pub const String = api.String;
+```
+
+References: [`api.String`](api.md#alias-string)
 
 <a id="alias-handlescope"></a>
 
@@ -1043,16 +1043,6 @@ pub const LoadOptions = api.LoadOptions;
 ```
 
 References: [`api.LoadOptions`](api.md#alias-loadoptions)
-
-<a id="alias-dooptions"></a>
-
-## DoOptions
-
-```zig
-pub const DoOptions = api.DoOptions;
-```
-
-References: [`api.DoOptions`](api.md#alias-dooptions)
 
 <a id="alias-tableoptions"></a>
 

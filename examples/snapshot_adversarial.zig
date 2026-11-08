@@ -64,12 +64,12 @@ pub fn main() !void {
         var fresh = try lua.createTable(.{});
         defer fresh.deinit();
         try fresh.set("secret", "new-generation");
-        try rejected(error.InvalidHandle, old_table.get("secret", []const u8));
+        try rejected(error.InvalidHandle, old_table.get("secret", zlua.String));
         try rejected(error.InvalidHandle, old_table.set("secret", "poison"));
-        try rejected(error.InvalidHandle, injected.get("secret", []const u8));
-        try rejected(error.InvalidHandle, root_only.get("secret", []const u8));
-        try rejected(error.InvalidHandle, old_function.call(.{}, []const u8));
-        try rejected(error.InvalidHandle, steal.call(.{}, []const u8));
+        try rejected(error.InvalidHandle, injected.get("secret", zlua.String));
+        try rejected(error.InvalidHandle, root_only.get("secret", zlua.String));
+        try rejected(error.InvalidHandle, old_function.call(.{}, zlua.String));
+        try rejected(error.InvalidHandle, steal.call(.{}, zlua.String));
         try rejected(error.InvalidHandle, old_error.value());
         try rejected(error.InvalidHandle, lua.setGlobal("smuggled", old_value));
         try rejected(error.InvalidHandle, fresh.set(old_table, true));
@@ -85,7 +85,9 @@ pub fn main() !void {
         root_only.deinit();
         root_only_live = false;
         try lua.collect();
-        try require(std.mem.eql(u8, try fresh.get("secret", []const u8), "new-generation"));
+        var secret = try fresh.get("secret", zlua.String);
+        defer secret.deinit();
+        try require(std.mem.eql(u8, try secret.bytes(), "new-generation"));
         try lua.doString(
             \\assert(box.secret == 'baseline' and box.self == box and alias == box)
             \\assert(box.injected == nil and getmetatable(box) == nil)

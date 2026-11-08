@@ -8,7 +8,7 @@ const plugin_source =
 
 pub fn main() !void {
     const allocator = std.heap.smp_allocator;
-    const files = [_]zlua.api.MemoryFile{
+    const files = [_]zlua.MemoryFile{
         .{ .path = "plugin.lua", .contents = plugin_source },
     };
 
@@ -42,9 +42,10 @@ fn emit(ctx: *zlua.Context) !void {
     var event = try ctx.arg(0, zlua.Table);
     defer event.deinit();
 
-    const kind = try event.get("kind", []const u8);
+    var kind = try event.get("kind", zlua.String);
+    defer kind.deinit();
     const version = try event.get("version", i64);
-    if (!std.mem.eql(u8, kind, "loaded") or version != 1) {
+    if (!std.mem.eql(u8, try kind.bytes(), "loaded") or version != 1) {
         return ctx.raise("unexpected plugin event");
     }
 

@@ -188,13 +188,14 @@ const Catalog = struct {
 
     pub fn decode(d: anytype, comptime T: type, value: Value, out: *T) api.DecodeError!void {
         if (value != .string) return d.fail("expected an id, got {s}", .{value.typeName()});
+        const given = value.string.bytes() catch |err| return d.apiFail(err);
         for (d.context.ids, 0..) |id, index| {
-            if (std.mem.eql(u8, id, value.string)) {
+            if (std.mem.eql(u8, id, given)) {
                 out.* = @enumFromInt(index);
                 return;
             }
         }
-        return d.fail("unknown id \"{s}\"", .{value.string});
+        return d.fail("unknown id \"{s}\"", .{given});
     }
 };
 

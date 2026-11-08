@@ -9,6 +9,7 @@ const decode_mod = @import("decode.zig");
 const Coroutine = @import("coroutine.zig").Coroutine;
 const ErrorRef = errors.ErrorRef;
 const Function = @import("function.zig").Function;
+const String = @import("string.zig").String;
 const Ref = handle.Ref;
 const State = @import("state.zig").State;
 const Table = @import("table.zig").Table;
@@ -19,6 +20,7 @@ const namespace = @import("namespace.zig");
 
 pub fn expectedLuaType(comptime T: type) []const u8 {
     if (T == Value or T == Ref or T == ErrorRef) return "value";
+    if (T == String) return "string";
     if (T == Table) return "table";
     if (T == Function) return "function";
     if (T == Coroutine) return "thread";
@@ -61,7 +63,7 @@ pub fn toRuntimeValueNamed(state: *State, value: anytype, name: []const u8) !run
         .boolean => |v| .{ .boolean = v },
         .integer => |v| .{ .integer = v },
         .number => |v| .{ .number = v },
-        .string => |v| .{ .string = try state.raw_state.strings.intern(v) },
+        .string => |v| toRuntimeValue(state, v),
         .table => |v| toRuntimeValue(state, v),
         .function => |v| toRuntimeValue(state, v),
         .coroutine => |v| toRuntimeValue(state, v),
@@ -71,7 +73,7 @@ pub fn toRuntimeValueNamed(state: *State, value: anytype, name: []const u8) !run
         try handle.validate(value, state);
         return handle.rawValue(value);
     }
-    if (comptime T == Table or T == Function or T == Coroutine or T == ErrorRef or T == AnyUserdata or userdata_mod.isHandle(T)) {
+    if (comptime T == String or T == Table or T == Function or T == Coroutine or T == ErrorRef or T == AnyUserdata or userdata_mod.isHandle(T)) {
         try handle.validate(value.ref, state);
         return handle.rawValue(value.ref);
     }
@@ -102,7 +104,7 @@ pub fn toRuntimeValueNamed(state: *State, value: anytype, name: []const u8) !run
 
 /// Whether `toRuntimeValue` accepts a `T`; pointers to structs are assumed convertible.
 pub fn canConvert(comptime T: type) bool {
-    if (T == Value or T == Ref or T == Table or T == Function or T == Coroutine or T == ErrorRef or T == AnyUserdata or userdata_mod.isHandle(T)) return true;
+    if (T == Value or T == Ref or T == String or T == Table or T == Function or T == Coroutine or T == ErrorRef or T == AnyUserdata or userdata_mod.isHandle(T)) return true;
     if (decode_mod.hasToLua(T) or decode_mod.isEnumArray(T) or decode_mod.isEnumSet(T)) return true;
     return switch (@typeInfo(T)) {
         .null, .bool, .int, .comptime_int, .float, .comptime_float, .@"enum", .enum_literal, .@"fn", .type => true,
@@ -278,8 +280,19 @@ pub fn fromRuntimeResults(state: *State, results: []const runtime.Value, comptim
 }
 
 pub fn fromRuntimeValue(state: *State, raw: runtime.Value, comptime T: type) !T {
+    return fromRuntime(state, raw, T, false);
+}
+
+/// Like `fromRuntimeValue`, also reading `[]const u8` and `*T` that borrow VM memory. `raw` must
+/// stay reachable while the result is used, as a callback argument does.
+pub fn fromRuntimeBorrowed(state: *State, raw: runtime.Value, comptime T: type) !T {
+    return fromRuntime(state, raw, T, true);
+}
+
+fn fromRuntime(state: *State, raw: runtime.Value, comptime T: type, comptime borrow: bool) !T {
     if (T == Value) return valueFromRuntime(state, raw);
     if (T == Ref) return handle.fromRuntime(state, raw);
+    if (T == String) return if (raw == .string) rooted(String, state, raw) else error.TypeMismatch;
     if (T == Table) return if (raw == .table) rooted(Table, state, raw) else error.TypeMismatch;
     if (T == Function) return if (isFunction(raw)) rooted(Function, state, raw) else error.TypeMismatch;
     if (T == Coroutine) return if (raw == .thread) rooted(Coroutine, state, raw) else error.TypeMismatch;
@@ -311,20 +324,26 @@ pub fn fromRuntimeValue(state: *State, raw: runtime.Value, comptime T: type) !T 
         .optional => |optional| if (raw == .nil)
             null
         else
-            try fromRuntimeValue(state, raw, optional.child),
-        .pointer => |pointer| switch (pointer.size) {
-            .slice => if (pointer.child == u8) switch (raw) {
+            try fromRuntime(state, raw, optional.child, borrow),
+        .pointer => |pointer| if (comptime pointer.size == .slice and pointer.child == u8) {
+            if (!borrow) @compileError("a []const u8 read here can outlive the Lua string; read a zlua.String and call bytes()");
+            return switch (raw) {
                 .string => |value| value.bytes(),
                 else => error.TypeMismatch,
-            } else error.UnsupportedType,
-            .one => if (@typeInfo(pointer.child) == .@"struct") switch (raw) {
+            };
+        } else if (comptime pointer.size == .one and @typeInfo(pointer.child) == .@"struct") {
+            if (!borrow) @compileError("a " ++ @typeName(T) ++ " read here can outlive the userdata; read a zlua.Userdata(" ++ @typeName(pointer.child) ++ ") and call ptr()");
+            return switch (raw) {
                 .userdata => |userdata| userdata_mod.payloadPtr(pointer.child, userdata),
                 else => error.TypeMismatch,
-            } else error.UnsupportedType,
-            else => error.UnsupportedType,
-        },
-        else => error.UnsupportedType,
+            };
+        } else @compileError(unsupportedRead(T)),
+        else => @compileError(unsupportedRead(T)),
     };
+}
+
+fn unsupportedRead(comptime T: type) []const u8 {
+    return @typeName(T) ++ " has no direct Lua conversion; read a zlua.Value and pass it to zlua.decode";
 }
 
 fn valueFromRuntime(state: *State, raw: runtime.Value) !Value {
@@ -333,7 +352,7 @@ fn valueFromRuntime(state: *State, raw: runtime.Value) !Value {
         .boolean => |boolean| .{ .boolean = boolean },
         .integer => |integer| .{ .integer = integer },
         .number => |number| .{ .number = number },
-        .string => |string| .{ .string = string.bytes() },
+        .string => .{ .string = try rooted(String, state, raw) },
         .table => .{ .table = try rooted(Table, state, raw) },
         .userdata => .{ .userdata = try rooted(AnyUserdata, state, raw) },
         .thread => .{ .coroutine = try rooted(Coroutine, state, raw) },
@@ -367,7 +386,7 @@ fn isTupleResult(comptime T: type) bool {
 }
 
 pub fn isOwnedApiValue(comptime T: type) bool {
-    return isTupleResult(T) or T == Value or T == Ref or T == Table or T == Function or T == Coroutine or T == ErrorRef or T == AnyUserdata or userdata_mod.isHandle(T);
+    return isTupleResult(T) or T == Value or T == Ref or T == String or T == Table or T == Function or T == Coroutine or T == ErrorRef or T == AnyUserdata or userdata_mod.isHandle(T);
 }
 
 pub fn deinitIfOwned(comptime T: type, value: *T) void {

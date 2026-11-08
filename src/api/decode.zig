@@ -291,7 +291,7 @@ pub fn Decoder(comptime Context: type) type {
                     if (pointer.size != .slice) @compileError("can't decode " ++ @typeName(T));
                     if (pointer.child == u8) {
                         if (value != .string) return self.fail("expected a string, got {s}", .{value.typeName()});
-                        out.* = try self.allocator.dupe(u8, value.string);
+                        out.* = try self.allocator.dupe(u8, value.string.bytes() catch |err| return self.apiFail(err));
                         return;
                     }
                     const table = try self.sequence(value);
@@ -327,8 +327,9 @@ pub fn Decoder(comptime Context: type) type {
             defer iterator.deinit();
             while (iterator.next() catch |err| return self.apiFail(err)) |entry| {
                 if (entry.key != .string) return self.fail("unexpected {s} key", .{entry.key.typeName()});
-                if (!contains(keys, entry.key.string) and !contains(skip, entry.key.string)) {
-                    return self.fail("unknown field \"{s}\"", .{entry.key.string});
+                const key = entry.key.string.bytes() catch |err| return self.apiFail(err);
+                if (!contains(keys, key) and !contains(skip, key)) {
+                    return self.fail("unknown field \"{s}\"", .{key});
                 }
             }
         }
@@ -384,11 +385,12 @@ pub fn Decoder(comptime Context: type) type {
         fn decodeEnum(self: *Self, comptime T: type, value: Value) DecodeError!T {
             if (!reflection.isExhaustive(@typeInfo(T).@"enum")) @compileError("can't decode the non-exhaustive enum " ++ @typeName(T) ++ " without a hook");
             if (value != .string) return self.fail("expected a name, got {s}", .{value.typeName()});
+            const given = value.string.bytes() catch |err| return self.apiFail(err);
             inline for (comptime reflection.fieldsOf(T)) |name| {
-                const same = if (self.ignore_enum_case) std.ascii.eqlIgnoreCase(name, value.string) else std.mem.eql(u8, name, value.string);
+                const same = if (self.ignore_enum_case) std.ascii.eqlIgnoreCase(name, given) else std.mem.eql(u8, name, given);
                 if (same) return @field(T, name);
             }
-            return self.fail("unknown name \"{s}\"; expected one of {s}", .{ value.string, comptime enumList(T) });
+            return self.fail("unknown name \"{s}\"; expected one of {s}", .{ given, comptime enumList(T) });
         }
 
         fn decodeEnumSet(self: *Self, comptime T: type, value: Value, out: *T) DecodeError!void {

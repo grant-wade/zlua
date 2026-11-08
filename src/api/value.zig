@@ -2,6 +2,7 @@ const convert = @import("convert.zig");
 const AnyUserdata = @import("userdata.zig").AnyUserdata;
 const Coroutine = @import("coroutine.zig").Coroutine;
 const Function = @import("function.zig").Function;
+const String = @import("string.zig").String;
 const Table = @import("table.zig").Table;
 
 /// Dynamic Lua value; handle variants are rooted and released by `deinit`.
@@ -10,9 +11,7 @@ pub const Value = union(enum) {
     boolean: bool,
     integer: i64,
     number: f64,
-    /// Borrowed, unrooted VM bytes, valid while Lua can reach the string. Once unreachable, any
-    /// GC-capable call may free them; `deinit` and `reset` always do. Copy or use `Ref` to keep.
-    string: []const u8,
+    string: String,
     table: Table,
     function: Function,
     coroutine: Coroutine,
@@ -20,6 +19,7 @@ pub const Value = union(enum) {
 
     pub fn deinit(self: *Value) void {
         switch (self.*) {
+            .string => |*string| string.deinit(),
             .table => |*table| table.deinit(),
             .function => |*function| function.deinit(),
             .userdata => |*userdata| userdata.deinit(),

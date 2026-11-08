@@ -97,6 +97,7 @@
 - [api.context](../api/context.md)
 - [api.decode](../api/decode.md)
 - [api.coroutine](../api/coroutine.md)
+- [api.string](../api/string.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
 - [api.namespace](../api/namespace.md)
@@ -151,7 +152,6 @@
 - [BytecodeLoadOptions](#type-bytecodeloadoptions)
 - [BytecodeDumpOptions](#type-bytecodedumpoptions)
 - [TableOptions](#type-tableoptions)
-- [GcBudget](#type-gcbudget)
 - [GcStepResult](#type-gcstepresult)
 
 ## Aliases
@@ -160,7 +160,6 @@
 - [GcMode](#alias-gcmode)
 - [GcParam](#alias-gcparam)
 - [GcParams](#alias-gcparams)
-- [DoOptions](#alias-dooptions)
 
 <a id="alias-libraryset"></a>
 
@@ -329,8 +328,6 @@ pub const DebugOptions = struct {
     /// Richer internal error diagnostics.
     errors: bool = false,
     trace_vm: bool = false,
-    /// Keep Lua output in `raw_state.stdout` and `raw_state.stderr`, for test harnesses.
-    capture_output: bool = false,
 };
 ```
 
@@ -376,16 +373,6 @@ pub const LoadOptions = struct {
 };
 ```
 
-<a id="alias-dooptions"></a>
-
-## DoOptions
-
-```zig
-pub const DoOptions = LoadOptions;
-```
-
-References: [`LoadOptions`](#type-loadoptions)
-
 <a id="type-bytecodeloadoptions"></a>
 
 ## BytecodeLoadOptions
@@ -415,17 +402,6 @@ pub const BytecodeDumpOptions = struct {
 pub const TableOptions = struct {
     array_hint: u32 = 0,
     hash_hint: u32 = 0,
-};
-```
-
-<a id="type-gcbudget"></a>
-
-## GcBudget
-
-```zig
-pub const GcBudget = struct {
-    /// Maximum basic steps; zero requests one.
-    steps: usize = 0,
 };
 ```
 

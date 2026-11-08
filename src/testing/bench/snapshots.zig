@@ -22,9 +22,8 @@ fn initializeSnapshotWorkload(allocator: std.mem.Allocator, workload: SnapshotWo
         .no_op_large, .sparse, .dense, .gc => try lua.doString("data = {}; for i=1,10000 do data[i] = {value=i} end", .{}),
         .large_table => try lua.doString("data = {}; for i=1,100000 do data[i] = i end", .{}),
         .resources, .scoped_resources => {
-            var resource = try lua.newUserdata(Resource, .{}, .{ .snapshot = .{ .copy = Resource.copy, .dispose = Resource.dispose, .tracking = if (workload == .scoped_resources) .scoped else .eager } });
+            var resource = try lua.newUserdataAuto(Resource, .{}, .{ .snapshot = .{ .copy = Resource.copy, .dispose = Resource.dispose, .tracking = if (workload == .scoped_resources) .scoped else .eager } });
             defer resource.deinit();
-            try resource.method("increment", Resource.increment);
             try lua.setGlobal("resource", resource);
         },
         .callbacks => {
@@ -98,7 +97,7 @@ const Resource = struct {
     fn dispose(a: std.mem.Allocator, self: *Resource) void {
         a.destroy(self);
     }
-    fn increment(self: *Resource) void {
+    pub fn increment(self: *Resource) void {
         self.value += 1;
     }
 };

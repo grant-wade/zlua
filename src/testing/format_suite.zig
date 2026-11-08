@@ -200,9 +200,12 @@ const Suite = struct {
     }
 
     fn encode(self: *Suite, function: api.Function, args: anytype) !Encoded {
-        var result = try function.protectedCall(args, []const u8);
+        var result = try function.protectedCall(args, api.String);
         switch (result) {
-            .ok => |bytes| return .{ .ok = try self.arena.allocator().dupe(u8, bytes) },
+            .ok => |*string| {
+                defer string.deinit();
+                return .{ .ok = try self.arena.allocator().dupe(u8, try string.bytes()) };
+            },
             .lua_error => |*err| {
                 defer err.deinit();
                 const message = try err.message();

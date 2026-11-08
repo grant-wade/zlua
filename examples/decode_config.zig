@@ -49,7 +49,7 @@ pub fn main() !void {
         \\return pcall(report, { kind = "bow", might = 1.5 })
     , .{ .name = "=checked" });
     defer checked.deinit();
-    var result = try checked.call(.{}, zlua.Tuple(&.{ bool, []const u8 }));
+    var result = try checked.call(.{}, zlua.Tuple(&.{ bool, zlua.String }));
     defer result.deinit();
-    std.debug.print("accepted: {}, {s}\n", .{ result.get(0), result.get(1) });
+    std.debug.print("accepted: {}, {s}\n", .{ result.get(0), try result.get(1).bytes() });
 }

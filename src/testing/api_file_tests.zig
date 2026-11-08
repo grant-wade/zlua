@@ -178,7 +178,9 @@ test "os.tmpname reserves unique names inside sandboxed filesystems" {
         var lua = try api.State.init(a, .{ .stdlib = .full, .capabilities = .{ .filesystem = .{ .memory_rw = &filesystem } } });
         defer lua.deinit();
         try lua.doString("kept = os.tmpname()", .{});
-        const kept = try lua.getGlobal("kept", []const u8);
+        var kept_string = try lua.getGlobal("kept", api.String);
+        defer kept_string.deinit();
+        const kept = try kept_string.bytes();
         try std.testing.expectEqual(@as(usize, 0), (try filesystem.statPath(kept)).size);
         try lua.doString("assert(os.remove(kept))", .{});
         try lua.doString(script, .{ .name = "=memory_rw" });
@@ -482,7 +484,7 @@ test "deinit finalizers run collected tables first and respect limits and interr
             \\keep = setmetatable({}, {__gc = function() log('kept') end})
             \\setmetatable({}, {__gc = function() log('separated') end})
         , .{});
-        while (lua.raw_state.gc.phase != .finalize) _ = try lua.stepGc(.{});
+        while (lua.raw_state.gc.phase != .finalize) _ = try lua.stepGc(1);
         try std.testing.expect(lua.raw_state.table_pending_finalizers.items.len != 0);
         try lua.doString("late = setmetatable({}, {__gc = function() log('late') end})", .{});
     }

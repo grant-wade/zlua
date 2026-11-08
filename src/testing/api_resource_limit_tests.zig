@@ -248,11 +248,11 @@ test "api stack value limit catches coroutine recursion" {
     , .{ .name = "=api-stack-limit-coroutine-recursion" });
     defer chunk.deinit();
 
-    const Result = Tuple(&.{ bool, []const u8, []const u8 });
+    const Result = Tuple(&.{ bool, api.String, api.String });
     var result = try chunk.call(.{}, Result);
     defer result.deinit();
     try std.testing.expectEqual(false, result.get(0));
-    try std.testing.expectEqualStrings("dead", result.get(2));
+    try std.testing.expectEqualStrings("dead", try result.get(2).bytes());
 }
 
 test "api call frame limit catches coroutine recursion" {
@@ -274,12 +274,12 @@ test "api call frame limit catches coroutine recursion" {
     , .{ .name = "=api-call-frame-limit-coroutine-recursion" });
     defer chunk.deinit();
 
-    const Result = Tuple(&.{ bool, []const u8, []const u8 });
+    const Result = Tuple(&.{ bool, api.String, api.String });
     var result = try chunk.call(.{}, Result);
     defer result.deinit();
     try std.testing.expectEqual(false, result.get(0));
-    try std.testing.expect(std.mem.indexOf(u8, result.get(1), "stack overflow") != null);
-    try std.testing.expectEqualStrings("dead", result.get(2));
+    try std.testing.expect(std.mem.indexOf(u8, try result.get(1).bytes(), "stack overflow") != null);
+    try std.testing.expectEqualStrings("dead", try result.get(2).bytes());
 }
 
 test "api stack value limit catches host callback reentry" {
@@ -441,9 +441,9 @@ test "api memory limit applies to captured output buffers" {
     var lua = try State.init(std.testing.allocator, .{
         .stdlib = .base,
         .limits = .{ .max_memory = 400 * 1024 },
-        .debug = .{ .capture_output = true },
     });
     defer lua.deinit();
+    lua.raw_state.options.capture_output = true;
 
     var chunk = try lua.loadString(source.items, .{ .name = "=api-memory-output-limit" });
     defer chunk.deinit();

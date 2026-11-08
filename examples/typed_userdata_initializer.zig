@@ -4,17 +4,14 @@ const zlua = @import("zlua");
 const Budget = struct {
     remaining: i64,
 
-    fn spend(self: *@This(), amount: i64) i64 {
+    pub fn spend(self: *@This(), amount: i64) i64 {
         self.remaining = @max(self.remaining - amount, 0);
         return self.remaining;
     }
 };
 
 fn newBudget(ctx: *zlua.Context, amount: i64) !zlua.Userdata(Budget) {
-    var budget = try ctx.state().newUserdata(Budget, .{ .remaining = amount }, .{});
-    errdefer budget.deinit();
-    try budget.method("spend", Budget.spend);
-    return budget;
+    return ctx.state().newUserdataAuto(Budget, .{ .remaining = amount }, .{});
 }
 
 pub fn main(init: std.process.Init) !void {

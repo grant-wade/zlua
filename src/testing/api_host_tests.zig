@@ -1,5 +1,6 @@
 const std = @import("std");
 const api = @import("../api.zig");
+const expectString = @import("api_expect.zig").expectString;
 const runtime = @import("../runtime.zig");
 const a = std.testing.allocator;
 
@@ -71,18 +72,12 @@ test "shared userdata metatables equality raw table traversal and host type chec
     try std.testing.expectEqual(try data.identity(), try alias.identity());
     var actual_meta = (try data.getMetatable()).?;
     defer actual_meta.deinit();
-    try std.testing.expectEqualStrings("hidden", try actual_meta.get("__metatable", []const u8));
+    try expectString("hidden", actual_meta.get("__metatable", api.String));
     try std.testing.expect((try data.rawGet("absent", ?bool)) == null);
-    var key: api.Value = .nil;
-    defer key.deinit();
+    var iterator = try data.rawIterator();
+    defer iterator.deinit();
     var count: usize = 0;
-    while (try data.rawNext(key)) |entry_value| {
-        var entry = entry_value;
-        key.deinit();
-        key = entry.key;
-        defer entry.value.deinit();
-        count += 1;
-    }
+    while (try iterator.next()) |_| count += 1;
     try std.testing.expectEqual(3, count);
     var any = try lua.getGlobal("x", api.AnyUserdata);
     defer any.deinit();
@@ -105,14 +100,14 @@ test "inline and spilled callback results remain rooted across GC and nested cal
                 try ctx.pushReturn(table);
                 table.deinit();
                 if (ctx.state().raw_state.gc.stress_step) {
-                    _ = try ctx.state().stepGc(.{});
+                    _ = try ctx.state().stepGc(1);
                 } else try ctx.state().collect();
             }
             var callback = try ctx.arg(1, api.Function);
             defer callback.deinit();
             try ctx.callNonYielding(callback, .{}, void);
             if (ctx.state().raw_state.gc.stress_step) {
-                _ = try ctx.state().stepGc(.{});
+                _ = try ctx.state().stepGc(1);
             } else try ctx.state().collect();
         }
     };
@@ -365,7 +360,7 @@ test "deinit calls each queued userdata __gc once" {
         }
         try runLua(&lua, "meta = nil");
         lua.restartGc();
-        while (try lua.getGlobal("ran", i64) == 0) _ = try lua.stepGc(.{});
+        while (try lua.getGlobal("ran", i64) == 0) _ = try lua.stepGc(1);
     }
     try std.testing.expectEqualStrings("gc\t4\ngc\t3\ngc\t2\ngc\t1\n", stdout.buffered());
 }

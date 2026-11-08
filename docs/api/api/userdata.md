@@ -97,6 +97,7 @@
 - [api.context](../api/context.md)
 - [api.decode](../api/decode.md)
 - [api.coroutine](../api/coroutine.md)
+- [api.string](../api/string.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
 - [api.namespace](../api/namespace.md)
@@ -136,6 +137,7 @@
 - [UserdataPtrOptions](#fn-userdataptroptions)
 - [UserdataSnapshotHooks](#fn-userdatasnapshothooks)
 - [Userdata](#fn-userdata)
+- [bindMethods](#fn-bindmethods)
 - [define](#fn-define)
 - [isDefined](#fn-isdefined)
 - [definedName](#fn-definedname)
@@ -250,6 +252,14 @@ pub fn as(self: AnyUserdata, comptime T: type) !Userdata(T)
 ```
 
 References: [`AnyUserdata`](#type-anyuserdata)
+
+<a id="fn-bindmethods"></a>
+
+## bindMethods
+
+```zig
+pub fn bindMethods(comptime T: type, userdata: Userdata(T), comptime Source: type) !void
+```
 
 <a id="fn-define"></a>
 

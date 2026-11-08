@@ -97,6 +97,7 @@
 - [api.context](../api/context.md)
 - [api.decode](../api/decode.md)
 - [api.coroutine](../api/coroutine.md)
+- [api.string](../api/string.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
 - [api.namespace](../api/namespace.md)
@@ -150,9 +151,7 @@ pub const Value = union(enum) {
     boolean: bool,
     integer: i64,
     number: f64,
-    /// Borrowed, unrooted VM bytes, valid while Lua can reach the string. Once unreachable, any
-    /// GC-capable call may free them; `deinit` and `reset` always do. Copy or use `Ref` to keep.
-    string: []const u8,
+    string: String,
     table: Table,
     function: Function,
     coroutine: Coroutine,

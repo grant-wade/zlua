@@ -3,7 +3,7 @@
 ## Navigation
 
 - [API Index](README.md)
-- Submodules: [api.analyze](api/analyze.md), [api.callbacks](api/callbacks.md), [api.convert](api/convert.md), [api.errors](api/errors.md), [api.handle](api/handle.md), [api.state](api/state.md), [api.capabilities](api/capabilities.md), [api.options](api/options.md), [api.function](api/function.md), [api.table](api/table.md), [api.value](api/value.md), [api.userdata](api/userdata.md), [api.context](api/context.md), [api.decode](api/decode.md), [api.coroutine](api/coroutine.md), [api.snapshot](api/snapshot.md), [api.memory_limit](api/memory_limit.md), [api.namespace](api/namespace.md)
+- Submodules: [api.analyze](api/analyze.md), [api.callbacks](api/callbacks.md), [api.convert](api/convert.md), [api.errors](api/errors.md), [api.handle](api/handle.md), [api.state](api/state.md), [api.capabilities](api/capabilities.md), [api.options](api/options.md), [api.function](api/function.md), [api.table](api/table.md), [api.value](api/value.md), [api.userdata](api/userdata.md), [api.context](api/context.md), [api.decode](api/decode.md), [api.coroutine](api/coroutine.md), [api.string](api/string.md), [api.snapshot](api/snapshot.md), [api.memory_limit](api/memory_limit.md), [api.namespace](api/namespace.md)
 
 <details>
 <summary>All documents</summary>
@@ -97,6 +97,7 @@
 - [api.context](api/context.md)
 - [api.decode](api/decode.md)
 - [api.coroutine](api/coroutine.md)
+- [api.string](api/string.md)
 - [api.snapshot](api/snapshot.md)
 - [api.memory_limit](api/memory_limit.md)
 - [api.namespace](api/namespace.md)
@@ -135,8 +136,8 @@
 Zig-native embedding API for zlua: a Lua 5.5 state driven with Zig values,
 explicit host capabilities, rooted handles, and Zig errors.
 
-Rooted handles (`Table`, `Function`, `Coroutine`, `Ref`, `Userdata(T)`, `AnyUserdata`,
-`ErrorRef`, and `Value`s holding them) must be released with `deinit`. `State.reset`
+Rooted handles (`String`, `Table`, `Function`, `Coroutine`, `Ref`, `Userdata(T)`,
+`AnyUserdata`, `ErrorRef`, and `Value`s holding them) must be released with `deinit`. `State.reset`
 invalidates prior handles and borrowed VM slices. The `runtime` module is internal.
 See `docs/embedding.md` for capabilities, error handling, snapshots, and ownership.
 
@@ -165,11 +166,9 @@ See `docs/embedding.md` for capabilities, error handling, snapshots, and ownersh
 - [Options](#alias-options)
 - [LoadMode](#alias-loadmode)
 - [LoadOptions](#alias-loadoptions)
-- [DoOptions](#alias-dooptions)
 - [BytecodeLoadOptions](#alias-bytecodeloadoptions)
 - [BytecodeDumpOptions](#alias-bytecodedumpoptions)
 - [TableOptions](#alias-tableoptions)
-- [GcBudget](#alias-gcbudget)
 - [GcStepResult](#alias-gcstepresult)
 - [MemoryFile](#alias-memoryfile)
 - [MemoryFilesystem](#alias-memoryfilesystem)
@@ -199,6 +198,7 @@ See `docs/embedding.md` for capabilities, error handling, snapshots, and ownersh
 - [Value](#alias-value)
 - [Tuple](#alias-tuple)
 - [Ref](#alias-ref)
+- [String](#alias-string)
 - [HandleScope](#alias-handlescope)
 - [Table](#alias-table)
 - [Function](#alias-function)
@@ -458,16 +458,6 @@ pub const LoadOptions = options.LoadOptions;
 
 References: [`options.LoadOptions`](api/options.md#type-loadoptions)
 
-<a id="alias-dooptions"></a>
-
-## DoOptions
-
-```zig
-pub const DoOptions = options.DoOptions;
-```
-
-References: [`options.DoOptions`](api/options.md#alias-dooptions)
-
 <a id="alias-bytecodeloadoptions"></a>
 
 ## BytecodeLoadOptions
@@ -497,16 +487,6 @@ pub const TableOptions = options.TableOptions;
 ```
 
 References: [`options.TableOptions`](api/options.md#type-tableoptions)
-
-<a id="alias-gcbudget"></a>
-
-## GcBudget
-
-```zig
-pub const GcBudget = options.GcBudget;
-```
-
-References: [`options.GcBudget`](api/options.md#type-gcbudget)
 
 <a id="alias-gcstepresult"></a>
 
@@ -797,6 +777,16 @@ pub const Ref = handle.Ref;
 ```
 
 References: [`handle.Ref`](api/handle.md#type-ref)
+
+<a id="alias-string"></a>
+
+## String
+
+```zig
+pub const String = string.String;
+```
+
+References: [`string.String`](api/string.md#type-string)
 
 <a id="alias-handlescope"></a>
 

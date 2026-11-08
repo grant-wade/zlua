@@ -25,6 +25,7 @@ pub fn main() !void {
     var cached = try runner.loadBytecode(bytecode, .{ .environment = env });
     defer cached.deinit();
 
-    const message = try cached.call(.{"bytecode"}, []const u8);
-    std.debug.print("{s}\n", .{message});
+    var message = try cached.call(.{"bytecode"}, zlua.String);
+    defer message.deinit();
+    std.debug.print("{s}\n", .{try message.bytes()});
 }

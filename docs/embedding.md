@@ -22,7 +22,7 @@ This guide covers each feature's main use and its rules. The
   - [Finding Globals](#finding-globals)
   - [Binary Chunks](#binary-chunks)
 - [Values and Handles](#values-and-handles)
-  - [Borrowed Strings](#borrowed-strings)
+  - [Strings](#strings)
 - [Tables and Modules](#tables-and-modules)
   - [Globals and Tables from Structs](#globals-and-tables-from-structs)
   - [Zig Namespaces](#zig-namespaces)
@@ -273,12 +273,12 @@ var lua = try zlua.State.init(allocator, .{
 defer lua.deinit();
 
 // Between requests or frames:
-_ = try lua.stepGc(.{ .steps = 1 });
+_ = try lua.stepGc(1);
 ```
 
 | Call | Effect |
 | --- | --- |
-| `stepGc(.{ .steps = n })` | Runs up to `n` steps (zero means one). Returns `.complete` when a major cycle finishes and `.pending` otherwise. Steps bound work, not elapsed time. |
+| `stepGc(n)` | Runs up to `n` steps, and at least one. Returns `.complete` when a major cycle finishes and `.pending` otherwise. Steps bound work, not elapsed time. |
 | `collect()` | Finishes a full collection, including pending finalizers. |
 | `stopGc()`, `restartGc()`, `isGcRunning()` | Control automatic collection. `collect` and `stepGc` work while it is stopped. |
 | `setGcMode`, `gcMode` | Set or read the mode. The setter returns the previous mode. |
@@ -308,7 +308,8 @@ var greet = try lua.loadString(
 );
 defer greet.deinit();
 
-const message = try greet.call(.{"host"}, []const u8);
+var message = try greet.call(.{"host"}, zlua.String);
+defer message.deinit();
 ```
 
 Load options set the chunk's `_ENV` table with `.environment`, and the accepted
@@ -376,7 +377,7 @@ Zig values convert to Lua automatically:
 | enum | its name |
 | function | function, called like a [typed callback](#typed-callbacks) |
 | struct type | table of its [public declarations](#zig-namespaces) |
-| `Table`, `Function`, `Ref`, `Value`, `Userdata(T)` | existing Lua value |
+| `String`, `Table`, `Function`, `Ref`, `Value`, `Userdata(T)` | existing Lua value |
 
 Reads name the type they want. `zlua.Tuple` holds multiple return values, and
 `zlua.Value` holds a value of unknown type:
@@ -385,18 +386,18 @@ Reads name the type they want. `zlua.Tuple` holds multiple return values, and
 try lua.setGlobal("answer", 42);
 const answer = try lua.getGlobal("answer", i64);
 
-const Result = zlua.Tuple(&.{ bool, i64, []const u8 });
+const Result = zlua.Tuple(&.{ bool, i64, zlua.String });
 var result = try chunk.call(.{}, Result);
 defer result.deinit();
 ```
 
 `Tuple.get` and `.values` read a tuple's elements, and `Value.typeName` returns
-the name Lua's `type` gives a value. Reads of enums, structs, and non-byte
-slices return `error.UnsupportedType`; use [`decode`](#decoding-tables).
+the name Lua's `type` gives a value. Reading an enum, struct, or non-byte slice
+is a compile error; read a `Value` and pass it to [`decode`](#decoding-tables).
 
-`Table`, `Function`, `Coroutine`, `Ref`, userdata, and `ErrorRef` handles each
-own a registry root, as do values and tuples containing them. Call `deinit` on
-each one. Assigning a handle into Lua does not consume your root.
+`String`, `Table`, `Function`, `Coroutine`, `Ref`, userdata, and `ErrorRef`
+handles each own a registry root, as do values and tuples containing them. Call
+`deinit` on each one. Assigning a handle into Lua does not consume your root.
 
 `handleScope` releases every handle created until its `end`, except those passed
 to `keep`:
@@ -409,16 +410,21 @@ const players = try config.get("players", zlua.Table);
 return scope.keep(players); // the caller deinits it
 ```
 
-### Borrowed Strings
+### Strings
 
-A `[]const u8` read from Lua (through `getGlobal`, `Table.get`, `Function.call`,
-`Context.arg`, and similar) points into Lua memory. It stays valid while Lua
-references the string. Once nothing does, any call that may collect garbage can
-free it. Callback arguments stay valid until the callback returns, and `deinit`
-and `reset` invalidate every borrowed slice.
+Strings read from Lua are `zlua.String` handles, including `Value.string`.
+`bytes()` returns the string's bytes, valid until the handle's `deinit` or a
+`reset`:
 
-To keep a string, copy it, or read it as a `Ref` and get it back with
-`ref.value()`.
+```zig
+var title = try config.get("title", zlua.String);
+defer title.deinit();
+std.debug.print("{s}\n", .{try title.bytes()});
+```
+
+Callback arguments can also be read as `[]const u8`, and userdata arguments as
+`*T`. These point into Lua memory and stay valid until the callback returns.
+Reading either type anywhere else is a compile error.
 
 ## Tables and Modules
 
@@ -443,14 +449,13 @@ try lua.setGlobal("config", config);
 
 `toSlice(T, allocator)` copies the raw sequence `1..rawLen()` into an allocated
 slice. A hole or an element of the wrong type returns `error.TypeMismatch`, and
-`?T` allows holes. Deinitialize handle elements, and treat string elements as
-[borrowed](#borrowed-strings).
+`?T` allows holes. Deinitialize handle elements.
 
 ```zig
 var it = try inventory.pairs();
 defer it.deinit();
 while (try it.next()) |entry| {
-    std.debug.print("{s} = {d}\n", .{ entry.key.string, entry.value.integer });
+    std.debug.print("{s} = {d}\n", .{ try entry.key.string.bytes(), entry.value.integer });
 }
 ```
 
@@ -543,8 +548,8 @@ pub const lua = .{
 | `require(name, T)` | Calls Lua's `require` and converts the result to `T`. |
 
 ```zig
-fn openHost(ctx: *zlua.Context, name: []const u8) !zlua.Table {
-    var module = try ctx.state().createModule(name);
+fn openHost(ctx: *zlua.Context) !zlua.Table {
+    var module = try ctx.state().createTable(.{});
     errdefer module.deinit();
     try module.set("version", 1);
     return module; // released after conversion
@@ -776,11 +781,11 @@ var story = try lua.newCoroutine(chunk);
 defer story.deinit();
 
 while (try story.status() == .suspended) {
-    var step = try story.resumeCoroutine(.{}, []const u8, []const u8);
+    var step = try story.resumeCoroutine(.{}, zlua.String, zlua.String);
     defer step.deinit();
     switch (step) {
-        .yielded => |text| std.debug.print("yielded: {s}\n", .{text}),
-        .returned => |text| std.debug.print("returned: {s}\n", .{text}),
+        .yielded => |text| std.debug.print("yielded: {s}\n", .{try text.bytes()}),
+        .returned => |text| std.debug.print("returned: {s}\n", .{try text.bytes()}),
     }
 }
 ```
@@ -791,8 +796,7 @@ while (try story.status() == .suspended) {
   value, and `protectedResumeWith` takes `ResumeOptions` for `.traceback` and
   `.max_instructions`.
 - `switch` on the result. The inactive field is undefined.
-- `deinit` each result to release its handles. Its strings are
-  [borrowed](#borrowed-strings).
+- `deinit` each result to release its handles.
 - A conversion error leaves the coroutine wherever Lua stopped, and side effects
   stay.
 - A coroutine handle's `deinit` only drops the handle. To abandon a suspended
@@ -827,21 +831,21 @@ or library callbacks such as `table.sort`, `string.gsub`, `load` readers,
 ## Userdata
 
 `newUserdata` stores a Zig value that Lua owns, and `newUserdataPtr` wraps
-storage the host owns. `method` installs a method:
+storage the host owns. `newUserdataAuto` and `newUserdataPtrAuto` also bind the
+public methods of `T`:
 
 ```zig
 const Counter = struct {
     value: i64,
 
-    fn inc(self: *@This(), amount: i64) i64 {
+    pub fn inc(self: *@This(), amount: i64) i64 {
         self.value += amount;
         return self.value;
     }
 };
 
-var counter = try lua.newUserdata(Counter, .{ .value = 0 }, .{});
+var counter = try lua.newUserdataAuto(Counter, .{ .value = 0 }, .{});
 defer counter.deinit();
-try counter.method("inc", Counter.inc);
 try lua.setGlobal("counter", counter);
 ```
 
@@ -853,15 +857,15 @@ type and returns another rooted handle.
 | --- | --- |
 | `.finalizer` | Runs with the payload and the state's allocator: before storage is freed for Lua-owned userdata, and when the wrapper is finalized for host-owned storage. |
 | `.external_bytes`, `setExternalBytes` | Report host storage the payload keeps alive to the collector. These bytes do not count against `max_memory`. |
-| `.metatable` | Uses your own metatable. Install its methods before sharing it. If construction fails, the host still finalizes the value. |
+| `.metatable` | Uses your own metatable. `newUserdataAuto` installs `T`'s methods on it. If construction fails, the host still finalizes the value. |
 | `.snapshot` | Copy hooks; see [Userdata Payloads](snapshots.md#userdata-payloads). |
 
 A `__gc` metamethod runs before the host finalizer and the deinit hook. A `__gc`
-bound through `metamethod`, `bindMethods`, or `defineUserdata` runs at most once
-per object, after which typed access to the object fails with `userdata is
-closed` in Lua and `error.UserdataClosed` in Zig. Equality uses `__eq`, and
-`rawequal` compares wrapper identity. Zig fields are not enumerated
-automatically; define `__pairs` for custom iteration, or `__index` for `ipairs`.
+method of `T` runs at most once per object, after which typed access to the
+object fails with `userdata is closed` in Lua and `error.UserdataClosed` in Zig.
+Equality uses `__eq`, and `rawequal` compares wrapper identity. Zig fields are
+not enumerated automatically; define `__pairs` for custom iteration, or
+`__index` for `ipairs`.
 
 `getmetatable` returns false for userdata whose metatable zlua created. Set
 `UserdataType.expose_metatable` to return the metatable instead.
@@ -894,10 +898,8 @@ functions whose first parameter is `*T` or `*const T` become methods on
 `registerUserdataInitializerWith` creates a typed Lua constructor that returns
 auto-bound userdata.
 
-Without a definition, `newUserdata` gives each value its own metatable.
-`method`, `metamethod`, and `bindMethods` change that metatable, or the shared
-one when the type is defined. Each installed method adds a callback that lasts
-as long as the state.
+Without a definition, `newUserdata` gives each value its own metatable with no
+methods.
 
 ## Snapshots
 
@@ -914,10 +916,10 @@ try worker.doString("results = {42}", .{});
 try worker.reset();
 ```
 
-A reset invalidates earlier handles and borrowed slices. Separately retained
-`Snapshot` handles can create workers concurrently, and each `State` needs
-external serialization. See [Snapshots](snapshots.md) for baselines, threads,
-lifetimes, allocators, and userdata payloads.
+A reset invalidates earlier handles. Separately retained `Snapshot` handles can
+create workers concurrently, and each `State` needs external serialization. See
+[Snapshots](snapshots.md) for baselines, threads, lifetimes, allocators, and
+userdata payloads.
 
 ## Limitations
 

@@ -93,6 +93,7 @@ Generated Markdown API documentation.
 - [api.context](api/context.md)
 - [api.decode](api/decode.md)
 - [api.coroutine](api/coroutine.md)
+- [api.string](api/string.md)
 - [api.snapshot](api/snapshot.md)
 - [api.memory_limit](api/memory_limit.md)
 - [api.namespace](api/namespace.md)

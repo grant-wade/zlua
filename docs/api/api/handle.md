@@ -97,6 +97,7 @@
 - [api.context](../api/context.md)
 - [api.decode](../api/decode.md)
 - [api.coroutine](../api/coroutine.md)
+- [api.string](../api/string.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
 - [api.namespace](../api/namespace.md)
@@ -146,7 +147,7 @@
 
 ## Ref
 
-Rooted handle to any Lua value; unlike `Value.string`, keeps string bytes alive.
+Rooted handle to any Lua value.
 
 ```zig
 pub const Ref = struct {

@@ -97,6 +97,7 @@
 - [api.context](../api/context.md)
 - [api.decode](../api/decode.md)
 - [api.coroutine](../api/coroutine.md)
+- [api.string](../api/string.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
 - [api.namespace](../api/namespace.md)
@@ -152,7 +153,7 @@ pub const Function = struct {
 | Name | Parameters | Return Type | Description |
 | --- | --- | --- | --- |
 | [deinit](#fn-function-deinit) | `self: *Function` | `void` |  |
-| [call](#fn-function-call) | `self: Function, args: anytype, comptime R: type` | `!R` | Converts the first result, or a &#96;Tuple&#96;, to &#96;R&#96;; Lua failures return &#96;error.LuaError&#96;. &#96;[]const u8&#96; results borrow VM memory; see &#96;Value.string&#96;. |
+| [call](#fn-function-call) | `self: Function, args: anytype, comptime R: type` | `!R` | Converts the first result, or a &#96;Tuple&#96;, to &#96;R&#96;; Lua failures return &#96;error.LuaError&#96;. |
 | [callWith](#fn-function-callwith) | `self: Function, args: anytype, comptime R: type, options: CallOptions` | `!R` | &#96;call&#96; with &#96;CallOptions&#96;; on &#96;error.LuaError&#96; the handled error value and traceback are kept on the state. |
 | [protectedCall](#fn-function-protectedcall) | `self: Function, args: anytype, comptime R: type` | `!CallResult(R)` | Like &#96;call&#96;, but returns Lua failures as &#96;CallResult.lua_error&#96;. |
 | [protectedCallWith](#fn-function-protectedcallwith) | `self: Function, args: anytype, comptime R: type, options: CallOptions` | `!CallResult(R)` | &#96;protectedCall&#96; with &#96;CallOptions&#96;; a captured traceback is owned by the &#96;ErrorRef&#96;. |
@@ -173,7 +174,6 @@ References: [`Function`](#type-function)
 ### Function.call
 
 Converts the first result, or a `Tuple`, to `R`; Lua failures return `error.LuaError`.
-`[]const u8` results borrow VM memory; see `Value.string`.
 
 ```zig
 pub fn call(self: Function, args: anytype, comptime R: type) !R

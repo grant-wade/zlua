@@ -25,9 +25,10 @@ fn run(init: std.process.Init) !u8 {
             .process = .enabled,
             .clock = .system,
         },
-        .debug = .{ .errors = debug, .capture_output = true },
+        .debug = .{ .errors = debug },
     });
     defer baseline.deinit();
+    baseline.raw_state.options.capture_output = true;
     const arg_value = try baseline.raw_state.newTableWithHints(@intCast(args.len), 0);
     for (args, 0..) |arg, index| {
         const key = @as(i64, @intCast(index)) - @as(i64, @intCast(script_index));

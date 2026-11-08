@@ -20,11 +20,11 @@ pub fn main() !void {
     defer story.deinit();
 
     while (try story.status() == .suspended) {
-        var step = try story.resumeCoroutine(.{}, []const u8, []const u8);
+        var step = try story.resumeCoroutine(.{}, zlua.String, zlua.String);
         defer step.deinit();
         switch (step) {
-            .yielded => |text| std.debug.print("yielded: {s}\n", .{text}),
-            .returned => |text| std.debug.print("returned: {s}\n", .{text}),
+            .yielded => |text| std.debug.print("yielded: {s}\n", .{try text.bytes()}),
+            .returned => |text| std.debug.print("returned: {s}\n", .{try text.bytes()}),
         }
     }
 
@@ -38,17 +38,17 @@ pub fn main() !void {
     defer dialogue.deinit();
     var exchange = try lua.newCoroutine(dialogue);
     defer exchange.deinit();
-    var prompt = try exchange.resumeCoroutine(.{}, []const u8, []const u8);
+    var prompt = try exchange.resumeCoroutine(.{}, zlua.String, zlua.String);
     defer prompt.deinit();
     const question = switch (prompt) {
-        .yielded => |text| text,
+        .yielded => |text| try text.bytes(),
         .returned => return error.ExpectedPrompt,
     };
     std.debug.print("{s}\n", .{question});
-    var answer = try exchange.resumeCoroutine(.{"yes"}, []const u8, []const u8);
+    var answer = try exchange.resumeCoroutine(.{"yes"}, zlua.String, zlua.String);
     defer answer.deinit();
     switch (answer) {
-        .returned => |text| std.debug.print("{s}\n", .{text}),
+        .returned => |text| std.debug.print("{s}\n", .{try text.bytes()}),
         .yielded => return error.ExpectedReturn,
     }
 }

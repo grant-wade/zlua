@@ -24,6 +24,7 @@ pub fn main(init: std.process.Init) !void {
 
     var greet = try lua.getGlobal("greet", zlua.Function);
     defer greet.deinit();
-    const message = try greet.call(.{"zlua"}, []const u8);
-    std.debug.print("{s}\n", .{message});
+    var message = try greet.call(.{"zlua"}, zlua.String);
+    defer message.deinit();
+    std.debug.print("{s}\n", .{try message.bytes()});
 }

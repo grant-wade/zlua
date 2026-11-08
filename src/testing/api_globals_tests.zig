@@ -1,5 +1,6 @@
 const std = @import("std");
 const api = @import("../api.zig");
+const expectString = @import("api_expect.zig").expectString;
 const a = std.testing.allocator;
 
 fn add(x: i64, y: i64) i64 {
@@ -233,7 +234,7 @@ test "a struct type converts to a table of its exported public declarations" {
 
     var kinds = try lua.createTableFrom(Api.Kind);
     defer kinds.deinit();
-    try std.testing.expectEqualStrings("sword", try kinds.get("sword", []const u8));
+    try expectString("sword", kinds.get("sword", api.String));
 }
 
 const Left = struct {

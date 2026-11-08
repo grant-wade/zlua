@@ -97,6 +97,7 @@
 - [api.context](../api/context.md)
 - [api.decode](../api/decode.md)
 - [api.coroutine](../api/coroutine.md)
+- [api.string](../api/string.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
 - [api.namespace](../api/namespace.md)
@@ -184,6 +185,8 @@ pub fn bindDispatch(state: *State) void
 
 ## create
 
+A function for the callback entry of `callback` under `name`, adding the entry if there is none.
+
 ```zig
 pub fn create(state: *State, name: []const u8, callback: HostFn) !Function
 ```
@@ -194,7 +197,7 @@ References: [`HostFn`](#const-hostfn)
 
 ## intern
 
-The id of the callback entry for `callback`, registering it under `name` if there is none.
+The id of the callback entry for `callback`, adding one under `name` if there is none.
 
 ```zig
 pub fn intern(state: *State, name: []const u8, callback: HostFn) !usize

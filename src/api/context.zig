@@ -107,7 +107,7 @@ pub const Context = struct {
     /// A `[]const u8` argument borrows VM memory until the callback returns.
     pub fn arg(self: *Context, index: usize, comptime T: type) !T {
         const raw = self.raw.callbackArgValue(index);
-        return convert.fromRuntimeValue(self.lua, raw, T) catch |err| return self.argConversionError(index, T, raw, err);
+        return convert.fromRuntimeBorrowed(self.lua, raw, T) catch |err| return self.argConversionError(index, T, raw, err);
     }
 
     /// Decodes an argument by type like `decode`, allocating strings and slices with `allocator`;

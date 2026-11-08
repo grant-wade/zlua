@@ -1,5 +1,6 @@
 const std = @import("std");
 const api = @import("../api.zig");
+const expectString = @import("api_expect.zig").expectString;
 const Context = api.Context;
 const Function = api.Function;
 const State = api.State;
@@ -43,12 +44,12 @@ test "api host callbacks read arguments and return multiple values" {
 
     try std.testing.expectError(error.TypeMismatch, lua.getGlobal("host_add", Function));
 
-    const Result = Tuple(&.{ i64, []const u8 });
+    const Result = Tuple(&.{ i64, api.String });
     var result = try host_add.call(.{ 20, 22 }, Result);
     defer result.deinit();
 
     try std.testing.expectEqual(@as(i64, 42), result.get(0));
-    try std.testing.expectEqualStrings("ok", result.get(1));
+    try std.testing.expectEqualStrings("ok", try result.get(1).bytes());
 }
 
 test "api host callback functions can be installed as globals" {
@@ -234,18 +235,16 @@ test "host registration is native and does not compile or execute Lua" {
     try std.testing.expectError(error.TypeMismatch, first.dumpBytecode(.{}));
     try lua.setGlobal("first", first);
     try lua.setGlobal("second", second);
-    const Result = Tuple(&.{ i64, ?i64, []const u8 });
+    const Result = Tuple(&.{ i64, ?i64, api.String });
     var result = try first.call(.{ 42, null, "last" }, Result);
     defer result.deinit();
     try std.testing.expectEqual(@as(i64, 42), result.get(0));
     try std.testing.expectEqual(@as(?i64, null), result.get(1));
-    try std.testing.expectEqualStrings("last", result.get(2));
+    try std.testing.expectEqualStrings("last", try result.get(2).bytes());
     try lua.openLibs(.full);
     try lua.doString(
-        \\assert(type(first) == 'function' and first ~= second)
-        \\assert(string.format("%p", first) ~= string.format("%p", second))
-        \\local t = {[first] = 'first', [second] = 'second'}
-        \\assert(t[first] == 'first' and t[second] == 'second')
+        \\assert(type(first) == 'function' and first == second)
+        \\assert(string.format("%p", first) == string.format("%p", second))
         \\local info = debug.getinfo(first, 'Su')
         \\assert(info.what == 'C' and info.nups == 0 and info.isvararg)
         \\assert(debug.getupvalue(first, 1) == nil)
@@ -517,9 +516,9 @@ test "api function handles accept every callable lua value" {
     var values = try chunk.call(.{}, Tuple(&.{ Function, Function, Function, api.Value }));
     defer values.deinit();
 
-    try std.testing.expectEqualStrings("7", try values.get(0).call(.{@as(i64, 7)}, []const u8));
+    try expectString("7", values.get(0).call(.{@as(i64, 7)}, api.String));
     try std.testing.expectEqual(@as(i64, 1), try values.get(1).call(.{}, i64));
-    try std.testing.expectEqualStrings("a", try values.get(2).call(.{}, []const u8));
+    try expectString("a", values.get(2).call(.{}, api.String));
     try std.testing.expect(values.get(3) == .function);
 }
 
@@ -542,7 +541,7 @@ test "api value type names match lua" {
     for (1..8) |index| {
         var value = try list.rawGet(@as(i64, @intCast(index)), api.Value);
         defer value.deinit();
-        try std.testing.expectEqualStrings(try expected.rawGet(@as(i64, @intCast(index)), []const u8), value.typeName());
+        try expectString(value.typeName(), expected.rawGet(@as(i64, @intCast(index)), api.String));
     }
 }
 
@@ -1065,4 +1064,39 @@ test "api handle scopes end quietly after a reset" {
     defer scope.end();
     _ = try lua.createTable(.{});
     try std.testing.expectEqual(@as(usize, 1), lua.scoped_roots.items.len);
+}
+
+test "registering a callback again reuses its entry" {
+    const Counter = struct {
+        value: i64 = 0,
+
+        pub fn inc(self: *@This()) void {
+            self.value += 1;
+        }
+    };
+    const Callbacks = struct {
+        fn noop(_: *Context) !void {}
+    };
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    var metatable = try lua.createTable(.{});
+    defer metatable.deinit();
+
+    var first = try lua.register("noop", Callbacks.noop);
+    defer first.deinit();
+    var counter = try lua.newUserdataAuto(Counter, .{}, .{ .metatable = metatable });
+    counter.deinit();
+    const entries = lua.callbacks.items.len;
+
+    for (0..100) |_| {
+        var again = try lua.register("noop", Callbacks.noop);
+        again.deinit();
+        var another = try lua.newUserdataAuto(Counter, .{}, .{ .metatable = metatable });
+        another.deinit();
+    }
+    try std.testing.expectEqual(entries, lua.callbacks.items.len);
+
+    var renamed = try lua.register("other", Callbacks.noop);
+    defer renamed.deinit();
+    try std.testing.expectEqual(entries + 1, lua.callbacks.items.len);
 }

@@ -17,11 +17,11 @@ pub fn main() !void {
     , .{ .name = "=register_function" });
     defer chunk.deinit();
 
-    const Result = zlua.Tuple(&.{ i64, []const u8 });
+    const Result = zlua.Tuple(&.{ i64, zlua.String });
     var result = try chunk.call(.{}, Result);
     defer result.deinit();
 
-    std.debug.print("{d} {s}\n", .{ result.get(0), result.get(1) });
+    std.debug.print("{d} {s}\n", .{ result.get(0), try result.get(1).bytes() });
 }
 
 fn hostAdd(ctx: *zlua.Context) !void {

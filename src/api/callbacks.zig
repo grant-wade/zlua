@@ -12,6 +12,7 @@ const Context = context_mod.Context;
 const Coroutine = @import("coroutine.zig").Coroutine;
 const Function = @import("function.zig").Function;
 const Ref = @import("handle.zig").Ref;
+const String = @import("string.zig").String;
 const Table = @import("table.zig").Table;
 const Value = @import("value.zig").Value;
 const State = @import("state.zig").State;
@@ -29,23 +30,32 @@ pub fn bindDispatch(state: *State) void {
     state.raw_state.setApiCallbackDispatch(apiCallbackDispatch, state);
 }
 
+/// A function for the callback entry of `callback` under `name`, adding the entry if there is none.
 pub fn create(state: *State, name: []const u8, callback: HostFn) !Function {
-    try snapshot_mod.writableBindings(state);
-    bindDispatch(state);
-    const name_copy = try state.allocator().dupe(u8, name);
-    errdefer state.allocator().free(name_copy);
-    try state.callbacks.append(state.allocator(), .{ .name = name_copy, .callback = callback });
-    errdefer _ = state.callbacks.pop();
-    return convert.fromRuntimeValue(state, .{ .api_callback = state.callbacks.items.len }, Function);
+    const count = state.callbacks.items.len;
+    const id = find(state, callback, name) orelse try append(state, name, callback);
+    errdefer if (state.callbacks.items.len > count) state.allocator().free(state.callbacks.pop().?.name);
+    return convert.fromRuntimeValue(state, .{ .api_callback = id }, Function);
 }
 
-/// The id of the callback entry for `callback`, registering it under `name` if there is none.
+/// The id of the callback entry for `callback`, adding one under `name` if there is none.
 pub fn intern(state: *State, name: []const u8, callback: HostFn) !usize {
-    for (state.callbacks.items, 1..) |entry, id| {
-        if (entry.callback == callback) return id;
-    }
-    try snapshot_mod.writableBindings(state);
+    return find(state, callback, null) orelse append(state, name, callback);
+}
+
+/// `name` null matches an entry under any name.
+fn find(state: *State, callback: HostFn, name: ?[]const u8) ?usize {
     bindDispatch(state);
+    for (state.callbacks.items, 1..) |entry, id| {
+        if (entry.callback != callback) continue;
+        if (name) |wanted| if (!std.mem.eql(u8, entry.name, wanted)) continue;
+        return id;
+    }
+    return null;
+}
+
+fn append(state: *State, name: []const u8, callback: HostFn) !usize {
+    try snapshot_mod.writableBindings(state);
     const name_copy = try state.allocator().dupe(u8, name);
     errdefer state.allocator().free(name_copy);
     try state.callbacks.append(state.allocator(), .{ .name = name_copy, .callback = callback });
@@ -83,7 +93,7 @@ pub fn canReadParam(comptime T: type) bool {
     if (T == *Context or context_mod.isHost(T)) return true;
     if (@typeInfo(T) == .optional) return canReadParam(@typeInfo(T).optional.child);
     if (decode_mod.needsDecoding(T)) return decode_mod.canDecode(T);
-    if (T == Value or T == Ref or T == Table or T == Function or T == Coroutine or T == userdata_mod.AnyUserdata or userdata_mod.isHandle(T)) return true;
+    if (T == Value or T == Ref or T == String or T == Table or T == Function or T == Coroutine or T == userdata_mod.AnyUserdata or userdata_mod.isHandle(T)) return true;
     return switch (@typeInfo(T)) {
         .bool, .int, .float => true,
         .pointer => |pointer| switch (pointer.size) {

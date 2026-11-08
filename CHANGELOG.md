@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Breaking changes
+
+- Strings read from Lua are `String` handles, including `Value.string`.
+- Reading a `[]const u8` or `*T` anywhere but a callback argument is a compile
+  error.
+- Reading an enum, struct, or non-byte slice outside `decode` is a compile
+  error.
+- `State.createModule`, `DoOptions`, `GcBudget`, `Table.rawNext`,
+  `DebugOptions.capture_output`, and `Userdata.method`, `metamethod`, and
+  `bindMethods` are removed.
+- `State.stepGc` takes a step count.
+- Registering a function again under the same name returns the same Lua
+  function.
+
 ### Data Formats
 
 - JSON, TOML, MessagePack, and CSV are built into zlua, which has no package
@@ -57,6 +71,10 @@
 
 ### Fixes
 
+- Strings returned by `Function.call`, `Table.get`, and other reads could be
+  freed while still in use.
+- Registering callbacks, and creating userdata with a shared metatable, added
+  callback entries that were never freed.
 - Setting a numeric `for` variable with `debug.setlocal` changed how many times
   the loop ran.
 - `msgpack.read` panicked on an array or map length longer than the input.

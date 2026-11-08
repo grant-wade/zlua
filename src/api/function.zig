@@ -21,7 +21,6 @@ pub const Function = struct {
     }
 
     /// Converts the first result, or a `Tuple`, to `R`; Lua failures return `error.LuaError`.
-    /// `[]const u8` results borrow VM memory; see `Value.string`.
     pub fn call(self: Function, args: anytype, comptime R: type) !R {
         return self.callWith(args, R, .{});
     }

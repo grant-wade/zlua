@@ -111,8 +111,7 @@ pub fn Userdata(comptime T: type) type {
             return @call(.auto, callback, .{ pointer, context });
         }
 
-        /// Installs a Zig method on `__index`; its first parameter must be a pointer to `T`.
-        pub fn method(self: @This(), name: []const u8, comptime function: anytype) !void {
+        fn method(self: @This(), name: []const u8, comptime function: anytype) !void {
             try handle.validate(self.ref, self.ref.state);
             const Wrapper = struct {
                 fn call(ctx: *Context) !void {
@@ -138,8 +137,7 @@ pub fn Userdata(comptime T: type) type {
             try index_mod.setTableValue(&self.ref.state.raw_state, index_value, .{ .string = try self.ref.state.raw_state.strings.intern(name) }, try handle.rawValue(method_function.ref));
         }
 
-        /// Installs `Source` methods as in `State.newUserdataAuto`.
-        pub fn bindMethods(self: @This(), comptime Source: type) !void {
+        fn bindMethods(self: @This(), comptime Source: type) !void {
             try handle.validate(self.ref, self.ref.state);
             if (@typeInfo(Source) != .@"struct") @compileError("bindMethods requires a struct type");
 
@@ -155,8 +153,7 @@ pub fn Userdata(comptime T: type) type {
             }
         }
 
-        /// Installs a typed Zig function as a metamethod such as `__close`.
-        pub fn metamethod(self: @This(), name: []const u8, comptime function: anytype) !void {
+        fn metamethod(self: @This(), name: []const u8, comptime function: anytype) !void {
             try handle.validate(self.ref, self.ref.state);
             const Wrapper = struct {
                 fn call(ctx: *Context) !void {
@@ -226,6 +223,10 @@ pub const AnyUserdata = struct {
         return raw;
     }
 };
+
+pub fn bindMethods(comptime T: type, userdata: Userdata(T), comptime Source: type) !void {
+    return userdata.bindMethods(Source);
+}
 
 pub fn define(state: *State, comptime T: type, comptime options: UserdataType) !void {
     if (definedMetatable(state, T) != null) return error.UserdataTypeDefined;

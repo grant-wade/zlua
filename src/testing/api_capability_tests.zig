@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const api = @import("../api.zig");
+const expectString = @import("api_expect.zig").expectString;
 const ExitRequest = api.ExitRequest;
 const MemoryFile = api.MemoryFile;
 const MemoryFilesystem = api.MemoryFilesystem;
@@ -744,7 +745,7 @@ test "child processes get only the granted environment" {
         });
         defer lua.deinit();
         try lua.doString(script, .{});
-        try std.testing.expectEqualStrings("unset:unset", try lua.getGlobal("result", []const u8));
+        try expectString("unset:unset", lua.getGlobal("result", api.String));
         try std.testing.expect(try lua.getGlobal("status", bool));
     }
     {
@@ -757,7 +758,7 @@ test "child processes get only the granted environment" {
         });
         defer lua.deinit();
         try lua.doString(script, .{});
-        try std.testing.expectEqualStrings("unset:granted", try lua.getGlobal("result", []const u8));
+        try expectString("unset:granted", lua.getGlobal("result", api.String));
     }
 }
 

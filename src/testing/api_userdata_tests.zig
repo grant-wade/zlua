@@ -26,17 +26,14 @@ test "api typed host callback can create userdata through context" {
     const Budget = struct {
         remaining: i64,
 
-        fn spend(self: *@This(), amount: i64) i64 {
+        pub fn spend(self: *@This(), amount: i64) i64 {
             self.remaining = @max(self.remaining - amount, 0);
             return self.remaining;
         }
     };
     const Callbacks = struct {
         fn newBudget(ctx: *Context, amount: i64) !Userdata(Budget) {
-            var budget = try ctx.state().newUserdata(Budget, .{ .remaining = amount }, .{});
-            errdefer budget.deinit();
-            try budget.method("spend", Budget.spend);
-            return budget;
+            return ctx.state().newUserdataAuto(Budget, .{ .remaining = amount }, .{});
         }
     };
 
@@ -65,7 +62,7 @@ test "api userdata methods receive typed Zig pointers" {
     const Counter = struct {
         value: i64,
 
-        fn inc(self: *@This(), amount: i64) i64 {
+        pub fn inc(self: *@This(), amount: i64) i64 {
             self.value += amount;
             return self.value;
         }
@@ -74,9 +71,8 @@ test "api userdata methods receive typed Zig pointers" {
     var lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
-    var counter = try lua.newUserdata(Counter, .{ .value = 0 }, .{});
+    var counter = try lua.newUserdataAuto(Counter, .{ .value = 0 }, .{});
     defer counter.deinit();
-    try counter.method("inc", Counter.inc);
     try lua.setGlobal("counter", counter);
 
     try lua.doString(
@@ -484,7 +480,7 @@ test "api userdata close metamethod runs for to-be-closed locals" {
     const Closer = struct {
         closed: *usize,
 
-        fn close(self: *@This()) void {
+        pub fn __close(self: *@This()) void {
             self.closed.* += 1;
         }
     };
@@ -493,9 +489,8 @@ test "api userdata close metamethod runs for to-be-closed locals" {
     defer lua.deinit();
 
     var closed: usize = 0;
-    var closer = try lua.newUserdata(Closer, .{ .closed = &closed }, .{});
+    var closer = try lua.newUserdataAuto(Closer, .{ .closed = &closed }, .{});
     defer closer.deinit();
-    try closer.metamethod("__close", Closer.close);
     try lua.setGlobal("closer", closer);
 
     try lua.doString(
@@ -527,6 +522,7 @@ test "api userdata pairs and ipairs use explicit and automatic metamethods" {
     };
     var lua = try State.init(std.testing.allocator, .{ .stdlib = .full });
     defer lua.deinit();
+    try lua.defineUserdata(Sequence, .{});
     for ([_]bool{ false, true }) |automatic| {
         for ([_][4]?bool{
             .{ null, null, null, null },
@@ -539,10 +535,6 @@ test "api userdata pairs and ipairs use explicit and automatic metamethods" {
             else
                 try lua.newUserdata(Sequence, payload, .{});
             defer sequence.deinit();
-            if (!automatic) {
-                try sequence.metamethod("__index", Sequence.__index);
-                try sequence.metamethod("__pairs", Sequence.__pairs);
-            }
             try lua.setGlobal("sequence", sequence);
             var expected = try lua.createTable(.{});
             defer expected.deinit();
@@ -874,7 +866,7 @@ test "api userdata definitions follow snapshots and reset" {
 
 test "api userdata method raises an error naming the current Lua line" {
     const Scene = struct {
-        fn text(self: *@This(), ctx: *Context, parent_id: i64) !void {
+        pub fn text(self: *@This(), ctx: *Context, parent_id: i64) !void {
             _ = self;
             if (parent_id == 1) return;
             const line = ctx.currentLine() orelse 0;
@@ -887,9 +879,8 @@ test "api userdata method raises an error naming the current Lua line" {
     var lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
-    var scene = try lua.newUserdata(Scene, .{}, .{});
+    var scene = try lua.newUserdataAuto(Scene, .{}, .{});
     defer scene.deinit();
-    try scene.method("text", Scene.text);
     try lua.setGlobal("s", scene);
 
     var chunk = try lua.loadString(

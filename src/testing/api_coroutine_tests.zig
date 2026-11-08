@@ -28,16 +28,16 @@ test "thread lifecycle converts only active branches and preserves resume argume
     try std.testing.expectEqual(api.CoroutineStatus.suspended, try thread.status());
     try std.testing.expectEqual(null, try lua.getGlobal("started", ?bool));
     const Yield = api.Tuple(&.{ i64, ?i64 });
-    var first = try thread.resumeCoroutine(.{41}, Yield, []const u8);
+    var first = try thread.resumeCoroutine(.{41}, Yield, api.String);
     defer first.deinit();
     try std.testing.expectEqual(41, first.yielded.get(0));
     try std.testing.expectEqual(null, first.yielded.get(1));
-    var second = try thread.resumeCoroutine(.{42}, Yield, []const u8);
+    var second = try thread.resumeCoroutine(.{42}, Yield, api.String);
     defer second.deinit();
     try std.testing.expectEqual(42, second.yielded.get(0));
-    var last = try thread.resumeCoroutine(.{}, Yield, []const u8);
+    var last = try thread.resumeCoroutine(.{}, Yield, api.String);
     defer last.deinit();
-    try std.testing.expectEqualStrings("finished", last.returned);
+    try std.testing.expectEqualStrings("finished", try last.returned.bytes());
     try std.testing.expectEqual(api.CoroutineStatus.dead, try thread.status());
     try std.testing.expectError(error.LuaError, thread.resumeCoroutine(.{}, void, void));
     try thread.close();
@@ -46,10 +46,10 @@ test "thread lifecycle converts only active branches and preserves resume argume
     defer dialogue.deinit();
     var story = try lua.newCoroutine(dialogue);
     defer story.deinit();
-    var line = try story.resumeCoroutine(.{}, []const u8, void);
+    var line = try story.resumeCoroutine(.{}, api.String, void);
     defer line.deinit();
-    try std.testing.expectEqualStrings("dialogue", line.yielded);
-    var done = try story.resumeCoroutine(.{}, []const u8, void);
+    try std.testing.expectEqualStrings("dialogue", try line.yielded.bytes());
+    var done = try story.resumeCoroutine(.{}, api.String, void);
     defer done.deinit();
     try std.testing.expect(done == .returned);
 }
@@ -137,9 +137,9 @@ test "plain typed and entry callbacks yield after defers without reentering Zig"
     var first = try thread.resumeCoroutine(.{}, i64, i64);
     defer first.deinit();
     try std.testing.expectEqual(10, first.yielded);
-    var second = try thread.resumeCoroutine(.{20}, []const u8, i64);
+    var second = try thread.resumeCoroutine(.{20}, api.String, i64);
     defer second.deinit();
-    try std.testing.expectEqualStrings("prompt", second.yielded);
+    try std.testing.expectEqualStrings("prompt", try second.yielded.bytes());
     try std.testing.expect(try lua.getGlobal("cleaned", bool));
     var last = try thread.resumeCoroutine(.{22}, void, i64);
     defer last.deinit();

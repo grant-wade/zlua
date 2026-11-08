@@ -13,11 +13,9 @@ const userdata_mod = @import("userdata.zig");
 const BytecodeLoadOptions = options_mod.BytecodeLoadOptions;
 const Context = @import("context.zig").Context;
 const Coroutine = @import("coroutine.zig").Coroutine;
-const DoOptions = options_mod.DoOptions;
 const ErrorRef = errors.ErrorRef;
 const ExitRequest = capabilities.ExitRequest;
 const Function = @import("function.zig").Function;
-const GcBudget = options_mod.GcBudget;
 const handle_mod = @import("handle.zig");
 const HandleScope = handle_mod.HandleScope;
 const GcMode = options_mod.GcMode;
@@ -244,10 +242,10 @@ pub const State = struct {
         try self.raw_state.gc.collect();
     }
 
-    /// Runs at most `budget.steps` basic steps, even while stopped; bounds work, not time.
-    pub fn stepGc(self: *State, budget: GcBudget) !GcStepResult {
+    /// Runs up to `steps` basic steps, and at least one, even while stopped; bounds work, not time.
+    pub fn stepGc(self: *State, steps: usize) !GcStepResult {
         callbacks.bindDispatch(self);
-        return if (try self.raw_state.gc.runSteps(budget.steps)) .complete else .pending;
+        return if (try self.raw_state.gc.runSteps(steps)) .complete else .pending;
     }
 
     pub fn gcMode(self: *const State) GcMode {
@@ -298,7 +296,6 @@ pub const State = struct {
         return result;
     }
 
-    /// A `[]const u8` result borrows VM memory; see `Value.string`.
     pub fn read(self: *State, value: Value, comptime T: type) !T {
         return convert.fromRuntimeValue(self, try convert.toRuntimeValue(self, value), T);
     }
@@ -325,7 +322,6 @@ pub const State = struct {
         return table;
     }
 
-    /// A `[]const u8` result borrows VM memory; see `Value.string`.
     pub fn getGlobal(self: *State, name: []const u8, comptime T: type) !T {
         return convert.fromRuntimeValue(self, self.raw_state.getGlobal(name), T);
     }
@@ -390,7 +386,7 @@ pub const State = struct {
         }
         var userdata = try self.newUserdata(T, value, options);
         errdefer userdata.deinit();
-        try userdata.bindMethods(T);
+        try userdata_mod.bindMethods(T, userdata, T);
         return userdata;
     }
 
@@ -407,14 +403,8 @@ pub const State = struct {
         }
         var userdata = try self.newUserdataPtr(T, ptr, options);
         errdefer userdata.deinit();
-        try userdata.bindMethods(T);
+        try userdata_mod.bindMethods(T, userdata, T);
         return userdata;
-    }
-
-    /// Creates a module table; it is not installed (see `setLoadedModule`).
-    pub fn createModule(self: *State, name: []const u8) !Table {
-        _ = name;
-        return self.createTable(.{ .hash_hint = 4 });
     }
 
     /// Sets `package.loaded[name]` so `require(name)` returns `module`; opens `package` if needed.
@@ -509,13 +499,13 @@ pub const State = struct {
         return convert.fromRuntimeValue(self, loaded, Function);
     }
 
-    pub fn doString(self: *State, source: []const u8, options: DoOptions) !void {
+    pub fn doString(self: *State, source: []const u8, options: LoadOptions) !void {
         var function = try self.loadString(source, options);
         defer function.deinit();
         try function.call(.{}, void);
     }
 
-    pub fn doFile(self: *State, path: []const u8, options: DoOptions) !void {
+    pub fn doFile(self: *State, path: []const u8, options: LoadOptions) !void {
         var function = try self.loadFile(path, options);
         defer function.deinit();
         try function.call(.{}, void);

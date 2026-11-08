@@ -13,6 +13,7 @@ pub fn main() !void {
     , .{ .name = "=run_script" });
     defer chunk.deinit();
 
-    const message = try chunk.call(.{"zlua"}, []const u8);
-    std.debug.print("{s}\n", .{message});
+    var message = try chunk.call(.{"zlua"}, zlua.String);
+    defer message.deinit();
+    std.debug.print("{s}\n", .{try message.bytes()});
 }

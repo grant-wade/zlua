@@ -4,36 +4,32 @@ const zlua = @import("zlua");
 const Budget = struct {
     remaining: i64,
     spent: i64,
+};
 
-    fn spend(self: *@This(), amount: i64) i64 {
+const BudgetMethods = struct {
+    pub fn spend(self: *Budget, amount: i64) i64 {
         self.remaining = @max(self.remaining - amount, 0);
         self.spent += amount;
         return self.remaining;
     }
 
-    fn refund(self: *@This(), amount: i64) i64 {
+    pub fn refund(self: *Budget, amount: i64) i64 {
         self.remaining += amount;
         self.spent = @max(self.spent - amount, 0);
         return self.remaining;
     }
 
-    fn spentTotal(self: *@This()) i64 {
+    pub fn spent(self: *Budget) i64 {
         return self.spent;
     }
 
-    fn available(self: *@This()) i64 {
+    pub fn available(self: *Budget) i64 {
         return self.remaining;
     }
 };
 
 fn newBudget(ctx: *zlua.Context, amount: i64) !zlua.Userdata(Budget) {
-    var budget = try ctx.state().newUserdata(Budget, .{ .remaining = amount, .spent = 0 }, .{});
-    errdefer budget.deinit();
-    try budget.method("spend", Budget.spend);
-    try budget.method("refund", Budget.refund);
-    try budget.method("spent", Budget.spentTotal);
-    try budget.method("available", Budget.available);
-    return budget;
+    return ctx.state().newUserdata(Budget, .{ .remaining = amount, .spent = 0 }, .{});
 }
 
 fn percent(part: f64, whole: f64) f64 {
@@ -61,7 +57,9 @@ pub fn main() !void {
         .features = &.{ "globals", "modules", "callbacks", "userdata" },
     });
 
-    var rules = try lua.createModule("rules");
+    try lua.defineUserdata(Budget, .{ .methods = BudgetMethods });
+
+    var rules = try lua.createTable(.{});
     defer rules.deinit();
     try rules.set("starting_budget", 150);
     try rules.set("warning_at", 40);
@@ -139,12 +137,16 @@ pub fn main() !void {
     const budget = result.get(2);
 
     const after_extra = try spend_more.call(.{6}, i64);
+    var title = try report.get("title", zlua.String);
+    defer title.deinit();
+    var plan = try report.get("plan", zlua.String);
+    defer plan.deinit();
 
     std.debug.print(
         "{s}: {s}, planned={d}, spent={d}, remaining={d}, used={d:.1}%, warned={}, after_extra={d}, userdata_remaining={d}\n",
         .{
-            try report.get("title", []const u8),
-            try report.get("plan", []const u8),
+            try title.bytes(),
+            try plan.bytes(),
             try report.get("planned", i64),
             try report.get("spent", i64),
             try report.get("remaining", i64),

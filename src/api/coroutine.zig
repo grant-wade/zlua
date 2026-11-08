@@ -12,7 +12,7 @@ const ResumeOptions = @import("options.zig").ResumeOptions;
 
 pub const CoroutineStatus = runtime_types.ThreadStatus;
 
-/// Converts only the active branch; strings are borrowed and handles released by `deinit`.
+/// Converts only the active branch; handles are released by `deinit`.
 /// Conversion failure does not rewind execution.
 pub fn ResumeResult(comptime Y: type, comptime R: type) type {
     return union(enum) {

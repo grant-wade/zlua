@@ -97,6 +97,7 @@
 - [api.context](../api/context.md)
 - [api.decode](../api/decode.md)
 - [api.coroutine](../api/coroutine.md)
+- [api.string](../api/string.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
 - [api.namespace](../api/namespace.md)
@@ -154,7 +155,7 @@ pub const CoroutineStatus = runtime_types.ThreadStatus;
 
 ## ResumeResult
 
-Converts only the active branch; strings are borrowed and handles released by `deinit`.
+Converts only the active branch; handles are released by `deinit`.
 Conversion failure does not rewind execution.
 
 ```zig

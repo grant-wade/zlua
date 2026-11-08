@@ -235,8 +235,7 @@ const count = try tracked.withRead({}, struct {
   `error.ScopedAccessConflict`. Overlapping write scopes are allowed.
 - Typed callbacks and auto-bound methods open a read scope for `*const T`
   arguments and a mutable scope for `*T` arguments.
-- `ptr`, `getGlobal(..., *T)`, and `Context.arg(..., *T)` return
-  `error.ScopedAccessRequired`.
+- `ptr` and `Context.arg(..., *T)` return `error.ScopedAccessRequired`.
 - Scoped tracking requires owned userdata, and `newUserdataPtr` rejects it.
 - A failed mutable scope keeps its writes, and the payload stays dirty.
 - Reset disposes of the private copy and restores the pristine storage.

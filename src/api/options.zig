@@ -93,8 +93,6 @@ pub const DebugOptions = struct {
     /// Richer internal error diagnostics.
     errors: bool = false,
     trace_vm: bool = false,
-    /// Keep Lua output in `raw_state.stdout` and `raw_state.stderr`, for test harnesses.
-    capture_output: bool = false,
 };
 
 pub const Options = struct {
@@ -121,8 +119,6 @@ pub const LoadOptions = struct {
     mode: LoadMode = .source_only,
 };
 
-pub const DoOptions = LoadOptions;
-
 pub const BytecodeLoadOptions = struct {
     /// Table used as the loaded function's `_ENV`.
     environment: ?Table = null,
@@ -135,11 +131,6 @@ pub const BytecodeDumpOptions = struct {
 pub const TableOptions = struct {
     array_hint: u32 = 0,
     hash_hint: u32 = 0,
-};
-
-pub const GcBudget = struct {
-    /// Maximum basic steps; zero requests one.
-    steps: usize = 0,
 };
 
 pub const GcStepResult = enum {
@@ -179,7 +170,7 @@ pub fn runtimeOptions(options: Options) runtime.StateOptions {
         .binary_chunks = options.binary_chunks,
         .debug_errors = options.debug.errors,
         .trace_vm = options.debug.trace_vm,
-        .capture_output = options.debug.capture_output,
+        .capture_output = false,
     };
 }
 

@@ -1,5 +1,6 @@
 const std = @import("std");
 const api = @import("../api.zig");
+const expectString = @import("api_expect.zig").expectString;
 const handle = @import("../api/handle.zig");
 const userdata_mod = @import("../api/userdata.zig");
 const AnyUserdata = api.AnyUserdata;
@@ -132,7 +133,7 @@ test "api primitive values round trip through calls and conversion" {
     try std.testing.expectEqual(@as(i64, -42), try identity.call(.{-42}, i64));
     try std.testing.expectEqual(@as(u8, 42), try identity.call(.{42}, u8));
     try std.testing.expectEqual(@as(f64, 1.5), try identity.call(.{1.5}, f64));
-    try std.testing.expectEqualStrings("hello", try identity.call(.{"hello"}, []const u8));
+    try expectString("hello", identity.call(.{"hello"}, api.String));
 
     const pushed = try lua.push(@as(i64, 123));
     try std.testing.expectEqual(@as(i64, 123), try lua.read(pushed, i64));
@@ -145,13 +146,13 @@ test "api tuple helper reads multiple returns" {
     var chunk = try lua.loadString("return true, 42, 'ok'", .{ .name = "=tuple" });
     defer chunk.deinit();
 
-    const Result = Tuple(&.{ bool, i64, []const u8 });
+    const Result = Tuple(&.{ bool, i64, api.String });
     var result = try chunk.call(.{}, Result);
     defer result.deinit();
 
     try std.testing.expectEqual(true, result.get(0));
     try std.testing.expectEqual(@as(i64, 42), result.get(1));
-    try std.testing.expectEqualStrings("ok", result.get(2));
+    try std.testing.expectEqualStrings("ok", try result.get(2).bytes());
 }
 
 test "api public handles survive forced GC" {
@@ -259,7 +260,7 @@ test "api error refs survive forced GC" {
     var value = try err.value();
     defer value.deinit();
     switch (value) {
-        .table => |table| try std.testing.expectEqualStrings("boom", try table.get("message", []const u8)),
+        .table => |table| try expectString("boom", table.get("message", api.String)),
         else => return error.TypeMismatch,
     }
 }
@@ -278,17 +279,19 @@ test "api callback argument roots survive forced GC through weak tables" {
             defer check.deinit();
 
             try ctx.state().collect();
-            try std.testing.expectEqualStrings("payload", try payload.get("name", []const u8));
+            try expectString("payload", payload.get("name", api.String));
             try std.testing.expectEqual(@as(i64, 7), (try tracker.ptr()).id);
 
-            const CheckResult = Tuple(&.{ []const u8, bool });
+            const CheckResult = Tuple(&.{ api.String, bool });
             var checked = try check.call(.{}, CheckResult);
             defer checked.deinit();
-            try std.testing.expectEqualStrings("payload", checked.get(0));
+            try std.testing.expectEqualStrings("payload", try checked.get(0).bytes());
             try std.testing.expectEqual(true, checked.get(1));
 
             try ctx.state().collect();
-            try ctx.returnValues(.{ try payload.get("name", []const u8), (try tracker.ptr()).id });
+            var name = try payload.get("name", api.String);
+            defer name.deinit();
+            try ctx.returnValues(.{ name, (try tracker.ptr()).id });
         }
     };
 
@@ -315,10 +318,10 @@ test "api callback argument roots survive forced GC through weak tables" {
     , .{ .name = "=api-callback-root-stress" });
     defer chunk.deinit();
 
-    const Result = Tuple(&.{ []const u8, i64 });
+    const Result = Tuple(&.{ api.String, i64 });
     var result = try chunk.call(.{tracker}, Result);
     defer result.deinit();
-    try std.testing.expectEqualStrings("payload", result.get(0));
+    try std.testing.expectEqualStrings("payload", try result.get(0).bytes());
     try std.testing.expectEqual(@as(i64, 7), result.get(1));
 }
 
@@ -329,7 +332,9 @@ test "api native callback dispatch tolerates forced GC" {
             defer callback.deinit();
 
             try ctx.state().collect();
-            const returned = try callback.call(.{"native"}, []const u8);
+            var returned_string = try callback.call(.{"native"}, api.String);
+            defer returned_string.deinit();
+            const returned = try returned_string.bytes();
             try ctx.returnValues(.{returned});
         }
     };
@@ -349,7 +354,7 @@ test "api native callback dispatch tolerates forced GC" {
     , .{ .name = "=api-callback-dispatch-gc" });
     defer chunk.deinit();
 
-    try std.testing.expectEqualStrings("native-callback", try chunk.call(.{}, []const u8));
+    try expectString("native-callback", chunk.call(.{}, api.String));
 }
 
 test "api userdata handles root weak values until finalizers can run" {
@@ -412,14 +417,14 @@ test "api error value refs root weak-table values through forced GC" {
     try lua.collect();
     var value = try err.value();
     switch (value) {
-        .table => |table| try std.testing.expectEqualStrings("kept", try table.get("tag", []const u8)),
+        .table => |table| try expectString("kept", table.get("tag", api.String)),
         else => return error.TypeMismatch,
     }
     value.deinit();
 
     var check_alive = try lua.loadString("return weak_errors.err and weak_errors.err.tag or 'gone'", .{ .name = "=api-error-root-weak-alive" });
     defer check_alive.deinit();
-    try std.testing.expectEqualStrings("kept", try check_alive.call(.{}, []const u8));
+    try expectString("kept", check_alive.call(.{}, api.String));
 
     err.deinit();
     try lua.collect();
@@ -486,14 +491,14 @@ test "api globals tables arrays and structs build Lua environments" {
     defer app.deinit();
     var features = try app.get("features", Table);
     defer features.deinit();
-    try std.testing.expectEqualStrings("sandbox", try features.get(2, []const u8));
+    try expectString("sandbox", features.get(2, api.String));
 }
 
 test "api loaded module is returned by require" {
     var lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
-    var host = try lua.createModule("host");
+    var host = try lua.createTable(.{});
     defer host.deinit();
     try host.set("name", "host-module");
     try host.set("version", 3);
@@ -537,7 +542,9 @@ test "api load options support environments and binary modes" {
 
     var dumper = try lua.loadString("return string.dump(function() return secret end)", .{ .name = "=api-21.6-dump" });
     defer dumper.deinit();
-    const dumped = try dumper.call(.{}, []const u8);
+    var dumped_string = try dumper.call(.{}, api.String);
+    defer dumped_string.deinit();
+    const dumped = try dumped_string.bytes();
 
     var binary_chunk = try lua.loadString(dumped, .{ .mode = .source_or_binary, .environment = env });
     defer binary_chunk.deinit();
@@ -567,11 +574,11 @@ test "api dumps and loads zlua bytecode" {
     var loaded = try target_state.loadBytecode(dumped, .{ .environment = env });
     defer loaded.deinit();
 
-    const Result = Tuple(&.{ []const u8, i64 });
+    const Result = Tuple(&.{ api.String, i64 });
     var result = try loaded.call(.{42}, Result);
     defer result.deinit();
 
-    try std.testing.expectEqualStrings("roundtrip", result.get(0));
+    try std.testing.expectEqualStrings("roundtrip", try result.get(0).bytes());
     try std.testing.expectEqual(@as(i64, 42), result.get(1));
     try std.testing.expectError(error.LuaError, target_state.loadBytecode("return 1", .{}));
 }
@@ -676,4 +683,27 @@ test "later openLibs calls register libraries in package.loaded" {
     var check = try no_base.loadString("return package.loaded._G == nil", .{});
     defer check.deinit();
     try std.testing.expect(try check.call(.{}, bool));
+}
+
+test "strings read from Lua stay valid until deinit" {
+    var lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    try lua.doString("function make() return string.rep('a', 128) end t = { s = string.rep('c', 128) }", .{});
+    var make = try lua.getGlobal("make", Function);
+    defer make.deinit();
+    var made = try make.call(.{}, api.String);
+    defer made.deinit();
+    var table = try lua.getGlobal("t", api.Table);
+    defer table.deinit();
+    var field = try table.get("s", api.String);
+    defer field.deinit();
+    try lua.doString("t.s = nil", .{});
+    try lua.collect();
+    try std.testing.expectEqualStrings(&@as([128]u8, @splat('a')), try made.bytes());
+    try std.testing.expectEqualStrings(&@as([128]u8, @splat('c')), try field.bytes());
+
+    var value = try make.call(.{}, api.Value);
+    defer value.deinit();
+    try lua.collect();
+    try std.testing.expectEqualStrings(&@as([128]u8, @splat('a')), try value.string.bytes());
 }

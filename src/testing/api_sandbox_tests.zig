@@ -1,5 +1,6 @@
 const std = @import("std");
 const api = @import("../api.zig");
+const expectString = @import("api_expect.zig").expectString;
 const a = std.testing.allocator;
 
 fn expectErrorMessage(lua: *api.State, source: []const u8, expected: []const u8) !void {
@@ -30,7 +31,7 @@ test "load rejects binary chunks unless the state allows them" {
         defer lua.deinit();
         var function = try lua.loadString(script, .{});
         defer function.deinit();
-        try std.testing.expectEqualStrings("binary chunks are disabled", try function.call(.{}, []const u8));
+        try expectString("binary chunks are disabled", function.call(.{}, api.String));
 
         var dumped = try lua.loadString("return 8", .{});
         defer dumped.deinit();

@@ -533,8 +533,9 @@ test "protected call message handlers run on the failing frames" {
             var value = try err.value();
             defer value.deinit();
             try std.testing.expect(value == .table);
-            const message = try value.table.get("message", []const u8);
-            try std.testing.expectEqualStrings("handled.lua:1: bad", message);
+            var message = try value.table.get("message", api.String);
+            defer message.deinit();
+            try std.testing.expectEqualStrings("handled.lua:1: bad", try message.bytes());
             try std.testing.expect(try value.table.get("levels", i64) >= 2);
             try expectContains(err.traceback().?, "handled.lua:1: in function 'fail'");
         },
@@ -618,7 +619,7 @@ test "nil error objects reach hosts and message handlers as nil" {
             defer err.deinit();
             var value = try err.value();
             defer value.deinit();
-            try std.testing.expectEqualStrings("nil", value.string);
+            try std.testing.expectEqualStrings("nil", try value.string.bytes());
         },
     }
 
@@ -632,7 +633,7 @@ test "nil error objects reach hosts and message handlers as nil" {
             defer err.deinit();
             var value = try err.value();
             defer value.deinit();
-            try std.testing.expectEqualStrings("<no error object>", value.string);
+            try std.testing.expectEqualStrings("<no error object>", try value.string.bytes());
         },
     }
 }

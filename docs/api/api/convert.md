@@ -97,6 +97,7 @@
 - [api.context](../api/context.md)
 - [api.decode](../api/decode.md)
 - [api.coroutine](../api/coroutine.md)
+- [api.string](../api/string.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
 - [api.namespace](../api/namespace.md)
@@ -140,6 +141,7 @@
 - [writeEntries](#fn-writeentries)
 - [fromRuntimeResults](#fn-fromruntimeresults)
 - [fromRuntimeValue](#fn-fromruntimevalue)
+- [fromRuntimeBorrowed](#fn-fromruntimeborrowed)
 - [integerFromFloat](#fn-integerfromfloat)
 - [isOwnedApiValue](#fn-isownedapivalue)
 - [deinitIfOwned](#fn-deinitifowned)
@@ -253,6 +255,19 @@ References: [`runtime.Value`](../runtime.md#alias-value)
 
 ```zig
 pub fn fromRuntimeValue(state: *State, raw: runtime.Value, comptime T: type) !T
+```
+
+References: [`runtime.Value`](../runtime.md#alias-value)
+
+<a id="fn-fromruntimeborrowed"></a>
+
+## fromRuntimeBorrowed
+
+Like `fromRuntimeValue`, also reading `[]const u8` and `*T` that borrow VM memory. `raw` must
+stay reachable while the result is used, as a callback argument does.
+
+```zig
+pub fn fromRuntimeBorrowed(state: *State, raw: runtime.Value, comptime T: type) !T
 ```
 
 References: [`runtime.Value`](../runtime.md#alias-value)

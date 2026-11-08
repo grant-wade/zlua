@@ -48,7 +48,7 @@ pub fn collect(allocator: std.mem.Allocator, io: std.Io, options: Options, suite
             defer tick.deinit();
             const before = counter.beginPhase();
             const start = Timestamp.now(io, .awake);
-            if (workload == .finalizers) try tick.call(.{}, void) else _ = try lua.stepGc(.{});
+            if (workload == .finalizers) try tick.call(.{}, void) else _ = try lua.stepGc(1);
             const elapsed = allocation.elapsedSince(io, start);
             if (i >= warmup) samples[i - warmup] = allocation.phaseMetric(&counter, before, elapsed, lua.raw_state.gc.currentAllocationTotal());
         }
