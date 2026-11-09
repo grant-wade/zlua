@@ -192,7 +192,7 @@ pub const Gc = struct {
             .string => |string| if (!string.static and !gc.isOld(string)) {
                 state.gc.found_young = true;
             },
-            inline .table, .gmatch_iterator, .userdata, .closure, .thread, .coroutine_wrapper => |pointer| {
+            inline .table, .gmatch_iterator, .api_closure, .userdata, .closure, .thread, .coroutine_wrapper => |pointer| {
                 if (pointer.gc.registry_index != types.GcHeader.untracked and !gc.isOld(pointer)) state.gc.found_young = true;
             },
             else => {},
@@ -804,6 +804,8 @@ pub const Gc = struct {
             gc.markStackRange(context.thread, context.argument_base, context.argCount());
             for (context.returns.items()) |value| gc.markValue(value);
             if (context.error_value) |value| gc.markValue(value);
+            if (context.closure) |table| gc.markValue(.{ .api_closure = table });
+            if (context.tail_callee) |value| gc.markValue(value);
         }
         gc.markRuntimeErrorPayload(state.last_error);
         if (state.current_thread) |thread| gc.forceEnqueue(.{ .thread = thread });
@@ -829,7 +831,7 @@ pub const Gc = struct {
             .userdata => |userdata| if (gc.isTrackedUserdata(userdata)) gc.markUserdata(userdata),
             .closure => |closure| if (gc.isTrackedClosure(closure)) gc.markClosure(closure),
             .thread, .coroutine_wrapper => |thread| if (gc.isTrackedThread(thread) or thread == state.current_thread) gc.markThread(thread),
-            .gmatch_iterator => |table| if (gc.isTrackedTable(table)) gc.markTable(table),
+            .gmatch_iterator, .api_closure => |table| if (gc.isTrackedTable(table)) gc.markTable(table),
             else => {},
         }
     }
@@ -1073,7 +1075,7 @@ pub const Gc = struct {
     fn valueIsMarked(gc: *Gc, value: Value) bool {
         return switch (value) {
             .string => |string| string.static or gc.isMarked(string),
-            .table, .gmatch_iterator => |table| !gc.isTrackedTable(table) or gc.isMarked(table),
+            .table, .gmatch_iterator, .api_closure => |table| !gc.isTrackedTable(table) or gc.isMarked(table),
             .userdata => |userdata| !gc.isTrackedUserdata(userdata) or gc.isMarked(userdata),
             .closure => |closure| !gc.isTrackedClosure(closure) or gc.isMarked(closure),
             .thread, .coroutine_wrapper => |thread| !gc.isTrackedThread(thread) or gc.isMarked(thread),
@@ -1083,7 +1085,7 @@ pub const Gc = struct {
 
     fn valueIsWeaklyCleared(gc: *Gc, value: Value) bool {
         return switch (value) {
-            .table, .gmatch_iterator => |table| gc.isTrackedTable(table) and !gc.isMarked(table),
+            .table, .gmatch_iterator, .api_closure => |table| gc.isTrackedTable(table) and !gc.isMarked(table),
             .userdata => |userdata| gc.isTrackedUserdata(userdata) and !gc.isMarked(userdata),
             .closure => |closure| gc.isTrackedClosure(closure) and !gc.isMarked(closure),
             .thread, .coroutine_wrapper => |thread| gc.isTrackedThread(thread) and !gc.isMarked(thread),
@@ -1094,7 +1096,7 @@ pub const Gc = struct {
     fn valueIsCollectableUnmarked(gc: *Gc, value: Value) bool {
         return switch (value) {
             .string => |string| !string.static and !gc.isMarked(string),
-            .table, .gmatch_iterator => |table| gc.isTrackedTable(table) and !gc.isMarked(table),
+            .table, .gmatch_iterator, .api_closure => |table| gc.isTrackedTable(table) and !gc.isMarked(table),
             .userdata => |userdata| gc.isTrackedUserdata(userdata) and !gc.isMarked(userdata),
             .closure => |closure| gc.isTrackedClosure(closure) and !gc.isMarked(closure),
             .thread, .coroutine_wrapper => |thread| gc.isTrackedThread(thread) and !gc.isMarked(thread),
@@ -1232,7 +1234,7 @@ pub const Gc = struct {
     inline fn isCollectable(value: Value) bool {
         return switch (value) {
             .string => |string| !string.static,
-            .table, .userdata, .closure, .thread, .coroutine_wrapper, .gmatch_iterator => true,
+            .table, .userdata, .closure, .thread, .coroutine_wrapper, .gmatch_iterator, .api_closure => true,
             else => false,
         };
     }

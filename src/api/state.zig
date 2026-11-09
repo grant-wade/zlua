@@ -333,6 +333,13 @@ pub const State = struct {
         return convert.fromRuntimeValue(self, self.raw_state.getGlobal(name), T);
     }
 
+    /// Calls the global function `name` as `Function.call` does.
+    pub fn callGlobal(self: *State, name: []const u8, args: anytype, comptime R: type) !R {
+        var function = try self.getGlobal(name, Function);
+        defer function.deinit();
+        return function.call(args, R);
+    }
+
     /// Wraps an untyped callback as a Lua function; it is not installed automatically.
     pub fn register(self: *State, name: []const u8, callback: HostFn) !Function {
         return callbacks.create(self, name, callback);
@@ -341,6 +348,13 @@ pub const State = struct {
     /// Like `register`, reading parameters from Lua arguments by type; `*Context` is injected.
     pub fn registerTyped(self: *State, name: []const u8, comptime function: anytype) !Function {
         return self.register(name, callbacks.typedHostFn(function));
+    }
+
+    /// Like `registerTyped`, binding the values of tuple `upvalues` to the function; the callback
+    /// reads them with `Context.upvalue` and replaces them with `Context.setUpvalue`.
+    pub fn registerClosure(self: *State, name: []const u8, comptime function: anytype, upvalues: anytype) !Function {
+        const raw_upvalues = try convert.convertArgs(self, upvalues);
+        return callbacks.createClosure(self, name, callbacks.typedHostFn(function), &raw_upvalues);
     }
 
     /// Registers a Lua constructor that reads `initializer`'s arguments by type (`*Context` is

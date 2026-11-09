@@ -646,3 +646,153 @@ test "api protected resume options capture a traceback and bound one resume" {
     try std.testing.expect(std.mem.indexOf(u8, message, "instruction limit exceeded") != null);
     try lua.doString("for _ = 1, 10000 do end", .{});
 }
+
+const Continuations = struct {
+    fn count(ctx: *api.Context) !i64 {
+        const next = try ctx.upvalue(0, i64) + 1;
+        try ctx.setUpvalue(0, next);
+        return next;
+    }
+
+    fn askDoor(ctx: *api.Context, prompt: []const u8) !void {
+        return ctx.yieldThen(.{prompt}, answered, .{@as(i64, 7)});
+    }
+
+    fn answered(ctx: *api.Context, answer: []const u8) !struct { i64, bool } {
+        return .{ try ctx.upvalue(0, i64), std.mem.eql(u8, answer, "yes") };
+    }
+
+    fn twice(ctx: *api.Context, function: api.Function) !void {
+        return ctx.callThen(function, .{@as(i64, 1)}, again, .{function});
+    }
+
+    fn again(ctx: *api.Context, first: i64) !void {
+        var function = try ctx.upvalue(0, api.Function);
+        defer function.deinit();
+        return ctx.callThen(function, .{first + 1}, finish, .{first});
+    }
+
+    fn finish(ctx: *api.Context, second: i64) !i64 {
+        return try ctx.upvalue(0, i64) * 100 + second;
+    }
+
+    fn failLater(ctx: *api.Context) !void {
+        return ctx.yieldThen(.{}, fail, .{});
+    }
+
+    fn fail(ctx: *api.Context) !void {
+        return ctx.raise("continuation failed");
+    }
+
+    fn install(lua: *api.State) !void {
+        var counter = try lua.registerClosure("count", count, .{@as(i64, 0)});
+        defer counter.deinit();
+        var other = try lua.registerClosure("count", count, .{@as(i64, 10)});
+        defer other.deinit();
+        try lua.setGlobals(.{ .counter = counter, .other = other, .ask = askDoor, .twice = twice, .fail_later = failLater });
+    }
+};
+
+test "closures keep their own bound values" {
+    const lua = try api.State.init(a, .{});
+    defer lua.deinit();
+    try Continuations.install(lua);
+    const entries = lua.callbacks.items.len;
+    try lua.doString("assert(counter() == 1 and counter() == 2 and other() == 11 and counter() == 3)", .{});
+    try std.testing.expectEqual(entries, lua.callbacks.items.len);
+}
+
+test "yieldThen resumes into its continuation with saved values" {
+    const lua = try api.State.init(a, .{});
+    defer lua.deinit();
+    try Continuations.install(lua);
+    var chunk = try lua.loadString("local n, ok = ask('door?') return n, ok", .{});
+    defer chunk.deinit();
+    var co = try lua.newCoroutine(chunk);
+    defer co.deinit();
+    var prompt = try co.resumeCoroutine(.{}, api.String, void);
+    defer prompt.deinit();
+    try std.testing.expectEqualStrings("door?", try prompt.yielded.bytes());
+    var done = try co.resumeCoroutine(.{"yes"}, void, struct { i64, bool });
+    defer done.deinit();
+    try std.testing.expectEqual(@as(i64, 7), done.returned[0]);
+    try std.testing.expect(done.returned[1]);
+}
+
+test "callThen chains through Lua calls that yield" {
+    const lua = try api.State.init(a, .{});
+    defer lua.deinit();
+    try Continuations.install(lua);
+    try lua.doString("assert(twice(function(x) return x end) == 102)", .{});
+    var chunk = try lua.loadString("return twice(function(x) coroutine.yield(x) return x * 10 end)", .{});
+    defer chunk.deinit();
+    var co = try lua.newCoroutine(chunk);
+    defer co.deinit();
+    var first = try co.resumeCoroutine(.{}, i64, i64);
+    defer first.deinit();
+    try std.testing.expectEqual(@as(i64, 1), first.yielded);
+    var second = try co.resumeCoroutine(.{}, i64, i64);
+    defer second.deinit();
+    try std.testing.expectEqual(@as(i64, 11), second.yielded);
+    var last = try co.resumeCoroutine(.{}, i64, i64);
+    defer last.deinit();
+    try std.testing.expectEqual(@as(i64, 10 * 100 + 110), last.returned);
+}
+
+test "continuation errors propagate and yieldThen outside a coroutine fails" {
+    const lua = try api.State.init(a, .{});
+    defer lua.deinit();
+    try Continuations.install(lua);
+    try lua.doString(
+        \\local ok, err = pcall(ask, 'x')
+        \\assert(not ok and err:find('outside a coroutine'), err)
+        \\local co = coroutine.create(function() return fail_later() end)
+        \\assert(coroutine.resume(co))
+        \\ok, err = coroutine.resume(co)
+        \\assert(not ok and err:find('continuation failed'), err)
+    , .{});
+}
+
+test "snapshots capture coroutines suspended inside continuations" {
+    const lua = try api.State.init(a, .{ .stdlib = .full });
+    defer lua.deinit();
+    try Continuations.install(lua);
+    try lua.doString(
+        \\co = coroutine.create(function() return twice(function(x) coroutine.yield(x) return x * 10 end) end)
+        \\assert(select(2, coroutine.resume(co)) == 1)
+        \\assert(select(2, coroutine.resume(co)) == 11)
+        \\counter()
+    , .{});
+    var snapshot = try lua.snapshot(a);
+    defer snapshot.deinit();
+    const worker = try snapshot.newState(a);
+    defer worker.deinit();
+    const finish =
+        \\local ok, value = coroutine.resume(co)
+        \\assert(ok and value == 1110, value)
+        \\assert(counter() == 2)
+    ;
+    try worker.doString(finish, .{});
+    try worker.reset();
+    try worker.doString(finish, .{});
+    try lua.doString(finish, .{});
+}
+
+test "continuations show as C frames and reuse callback entries" {
+    const lua = try api.State.init(a, .{ .stdlib = .full });
+    defer lua.deinit();
+    try Continuations.install(lua);
+    try lua.doString("assert(twice(function(x) return x end) == 102)", .{});
+    const entries = lua.callbacks.items.len;
+    try lua.doString(
+        \\for _ = 1, 10 do assert(twice(function(x) return x end) == 102) end
+        \\local tb
+        \\twice(function(x) tb = tb or debug.traceback() return x end)
+        \\assert(tb:find("\n\t%[C%]: in global 'twice'\n"), tb)
+    , .{ .name = "=traces" });
+    try std.testing.expectEqual(entries, lua.callbacks.items.len);
+    try lua.doString("function identity(x) return x end", .{});
+    var identity = try lua.getGlobal("identity", api.Function);
+    defer identity.deinit();
+    try std.testing.expectEqual(@as(i64, 102), try lua.callGlobal("twice", .{identity}, i64));
+}

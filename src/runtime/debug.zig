@@ -284,7 +284,7 @@ fn appendTracebackFrame(self: *State, out: *std.ArrayList(u8), thread: *const Th
     }
     var id_buffer: [chunk_id_size]u8 = undefined;
     const stripped = frame.closure.stripped_debug;
-    const source = if (stripped) "?" else chunkId(&id_buffer, frame.closure.proto.source_name);
+    const source = if (std.mem.eql(u8, frame.closure.proto.source_name, "=[C]")) "[C]" else if (stripped) "?" else chunkId(&id_buffer, frame.closure.proto.source_name);
     if (if (stripped) null else lineForFrame(frame)) |line| {
         try appendFmt(allocator, out, "\n\t{s}:{d}: in ", .{ source, line });
     } else {

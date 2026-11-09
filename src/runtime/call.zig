@@ -624,7 +624,8 @@ pub fn invokeValue(self: *State, thread: *Thread, resolved: bytecode.Call, depth
     }
     switch (callee) {
         .closure => |closure| try callClosure(self, thread, resolved, closure, call_name, call_namewhat),
-        .api_callback => |id| try self.callApiCallbackDispatch(thread, resolved, id),
+        .api_callback => |id| try self.callApiCallbackDispatch(thread, resolved, id, null),
+        .api_closure => |table| try self.callApiCallbackDispatch(thread, resolved, apiClosureCallbackId(table), table),
         .native_print => {
             for (0..resolved.arg_count) |index| {
                 if (index != 0) try io_mod.writeStdout(self, "\t");
@@ -767,6 +768,20 @@ pub fn invokeValue(self: *State, thread: *Thread, resolved: bytecode.Call, depth
         }
         try debug_mod.callReturnHook(self, thread, call_name orelse nativeHookName(callee));
     }
+}
+
+pub fn apiClosureCallbackId(table: *types.Table) usize {
+    return @intCast(table.get(.{ .integer = 1 }).integer);
+}
+
+/// Replaces the call at `resolved` with a call of `callee` on `args`, returning its results in place.
+pub fn replaceCall(self: *State, thread: *Thread, resolved: bytecode.Call, callee: Value, args: []const Value) !void {
+    const frame = thread.frames.items[thread.frames.items.len - 1];
+    const base = frame.base + resolved.base;
+    try thread.ensureStack(self.allocator, base + 1 + args.len, callStackValueLimit(self, thread));
+    thread.stack.items[base] = callee;
+    @memcpy(thread.stack.items[base + 1 ..][0..args.len], args);
+    try invokeValue(self, thread, .{ .base = resolved.base, .arg_count = @intCast(args.len), .return_count = resolved.return_count }, 1);
 }
 
 fn prependCallArgument(self: *State, thread: *Thread, resolved: bytecode.Call, metamethod: Value, receiver: Value) !void {
@@ -936,7 +951,13 @@ pub fn tailCallValue(self: *State, thread: *Thread, op: bytecode.Call) anyerror!
                 },
                 else => return err,
             };
-            if (thread.frames.items.len > frame_count) try vm_mod.runThreadUntil(self, thread, frame_count);
+            if (thread.frames.items.len > frame_count) vm_mod.runThreadUntil(self, thread, frame_count) catch |err| switch (err) {
+                error.CoroutineYield => {
+                    try pushTailCallContinuation(self, thread, frame_count, resolved.base, frame.return_count);
+                    return err;
+                },
+                else => return err,
+            };
             try returnFromFrame(self, thread, resolved.base, frame.return_count);
         },
     }

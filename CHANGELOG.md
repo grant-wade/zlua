@@ -34,6 +34,11 @@
 - Calls and resumes read results into Zig tuple types such as
   `struct { i64, zlua.String }`, and `zlua.deinit` releases their handles.
 - `String.dupe` copies a string's bytes into an allocator.
+- `State.registerClosure` binds Lua values to a callback, which
+  `Context.upvalue` and `setUpvalue` read and replace.
+- `Context.callThen` and `yieldThen` end a callback with a call or yield and
+  continue in another callback after Lua resumes.
+- `State.callGlobal` calls a global function.
 
 ### Data Formats
 

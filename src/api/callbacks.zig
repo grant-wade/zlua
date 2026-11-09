@@ -4,6 +4,9 @@ const runtime = @import("../runtime.zig");
 const rollback_runtime = @import("../runtime/rollback.zig");
 const runtime_types = @import("../runtime/types.zig");
 const convert = @import("convert.zig");
+const errors = @import("errors.zig");
+const entry_mod = @import("../runtime/entry.zig");
+const load_mod = @import("../runtime/load.zig");
 const decode_mod = @import("decode.zig");
 const snapshot_mod = @import("snapshot.zig");
 const userdata_mod = @import("userdata.zig");
@@ -36,6 +39,40 @@ pub fn create(state: *State, name: []const u8, callback: HostFn) !Function {
     const id = find(state, callback, name) orelse try append(state, name, callback);
     errdefer if (state.callbacks.items.len > count) state.allocator().free(state.callbacks.pop().?.name);
     return convert.fromRuntimeValue(state, .{ .api_callback = id }, Function);
+}
+
+/// A function for the callback entry of `callback` under `name` with `values` bound to it.
+pub fn createClosure(state: *State, name: []const u8, callback: HostFn, values: []const runtime.Value) !Function {
+    const count = state.callbacks.items.len;
+    const id = find(state, callback, name) orelse try append(state, name, callback);
+    errdefer if (state.callbacks.items.len > count) state.allocator().free(state.callbacks.pop().?.name);
+    const raw = &state.raw_state;
+    const closure = (raw.newTableWithHints(@intCast(values.len + closure_values_start - 1), 0) catch |err| return errors.captureLuaError(state, err)).table;
+    try raw.setTableRaw(closure, .{ .integer = 1 }, .{ .integer = @intCast(id) });
+    try raw.setTableRaw(closure, .{ .integer = 2 }, .{ .integer = @intCast(values.len) });
+    for (values, closure_values_start..) |value, index| try raw.setTableRaw(closure, .{ .integer = @intCast(index) }, value);
+    return convert.fromRuntimeValue(state, .{ .api_closure = closure }, Function);
+}
+
+/// Index of the first bound value in an `api_closure` table, after the callback id and count.
+pub const closure_values_start = 3;
+
+pub fn closureValueCount(closure: *runtime.Table) usize {
+    return @intCast(closure.get(.{ .integer = 2 }).integer);
+}
+
+/// The Lua function `function(k, f, ...) return k(f(...)) end`, compiled once per state.
+pub fn continuationHelper(state: *State) !runtime.Value {
+    const raw = &state.raw_state;
+    if (raw.library_tables.get(.host_continuation)) |holder| return holder.get(.{ .integer = 1 });
+    const chunk = load_mod.loadSourceAsClosureNamedEnv(raw, "return function(k, f, ...) return k(f(...)) end", "=[C]", .nil) catch |err| return errors.captureLuaError(state, err);
+    const results = entry_mod.callFunction(raw, chunk, &.{}) catch |err| return errors.captureLuaError(state, err);
+    defer state.allocator().free(results);
+    results[0].closure.stripped_debug = true;
+    const holder = (raw.newTableWithHints(1, 0) catch |err| return errors.captureLuaError(state, err)).table;
+    try raw.setTableRaw(holder, .{ .integer = 1 }, results[0]);
+    raw.library_tables.set(.host_continuation, holder);
+    return results[0];
 }
 
 /// The id of the callback entry for `callback`, adding one under `name` if there is none.

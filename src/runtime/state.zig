@@ -513,7 +513,7 @@ pub const State = struct {
         self.api_callback_user_data = user_data;
     }
 
-    pub fn callApiCallbackDispatch(self: *State, thread: *Thread, op: bytecode.Call, callback_id: usize) !void {
+    pub fn callApiCallbackDispatch(self: *State, thread: *Thread, op: bytecode.Call, callback_id: usize, closure: ?*Table) !void {
         const dispatch = self.api_callback_dispatch orelse return self.fail("host callback dispatcher unavailable");
         var context = ApiCallbackContext{
             .state = self,
@@ -523,6 +523,7 @@ pub const State = struct {
             .argument_base = thread.frames.items[thread.frames.items.len - 1].base + op.base + 1,
             .parent = self.active_api_callback,
             .user_data = self.api_callback_user_data,
+            .closure = closure,
         };
         defer context.deinit();
         self.active_api_callback = &context;
@@ -530,12 +531,17 @@ pub const State = struct {
 
         dispatch(&context) catch |err| switch (err) {
             error.HostCallbackYield => return coroutine_mod.suspendCoroutine(self, thread, op, context.returns.items()),
+            error.HostCallbackTailCall => if (context.tail_callee == null) return self.fail("host callback tail call unavailable"),
             error.RuntimeError, error.StackOverflow, error.UnsupportedOpcode => return err,
             error.LuaError => return self.failValue(context.error_value orelse .{ .string = try self.strings.intern("host callback raised an error") }),
             error.OutOfMemory, error.LuaExit, error.Interrupted => return err,
             else => return self.fail(@errorName(err)),
         };
 
+        if (context.tail_callee) |callee| {
+            self.active_api_callback = context.parent;
+            return call_mod.replaceCall(self, thread, op, callee, context.returns.items());
+        }
         try self.returnValues(thread, op.base, op.return_count, context.returns.items());
     }
 

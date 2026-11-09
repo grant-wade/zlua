@@ -1,10 +1,19 @@
-//! Drive a loaded script and a terminal host callback from Zig.
+//! Drive a loaded script, a terminal host callback, and a continuation from Zig.
 const std = @import("std");
 const zlua = @import("zlua");
 
 fn askUser(ctx: *zlua.Context) !void {
     const prompt = try ctx.arg(0, []const u8);
     return ctx.yield(.{prompt});
+}
+
+fn confirm(ctx: *zlua.Context, prompt: []const u8) !void {
+    return ctx.yieldThen(.{prompt}, answered, .{prompt});
+}
+
+fn answered(ctx: *zlua.Context, answer: []const u8) ![]const u8 {
+    const prompt = try ctx.upvalue(0, []const u8);
+    return if (std.mem.eql(u8, answer, "yes")) prompt else "declined";
 }
 
 pub fn main() !void {
@@ -51,4 +60,18 @@ pub fn main() !void {
         .returned => |text| std.debug.print("{s}\n", .{try text.bytes()}),
         .yielded => return error.ExpectedReturn,
     }
+
+    try lua.setGlobal("confirm", confirm);
+    var confirmation = try lua.loadString(
+        \\return "Confirmed: " .. confirm("Take the key?")
+    , .{ .name = "=confirm.lua" });
+    defer confirmation.deinit();
+    var flow = try lua.newCoroutine(confirmation);
+    defer flow.deinit();
+    var asked = try flow.resumeCoroutine(.{}, zlua.String, void);
+    defer asked.deinit();
+    std.debug.print("{s}\n", .{try asked.yielded.bytes()});
+    var confirmed = try flow.resumeCoroutine(.{"yes"}, void, zlua.String);
+    defer confirmed.deinit();
+    std.debug.print("{s}\n", .{try confirmed.returned.bytes()});
 }

@@ -30,11 +30,13 @@ This guide covers each feature's main use and its rules. The
 - [Host Callbacks](#host-callbacks)
   - [Typed Callbacks](#typed-callbacks)
   - [Host State](#host-state)
+  - [Bound Values](#bound-values)
   - [Context Methods](#context-methods)
 - [Decoding Tables](#decoding-tables)
 - [Calling and Errors](#calling-and-errors)
 - [Coroutines](#coroutines)
   - [Yielding from Callbacks](#yielding-from-callbacks)
+  - [Continuations](#continuations)
 - [Userdata](#userdata)
   - [Shared Metatables](#shared-metatables)
 - [Snapshots](#snapshots)
@@ -630,6 +632,28 @@ try lua.setHost(&game);
 Snapshots and their workers keep the pointer, and `reset` restores the
 baseline's. A worker on another thread can call `setHost` with its own.
 
+### Bound Values
+
+`registerClosure(name, function, values)` registers a typed callback with the
+Lua values in tuple `values` bound to it, like the upvalues of a C closure. Each
+registration has its own values:
+
+```zig
+fn count(ctx: *zlua.Context) !i64 {
+    const next = try ctx.upvalue(0, i64) + 1;
+    try ctx.setUpvalue(0, next);
+    return next;
+}
+
+var counter = try lua.registerClosure("count", count, .{@as(i64, 0)});
+defer counter.deinit();
+try lua.setGlobal("count", counter);
+```
+
+`ctx.upvalue(index, T)` reads a bound value, `ctx.setUpvalue(index, value)`
+replaces one, and `ctx.upvalueCount()` returns how many there are. Bound values
+are Lua values, so snapshots copy them and `reset` restores them.
+
 ### Context Methods
 
 | Method | Behavior |
@@ -645,6 +669,9 @@ baseline's. A worker on another thread can call `setHost` with its own.
 | `caller(level)` | Describes a Lua function on the callback's coroutine: `source`, `shortSource(&buffer)` with a `[zlua.Caller.short_source_len]u8` buffer, and `line`. Level 0 is the innermost, native functions are not counted, and it returns null past the last function. |
 | `currentLine()` | Returns the line of the running Lua function, or null when there is none or its debug info is stripped. |
 | `callNonYielding(function, args, R)` | Calls Lua on the callback's coroutine, within its instruction budget, with yields forbidden. Lua errors propagate after cleanup, and completed effects stay. |
+| `callThen(function, args, continuation, saved)` | Ends the callback by calling Lua that may yield; see [Continuations](#continuations). |
+| `yieldThen(values, continuation, saved)` | Ends the callback by yielding; see [Continuations](#continuations). |
+| `upvalue(index, T)`, `setUpvalue(index, value)`, `upvalueCount()` | Read and replace [bound values](#bound-values). |
 | `coroutineIdentity()` | Returns a token for the current coroutine, valid during the callback and until reset. |
 | `io()` | Returns the `std.Io` given as `capabilities.io.runtime`, or null. |
 
@@ -727,6 +754,9 @@ var add = try lua.getGlobal("add", zlua.Function);
 defer add.deinit();
 const sum = try add.call(.{ 20, 22 }, i64);
 ```
+
+`callGlobal("add", .{ 20, 22 }, i64)` fetches and calls a global function in one
+step.
 
 `call` and the other state calls report Lua failures as `error.LuaError`, and
 the state keeps the error until the next one:
@@ -823,6 +853,31 @@ It cannot under `Function.call`, `doString`, the main thread,
 or library callbacks such as `table.sort`, `string.gsub`, `load` readers,
 `require` loaders, and `__tostring` through `tostring`.
 
+### Continuations
+
+A callback that needs to continue after Lua yields ends with `callThen` or
+`yieldThen`. `return ctx.callThen(function, args, continuation, saved)` calls
+`function`, which may yield, and then calls `continuation` with its results.
+`return ctx.yieldThen(values, continuation, saved)` yields `values` and calls
+`continuation` with the resume arguments:
+
+```zig
+fn askUser(ctx: *zlua.Context, prompt: []const u8) !void {
+    return ctx.yieldThen(.{prompt}, answered, .{prompt});
+}
+
+fn answered(ctx: *zlua.Context, answer: []const u8) ![]const u8 {
+    const prompt = try ctx.upvalue(0, []const u8);
+    return if (std.mem.eql(u8, answer, "yes")) prompt else "declined";
+}
+```
+
+The continuation is a typed callback whose [bound values](#bound-values) are the
+tuple `saved`, and its returns become the original callback's. It can end with
+`callThen` or `yieldThen` itself. A suspended continuation is part of the
+coroutine, so snapshots capture it. Lua errors propagate through both calls, and
+tracebacks show the pending call as a `[C]` frame.
+
 ## Userdata
 
 `newUserdata` stores a Zig value that Lua owns, and `wrapUserdata` wraps
@@ -912,9 +967,8 @@ userdata payloads.
 
 ## Limitations
 
-- A Zig callback cannot call Lua that yields and then continue running.
-  `Context.yield` must be the callback's last action.
-- There are no `callGlobal` convenience methods. Fetch a `Function` and call it.
+- `Context.yield`, `callThen`, and `yieldThen` must be a callback's last action.
+  A continuation picks up the work after Lua resumes.
 
 ## Examples
 
