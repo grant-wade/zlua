@@ -94,13 +94,13 @@
 - [api.table](../api/table.md)
 - [api.value](../api/value.md)
 - [api.userdata](../api/userdata.md)
+- [api.namespace](../api/namespace.md)
 - [api.context](../api/context.md)
 - [api.decode](../api/decode.md)
 - [api.coroutine](../api/coroutine.md)
 - [api.string](../api/string.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
-- [api.namespace](../api/namespace.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
 - [testing.bench_runner](../testing/bench_runner.md)
@@ -130,10 +130,6 @@
 - [testing.generators](../testing/generators.md)
 
 </details>
-
-## Functions
-
-- [Tuple](#fn-tuple)
 
 ## Types
 
@@ -187,14 +183,4 @@ pub fn typeName(self: Value) []const u8
 ```
 
 References: [`Value`](#type-value)
-
-<a id="fn-tuple"></a>
-
-## Tuple
-
-Converts multiple Lua return values.
-
-```zig
-pub fn Tuple(comptime types: []const type) type
-```
 

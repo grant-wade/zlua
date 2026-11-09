@@ -94,13 +94,13 @@
 - [api.table](../api/table.md)
 - [api.value](../api/value.md)
 - [api.userdata](../api/userdata.md)
+- [api.namespace](../api/namespace.md)
 - [api.context](../api/context.md)
 - [api.decode](../api/decode.md)
 - [api.coroutine](../api/coroutine.md)
 - [api.string](../api/string.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
-- [api.namespace](../api/namespace.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
 - [testing.bench_runner](../testing/bench_runner.md)
@@ -160,7 +160,7 @@
 
 ## HostFn
 
-Untyped callback for `State.register`.
+Untyped callback for `State.newFunction`.
 
 ```zig
 pub const HostFn = *const fn (ctx: *Context) anyerror!void;
@@ -257,7 +257,7 @@ References: [`HostFn`](#const-hostfn)
 
 ## typedHostFn
 
-The untyped callback that calls `function` as `State.registerTyped` does.
+The untyped callback that calls `function` as `State.newTypedFunction` does.
 
 ```zig
 pub fn typedHostFn(comptime function: anytype) HostFn

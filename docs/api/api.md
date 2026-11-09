@@ -3,7 +3,7 @@
 ## Navigation
 
 - [API Index](README.md)
-- Submodules: [api.analyze](api/analyze.md), [api.callbacks](api/callbacks.md), [api.convert](api/convert.md), [api.errors](api/errors.md), [api.handle](api/handle.md), [api.state](api/state.md), [api.capabilities](api/capabilities.md), [api.options](api/options.md), [api.function](api/function.md), [api.table](api/table.md), [api.value](api/value.md), [api.userdata](api/userdata.md), [api.context](api/context.md), [api.decode](api/decode.md), [api.coroutine](api/coroutine.md), [api.string](api/string.md), [api.snapshot](api/snapshot.md), [api.memory_limit](api/memory_limit.md), [api.namespace](api/namespace.md)
+- Submodules: [api.analyze](api/analyze.md), [api.callbacks](api/callbacks.md), [api.convert](api/convert.md), [api.errors](api/errors.md), [api.handle](api/handle.md), [api.state](api/state.md), [api.capabilities](api/capabilities.md), [api.options](api/options.md), [api.function](api/function.md), [api.table](api/table.md), [api.value](api/value.md), [api.userdata](api/userdata.md), [api.namespace](api/namespace.md), [api.context](api/context.md), [api.decode](api/decode.md), [api.coroutine](api/coroutine.md), [api.string](api/string.md), [api.snapshot](api/snapshot.md), [api.memory_limit](api/memory_limit.md)
 
 <details>
 <summary>All documents</summary>
@@ -94,13 +94,13 @@
 - [api.table](api/table.md)
 - [api.value](api/value.md)
 - [api.userdata](api/userdata.md)
+- [api.namespace](api/namespace.md)
 - [api.context](api/context.md)
 - [api.decode](api/decode.md)
 - [api.coroutine](api/coroutine.md)
 - [api.string](api/string.md)
 - [api.snapshot](api/snapshot.md)
 - [api.memory_limit](api/memory_limit.md)
-- [api.namespace](api/namespace.md)
 - [testing](testing.md)
 - [testing.clua](testing/clua.md)
 - [testing.bench_runner](testing/bench_runner.md)
@@ -195,7 +195,6 @@ See `docs/embedding.md` for capabilities, error handling, snapshots, and ownersh
 - [WarningHandler](#alias-warninghandler)
 - [Capabilities](#alias-capabilities)
 - [Value](#alias-value)
-- [Tuple](#alias-tuple)
 - [Ref](#alias-ref)
 - [String](#alias-string)
 - [HandleScope](#alias-handlescope)
@@ -749,16 +748,6 @@ pub const Value = value.Value;
 ```
 
 References: [`value.Value`](api/value.md#type-value)
-
-<a id="alias-tuple"></a>
-
-## Tuple
-
-```zig
-pub const Tuple = value.Tuple;
-```
-
-References: [`value.Tuple`](api/value.md#fn-tuple)
 
 <a id="import-deinit"></a>
 

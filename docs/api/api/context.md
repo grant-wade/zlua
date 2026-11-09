@@ -94,13 +94,13 @@
 - [api.table](../api/table.md)
 - [api.value](../api/value.md)
 - [api.userdata](../api/userdata.md)
+- [api.namespace](../api/namespace.md)
 - [api.context](../api/context.md)
 - [api.decode](../api/decode.md)
 - [api.coroutine](../api/coroutine.md)
 - [api.string](../api/string.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
-- [api.namespace](../api/namespace.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
 - [testing.bench_runner](../testing/bench_runner.md)
@@ -208,7 +208,7 @@ References: [`Caller`](#type-caller)
 
 ## Context
 
-Callback context for functions registered with `State.register`.
+Callback context for functions created with `State.newFunction`.
 
 ```zig
 pub const Context = struct {
@@ -241,7 +241,7 @@ pub const Context = struct {
 | [yield](#fn-context-yield) | `self: *Context, values: anytype` | `error` | Terminal yield: &#96;return ctx.yield(.{values});&#96;. Defers run before suspension; resume continues Lua with the resume arguments without reentering the Zig body. |
 | [callThen](#fn-context-callthen) | `self: *Context, function: Function, args: anytype, comptime continuation: anytype, saved: anytype` | `error` | Ends the callback by calling &#96;function&#96;, which may yield, then typed callback &#96;continuation&#96; with its results and &#96;saved&#96; bound; the continuation's returns are this callback's. |
 | [yieldThen](#fn-context-yieldthen) | `self: *Context, values: anytype, comptime continuation: anytype, saved: anytype` | `error` | Ends the callback by yielding &#96;values&#96;, then calls &#96;continuation&#96; with the resume arguments as &#96;callThen&#96; does. |
-| [upvalueCount](#fn-context-upvaluecount) | `self: *Context` | `usize` | The number of values bound to this callback by &#96;State.registerClosure&#96;. |
+| [upvalueCount](#fn-context-upvaluecount) | `self: *Context` | `usize` | The number of values bound to this callback by &#96;State.newClosure&#96;. |
 | [upvalue](#fn-context-upvalue) | `self: *Context, index: usize, comptime T: type` | `!T` | The value bound at &#96;index&#96;, or nil past the last one. A &#96;[]const u8&#96; or &#96;*T&#96; borrows VM memory until the callback returns or replaces the value. |
 | [setUpvalue](#fn-context-setupvalue) | `self: *Context, index: usize, value: anytype` | `!void` | Replaces the value bound at &#96;index&#96;, which must be less than &#96;upvalueCount()&#96;. |
 | [coroutineIdentity](#fn-context-coroutineidentity) | `self: *Context` | `usize` | Coroutine token valid only during this callback and until reset. |
@@ -492,7 +492,7 @@ References: [`Context`](#type-context)
 
 ### Context.upvalueCount
 
-The number of values bound to this callback by `State.registerClosure`.
+The number of values bound to this callback by `State.newClosure`.
 
 ```zig
 pub fn upvalueCount(self: *Context) usize

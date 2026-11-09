@@ -94,13 +94,13 @@
 - [api.table](../api/table.md)
 - [api.value](../api/value.md)
 - [api.userdata](../api/userdata.md)
+- [api.namespace](../api/namespace.md)
 - [api.context](../api/context.md)
 - [api.decode](../api/decode.md)
 - [api.coroutine](../api/coroutine.md)
 - [api.string](../api/string.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
-- [api.namespace](../api/namespace.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
 - [testing.bench_runner](../testing/bench_runner.md)
@@ -153,6 +153,7 @@ pub const String = struct {
 | --- | --- | --- | --- |
 | [deinit](#fn-string-deinit) | `self: *String` | `void` |  |
 | [bytes](#fn-string-bytes) | `self: String` | `![]const u8` | The string's bytes, valid until &#96;deinit&#96; or &#96;State.reset&#96;. |
+| [format](#fn-string-format) | `self: String, writer: *std.Io.Writer` | `std.Io.Writer.Error!void` | Writes the string's bytes for the &#96;{f}&#96; format specifier. |
 | [dupe](#fn-string-dupe) | `self: String, allocator: std.mem.Allocator` | `![]u8` | A copy of the string's bytes owned by &#96;allocator&#96;. |
 
 <a id="fn-string-deinit"></a>
@@ -173,6 +174,18 @@ The string's bytes, valid until `deinit` or `State.reset`.
 
 ```zig
 pub fn bytes(self: String) ![]const u8
+```
+
+References: [`String`](#type-string)
+
+<a id="fn-string-format"></a>
+
+### String.format
+
+Writes the string's bytes for the `{f}` format specifier.
+
+```zig
+pub fn format(self: String, writer: *std.Io.Writer) std.Io.Writer.Error!void
 ```
 
 References: [`String`](#type-string)

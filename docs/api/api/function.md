@@ -94,13 +94,13 @@
 - [api.table](../api/table.md)
 - [api.value](../api/value.md)
 - [api.userdata](../api/userdata.md)
+- [api.namespace](../api/namespace.md)
 - [api.context](../api/context.md)
 - [api.decode](../api/decode.md)
 - [api.coroutine](../api/coroutine.md)
 - [api.string](../api/string.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
-- [api.namespace](../api/namespace.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
 - [testing.bench_runner](../testing/bench_runner.md)
@@ -153,7 +153,7 @@ pub const Function = struct {
 | Name | Parameters | Return Type | Description |
 | --- | --- | --- | --- |
 | [deinit](#fn-function-deinit) | `self: *Function` | `void` |  |
-| [call](#fn-function-call) | `self: Function, args: anytype, comptime R: type` | `!R` | Converts the first result, or a &#96;Tuple&#96;, to &#96;R&#96;; Lua failures return &#96;error.LuaError&#96;, and &#96;State.takeError&#96; returns the error value. |
+| [call](#fn-function-call) | `self: Function, args: anytype, comptime R: type` | `!R` | Converts the first result to &#96;R&#96;, or every result to a tuple &#96;R&#96;; Lua failures return &#96;error.LuaError&#96;, and &#96;State.takeError&#96; returns the error value. |
 | [callWith](#fn-function-callwith) | `self: Function, args: anytype, comptime R: type, options: CallOptions` | `!R` |  |
 | [dumpBytecode](#fn-function-dumpbytecode) | `self: Function, writer: *std.Io.Writer, options: BytecodeDumpOptions` | `!void` | Writes the function as a binary chunk; native callbacks return &#96;error.TypeMismatch&#96;. |
 
@@ -171,8 +171,8 @@ References: [`Function`](#type-function)
 
 ### Function.call
 
-Converts the first result, or a `Tuple`, to `R`; Lua failures return `error.LuaError`, and
-`State.takeError` returns the error value.
+Converts the first result to `R`, or every result to a tuple `R`; Lua failures return
+`error.LuaError`, and `State.takeError` returns the error value.
 
 ```zig
 pub fn call(self: Function, args: anytype, comptime R: type) !R

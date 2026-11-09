@@ -94,13 +94,13 @@
 - [api.table](../api/table.md)
 - [api.value](../api/value.md)
 - [api.userdata](../api/userdata.md)
+- [api.namespace](../api/namespace.md)
 - [api.context](../api/context.md)
 - [api.decode](../api/decode.md)
 - [api.coroutine](../api/coroutine.md)
 - [api.string](../api/string.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
-- [api.namespace](../api/namespace.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
 - [testing.bench_runner](../testing/bench_runner.md)
@@ -139,6 +139,7 @@
 - [indirectFrameCount](#fn-indirectframecount)
 - [errorRaisedByLuaCode](#fn-errorraisedbyluacode)
 - [messageHandlerCallName](#fn-messagehandlercallname)
+- [isHostHelper](#fn-ishosthelper)
 - [isCoroutineEntryFrame](#fn-iscoroutineentryframe)
 - [chunkId](#fn-chunkid)
 - [currentLine](#fn-currentline)
@@ -243,6 +244,16 @@ pub fn messageHandlerCallName(thread: *Thread) ?CallName
 ```
 
 References: [`CallName`](#type-callname)
+
+<a id="fn-ishosthelper"></a>
+
+## isHostHelper
+
+True for the Lua function that runs a host callback's continuation.
+
+```zig
+pub fn isHostHelper(closure: *const types.Closure) bool
+```
 
 <a id="const-coroutine_entry_source"></a>
 

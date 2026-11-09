@@ -93,13 +93,13 @@
 - [api.table](api/table.md)
 - [api.value](api/value.md)
 - [api.userdata](api/userdata.md)
+- [api.namespace](api/namespace.md)
 - [api.context](api/context.md)
 - [api.decode](api/decode.md)
 - [api.coroutine](api/coroutine.md)
 - [api.string](api/string.md)
 - [api.snapshot](api/snapshot.md)
 - [api.memory_limit](api/memory_limit.md)
-- [api.namespace](api/namespace.md)
 - [testing](testing.md)
 - [testing.clua](testing/clua.md)
 - [testing.bench_runner](testing/bench_runner.md)
@@ -172,7 +172,6 @@ internal and change between versions.
 - [Error](#alias-error)
 - [BytecodeLoadOptions](#alias-bytecodeloadoptions)
 - [BytecodeDumpOptions](#alias-bytecodedumpoptions)
-- [Tuple](#alias-tuple)
 - [deinit](#alias-deinit)
 - [HostFn](#alias-hostfn)
 - [Analysis](#alias-analysis)
@@ -598,16 +597,6 @@ pub const BytecodeDumpOptions = api.BytecodeDumpOptions;
 ```
 
 References: [`api.BytecodeDumpOptions`](api.md#alias-bytecodedumpoptions)
-
-<a id="alias-tuple"></a>
-
-## Tuple
-
-```zig
-pub const Tuple = api.Tuple;
-```
-
-References: [`api.Tuple`](api.md#alias-tuple)
 
 <a id="alias-deinit"></a>
 

@@ -94,13 +94,13 @@
 - [api.table](../api/table.md)
 - [api.value](../api/value.md)
 - [api.userdata](../api/userdata.md)
+- [api.namespace](../api/namespace.md)
 - [api.context](../api/context.md)
 - [api.decode](../api/decode.md)
 - [api.coroutine](../api/coroutine.md)
 - [api.string](../api/string.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
-- [api.namespace](../api/namespace.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
 - [testing.bench_runner](../testing/bench_runner.md)
@@ -139,6 +139,7 @@
 - [memoryLimitError](#fn-memorylimiterror)
 - [writeErrorValue](#fn-writeerrorvalue)
 - [setLastErrorValue](#fn-setlasterrorvalue)
+- [clearLastError](#fn-clearlasterror)
 - [lastErrorValue](#fn-lasterrorvalue)
 - [clearLastErrorTraceback](#fn-clearlasterrortraceback)
 
@@ -209,6 +210,7 @@ pub const ErrorRef = struct {
 | [traceback](#fn-errorref-traceback) | `self: ErrorRef` | `?[]const u8` | Traceback when &#96;CallOptions.traceback&#96; or &#96;ResumeOptions.traceback&#96; was set, formatted like &#96;debug.traceback&#96;; valid until &#96;deinit&#96;. |
 | [value](#fn-errorref-value) | `self: ErrorRef` | `!Value` |  |
 | [writeMessage](#fn-errorref-writemessage) | `self: ErrorRef, writer: *std.Io.Writer` | `!void` | Writes the error value as the CLI reports it. |
+| [format](#fn-errorref-format) | `self: ErrorRef, writer: *std.Io.Writer` | `std.Io.Writer.Error!void` | Writes the message for the &#96;{f}&#96; format specifier. |
 
 <a id="fn-errorref-deinit"></a>
 
@@ -251,6 +253,18 @@ Writes the error value as the CLI reports it.
 
 ```zig
 pub fn writeMessage(self: ErrorRef, writer: *std.Io.Writer) !void
+```
+
+References: [`ErrorRef`](#type-errorref)
+
+<a id="fn-errorref-format"></a>
+
+### ErrorRef.format
+
+Writes the message for the `{f}` format specifier.
+
+```zig
+pub fn format(self: ErrorRef, writer: *std.Io.Writer) std.Io.Writer.Error!void
 ```
 
 References: [`ErrorRef`](#type-errorref)
@@ -310,6 +324,14 @@ pub fn setLastErrorValue(state: *State, value: runtime.Value) !void
 ```
 
 References: [`runtime.Value`](../runtime.md#alias-value)
+
+<a id="fn-clearlasterror"></a>
+
+## clearLastError
+
+```zig
+pub fn clearLastError(state: *State) void
+```
 
 <a id="fn-lasterrorvalue"></a>
 

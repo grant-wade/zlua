@@ -94,13 +94,13 @@
 - [api.table](../api/table.md)
 - [api.value](../api/value.md)
 - [api.userdata](../api/userdata.md)
+- [api.namespace](../api/namespace.md)
 - [api.context](../api/context.md)
 - [api.decode](../api/decode.md)
 - [api.coroutine](../api/coroutine.md)
 - [api.string](../api/string.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
-- [api.namespace](../api/namespace.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
 - [testing.bench_runner](../testing/bench_runner.md)
@@ -293,7 +293,7 @@ pub fn isOwnedApiValue(comptime T: type) bool
 
 ## deinit
 
-Releases the handles in `value`, a pointer to a handle, `Value`, `Tuple`, optional, or Zig tuple.
+Releases the handles in `value`, a pointer to a handle, `Value`, optional, or tuple.
 
 ```zig
 pub fn deinit(value: anytype) void
