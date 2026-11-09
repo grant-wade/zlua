@@ -33,6 +33,7 @@
 
 - Calls and resumes read results into Zig tuple types such as
   `struct { i64, zlua.String }`, and `zlua.deinit` releases their handles.
+- `String.dupe` copies a string's bytes into an allocator.
 
 ### Data Formats
 

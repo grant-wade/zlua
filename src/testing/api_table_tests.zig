@@ -628,3 +628,16 @@ test "preloadModule installs Lua loaders and host require reports errors" {
     try std.testing.expect(try loaded.get("ready", bool));
     try std.testing.expectEqual(@as(i64, 42), try lua.require("answer", i64));
 }
+
+test "String.dupe copies bytes that outlive the handle" {
+    const lua = try api.State.init(a, .{});
+    defer lua.deinit();
+    try lua.doString("name = 'copied'", .{});
+    var name = try lua.getGlobal("name", api.String);
+    const copy = try name.dupe(a);
+    defer a.free(copy);
+    name.deinit();
+    try lua.doString("name = nil", .{});
+    try lua.collect();
+    try std.testing.expectEqualStrings("copied", copy);
+}

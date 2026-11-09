@@ -414,7 +414,7 @@ return scope.keep(players); // the caller deinits it
 
 Strings read from Lua are `zlua.String` handles, including `Value.string`.
 `bytes()` returns the string's bytes, valid until the handle's `deinit` or a
-`reset`:
+`reset`, and `dupe(allocator)` returns a copy:
 
 ```zig
 var title = try config.get("title", zlua.String);

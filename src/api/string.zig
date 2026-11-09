@@ -1,3 +1,4 @@
+const std = @import("std");
 const handle = @import("handle.zig");
 const Ref = handle.Ref;
 
@@ -16,5 +17,10 @@ pub const String = struct {
             .string => |string| string.bytes(),
             else => error.TypeMismatch,
         };
+    }
+
+    /// A copy of the string's bytes owned by `allocator`.
+    pub fn dupe(self: String, allocator: std.mem.Allocator) ![]u8 {
+        return allocator.dupe(u8, try self.bytes());
     }
 };
