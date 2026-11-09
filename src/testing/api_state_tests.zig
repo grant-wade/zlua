@@ -693,3 +693,19 @@ test "strings read from Lua stay valid until deinit" {
     try lua.collect();
     try std.testing.expectEqualStrings(&@as([128]u8, @splat('a')), try value.string.bytes());
 }
+
+test "plain tuple results convert each value and release handles" {
+    const lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    var chunk = try lua.loadString("return 7, 'seven', {}", .{});
+    defer chunk.deinit();
+    const roots = lua.raw_state.activeRootCount();
+    var result = try chunk.call(.{}, struct { i64, api.String, ?api.Table });
+    try std.testing.expectEqual(@as(i64, 7), result[0]);
+    try std.testing.expectEqualStrings("seven", try result[1].bytes());
+    try std.testing.expect(result[2] != null);
+    api.deinit(&result);
+    try std.testing.expectEqual(roots, lua.raw_state.activeRootCount());
+    try std.testing.expectError(error.TypeMismatch, chunk.call(.{}, struct { i64, i64 }));
+    try std.testing.expectEqual(roots, lua.raw_state.activeRootCount());
+}

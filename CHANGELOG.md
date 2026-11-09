@@ -28,6 +28,11 @@
   `writeError` and `takeError`, and `ErrorRef.message` is `writeMessage`.
 - `Function.dumpBytecode` writes to a `std.Io.Writer`.
 
+### Embedding API
+
+- Calls and resumes read results into Zig tuple types such as
+  `struct { i64, zlua.String }`, and `zlua.deinit` releases their handles.
+
 ### Data Formats
 
 - JSON, TOML, MessagePack, and CSV are built into zlua, which has no package
@@ -92,6 +97,7 @@
   the loop ran.
 - `msgpack.read` panicked on an array or map length longer than the input.
 
+- Typed callbacks that returned a tuple of handles never released them.
 ## 0.8.1
 
 ### Breaking changes

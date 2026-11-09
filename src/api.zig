@@ -80,6 +80,7 @@ pub const Capabilities = capabilities.Capabilities;
 
 pub const Value = value.Value;
 pub const Tuple = value.Tuple;
+pub const deinit = @import("api/convert.zig").deinit;
 pub const Ref = handle.Ref;
 pub const String = string.String;
 pub const HandleScope = handle.HandleScope;

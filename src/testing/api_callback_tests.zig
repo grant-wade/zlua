@@ -1068,3 +1068,20 @@ test "registering a callback again reuses its entry" {
     defer renamed.deinit();
     try std.testing.expectEqual(entries + 1, lua.callbacks.items.len);
 }
+
+test "typed callbacks release handles returned in a tuple" {
+    const Callbacks = struct {
+        fn pair(ctx: *Context) !struct { Table, api.String } {
+            var table = try ctx.state().createTable(.{});
+            errdefer table.deinit();
+            try ctx.state().doString("last = 'pair'", .{});
+            return .{ table, try ctx.state().getGlobal("last", api.String) };
+        }
+    };
+    const lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    try lua.setGlobal("pair", Callbacks.pair);
+    const roots = lua.raw_state.activeRootCount();
+    try lua.doString("local t, s = pair() assert(type(t) == 'table' and s == 'pair')", .{});
+    try std.testing.expectEqual(roots, lua.raw_state.activeRootCount());
+}

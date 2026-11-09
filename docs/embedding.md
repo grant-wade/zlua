@@ -378,21 +378,22 @@ Zig values convert to Lua automatically:
 | struct type | table of its [public declarations](#zig-namespaces) |
 | `String`, `Table`, `Function`, `Ref`, `Value`, `Userdata(T)` | existing Lua value |
 
-Reads name the type they want. `zlua.Tuple` holds multiple return values, and
-`zlua.Value` holds a value of unknown type:
+Reads name the type they want. A Zig tuple type or a `zlua.Tuple` reads
+multiple return values, and `zlua.Value` holds a value of unknown type:
 
 ```zig
 try lua.setGlobal("answer", 42);
 const answer = try lua.getGlobal("answer", i64);
 
-const Result = zlua.Tuple(&.{ bool, i64, zlua.String });
-var result = try chunk.call(.{}, Result);
-defer result.deinit();
+var result = try chunk.call(.{}, struct { bool, i64, zlua.String });
+defer zlua.deinit(&result);
 ```
 
-`Tuple.get` and `.values` read a tuple's elements, and `Value.typeName` returns
-the name Lua's `type` gives a value. Reading an enum, struct, or non-byte slice
-is a compile error; read a `Value` and pass it to [`decode`](#decoding-tables).
+`zlua.deinit` releases the handles in a tuple, optional, `Value`, or handle.
+`Tuple.get` and `.values` read a `zlua.Tuple`'s elements, and `Tuple.deinit`
+releases them. `Value.typeName` returns the name Lua's `type` gives a value.
+Reading an enum, struct, or non-byte slice is a compile error; read a `Value`
+and pass it to [`decode`](#decoding-tables).
 
 `String`, `Table`, `Function`, `Coroutine`, `Ref`, userdata, and `ErrorRef`
 handles each own a registry root, as do values and tuples containing them. Call

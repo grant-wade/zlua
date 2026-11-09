@@ -261,19 +261,8 @@ fn tupleToRuntimeValue(state: *State, value: anytype, comptime len: usize) !runt
 
 pub fn fromRuntimeResults(state: *State, results: []const runtime.Value, comptime R: type) !R {
     if (R == void) return {};
-    if (comptime isTupleResult(R)) {
-        var values: @Tuple(R.field_types) = undefined;
-        var initialized: usize = 0;
-        errdefer inline for (R.field_types, 0..) |Field, index| {
-            if (index < initialized) deinitIfOwned(Field, &values[index]);
-        };
-        inline for (R.field_types, 0..) |Field, index| {
-            const raw = if (index < results.len) results[index] else runtime.Value.nil;
-            values[index] = try fromRuntimeValue(state, raw, Field);
-            initialized += 1;
-        }
-        return .{ .values = values };
-    }
+    if (comptime isTupleResult(R)) return .{ .values = try tupleFromResults(state, results, @Tuple(R.field_types)) };
+    if (comptime isPlainTuple(R)) return tupleFromResults(state, results, R);
 
     const raw = if (results.len == 0) runtime.Value.nil else results[0];
     return fromRuntimeValue(state, raw, R);
@@ -378,6 +367,27 @@ pub fn integerFromFloat(value: f64) ?i64 {
     return @intFromFloat(value);
 }
 
+fn tupleFromResults(state: *State, results: []const runtime.Value, comptime T: type) !T {
+    var values: T = undefined;
+    var initialized: usize = 0;
+    errdefer inline for (comptime reflection.fieldsOf(T), 0..) |name, index| {
+        if (index < initialized) deinitIfOwned(@FieldType(T, name), &values[index]);
+    };
+    inline for (comptime reflection.fieldsOf(T), 0..) |name, index| {
+        const raw = if (index < results.len) results[index] else runtime.Value.nil;
+        values[index] = try fromRuntimeValue(state, raw, @FieldType(T, name));
+        initialized += 1;
+    }
+    return values;
+}
+
+fn isPlainTuple(comptime T: type) bool {
+    return switch (@typeInfo(T)) {
+        .@"struct" => |info| info.is_tuple,
+        else => false,
+    };
+}
+
 fn isTupleResult(comptime T: type) bool {
     return switch (@typeInfo(T)) {
         .@"struct" => @hasDecl(T, "is_zlua_tuple") and T.is_zlua_tuple,
@@ -389,10 +399,17 @@ pub fn isOwnedApiValue(comptime T: type) bool {
     return isTupleResult(T) or T == Value or T == Ref or T == String or T == Table or T == Function or T == Coroutine or T == ErrorRef or T == AnyUserdata or userdata_mod.isHandle(T);
 }
 
+/// Releases the handles in `value`, a pointer to a handle, `Value`, `Tuple`, optional, or Zig tuple.
+pub fn deinit(value: anytype) void {
+    deinitIfOwned(@typeInfo(@TypeOf(value)).pointer.child, value);
+}
+
 pub fn deinitIfOwned(comptime T: type, value: *T) void {
     if (comptime isOwnedApiValue(T)) {
         value.deinit();
     } else if (comptime @typeInfo(T) == .optional) {
         if (value.*) |*payload| deinitIfOwned(@typeInfo(T).optional.child, payload);
+    } else if (comptime isPlainTuple(T)) {
+        inline for (comptime reflection.fieldsOf(T), 0..) |name, index| deinitIfOwned(@FieldType(T, name), &value[index]);
     }
 }
