@@ -85,9 +85,13 @@ fn runSample(io: std.Io, selection: Selection) !Sample {
         .phase_before = counter.beginPhase(),
     };
     // Wrap the observed runtime so host registration keeps per-phase init timings.
-    var api_state: zlua.State = .{
+    const api_state = try allocator.create(zlua.State);
+    api_state.* = .{
         .base_allocator = allocator,
-        .raw_state = try zlua.runtime.State.initWithOptionsObserved(allocator, .{ .stdlib = selection.stdlib }, &init_observer, InitObserver.observe),
+        .raw_state = zlua.runtime.State.initWithOptionsObserved(allocator, .{ .stdlib = selection.stdlib }, &init_observer, InitObserver.observe) catch |err| {
+            allocator.destroy(api_state);
+            return err;
+        },
     };
     var alive = true;
     defer if (alive) api_state.deinit();
@@ -96,7 +100,7 @@ fn runSample(io: std.Io, selection: Selection) !Sample {
     if (selection.host_functions) {
         const before = counter.beginPhase();
         const start = Timestamp.now(io, .awake);
-        try registerHostFunctions(&api_state);
+        try registerHostFunctions(api_state);
         sample.phases[@intFromEnum(Phase.register)] = phaseMetric(&counter, before, elapsedSince(io, start), state.gc.allocationStats().bytes);
     }
 
