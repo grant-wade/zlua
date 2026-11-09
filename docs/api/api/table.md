@@ -9,16 +9,18 @@
 <summary>All documents</summary>
 
 - [root](../root.md)
-- [frontend](../frontend.md)
+- [api](../api.md)
+- [api.analyze](../api/analyze.md)
+- [compile](../compile.md)
 - [errors](../errors.md)
 - [frontend.source](../frontend/source.md)
 - [frontend.token](../frontend/token.md)
+- [frontend](../frontend.md)
 - [frontend.diagnostic](../frontend/diagnostic.md)
 - [frontend.lexer](../frontend/lexer.md)
 - [stack_guard](../stack_guard.md)
 - [frontend.ast](../frontend/ast.md)
 - [frontend.parser](../frontend/parser.md)
-- [compile](../compile.md)
 - [compile.resolver](../compile/resolver.md)
 - [compile.bytecode](../compile/bytecode.md)
 - [compile.proto](../compile/proto.md)
@@ -80,8 +82,6 @@
 - [compile.compiler](../compile/compiler.md)
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
-- [api](../api.md)
-- [api.analyze](../api/analyze.md)
 - [api.callbacks](../api/callbacks.md)
 - [api.convert](../api/convert.md)
 - [api.errors](../api/errors.md)
@@ -130,6 +130,10 @@
 - [testing.generators](../testing/generators.md)
 
 </details>
+
+## Functions
+
+- [storeRaw](#fn-storeraw)
 
 ## Types
 
@@ -420,4 +424,14 @@ pub fn deinit(self: *Iterator) void
 ```
 
 References: [`Iterator`](#type-table-iterator)
+
+<a id="fn-storeraw"></a>
+
+## storeRaw
+
+```zig
+pub fn storeRaw(state: *State, table: *runtime.Table, key: runtime.Value, value: runtime.Value) !void
+```
+
+References: [`runtime.Table`](../runtime.md#alias-table), [`runtime.Value`](../runtime.md#alias-value)
 

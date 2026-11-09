@@ -9,16 +9,18 @@
 <summary>All documents</summary>
 
 - [root](../root.md)
-- [frontend](../frontend.md)
+- [api](../api.md)
+- [api.analyze](../api/analyze.md)
+- [compile](../compile.md)
 - [errors](../errors.md)
 - [frontend.source](../frontend/source.md)
 - [frontend.token](../frontend/token.md)
+- [frontend](../frontend.md)
 - [frontend.diagnostic](../frontend/diagnostic.md)
 - [frontend.lexer](../frontend/lexer.md)
 - [stack_guard](../stack_guard.md)
 - [frontend.ast](../frontend/ast.md)
 - [frontend.parser](../frontend/parser.md)
-- [compile](../compile.md)
 - [compile.resolver](../compile/resolver.md)
 - [compile.bytecode](../compile/bytecode.md)
 - [compile.proto](../compile/proto.md)
@@ -80,8 +82,6 @@
 - [compile.compiler](../compile/compiler.md)
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
-- [api](../api.md)
-- [api.analyze](../api/analyze.md)
 - [api.callbacks](../api/callbacks.md)
 - [api.convert](../api/convert.md)
 - [api.errors](../api/errors.md)
@@ -659,7 +659,7 @@ pub const State = struct {
 | [rootedValue](#fn-state-rootedvalue) | `self: *const State, index: usize` | `Value` |  |
 | [activeRootCount](#fn-state-activerootcount) | `self: State` | `usize` |  |
 | [setApiCallbackDispatch](#fn-state-setapicallbackdispatch) | `self: *State, dispatch: ApiCallbackDispatchFn, user_data: *anyopaque` | `void` |  |
-| [callApiCallbackDispatch](#fn-state-callapicallbackdispatch) | `self: *State, thread: *Thread, op: bytecode.Call, callback_id: usize` | `!void` |  |
+| [callApiCallbackDispatch](#fn-state-callapicallbackdispatch) | `self: *State, thread: *Thread, op: bytecode.Call, callback_id: usize, closure: ?*Table` | `!void` |  |
 | [newTableWithHints](#fn-state-newtablewithhints) | `self: *State, array_hint: u32, hash_hint: u32` | `!Value` |  |
 | [newUserdata](#fn-state-newuserdata) | `self: *State, ptr: *anyopaque, type_id: usize, type_name: []const u8, finalizer: ?UserdataFinalizer, finalizer_data: ?*const anyopaque, deinit_fn: ?UserdataDeinit` | `!Value` |  |
 | [newClosure](#fn-state-newclosure) | `self: *State, thread: *Thread, proto: *const proto_mod.Proto` | `!Value` |  |
@@ -1047,10 +1047,10 @@ References: [`State`](#type-state), [`ApiCallbackDispatchFn`](#alias-apicallback
 ### State.callApiCallbackDispatch
 
 ```zig
-pub fn callApiCallbackDispatch(self: *State, thread: *Thread, op: bytecode.Call, callback_id: usize) !void
+pub fn callApiCallbackDispatch(self: *State, thread: *Thread, op: bytecode.Call, callback_id: usize, closure: ?*Table) !void
 ```
 
-References: [`State`](#type-state), [`Thread`](#alias-thread)
+References: [`State`](#type-state), [`Thread`](#alias-thread), [`Table`](#alias-table)
 
 <a id="fn-state-newtablewithhints"></a>
 

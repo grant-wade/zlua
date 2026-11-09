@@ -9,16 +9,18 @@
 <summary>All documents</summary>
 
 - [root](../root.md)
-- [frontend](../frontend.md)
+- [api](../api.md)
+- [api.analyze](../api/analyze.md)
+- [compile](../compile.md)
 - [errors](../errors.md)
 - [frontend.source](../frontend/source.md)
 - [frontend.token](../frontend/token.md)
+- [frontend](../frontend.md)
 - [frontend.diagnostic](../frontend/diagnostic.md)
 - [frontend.lexer](../frontend/lexer.md)
 - [stack_guard](../stack_guard.md)
 - [frontend.ast](../frontend/ast.md)
 - [frontend.parser](../frontend/parser.md)
-- [compile](../compile.md)
 - [compile.resolver](../compile/resolver.md)
 - [compile.bytecode](../compile/bytecode.md)
 - [compile.proto](../compile/proto.md)
@@ -80,8 +82,6 @@
 - [compile.compiler](../compile/compiler.md)
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
-- [api](../api.md)
-- [api.analyze](../api/analyze.md)
 - [api.callbacks](../api/callbacks.md)
 - [api.convert](../api/convert.md)
 - [api.errors](../api/errors.md)
@@ -144,6 +144,7 @@
 - [fromRuntimeBorrowed](#fn-fromruntimeborrowed)
 - [integerFromFloat](#fn-integerfromfloat)
 - [isOwnedApiValue](#fn-isownedapivalue)
+- [deinit](#fn-deinit)
 - [deinitIfOwned](#fn-deinitifowned)
 
 ## Types
@@ -163,7 +164,7 @@ pub fn expectedLuaType(comptime T: type) []const u8
 ## convertArgs
 
 ```zig
-pub fn convertArgs(state: *State, args: anytype) ![]runtime.Value
+pub fn convertArgs(state: *State, args: anytype) ![argCount(@TypeOf(args))]runtime.Value
 ```
 
 References: [`runtime.Value`](../runtime.md#alias-value)
@@ -286,6 +287,16 @@ pub fn integerFromFloat(value: f64) ?i64
 
 ```zig
 pub fn isOwnedApiValue(comptime T: type) bool
+```
+
+<a id="fn-deinit"></a>
+
+## deinit
+
+Releases the handles in `value`, a pointer to a handle, `Value`, `Tuple`, optional, or Zig tuple.
+
+```zig
+pub fn deinit(value: anytype) void
 ```
 
 <a id="fn-deinitifowned"></a>

@@ -9,16 +9,18 @@
 <summary>All documents</summary>
 
 - [root](../root.md)
-- [frontend](../frontend.md)
+- [api](../api.md)
+- [api.analyze](../api/analyze.md)
+- [compile](../compile.md)
 - [errors](../errors.md)
 - [frontend.source](../frontend/source.md)
 - [frontend.token](../frontend/token.md)
+- [frontend](../frontend.md)
 - [frontend.diagnostic](../frontend/diagnostic.md)
 - [frontend.lexer](../frontend/lexer.md)
 - [stack_guard](../stack_guard.md)
 - [frontend.ast](../frontend/ast.md)
 - [frontend.parser](../frontend/parser.md)
-- [compile](../compile.md)
 - [compile.resolver](../compile/resolver.md)
 - [compile.bytecode](../compile/bytecode.md)
 - [compile.proto](../compile/proto.md)
@@ -80,8 +82,6 @@
 - [compile.compiler](../compile/compiler.md)
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
-- [api](../api.md)
-- [api.analyze](../api/analyze.md)
 - [api.callbacks](../api/callbacks.md)
 - [api.convert](../api/convert.md)
 - [api.errors](../api/errors.md)
@@ -237,14 +237,14 @@ References: [`Limits`](#type-limits)
 
 ## CallOptions
 
-[Options](#type-options) for `Function.callWith` and `Function.protectedCallWith`.
+[Options](#type-options) for `Function.callWith`.
 
 ```zig
 pub const CallOptions = struct {
     /// Per-call instruction budget covering nested calls and coroutines; nested budgets keep
     /// the tighter limit, and `Limits.max_instructions` still applies.
     max_instructions: ?u64 = null,
-    /// Capture a traceback before failing frames unwind; read it via `ErrorRef.traceback`.
+    /// Capture a traceback before failing frames unwind; read it from `State.takeError`.
     traceback: bool = false,
     /// `xpcall`-style handler run at the error point before `__close` handlers; its first
     /// result becomes the error value. Must belong to the called state.
@@ -256,14 +256,14 @@ pub const CallOptions = struct {
 
 ## ResumeOptions
 
-[Options](#type-options) for `Coroutine.protectedResumeWith`.
+[Options](#type-options) for `Coroutine.resumeCoroutineWith`.
 
 ```zig
 pub const ResumeOptions = struct {
     /// Instruction budget for this resume, covering nested calls and coroutines; nested budgets
     /// keep the tighter limit, and `Limits.max_instructions` still applies.
     max_instructions: ?u64 = null,
-    /// Capture a traceback of the failed coroutine; read it via `ErrorRef.traceback`.
+    /// Capture a traceback of the failed coroutine; read it from `State.takeError`.
     traceback: bool = false,
 };
 ```

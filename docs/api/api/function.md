@@ -9,16 +9,18 @@
 <summary>All documents</summary>
 
 - [root](../root.md)
-- [frontend](../frontend.md)
+- [api](../api.md)
+- [api.analyze](../api/analyze.md)
+- [compile](../compile.md)
 - [errors](../errors.md)
 - [frontend.source](../frontend/source.md)
 - [frontend.token](../frontend/token.md)
+- [frontend](../frontend.md)
 - [frontend.diagnostic](../frontend/diagnostic.md)
 - [frontend.lexer](../frontend/lexer.md)
 - [stack_guard](../stack_guard.md)
 - [frontend.ast](../frontend/ast.md)
 - [frontend.parser](../frontend/parser.md)
-- [compile](../compile.md)
 - [compile.resolver](../compile/resolver.md)
 - [compile.bytecode](../compile/bytecode.md)
 - [compile.proto](../compile/proto.md)
@@ -80,8 +82,6 @@
 - [compile.compiler](../compile/compiler.md)
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
-- [api](../api.md)
-- [api.analyze](../api/analyze.md)
 - [api.callbacks](../api/callbacks.md)
 - [api.convert](../api/convert.md)
 - [api.errors](../api/errors.md)
@@ -153,11 +153,9 @@ pub const Function = struct {
 | Name | Parameters | Return Type | Description |
 | --- | --- | --- | --- |
 | [deinit](#fn-function-deinit) | `self: *Function` | `void` |  |
-| [call](#fn-function-call) | `self: Function, args: anytype, comptime R: type` | `!R` | Converts the first result, or a &#96;Tuple&#96;, to &#96;R&#96;; Lua failures return &#96;error.LuaError&#96;. |
-| [callWith](#fn-function-callwith) | `self: Function, args: anytype, comptime R: type, options: CallOptions` | `!R` | &#96;call&#96; with &#96;CallOptions&#96;; on &#96;error.LuaError&#96; the handled error value and traceback are kept on the state. |
-| [protectedCall](#fn-function-protectedcall) | `self: Function, args: anytype, comptime R: type` | `!CallResult(R)` | Like &#96;call&#96;, but returns Lua failures as &#96;CallResult.lua_error&#96;. |
-| [protectedCallWith](#fn-function-protectedcallwith) | `self: Function, args: anytype, comptime R: type, options: CallOptions` | `!CallResult(R)` | &#96;protectedCall&#96; with &#96;CallOptions&#96;; a captured traceback is owned by the &#96;ErrorRef&#96;. |
-| [dumpBytecode](#fn-function-dumpbytecode) | `self: Function, options: BytecodeDumpOptions` | `![]const u8` | Native callbacks return &#96;error.TypeMismatch&#96;. The caller frees the result with the state's allocator. |
+| [call](#fn-function-call) | `self: Function, args: anytype, comptime R: type` | `!R` | Converts the first result, or a &#96;Tuple&#96;, to &#96;R&#96;; Lua failures return &#96;error.LuaError&#96;, and &#96;State.takeError&#96; returns the error value. |
+| [callWith](#fn-function-callwith) | `self: Function, args: anytype, comptime R: type, options: CallOptions` | `!R` |  |
+| [dumpBytecode](#fn-function-dumpbytecode) | `self: Function, writer: *std.Io.Writer, options: BytecodeDumpOptions` | `!void` | Writes the function as a binary chunk; native callbacks return &#96;error.TypeMismatch&#96;. |
 
 <a id="fn-function-deinit"></a>
 
@@ -173,7 +171,8 @@ References: [`Function`](#type-function)
 
 ### Function.call
 
-Converts the first result, or a `Tuple`, to `R`; Lua failures return `error.LuaError`.
+Converts the first result, or a `Tuple`, to `R`; Lua failures return `error.LuaError`, and
+`State.takeError` returns the error value.
 
 ```zig
 pub fn call(self: Function, args: anytype, comptime R: type) !R
@@ -185,35 +184,8 @@ References: [`Function`](#type-function)
 
 ### Function.callWith
 
-`call` with `CallOptions`; on `error.LuaError` the handled error value and traceback
-are kept on the state.
-
 ```zig
 pub fn callWith(self: Function, args: anytype, comptime R: type, options: CallOptions) !R
-```
-
-References: [`Function`](#type-function)
-
-<a id="fn-function-protectedcall"></a>
-
-### Function.protectedCall
-
-Like `call`, but returns Lua failures as `CallResult.lua_error`.
-
-```zig
-pub fn protectedCall(self: Function, args: anytype, comptime R: type) !CallResult(R)
-```
-
-References: [`Function`](#type-function)
-
-<a id="fn-function-protectedcallwith"></a>
-
-### Function.protectedCallWith
-
-`protectedCall` with `CallOptions`; a captured traceback is owned by the `ErrorRef`.
-
-```zig
-pub fn protectedCallWith(self: Function, args: anytype, comptime R: type, options: CallOptions) !CallResult(R)
 ```
 
 References: [`Function`](#type-function)
@@ -222,11 +194,10 @@ References: [`Function`](#type-function)
 
 ### Function.dumpBytecode
 
-Native callbacks return `error.TypeMismatch`.
-The caller frees the result with the state's allocator.
+Writes the function as a binary chunk; native callbacks return `error.TypeMismatch`.
 
 ```zig
-pub fn dumpBytecode(self: Function, options: BytecodeDumpOptions) ![]const u8
+pub fn dumpBytecode(self: Function, writer: *std.Io.Writer, options: BytecodeDumpOptions) !void
 ```
 
 References: [`Function`](#type-function)

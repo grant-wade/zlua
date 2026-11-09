@@ -9,16 +9,18 @@
 <summary>All documents</summary>
 
 - [root](../root.md)
-- [frontend](../frontend.md)
+- [api](../api.md)
+- [api.analyze](../api/analyze.md)
+- [compile](../compile.md)
 - [errors](../errors.md)
 - [frontend.source](../frontend/source.md)
 - [frontend.token](../frontend/token.md)
+- [frontend](../frontend.md)
 - [frontend.diagnostic](../frontend/diagnostic.md)
 - [frontend.lexer](../frontend/lexer.md)
 - [stack_guard](../stack_guard.md)
 - [frontend.ast](../frontend/ast.md)
 - [frontend.parser](../frontend/parser.md)
-- [compile](../compile.md)
 - [compile.resolver](../compile/resolver.md)
 - [compile.bytecode](../compile/bytecode.md)
 - [compile.proto](../compile/proto.md)
@@ -80,8 +82,6 @@
 - [compile.compiler](../compile/compiler.md)
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
-- [api](../api.md)
-- [api.analyze](../api/analyze.md)
 - [api.callbacks](../api/callbacks.md)
 - [api.convert](../api/convert.md)
 - [api.errors](../api/errors.md)
@@ -135,6 +135,9 @@
 
 - [bindDispatch](#fn-binddispatch)
 - [create](#fn-create)
+- [createClosure](#fn-createclosure)
+- [closureValueCount](#fn-closurevaluecount)
+- [continuationHelper](#fn-continuationhelper)
 - [intern](#fn-intern)
 - [typedHostFn](#fn-typedhostfn)
 - [deinitNames](#fn-deinitnames)
@@ -151,6 +154,7 @@
 ## Constants
 
 - [HostFn](#const-hostfn)
+- [closure_values_start](#const-closure_values_start)
 
 <a id="const-hostfn"></a>
 
@@ -192,6 +196,50 @@ pub fn create(state: *State, name: []const u8, callback: HostFn) !Function
 ```
 
 References: [`HostFn`](#const-hostfn)
+
+<a id="fn-createclosure"></a>
+
+## createClosure
+
+A function for the callback entry of `callback` under `name` with `values` bound to it.
+
+```zig
+pub fn createClosure(state: *State, name: []const u8, callback: HostFn, values: []const runtime.Value) !Function
+```
+
+References: [`HostFn`](#const-hostfn), [`runtime.Value`](../runtime.md#alias-value)
+
+<a id="const-closure_values_start"></a>
+
+## closure_values_start
+
+Index of the first bound value in an `api_closure` table, after the callback id and count.
+
+```zig
+pub const closure_values_start = 3;
+```
+
+<a id="fn-closurevaluecount"></a>
+
+## closureValueCount
+
+```zig
+pub fn closureValueCount(closure: *runtime.Table) usize
+```
+
+References: [`runtime.Table`](../runtime.md#alias-table)
+
+<a id="fn-continuationhelper"></a>
+
+## continuationHelper
+
+The Lua function `function(k, f, ...) return k(f(...)) end`, compiled once per state.
+
+```zig
+pub fn continuationHelper(state: *State) !runtime.Value
+```
+
+References: [`runtime.Value`](../runtime.md#alias-value)
 
 <a id="fn-intern"></a>
 

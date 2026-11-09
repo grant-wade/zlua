@@ -9,16 +9,18 @@
 <summary>All documents</summary>
 
 - [root](../root.md)
-- [frontend](../frontend.md)
+- [api](../api.md)
+- [api.analyze](../api/analyze.md)
+- [compile](../compile.md)
 - [errors](../errors.md)
 - [frontend.source](../frontend/source.md)
 - [frontend.token](../frontend/token.md)
+- [frontend](../frontend.md)
 - [frontend.diagnostic](../frontend/diagnostic.md)
 - [frontend.lexer](../frontend/lexer.md)
 - [stack_guard](../stack_guard.md)
 - [frontend.ast](../frontend/ast.md)
 - [frontend.parser](../frontend/parser.md)
-- [compile](../compile.md)
 - [compile.resolver](../compile/resolver.md)
 - [compile.bytecode](../compile/bytecode.md)
 - [compile.proto](../compile/proto.md)
@@ -80,8 +82,6 @@
 - [compile.compiler](../compile/compiler.md)
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
-- [api](../api.md)
-- [api.analyze](../api/analyze.md)
 - [api.callbacks](../api/callbacks.md)
 - [api.convert](../api/convert.md)
 - [api.errors](../api/errors.md)
@@ -179,13 +179,11 @@ pub const Coroutine = struct {
 | Name | Parameters | Return Type | Description |
 | --- | --- | --- | --- |
 | [deinit](#fn-coroutine-deinit) | `self: *Coroutine` | `void` | Releases only the root; use &#96;close&#96; to unwind pending frames. |
-| [resumeCoroutine](#fn-coroutine-resumecoroutine) | `self: Coroutine, args: anytype, comptime Y: type, comptime R: type` | `!ResumeResult(Y, R)` | Converts yields to &#96;Y&#96; and returns to &#96;R&#96;; Lua failures return &#96;error.LuaError&#96;. |
-| [protectedResume](#fn-coroutine-protectedresume) | `self: Coroutine, args: anytype, comptime Y: type, comptime R: type` | `!CallResult(ResumeResult(Y, R))` | Like &#96;resumeCoroutine&#96;, returning Lua errors as an &#96;ErrorRef&#96;. |
-| [protectedResumeWith](#fn-coroutine-protectedresumewith) | `self: Coroutine, args: anytype, comptime Y: type, comptime R: type, options: ResumeOptions` | `!CallResult(ResumeResult(Y, R))` | &#96;protectedResume&#96; with &#96;ResumeOptions&#96;; a captured traceback is owned by the &#96;ErrorRef&#96;. |
+| [resumeCoroutine](#fn-coroutine-resumecoroutine) | `self: Coroutine, args: anytype, comptime Y: type, comptime R: type` | `!ResumeResult(Y, R)` | Converts yields to &#96;Y&#96; and returns to &#96;R&#96;; Lua failures return &#96;error.LuaError&#96;, and &#96;State.takeError&#96; returns the error value. |
+| [resumeCoroutineWith](#fn-coroutine-resumecoroutinewith) | `self: Coroutine, args: anytype, comptime Y: type, comptime R: type, options: ResumeOptions` | `!ResumeResult(Y, R)` |  |
 | [status](#fn-coroutine-status) | `self: Coroutine` | `!CoroutineStatus` |  |
 | [identity](#fn-coroutine-identity) | `self: Coroutine` | `!usize` | State-local token valid while rooted and until reset. |
-| [close](#fn-coroutine-close) | `self: Coroutine` | `!void` | Unwinds pending frames and &#96;__close&#96; handlers; rejects main, running, and normal coroutines. |
-| [protectedClose](#fn-coroutine-protectedclose) | `self: Coroutine` | `!CallResult(void)` | Like &#96;close&#96;, returning Lua errors as an &#96;ErrorRef&#96; the caller must &#96;deinit&#96;. |
+| [close](#fn-coroutine-close) | `self: Coroutine` | `!void` | Unwinds pending frames and &#96;__close&#96; handlers; rejects main, running, and normal coroutines. A Lua error raised while closing returns &#96;error.LuaError&#96;. |
 
 <a id="fn-coroutine-deinit"></a>
 
@@ -203,7 +201,8 @@ References: [`Coroutine`](#type-coroutine)
 
 ### Coroutine.resumeCoroutine
 
-Converts yields to `Y` and returns to `R`; Lua failures return `error.LuaError`.
+Converts yields to `Y` and returns to `R`; Lua failures return `error.LuaError`, and
+`State.takeError` returns the error value.
 
 ```zig
 pub fn resumeCoroutine(self: Coroutine, args: anytype, comptime Y: type, comptime R: type) !ResumeResult(Y, R)
@@ -211,26 +210,12 @@ pub fn resumeCoroutine(self: Coroutine, args: anytype, comptime Y: type, comptim
 
 References: [`Coroutine`](#type-coroutine)
 
-<a id="fn-coroutine-protectedresume"></a>
+<a id="fn-coroutine-resumecoroutinewith"></a>
 
-### Coroutine.protectedResume
-
-Like `resumeCoroutine`, returning Lua errors as an `ErrorRef`.
+### Coroutine.resumeCoroutineWith
 
 ```zig
-pub fn protectedResume(self: Coroutine, args: anytype, comptime Y: type, comptime R: type) !CallResult(ResumeResult(Y, R))
-```
-
-References: [`Coroutine`](#type-coroutine)
-
-<a id="fn-coroutine-protectedresumewith"></a>
-
-### Coroutine.protectedResumeWith
-
-`protectedResume` with `ResumeOptions`; a captured traceback is owned by the `ErrorRef`.
-
-```zig
-pub fn protectedResumeWith(self: Coroutine, args: anytype, comptime Y: type, comptime R: type, options: ResumeOptions) !CallResult(ResumeResult(Y, R))
+pub fn resumeCoroutineWith(self: Coroutine, args: anytype, comptime Y: type, comptime R: type, options: ResumeOptions) !ResumeResult(Y, R)
 ```
 
 References: [`Coroutine`](#type-coroutine)
@@ -262,21 +247,10 @@ References: [`Coroutine`](#type-coroutine)
 ### Coroutine.close
 
 Unwinds pending frames and `__close` handlers; rejects main, running, and normal coroutines.
+A Lua error raised while closing returns `error.LuaError`.
 
 ```zig
 pub fn close(self: Coroutine) !void
-```
-
-References: [`Coroutine`](#type-coroutine)
-
-<a id="fn-coroutine-protectedclose"></a>
-
-### Coroutine.protectedClose
-
-Like `close`, returning Lua errors as an `ErrorRef` the caller must `deinit`.
-
-```zig
-pub fn protectedClose(self: Coroutine) !CallResult(void)
 ```
 
 References: [`Coroutine`](#type-coroutine)

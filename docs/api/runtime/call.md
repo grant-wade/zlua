@@ -9,16 +9,18 @@
 <summary>All documents</summary>
 
 - [root](../root.md)
-- [frontend](../frontend.md)
+- [api](../api.md)
+- [api.analyze](../api/analyze.md)
+- [compile](../compile.md)
 - [errors](../errors.md)
 - [frontend.source](../frontend/source.md)
 - [frontend.token](../frontend/token.md)
+- [frontend](../frontend.md)
 - [frontend.diagnostic](../frontend/diagnostic.md)
 - [frontend.lexer](../frontend/lexer.md)
 - [stack_guard](../stack_guard.md)
 - [frontend.ast](../frontend/ast.md)
 - [frontend.parser](../frontend/parser.md)
-- [compile](../compile.md)
 - [compile.resolver](../compile/resolver.md)
 - [compile.bytecode](../compile/bytecode.md)
 - [compile.proto](../compile/proto.md)
@@ -80,8 +82,6 @@
 - [compile.compiler](../compile/compiler.md)
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
-- [api](../api.md)
-- [api.analyze](../api/analyze.md)
 - [api.callbacks](../api/callbacks.md)
 - [api.convert](../api/convert.md)
 - [api.errors](../api/errors.md)
@@ -156,6 +156,8 @@
 - [runtimeNativeCall](#fn-runtimenativecall)
 - [nativeCallInfo](#fn-nativecallinfo)
 - [invokeValue](#fn-invokevalue)
+- [apiClosureCallbackId](#fn-apiclosurecallbackid)
+- [replaceCall](#fn-replacecall)
 - [nativeStackFits](#fn-nativestackfits)
 - [callStackValueLimit](#fn-callstackvaluelimit)
 - [tailCallValue](#fn-tailcallvalue)
@@ -362,6 +364,24 @@ pub fn nativeCallInfo(thread: *Thread, resolved: bytecode.Call, outer: ?types.Na
 
 ```zig
 pub fn invokeValue(self: *State, thread: *Thread, resolved: bytecode.Call, depth: usize) anyerror!void
+```
+
+<a id="fn-apiclosurecallbackid"></a>
+
+## apiClosureCallbackId
+
+```zig
+pub fn apiClosureCallbackId(table: *types.Table) usize
+```
+
+<a id="fn-replacecall"></a>
+
+## replaceCall
+
+Replaces the call at `resolved` with a call of `callee` on `args`, returning its results in place.
+
+```zig
+pub fn replaceCall(self: *State, thread: *Thread, resolved: bytecode.Call, callee: Value, args: []const Value) !void
 ```
 
 <a id="fn-nativestackfits"></a>

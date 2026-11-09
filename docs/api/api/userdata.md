@@ -9,16 +9,18 @@
 <summary>All documents</summary>
 
 - [root](../root.md)
-- [frontend](../frontend.md)
+- [api](../api.md)
+- [api.analyze](../api/analyze.md)
+- [compile](../compile.md)
 - [errors](../errors.md)
 - [frontend.source](../frontend/source.md)
 - [frontend.token](../frontend/token.md)
+- [frontend](../frontend.md)
 - [frontend.diagnostic](../frontend/diagnostic.md)
 - [frontend.lexer](../frontend/lexer.md)
 - [stack_guard](../stack_guard.md)
 - [frontend.ast](../frontend/ast.md)
 - [frontend.parser](../frontend/parser.md)
-- [compile](../compile.md)
 - [compile.resolver](../compile/resolver.md)
 - [compile.bytecode](../compile/bytecode.md)
 - [compile.proto](../compile/proto.md)
@@ -80,8 +82,6 @@
 - [compile.compiler](../compile/compiler.md)
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
-- [api](../api.md)
-- [api.analyze](../api/analyze.md)
 - [api.callbacks](../api/callbacks.md)
 - [api.convert](../api/convert.md)
 - [api.errors](../api/errors.md)
@@ -134,7 +134,6 @@
 ## Functions
 
 - [UserdataOptions](#fn-userdataoptions)
-- [UserdataPtrOptions](#fn-userdataptroptions)
 - [UserdataSnapshotHooks](#fn-userdatasnapshothooks)
 - [Userdata](#fn-userdata)
 - [bindMethods](#fn-bindmethods)
@@ -162,14 +161,6 @@
 
 ```zig
 pub fn UserdataOptions(comptime T: type) type
-```
-
-<a id="fn-userdataptroptions"></a>
-
-## UserdataPtrOptions
-
-```zig
-pub fn UserdataPtrOptions(comptime T: type) type
 ```
 
 <a id="type-userdatatype"></a>
@@ -302,7 +293,7 @@ pub fn create(state: *State, comptime T: type, value: T, options: UserdataOption
 ## wrapPtr
 
 ```zig
-pub fn wrapPtr(state: *State, comptime T: type, ptr: *T, options: UserdataPtrOptions(T)) !Userdata(T)
+pub fn wrapPtr(state: *State, comptime T: type, ptr: *T, options: UserdataOptions(T)) !Userdata(T)
 ```
 
 <a id="fn-isreceiver"></a>

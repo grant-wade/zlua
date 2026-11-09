@@ -9,16 +9,18 @@
 <summary>All documents</summary>
 
 - [root](root.md)
-- [frontend](frontend.md)
+- [api](api.md)
+- [api.analyze](api/analyze.md)
+- [compile](compile.md)
 - [errors](errors.md)
 - [frontend.source](frontend/source.md)
 - [frontend.token](frontend/token.md)
+- [frontend](frontend.md)
 - [frontend.diagnostic](frontend/diagnostic.md)
 - [frontend.lexer](frontend/lexer.md)
 - [stack_guard](stack_guard.md)
 - [frontend.ast](frontend/ast.md)
 - [frontend.parser](frontend/parser.md)
-- [compile](compile.md)
 - [compile.resolver](compile/resolver.md)
 - [compile.bytecode](compile/bytecode.md)
 - [compile.proto](compile/proto.md)
@@ -80,8 +82,6 @@
 - [compile.compiler](compile/compiler.md)
 - [compile.fold](compile/fold.md)
 - [compile.disasm](compile/disasm.md)
-- [api](api.md)
-- [api.analyze](api/analyze.md)
 - [api.callbacks](api/callbacks.md)
 - [api.convert](api/convert.md)
 - [api.errors](api/errors.md)
@@ -146,7 +146,6 @@ See `docs/embedding.md` for capabilities, error handling, snapshots, and ownersh
 - [Error](#alias-error)
 - [UnsupportedOption](#alias-unsupportedoption)
 - [ConversionError](#alias-conversionerror)
-- [CallResult](#alias-callresult)
 - [ErrorRef](#alias-errorref)
 - [State](#alias-state)
 - [HostData](#alias-hostdata)
@@ -209,7 +208,6 @@ See `docs/embedding.md` for capabilities, error handling, snapshots, and ownersh
 - [AnyUserdata](#alias-anyuserdata)
 - [UserdataOptions](#alias-userdataoptions)
 - [UserdataType](#alias-userdatatype)
-- [UserdataPtrOptions](#alias-userdataptroptions)
 - [UserdataSnapshotHooks](#alias-userdatasnapshothooks)
 - [Analysis](#alias-analysis)
 - [GlobalUse](#alias-globaluse)
@@ -227,6 +225,10 @@ See `docs/embedding.md` for capabilities, error handling, snapshots, and ownersh
 - [Context](#alias-context)
 - [Host](#alias-host)
 - [Caller](#alias-caller)
+
+## Imports
+
+- [deinit](#import-deinit) `@import("api/convert.zig")`
 
 <a id="alias-error"></a>
 
@@ -257,16 +259,6 @@ pub const ConversionError = errors.ConversionError;
 ```
 
 References: [`errors.ConversionError`](api/errors.md#type-conversionerror)
-
-<a id="alias-callresult"></a>
-
-## CallResult
-
-```zig
-pub const CallResult = errors.CallResult;
-```
-
-References: [`errors.CallResult`](api/errors.md#fn-callresult)
 
 <a id="alias-errorref"></a>
 
@@ -768,6 +760,14 @@ pub const Tuple = value.Tuple;
 
 References: [`value.Tuple`](api/value.md#fn-tuple)
 
+<a id="import-deinit"></a>
+
+## deinit
+
+```zig
+pub const deinit = @import("api/convert.zig").deinit;
+```
+
 <a id="alias-ref"></a>
 
 ## Ref
@@ -887,16 +887,6 @@ pub const UserdataType = userdata.UserdataType;
 ```
 
 References: [`userdata.UserdataType`](api/userdata.md#type-userdatatype)
-
-<a id="alias-userdataptroptions"></a>
-
-## UserdataPtrOptions
-
-```zig
-pub const UserdataPtrOptions = userdata.UserdataPtrOptions;
-```
-
-References: [`userdata.UserdataPtrOptions`](api/userdata.md#fn-userdataptroptions)
 
 <a id="alias-userdatasnapshothooks"></a>
 

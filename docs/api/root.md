@@ -8,16 +8,18 @@
 <summary>All documents</summary>
 
 - [root](root.md)
-- [frontend](frontend.md)
+- [api](api.md)
+- [api.analyze](api/analyze.md)
+- [compile](compile.md)
 - [errors](errors.md)
 - [frontend.source](frontend/source.md)
 - [frontend.token](frontend/token.md)
+- [frontend](frontend.md)
 - [frontend.diagnostic](frontend/diagnostic.md)
 - [frontend.lexer](frontend/lexer.md)
 - [stack_guard](stack_guard.md)
 - [frontend.ast](frontend/ast.md)
 - [frontend.parser](frontend/parser.md)
-- [compile](compile.md)
 - [compile.resolver](compile/resolver.md)
 - [compile.bytecode](compile/bytecode.md)
 - [compile.proto](compile/proto.md)
@@ -79,8 +81,6 @@
 - [compile.compiler](compile/compiler.md)
 - [compile.fold](compile/fold.md)
 - [compile.disasm](compile/disasm.md)
-- [api](api.md)
-- [api.analyze](api/analyze.md)
 - [api.callbacks](api/callbacks.md)
 - [api.convert](api/convert.md)
 - [api.errors](api/errors.md)
@@ -130,6 +130,11 @@
 
 </details>
 
+## Overview
+
+zlua's embedding API. `frontend`, `compile`, `errors`, `runtime`, `stdlib`, and `testing` are
+internal and change between versions.
+
 ## Constants
 
 - [version](#const-version)
@@ -157,7 +162,6 @@
 - [Coroutine](#alias-coroutine)
 - [CoroutineStatus](#alias-coroutinestatus)
 - [ResumeResult](#alias-resumeresult)
-- [CallResult](#alias-callresult)
 - [ErrorRef](#alias-errorref)
 - [CallOptions](#alias-calloptions)
 - [ResumeOptions](#alias-resumeoptions)
@@ -169,6 +173,7 @@
 - [BytecodeLoadOptions](#alias-bytecodeloadoptions)
 - [BytecodeDumpOptions](#alias-bytecodedumpoptions)
 - [Tuple](#alias-tuple)
+- [deinit](#alias-deinit)
 - [HostFn](#alias-hostfn)
 - [Analysis](#alias-analysis)
 - [GlobalUse](#alias-globaluse)
@@ -220,14 +225,12 @@
 - [WarningHandler](#alias-warninghandler)
 - [Capabilities](#alias-capabilities)
 - [UserdataOptions](#alias-userdataoptions)
-- [UserdataPtrOptions](#alias-userdataptroptions)
 
 ## Imports
 
 - [frontend](#import-frontend) `@import("frontend.zig")`
 - [compile](#import-compile) `@import("compile.zig")`
 - [errors](#import-errors) `@import("errors.zig")`
-- [api](#import-api) `@import("api.zig")`
 - [runtime](#import-runtime) `@import("runtime.zig")`
 - [stdlib](#import-stdlib) `@import("stdlib.zig")`
 - [testing](#import-testing) `@import("testing.zig")`
@@ -270,14 +273,6 @@ pub const compile = @import("compile.zig");
 
 ```zig
 pub const errors = @import("errors.zig");
-```
-
-<a id="import-api"></a>
-
-## api
-
-```zig
-pub const api = @import("api.zig");
 ```
 
 <a id="import-runtime"></a>
@@ -504,16 +499,6 @@ pub const ResumeResult = api.ResumeResult;
 
 References: [`api.ResumeResult`](api.md#alias-resumeresult)
 
-<a id="alias-callresult"></a>
-
-## CallResult
-
-```zig
-pub const CallResult = api.CallResult;
-```
-
-References: [`api.CallResult`](api.md#alias-callresult)
-
 <a id="alias-errorref"></a>
 
 ## ErrorRef
@@ -623,6 +608,16 @@ pub const Tuple = api.Tuple;
 ```
 
 References: [`api.Tuple`](api.md#alias-tuple)
+
+<a id="alias-deinit"></a>
+
+## deinit
+
+```zig
+pub const deinit = api.deinit;
+```
+
+References: [`api.deinit`](api.md#import-deinit)
 
 <a id="alias-hostfn"></a>
 
@@ -1133,14 +1128,4 @@ pub const UserdataOptions = api.UserdataOptions;
 ```
 
 References: [`api.UserdataOptions`](api.md#alias-userdataoptions)
-
-<a id="alias-userdataptroptions"></a>
-
-## UserdataPtrOptions
-
-```zig
-pub const UserdataPtrOptions = api.UserdataPtrOptions;
-```
-
-References: [`api.UserdataPtrOptions`](api.md#alias-userdataptroptions)
 
