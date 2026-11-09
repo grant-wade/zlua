@@ -20,7 +20,7 @@ pub fn main(init: std.process.Init) !void {
     const lua = try zlua.State.init(allocator, .{});
     defer lua.deinit();
 
-    var new_budget = try lua.registerTyped("new_budget", newBudget);
+    var new_budget = try lua.newTypedFunction("new_budget", newBudget);
     defer new_budget.deinit();
     try lua.setGlobal("new_budget", new_budget);
 

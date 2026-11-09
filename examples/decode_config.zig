@@ -41,7 +41,7 @@ pub fn main() !void {
     };
     _ = report(weapon);
 
-    var report_fn = try lua.registerTyped("report", report);
+    var report_fn = try lua.newTypedFunction("report", report);
     defer report_fn.deinit();
     try lua.setGlobal("report", report_fn);
     var checked = try lua.loadString(
@@ -49,7 +49,7 @@ pub fn main() !void {
         \\return pcall(report, { kind = "bow", might = 1.5 })
     , .{ .name = "=checked" });
     defer checked.deinit();
-    var result = try checked.call(.{}, zlua.Tuple(&.{ bool, zlua.String }));
-    defer result.deinit();
-    std.debug.print("accepted: {}, {s}\n", .{ result.get(0), try result.get(1).bytes() });
+    const accepted, var reason = try checked.call(.{}, struct { bool, zlua.String });
+    defer reason.deinit();
+    std.debug.print("accepted: {}, {f}\n", .{ accepted, reason });
 }

@@ -26,5 +26,5 @@ pub fn main(init: std.process.Init) !void {
     defer greet.deinit();
     var message = try greet.call(.{"zlua"}, zlua.String);
     defer message.deinit();
-    std.debug.print("{s}\n", .{try message.bytes()});
+    std.debug.print("{f}\n", .{message});
 }

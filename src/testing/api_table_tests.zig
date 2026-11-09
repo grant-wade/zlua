@@ -53,7 +53,7 @@ test "table get and set honor function and table metamethods; raw access bypasse
     try expectString("two", t.get(@as(f64, 2.0), api.String));
     try expectLuaError(lua, t.rawSet(null, 1), "table index is nil");
     try expectLuaError(lua, t.rawSet(std.math.nan(f64), 1), "table index is NaN");
-    var plain = try lua.createTable(.{});
+    var plain = try lua.newTable(.{});
     defer plain.deinit();
     try expectLuaError(lua, plain.set(null, 1), "table index is nil");
 
@@ -109,7 +109,7 @@ test "table len honors __len and rawLen ignores it" {
     try expectLuaError(lua, raising.len(), "len boom");
     try std.testing.expectEqual(@as(i64, 0), try raising.rawLen());
 
-    var empty = try lua.createTable(.{});
+    var empty = try lua.newTable(.{});
     defer empty.deinit();
     try std.testing.expectEqual(@as(i64, 0), try empty.len());
 }
@@ -117,13 +117,13 @@ test "table len honors __len and rawLen ignores it" {
 test "table setMetatable matches lua_setmetatable and getMetatable round trips" {
     const lua = try api.State.init(a, .{});
     defer lua.deinit();
-    var t = try lua.createTable(.{});
+    var t = try lua.newTable(.{});
     defer t.deinit();
     try std.testing.expect((try t.getMetatable()) == null);
 
-    var meta = try lua.createTable(.{});
+    var meta = try lua.newTable(.{});
     defer meta.deinit();
-    var fallback = try lua.createTable(.{});
+    var fallback = try lua.newTable(.{});
     defer fallback.deinit();
     try fallback.set("answer", 42);
     try meta.set("__index", fallback);
@@ -141,7 +141,7 @@ test "table setMetatable matches lua_setmetatable and getMetatable round trips" 
         \\assert(not pcall(setmetatable, t, {}))
     , .{});
 
-    var replacement = try lua.createTable(.{});
+    var replacement = try lua.newTable(.{});
     defer replacement.deinit();
     try t.setMetatable(replacement);
     try lua.doString("assert(getmetatable(t) ~= 'locked' and t.answer == nil)", .{});
@@ -151,7 +151,7 @@ test "table setMetatable matches lua_setmetatable and getMetatable round trips" 
 
     const foreign = try api.State.init(a, .{});
     defer foreign.deinit();
-    var foreign_meta = try foreign.createTable(.{});
+    var foreign_meta = try foreign.newTable(.{});
     defer foreign_meta.deinit();
     try std.testing.expectError(error.InvalidHandle, t.setMetatable(foreign_meta));
 }
@@ -160,13 +160,13 @@ test "table setMetatable installs __gc finalizers and __mode weak tables" {
     const lua = try api.State.init(a, .{});
     defer lua.deinit();
     try lua.doString("finalized = 0", .{});
-    var meta = try lua.createTable(.{});
+    var meta = try lua.newTable(.{});
     defer meta.deinit();
     var gc = try lua.loadString("finalized = finalized + 1", .{});
     defer gc.deinit();
     try meta.set("__gc", gc);
     {
-        var doomed = try lua.createTable(.{});
+        var doomed = try lua.newTable(.{});
         defer doomed.deinit();
         try doomed.setMetatable(meta);
     }
@@ -174,14 +174,14 @@ test "table setMetatable installs __gc finalizers and __mode weak tables" {
     try lua.collect();
     try std.testing.expectEqual(@as(i64, 1), try lua.getGlobal("finalized", i64));
 
-    var weak = try lua.createTable(.{});
+    var weak = try lua.newTable(.{});
     defer weak.deinit();
-    var weak_meta = try lua.createTable(.{});
+    var weak_meta = try lua.newTable(.{});
     defer weak_meta.deinit();
     try weak_meta.set("__mode", "v");
     try weak.setMetatable(weak_meta);
     {
-        var value = try lua.createTable(.{});
+        var value = try lua.newTable(.{});
         defer value.deinit();
         try weak.set("entry", value);
     }
@@ -529,7 +529,7 @@ test "preloadModuleFn loads lazily once with Lua 5.5 loader arguments" {
             seen_name_len = name.len;
             @memcpy(seen_data[0..data.len], data);
             seen_data_len = data.len;
-            var module = try ctx.state().createTable(.{});
+            var module = try ctx.state().newTable(.{});
             errdefer module.deinit();
             try module.set("version", 7);
             return module;
@@ -600,12 +600,12 @@ test "preloadModule installs Lua loaders and host require reports errors" {
     try lua.preloadModule("broken", loader);
     try std.testing.expectEqual(@as(?i64, null), try lua.getGlobal("loads", ?i64));
 
-    const Result = api.Tuple(&.{ api.Table, api.String });
+    const Result = struct { api.Table, api.String };
     var result = try lua.require("lazy", Result);
-    defer result.deinit();
-    try expectString("lazy", result.get(0).get("name", api.String));
-    try expectString(":preload:", result.get(0).get("data", api.String));
-    try std.testing.expectEqualStrings(":preload:", try result.get(1).bytes());
+    defer api.deinit(&result);
+    try expectString("lazy", result[0].get("name", api.String));
+    try expectString(":preload:", result[0].get("data", api.String));
+    try std.testing.expectEqualStrings(":preload:", try result[1].bytes());
     try std.testing.expectEqual(@as(i64, 1), try lua.getGlobal("loads", i64));
 
     try expectLuaError(lua, lua.require("broken", api.Table), "loader boom");
@@ -616,9 +616,9 @@ test "preloadModule installs Lua loaders and host require reports errors" {
     try lua.doString("require = function() error('replaced') end", .{});
     var again = try lua.require("lazy", api.Table);
     defer again.deinit();
-    try std.testing.expectEqual(try result.get(0).identity(), try again.identity());
+    try std.testing.expectEqual(try result[0].identity(), try again.identity());
 
-    var eager = try lua.createTable(.{});
+    var eager = try lua.newTable(.{});
     defer eager.deinit();
     try eager.set("ready", true);
     try lua.setLoadedModule("eager", eager);

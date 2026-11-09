@@ -296,7 +296,7 @@ pub const State = struct {
     }
 
     /// Converts a Zig value into a rooted `Value`.
-    pub fn push(self: *State, value: anytype) !Value {
+    pub fn toValue(self: *State, value: anytype) !Value {
         var result = try convert.fromRuntimeValue(self, try convert.toRuntimeValue(self, value), Value);
         errdefer result.deinit();
         try gcBoundary(self);
@@ -321,7 +321,7 @@ pub const State = struct {
 
     /// Creates a table holding the fields of struct `values`, or the tags and exported public
     /// declarations of struct or enum type `values`.
-    pub fn createTableFrom(self: *State, values: anytype) !Table {
+    pub fn newTableFrom(self: *State, values: anytype) !Table {
         const raw = try convert.toRuntimeValue(self, values);
         var table = try convert.fromRuntimeValue(self, raw, Table);
         errdefer table.deinit();
@@ -341,35 +341,35 @@ pub const State = struct {
     }
 
     /// Wraps an untyped callback as a Lua function; it is not installed automatically.
-    pub fn register(self: *State, name: []const u8, callback: HostFn) !Function {
+    pub fn newFunction(self: *State, name: []const u8, callback: HostFn) !Function {
         return callbacks.create(self, name, callback);
     }
 
-    /// Like `register`, reading parameters from Lua arguments by type; `*Context` is injected.
-    pub fn registerTyped(self: *State, name: []const u8, comptime function: anytype) !Function {
-        return self.register(name, callbacks.typedHostFn(function));
+    /// Like `newFunction`, reading parameters from Lua arguments by type; `*Context` is injected.
+    pub fn newTypedFunction(self: *State, name: []const u8, comptime function: anytype) !Function {
+        return self.newFunction(name, callbacks.typedHostFn(function));
     }
 
-    /// Like `registerTyped`, binding the values of tuple `upvalues` to the function; the callback
-    /// reads them with `Context.upvalue` and replaces them with `Context.setUpvalue`.
-    pub fn registerClosure(self: *State, name: []const u8, comptime function: anytype, upvalues: anytype) !Function {
+    /// Like `newTypedFunction`, binding the values of tuple `upvalues` to the function; the
+    /// callback reads them with `Context.upvalue` and replaces them with `Context.setUpvalue`.
+    pub fn newClosure(self: *State, name: []const u8, comptime function: anytype, upvalues: anytype) !Function {
         const raw_upvalues = try convert.convertArgs(self, upvalues);
         return callbacks.createClosure(self, name, callbacks.typedHostFn(function), &raw_upvalues);
     }
 
-    /// Registers a Lua constructor that reads `initializer`'s arguments by type (`*Context` is
+    /// Creates a Lua constructor that reads `initializer`'s arguments by type (`*Context` is
     /// injected) and wraps its `T` or `!T` result with `newUserdata`.
-    pub fn registerConstructor(self: *State, comptime T: type, name: []const u8, comptime initializer: anytype, comptime options: UserdataOptions(T)) !Function {
+    pub fn newConstructor(self: *State, comptime T: type, name: []const u8, comptime initializer: anytype, comptime options: UserdataOptions(T)) !Function {
         const Wrapper = struct {
             fn call(ctx: *Context) !void {
                 try callbacks.callUserdataInitializer(T, initializer, options, ctx);
             }
         };
 
-        return self.register(name, Wrapper.call);
+        return self.newFunction(name, Wrapper.call);
     }
 
-    pub fn createTable(self: *State, options: TableOptions) !Table {
+    pub fn newTable(self: *State, options: TableOptions) !Table {
         const raw = self.raw_state.newTableWithHints(options.array_hint, options.hash_hint) catch |err| return errors.captureLuaError(self, err);
         var table = try convert.fromRuntimeValue(self, raw, Table);
         errdefer table.deinit();
@@ -393,16 +393,16 @@ pub const State = struct {
         return userdata_mod.define(self, T, options);
     }
 
-    /// Allocates Lua-owned userdata initialized with `value`, defining `T` with `defineUserdata` on
-    /// first use. An explicit `options.metatable` gets `T`'s methods instead.
+    /// Allocates Lua-owned userdata initialized with `value`, defining `T` on first use with its
+    /// `lua_userdata` options. An explicit `options.metatable` gets `T`'s methods instead.
     pub fn newUserdata(self: *State, comptime T: type, value: T, options: UserdataOptions(T)) !Userdata(T) {
         if (options.metatable == null) {
-            if (!userdata_mod.isDefined(self, T)) try userdata_mod.define(self, T, .{});
+            if (!userdata_mod.isDefined(self, T)) try userdata_mod.defineDeclared(self, T);
             return userdata_mod.create(self, T, value, options);
         }
         var userdata = try userdata_mod.create(self, T, value, options);
         errdefer userdata.deinit();
-        try userdata_mod.bindMethods(T, userdata, T);
+        try userdata_mod.bindDeclared(T, userdata);
         return userdata;
     }
 
@@ -410,12 +410,12 @@ pub const State = struct {
     /// `newUserdata` does.
     pub fn wrapUserdata(self: *State, comptime T: type, ptr: *T, options: UserdataOptions(T)) !Userdata(T) {
         if (options.metatable == null) {
-            if (!userdata_mod.isDefined(self, T)) try userdata_mod.define(self, T, .{});
+            if (!userdata_mod.isDefined(self, T)) try userdata_mod.defineDeclared(self, T);
             return userdata_mod.wrapPtr(self, T, ptr, options);
         }
         var userdata = try userdata_mod.wrapPtr(self, T, ptr, options);
         errdefer userdata.deinit();
-        try userdata_mod.bindMethods(T, userdata, T);
+        try userdata_mod.bindDeclared(T, userdata);
         return userdata;
     }
 
@@ -433,15 +433,15 @@ pub const State = struct {
         try preload.set(name, loader);
     }
 
-    /// Registers `loader` like `registerTyped` and installs it with `preloadModule`.
+    /// Wraps `loader` as `newTypedFunction` does and installs it with `preloadModule`.
     pub fn preloadModuleFn(self: *State, name: []const u8, comptime loader: anytype) !void {
-        var function = try self.registerTyped(name, loader);
+        var function = try self.newTypedFunction(name, loader);
         defer function.deinit();
         try self.preloadModule(name, function);
     }
 
     /// Calls the built-in `require(name)`, opening `package` if needed, and converts the result.
-    /// Loaders cannot yield; use `Tuple(&.{ M, []const u8 })` to also read the loader data.
+    /// Loaders cannot yield; read a `struct { M, String }` to also get the loader data.
     pub fn require(self: *State, name: []const u8, comptime T: type) !T {
         try self.ensurePackageLibrary();
         callbacks.bindDispatch(self);
@@ -543,8 +543,8 @@ pub const State = struct {
         try errors.writeErrorValue(self, errors.lastErrorValue(self), writer);
     }
 
-    /// Takes the last Lua error value, with its traceback when one was captured; the caller must
-    /// `deinit` it.
+    /// Takes the Lua error of the last call or resume, with its traceback when one was captured;
+    /// the caller must `deinit` it.
     pub fn takeError(self: *State) ?ErrorRef {
         const index = self.last_error_root orelse return null;
         self.last_error_root = null;

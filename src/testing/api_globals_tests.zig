@@ -140,7 +140,7 @@ test "a Zig function converts to one callback however often it is converted" {
     try lua.setGlobal("add", add);
     const registered = lua.callbacks.items.len;
     for (0..10) |_| try lua.setGlobals(.{ .again = add, .math = .{ .add = add } });
-    var t = try lua.createTable(.{});
+    var t = try lua.newTable(.{});
     defer t.deinit();
     for (0..10) |_| try t.set("add", add);
 
@@ -152,7 +152,7 @@ test "functions convert wherever Zig values go to Lua" {
     const lua = try api.State.init(a, .{ .stdlib = .full });
     defer lua.deinit();
 
-    var t = try lua.createTable(.{});
+    var t = try lua.newTable(.{});
     defer t.deinit();
     try t.set("add", add);
     try lua.setGlobal("t", t);
@@ -187,19 +187,19 @@ test "Table.setFields assigns through __newindex" {
     , .{});
 }
 
-test "createTableFrom builds a sandboxed environment" {
+test "newTableFrom builds a sandboxed environment" {
     const lua = try api.State.init(a, .{});
     defer lua.deinit();
 
-    var env = try lua.createTableFrom(.{ .add = add, .base = 10 });
+    var env = try lua.newTableFrom(.{ .add = add, .base = 10 });
     defer env.deinit();
     var chunk = try lua.loadString("return add(base, 5), print", .{ .name = "=env", .environment = env });
     defer chunk.deinit();
 
-    var result = try chunk.call(.{}, api.Tuple(&.{ i64, ?api.Function }));
-    defer result.deinit();
-    try std.testing.expectEqual(@as(i64, 15), result.get(0));
-    try std.testing.expect(result.get(1) == null);
+    var result = try chunk.call(.{}, struct { i64, ?api.Function });
+    defer api.deinit(&result);
+    try std.testing.expectEqual(@as(i64, 15), result[0]);
+    try std.testing.expect(result[1] == null);
 }
 
 test "a struct type converts to a table of its exported public declarations" {
@@ -226,13 +226,13 @@ test "a struct type converts to a table of its exported public declarations" {
     , .{});
     try std.testing.expectEqual(@as(i64, 42), Api.counter);
 
-    var module = try lua.createTableFrom(Api.math);
+    var module = try lua.newTableFrom(Api.math);
     defer module.deinit();
     var nested = try module.get("nested", api.Table);
     defer nested.deinit();
     try std.testing.expectEqual(@as(i64, 2), try nested.get("depth", i64));
 
-    var kinds = try lua.createTableFrom(Api.Kind);
+    var kinds = try lua.newTableFrom(Api.Kind);
     defer kinds.deinit();
     try expectString("sword", kinds.get("sword", api.String));
 }

@@ -1,4 +1,3 @@
-const convert = @import("convert.zig");
 const AnyUserdata = @import("userdata.zig").AnyUserdata;
 const Coroutine = @import("coroutine.zig").Coroutine;
 const Function = @import("function.zig").Function;
@@ -43,23 +42,3 @@ pub const Value = union(enum) {
         };
     }
 };
-
-/// Converts multiple Lua return values.
-pub fn Tuple(comptime types: []const type) type {
-    return struct {
-        /// Marker for zlua's compile-time conversions.
-        pub const is_zlua_tuple = true;
-        pub const field_types = types;
-
-        values: @Tuple(types),
-
-        pub fn deinit(self: *@This()) void {
-            inline for (types, 0..) |Field, index| convert.deinitIfOwned(Field, &self.values[index]);
-            self.* = undefined;
-        }
-
-        pub fn get(self: *const @This(), comptime index: usize) types[index] {
-            return self.values[index];
-        }
-    };
-}

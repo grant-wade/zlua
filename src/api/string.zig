@@ -19,6 +19,11 @@ pub const String = struct {
         };
     }
 
+    /// Writes the string's bytes for the `{f}` format specifier.
+    pub fn format(self: String, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        try writer.writeAll(self.bytes() catch return error.WriteFailed);
+    }
+
     /// A copy of the string's bytes owned by `allocator`.
     pub fn dupe(self: String, allocator: std.mem.Allocator) ![]u8 {
         return allocator.dupe(u8, try self.bytes());

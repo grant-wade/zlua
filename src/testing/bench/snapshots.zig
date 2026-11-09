@@ -30,7 +30,7 @@ fn initializeSnapshotWorkload(allocator: std.mem.Allocator, workload: SnapshotWo
             for (0..128) |i| {
                 var buffer: [32]u8 = undefined;
                 const name = try std.fmt.bufPrint(&buffer, "host_{d}", .{i});
-                var callback = try lua.registerTyped(name, struct {
+                var callback = try lua.newTypedFunction(name, struct {
                     fn identity(v: i64) i64 {
                         return v;
                     }

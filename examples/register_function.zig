@@ -7,7 +7,7 @@ pub fn main() !void {
     const lua = try zlua.State.init(allocator, .{});
     defer lua.deinit();
 
-    var host_add = try lua.register("host_add", hostAdd);
+    var host_add = try lua.newFunction("host_add", hostAdd);
     defer host_add.deinit();
     try lua.setGlobal("host_add", host_add);
 
@@ -17,11 +17,10 @@ pub fn main() !void {
     , .{ .name = "=register_function" });
     defer chunk.deinit();
 
-    const Result = zlua.Tuple(&.{ i64, zlua.String });
-    var result = try chunk.call(.{}, Result);
-    defer result.deinit();
+    const sum, var status = try chunk.call(.{}, struct { i64, zlua.String });
+    defer status.deinit();
 
-    std.debug.print("{d} {s}\n", .{ result.get(0), try result.get(1).bytes() });
+    std.debug.print("{d} {f}\n", .{ sum, status });
 }
 
 fn hostAdd(ctx: *zlua.Context) !void {

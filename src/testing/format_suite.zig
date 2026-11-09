@@ -118,7 +118,7 @@ const Codecs = struct {
             .msgpack_write = try msgpack.get("write", api.Function),
             .csv_read = try csv.get("read", api.Function),
             .csv_write = try csv.get("write", api.Function),
-            .sections = try lua.createTableFrom(.{ .layout = "sections" }),
+            .sections = try lua.newTableFrom(.{ .layout = "sections" }),
         };
     }
 

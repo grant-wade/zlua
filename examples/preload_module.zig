@@ -11,7 +11,7 @@ pub fn main() !void {
     try lua.preloadModuleFn("host", openHost);
 
     // Eager: an already built table goes straight into package.loaded.
-    var config = try lua.createTable(.{});
+    var config = try lua.newTable(.{});
     defer config.deinit();
     try config.set("greeting", "hello");
     try lua.setLoadedModule("config", config);
@@ -23,25 +23,24 @@ pub fn main() !void {
     , .{ .name = "=preload_module" });
     defer chunk.deinit();
 
-    const Result = zlua.Tuple(&.{ zlua.String, i64 });
-    var result = try chunk.call(.{}, Result);
-    defer result.deinit();
-    std.debug.print("{s} {d}\n", .{ try result.get(0).bytes(), result.get(1) });
+    var greeting, const doubled = try chunk.call(.{}, struct { zlua.String, i64 });
+    defer greeting.deinit();
+    std.debug.print("{f} {d}\n", .{ greeting, doubled });
 
     // The host can require modules too; this returns the cached table.
     var host = try lua.require("host", zlua.Table);
     defer host.deinit();
     var loaded_by = try host.get("loaded_by", zlua.String);
     defer loaded_by.deinit();
-    std.debug.print("loaded by {s}\n", .{try loaded_by.bytes()});
+    std.debug.print("loaded by {f}\n", .{loaded_by});
 }
 
 fn openHost(ctx: *zlua.Context, name: []const u8, loader_data: []const u8) !zlua.Table {
     _ = name;
-    var module = try ctx.state().createTable(.{});
+    var module = try ctx.state().newTable(.{});
     errdefer module.deinit();
 
-    var double_fn = try ctx.state().register("host_double", hostDouble);
+    var double_fn = try ctx.state().newFunction("host_double", hostDouble);
     defer double_fn.deinit();
     try module.set("double", double_fn);
     try module.set("name", "host-module");

@@ -30,7 +30,7 @@ pub fn main() !void {
     });
     defer lua.deinit();
 
-    var emit_fn = try lua.register("emit", emit);
+    var emit_fn = try lua.newFunction("emit", emit);
     defer emit_fn.deinit();
     try lua.setGlobal("emit", emit_fn);
     try lua.doFile("plugin.lua", .{ .name = "@plugin.lua" });

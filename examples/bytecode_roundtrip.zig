@@ -19,7 +19,7 @@ pub fn main() !void {
     const runner = try zlua.State.init(allocator, .{});
     defer runner.deinit();
 
-    var env = try runner.createTable(.{ .hash_hint = 1 });
+    var env = try runner.newTable(.{ .hash_hint = 1 });
     defer env.deinit();
     try env.set("greeting", "hello");
 
@@ -28,5 +28,5 @@ pub fn main() !void {
 
     var message = try cached.call(.{"bytecode"}, zlua.String);
     defer message.deinit();
-    std.debug.print("{s}\n", .{try message.bytes()});
+    std.debug.print("{f}\n", .{message});
 }

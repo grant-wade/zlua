@@ -380,8 +380,8 @@ Zig values convert to Lua automatically:
 | struct type | table of its [public declarations](#zig-namespaces) |
 | `String`, `Table`, `Function`, `Ref`, `Value`, `Userdata(T)` | existing Lua value |
 
-Reads name the type they want. A Zig tuple type or a `zlua.Tuple` reads
-multiple return values, and `zlua.Value` holds a value of unknown type:
+Reads name the type they want. A tuple type reads multiple return values, and
+`zlua.Value` holds a value of unknown type:
 
 ```zig
 try lua.setGlobal("answer", 42);
@@ -389,13 +389,13 @@ const answer = try lua.getGlobal("answer", i64);
 
 var result = try chunk.call(.{}, struct { bool, i64, zlua.String });
 defer zlua.deinit(&result);
+const ok, const count, const label = result;
 ```
 
 `zlua.deinit` releases the handles in a tuple, optional, `Value`, or handle.
-`Tuple.get` and `.values` read a `zlua.Tuple`'s elements, and `Tuple.deinit`
-releases them. `Value.typeName` returns the name Lua's `type` gives a value.
-Reading an enum, struct, or non-byte slice is a compile error; read a `Value`
-and pass it to [`decode`](#decoding-tables).
+`Value.typeName` returns the name Lua's `type` gives a value. Reading an enum,
+struct, or non-byte slice is a compile error; read a `Value` and pass it to
+[`decode`](#decoding-tables).
 
 `String`, `Table`, `Function`, `Coroutine`, `Ref`, userdata, and `ErrorRef`
 handles each own a registry root, as do values and tuples containing them. Call
@@ -416,12 +416,14 @@ return scope.keep(players); // the caller deinits it
 
 Strings read from Lua are `zlua.String` handles, including `Value.string`.
 `bytes()` returns the string's bytes, valid until the handle's `deinit` or a
-`reset`, and `dupe(allocator)` returns a copy:
+`reset`, `dupe(allocator)` returns a copy, and the `{f}` format specifier prints
+them:
 
 ```zig
 var title = try config.get("title", zlua.String);
 defer title.deinit();
-std.debug.print("{s}\n", .{try title.bytes()});
+const is_demo = std.mem.eql(u8, try title.bytes(), "demo");
+std.debug.print("{f}\n", .{title});
 ```
 
 Callback arguments can also be read as `[]const u8`, and userdata arguments as
@@ -431,7 +433,7 @@ Reading either type anywhere else is a compile error.
 ## Tables and Modules
 
 ```zig
-var config = try lua.createTable(.{ .hash_hint = 3 });
+var config = try lua.newTable(.{ .hash_hint = 3 });
 defer config.deinit();
 
 try config.set("title", "demo");
@@ -457,7 +459,7 @@ slice. A hole or an element of the wrong type returns `error.TypeMismatch`, and
 var it = try inventory.pairs();
 defer it.deinit();
 while (try it.next()) |entry| {
-    std.debug.print("{s} = {d}\n", .{ try entry.key.string.bytes(), entry.value.integer });
+    std.debug.print("{f} = {d}\n", .{ entry.key.string, entry.value.integer });
 }
 ```
 
@@ -485,13 +487,13 @@ try lua.setGlobals(.{
 });
 ```
 
-`createTableFrom` builds a `Table` the same way, for example as a chunk's
+`newTableFrom` builds a `Table` the same way, for example as a chunk's
 `environment`. `Table.setFields` assigns each field to an existing table through
 `__newindex`.
 
 Converting the same Zig function again reuses its Lua function. A function must
 be passed directly; a function pointer is a compile error, and
-`registerTyped` wraps one.
+`newTypedFunction` wraps one.
 
 ### Zig Namespaces
 
@@ -522,7 +524,7 @@ try lua.setLoadedModule("inventory", @import("inventory.zig"));
 | `pub const` struct type, such as `@import("math.zig")` | nested table, when it has public declarations |
 | `pub const` enum type | table mapping each tag to its name, plus its public declarations |
 | a type already being converted, such as `@This()` | left out |
-| other types, `lua` | left out |
+| other types, `lua`, `lua_userdata` | left out |
 
 A struct's fields aren't exported; create instances as [userdata](#userdata).
 
@@ -551,7 +553,7 @@ pub const lua = .{
 
 ```zig
 fn openHost(ctx: *zlua.Context) !zlua.Table {
-    var module = try ctx.state().createTable(.{});
+    var module = try ctx.state().newTable(.{});
     errdefer module.deinit();
     try module.set("version", 1);
     return module; // released after conversion
@@ -565,7 +567,7 @@ defer host.deinit();
 
 ## Host Callbacks
 
-`register` turns a Zig function into a Lua function. The callback reads
+`newFunction` turns a Zig function into a Lua function. The callback reads
 arguments and returns values through a `Context`:
 
 ```zig
@@ -575,26 +577,26 @@ fn hostAdd(ctx: *zlua.Context) !void {
     try ctx.returnValues(.{ lhs + rhs, "ok" });
 }
 
-var host_add = try lua.register("host_add", hostAdd);
+var host_add = try lua.newFunction("host_add", hostAdd);
 defer host_add.deinit();
 try lua.setGlobal("host_add", host_add);
 ```
 
-Registered callbacks are native functions: `debug.getinfo` reports `what = "C"`,
+Callbacks are native functions: `debug.getinfo` reports `what = "C"`,
 `string.dump` rejects them, and `Function.dumpBytecode` returns
 `error.TypeMismatch`. A rooted handle read with `ctx.arg` must be deinitialized
 by the callback.
 
 ### Typed Callbacks
 
-`registerTyped` converts parameters and return values:
+`newTypedFunction` converts parameters and return values:
 
 ```zig
 fn clamp(value: f64, min: f64, max: f64) f64 {
     return @min(@max(value, min), max);
 }
 
-var clamp_fn = try lua.registerTyped("clamp", clamp);
+var clamp_fn = try lua.newTypedFunction("clamp", clamp);
 defer clamp_fn.deinit();
 try lua.setGlobal("clamp", clamp_fn);
 ```
@@ -634,9 +636,9 @@ baseline's. A worker on another thread can call `setHost` with its own.
 
 ### Bound Values
 
-`registerClosure(name, function, values)` registers a typed callback with the
-Lua values in tuple `values` bound to it, like the upvalues of a C closure. Each
-registration has its own values:
+`newClosure(name, function, values)` creates a function from a typed callback
+with the Lua values in tuple `values` bound to it, like the upvalues of a C
+closure. Each function has its own values:
 
 ```zig
 fn count(ctx: *zlua.Context) !i64 {
@@ -645,7 +647,7 @@ fn count(ctx: *zlua.Context) !i64 {
     return next;
 }
 
-var counter = try lua.registerClosure("count", count, .{@as(i64, 0)});
+var counter = try lua.newClosure("count", count, .{@as(i64, 0)});
 defer counter.deinit();
 try lua.setGlobal("count", counter);
 ```
@@ -665,7 +667,7 @@ are Lua values, so snapshots copy them and `reset` restores them.
 | `raise(value)` | Raises any value as a Lua error. |
 | `raisef(fmt, args)` | Raises a formatted message starting with the Lua position, like `error`. |
 | `argError(index, message)` | Raises a `bad argument` error. |
-| `functionName()` | Returns the name the callback was registered under. |
+| `functionName()` | Returns the name the callback's function was created with. |
 | `caller(level)` | Describes a Lua function on the callback's coroutine: `source`, `shortSource(&buffer)` with a `[zlua.Caller.short_source_len]u8` buffer, and `line`. Level 0 is the innermost, native functions are not counted, and it returns null past the last function. |
 | `currentLine()` | Returns the line of the running Lua function, or null when there is none or its debug info is stripped. |
 | `callNonYielding(function, args, R)` | Calls Lua on the callback's coroutine, within its instruction budget, with yields forbidden. Lua errors propagate after cleanup, and completed effects stay. |
@@ -759,13 +761,13 @@ const sum = try add.call(.{ 20, 22 }, i64);
 step.
 
 `call` and the other state calls report Lua failures as `error.LuaError`, and
-the state keeps the error until the next one:
+the state keeps the error until the next call or resume:
 
 | Call | Effect |
 | --- | --- |
 | `takeError()` | Returns the rooted Lua error as an `ErrorRef`, which the caller deinits. |
 | `writeError(err, writer)` | Writes the message for `error.LuaError`, or the error's name for any other error. |
-| `ErrorRef.writeMessage(writer)` | Writes the error's message. |
+| `ErrorRef.writeMessage(writer)` | Writes the error's message, as the `{f}` format specifier does. |
 | `ErrorRef.value()` | Returns the error value. |
 
 ```zig
@@ -773,7 +775,7 @@ add.call(.{ "bad", 1 }, i64) catch |err| {
     if (err != error.LuaError) return err;
     var lua_error = lua.takeError().?;
     defer lua_error.deinit();
-    try lua_error.writeMessage(stderr);
+    std.debug.print("{f}\n", .{lua_error});
 };
 ```
 
@@ -792,7 +794,7 @@ When a script calls `error(nil)`, `ErrorRef.value` returns `.nil`.
 `newCoroutine(function)` creates a suspended coroutine, and
 `resumeCoroutine(args, Yield, Return)` runs it until it yields or returns. The
 first resume passes `args` to the function, and later resumes make them the
-results of the pending yield. Use `Tuple` for multiple values and `void` to
+results of the pending yield. Use a tuple type for multiple values and `void` to
 ignore them:
 
 ```zig
@@ -809,8 +811,8 @@ while (try story.status() == .suspended) {
     var step = try story.resumeCoroutine(.{}, zlua.String, zlua.String);
     defer step.deinit();
     switch (step) {
-        .yielded => |text| std.debug.print("yielded: {s}\n", .{try text.bytes()}),
-        .returned => |text| std.debug.print("returned: {s}\n", .{try text.bytes()}),
+        .yielded => |text| std.debug.print("yielded: {f}\n", .{text}),
+        .returned => |text| std.debug.print("returned: {f}\n", .{text}),
     }
 }
 ```
@@ -876,13 +878,13 @@ The continuation is a typed callback whose [bound values](#bound-values) are the
 tuple `saved`, and its returns become the original callback's. It can end with
 `callThen` or `yieldThen` itself. A suspended continuation is part of the
 coroutine, so snapshots capture it. Lua errors propagate through both calls, and
-tracebacks show the pending call as a `[C]` frame.
+tracebacks and the `debug` library show the pending call as a C function.
 
 ## Userdata
 
 `newUserdata` stores a Zig value that Lua owns, and `wrapUserdata` wraps
 storage the host owns. Public functions of `T` whose first parameter is `*T` or
-`*const T` become methods, and names beginning with `__` become metamethods:
+`*const T` become methods, and Lua names beginning with `__` become metamethods:
 
 ```zig
 const Counter = struct {
@@ -902,6 +904,26 @@ try lua.setGlobal("counter", counter);
 `ptr()` returns the payload pointer, and callbacks take either kind as a typed
 argument, such as `ctx.arg(0, *Counter)`. `AnyUserdata.as(T)` checks the payload
 type and returns another rooted handle.
+
+A method Lua can't call, such as one that takes a `std.mem.Allocator`, is a
+compile error. The `lua` declaration of `T` leaves methods out or renames them,
+as it does for a [namespace](#zig-namespaces):
+
+```zig
+const Buffer = struct {
+    bytes: std.ArrayList(u8) = .empty,
+
+    pub const lua = .{
+        .deinit = .{ .skip = true },
+        .length = .{ .key = "len" },
+        .close = .{ .key = "__close" },
+    };
+
+    pub fn deinit(self: *Buffer, gpa: std.mem.Allocator) void { ... }
+    pub fn length(self: *const Buffer) i64 { ... }
+    pub fn close(self: *Buffer) void { ... }
+};
+```
 
 | Option or call | Effect |
 | --- | --- |
@@ -940,9 +962,23 @@ defer canvas.deinit();
 ```
 
 `.name` sets `__name`, which `tostring` and argument errors show. `.methods`
-names another struct to take the methods from.
+names another struct to take the methods from, and its `lua` declaration applies
+to them.
 
-`registerConstructor(T, name, initializer, options)` creates a Lua function that
+A `lua_userdata` declaration on `T` gives the same options to the first
+`newUserdata` or `wrapUserdata`. `.methods = struct {}` binds no methods:
+
+```zig
+const Session = struct {
+    token: u64,
+
+    pub const lua_userdata = .{ .name = "session", .methods = struct {} };
+
+    pub fn revoke(self: *Session) void { ... }
+};
+```
+
+`newConstructor(T, name, initializer, options)` creates a Lua function that
 reads `initializer`'s arguments by type and returns its result as userdata.
 
 ## Snapshots

@@ -39,9 +39,9 @@ test "shared userdata metatables equality raw table traversal and host type chec
     };
     const lua = try api.State.init(a, .{});
     defer lua.deinit();
-    var meta = try lua.createTable(.{});
+    var meta = try lua.newTable(.{});
     defer meta.deinit();
-    var eq = try lua.register("equal", Host.eq);
+    var eq = try lua.newFunction("equal", Host.eq);
     defer eq.deinit();
     try meta.set("__eq", eq);
     try lua.setGlobal("host_eq", eq);
@@ -96,7 +96,7 @@ test "inline and spilled callback results remain rooted across GC and nested cal
         fn results(ctx: *api.Context) !void {
             const count = try ctx.arg(0, usize);
             for (0..count) |i| {
-                var table = try ctx.state().createTable(.{});
+                var table = try ctx.state().newTable(.{});
                 try table.set("n", i);
                 try ctx.pushReturn(table);
                 table.deinit();
@@ -121,7 +121,7 @@ test "inline and spilled callback results remain rooted across GC and nested cal
             _ = try lua.setGcParam(.stepsize, 8);
             _ = try lua.setGcParam(.stepmul, 100);
         }
-        var function = try lua.register("results", Host.results);
+        var function = try lua.newFunction("results", Host.results);
         defer function.deinit();
         try lua.setGlobal("results", function);
         try runLua(lua,
@@ -153,7 +153,7 @@ test "non-yielding callback stays on the current thread and unwinds before retur
     };
     const lua = try api.State.init(a, .{});
     defer lua.deinit();
-    var function = try lua.register("host_call", Host.call);
+    var function = try lua.newFunction("host_call", Host.call);
     defer function.deinit();
     try lua.setGlobal("host_call", function);
     try runLua(lua,
@@ -378,7 +378,7 @@ test "host callback arguments from multiple results survive a full collection" {
     };
     const lua = try api.State.init(a, .{});
     defer lua.deinit();
-    var function = try lua.register("join", Host.join);
+    var function = try lua.newFunction("join", Host.join);
     defer function.deinit();
     try lua.setGlobal("join", function);
     try runLua(lua,
@@ -401,7 +401,7 @@ test "thread frame storage stays current while frames hold pending returns" {
     Host.count = 0;
     const lua = try api.State.init(a, .{});
     defer lua.deinit();
-    var function = try lua.register("probe", Host.probe);
+    var function = try lua.newFunction("probe", Host.probe);
     defer function.deinit();
     try lua.setGlobal("probe", function);
     try runLua(lua,

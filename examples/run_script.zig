@@ -15,5 +15,5 @@ pub fn main() !void {
 
     var message = try chunk.call(.{"zlua"}, zlua.String);
     defer message.deinit();
-    std.debug.print("{s}\n", .{try message.bytes()});
+    std.debug.print("{f}\n", .{message});
 }

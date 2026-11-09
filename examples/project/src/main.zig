@@ -59,7 +59,7 @@ pub fn main() !void {
 
     try lua.defineUserdata(Budget, .{ .methods = BudgetMethods });
 
-    var rules = try lua.createTable(.{});
+    var rules = try lua.newTable(.{});
     defer rules.deinit();
     try rules.set("starting_budget", 150);
     try rules.set("warning_at", 40);
@@ -78,15 +78,15 @@ pub fn main() !void {
     );
     try lua.setPackagePath("plugins/?.lua");
 
-    var new_budget = try lua.registerTyped("new_budget", newBudget);
+    var new_budget = try lua.newTypedFunction("new_budget", newBudget);
     defer new_budget.deinit();
     try lua.setGlobal("new_budget", new_budget);
 
-    var percent_fn = try lua.registerTyped("percent", percent);
+    var percent_fn = try lua.newTypedFunction("percent", percent);
     defer percent_fn.deinit();
     try lua.setGlobal("percent", percent_fn);
 
-    var audit = try lua.register("host_audit", hostAudit);
+    var audit = try lua.newFunction("host_audit", hostAudit);
     defer audit.deinit();
     try lua.setGlobal("host_audit", audit);
 
@@ -126,15 +126,12 @@ pub fn main() !void {
     , .{ .name = "=zlua_test_integration" });
     defer chunk.deinit();
 
-    const Result = zlua.Tuple(&.{ zlua.Table, zlua.Function, zlua.Userdata(Budget) });
-    var result = try chunk.call(.{}, Result);
-    defer result.deinit();
+    var result = try chunk.call(.{}, struct { zlua.Table, zlua.Function, zlua.Userdata(Budget) });
+    defer zlua.deinit(&result);
 
     try lua.collect();
 
-    const report = result.get(0);
-    const spend_more = result.get(1);
-    const budget = result.get(2);
+    const report, const spend_more, const budget = result;
 
     const after_extra = try spend_more.call(.{6}, i64);
     var title = try report.get("title", zlua.String);
@@ -143,10 +140,10 @@ pub fn main() !void {
     defer plan.deinit();
 
     std.debug.print(
-        "{s}: {s}, planned={d}, spent={d}, remaining={d}, used={d:.1}%, warned={}, after_extra={d}, userdata_remaining={d}\n",
+        "{f}: {f}, planned={d}, spent={d}, remaining={d}, used={d:.1}%, warned={}, after_extra={d}, userdata_remaining={d}\n",
         .{
-            try title.bytes(),
-            try plan.bytes(),
+            title,
+            plan,
             try report.get("planned", i64),
             try report.get("spent", i64),
             try report.get("remaining", i64),
@@ -161,9 +158,9 @@ pub fn main() !void {
     defer failing.deinit();
 
     if (failing.call(.{}, void)) |_| return error.ExpectedLuaError else |err| {
-        var message: std.Io.Writer.Allocating = .init(allocator);
-        defer message.deinit();
-        try lua.writeError(err, &message.writer);
-        std.debug.print("lua error: {s}\n", .{message.written()});
+        if (err != error.LuaError) return err;
+        var failure = lua.takeError().?;
+        defer failure.deinit();
+        std.debug.print("lua error: {f}\n", .{failure});
     }
 }

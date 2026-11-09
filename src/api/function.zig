@@ -19,8 +19,8 @@ pub const Function = struct {
         self.* = undefined;
     }
 
-    /// Converts the first result, or a `Tuple`, to `R`; Lua failures return `error.LuaError`, and
-    /// `State.takeError` returns the error value.
+    /// Converts the first result to `R`, or every result to a tuple `R`; Lua failures return
+    /// `error.LuaError`, and `State.takeError` returns the error value.
     pub fn call(self: Function, args: anytype, comptime R: type) !R {
         return self.callWith(args, R, .{});
     }
@@ -30,6 +30,7 @@ pub const Function = struct {
         try handle.validate(self.ref, state);
         callbacks.bindDispatch(state);
         const raw_args = try convert.convertArgs(state, args);
+        errors.clearLastError(state);
 
         var traceback: ?[]u8 = null;
         defer if (traceback) |text| state.allocator().free(text);

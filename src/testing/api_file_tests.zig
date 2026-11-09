@@ -445,7 +445,7 @@ test "deinit calls pending __gc metamethods like lua_close" {
     {
         const lua = try api.State.init(a, .{ .stdlib = .full, .capabilities = .{ .filesystem = .{ .memory_rw = &filesystem } } });
         defer lua.deinit();
-        var log = try lua.register("log", FinalizerLog.log);
+        var log = try lua.newFunction("log", FinalizerLog.log);
         defer log.deinit();
         try lua.setGlobal("log", log);
         try lua.doString(
@@ -477,7 +477,7 @@ test "deinit finalizers run collected tables first and respect limits and interr
     {
         const lua = try api.State.init(a, .{ .gc = .{ .running = false, .mode = .incremental } });
         defer lua.deinit();
-        var log = try lua.register("log", FinalizerLog.log);
+        var log = try lua.newFunction("log", FinalizerLog.log);
         defer log.deinit();
         try lua.setGlobal("log", log);
         try lua.doString(
@@ -494,7 +494,7 @@ test "deinit finalizers run collected tables first and respect limits and interr
     {
         const lua = try api.State.init(a, .{ .limits = .{ .max_instructions = 10_000 } });
         defer lua.deinit();
-        var log = try lua.register("log", FinalizerLog.log);
+        var log = try lua.newFunction("log", FinalizerLog.log);
         defer log.deinit();
         try lua.setGlobal("log", log);
         try lua.doString(
@@ -509,7 +509,7 @@ test "deinit finalizers run collected tables first and respect limits and interr
     {
         const lua = try api.State.init(a, .{});
         defer lua.deinit();
-        var log = try lua.register("log", FinalizerLog.log);
+        var log = try lua.newFunction("log", FinalizerLog.log);
         defer log.deinit();
         try lua.setGlobal("log", log);
         try lua.doString(
@@ -525,7 +525,7 @@ test "deinit finalizers run collected tables first and respect limits and interr
 test "reset skips finalizers while workers and sources finalize at deinit" {
     FinalizerLog.reset();
     const lua = try api.State.init(a, .{});
-    var log = try lua.register("log", FinalizerLog.log);
+    var log = try lua.newFunction("log", FinalizerLog.log);
     try lua.setGlobal("log", log);
     log.deinit();
     try lua.doString("base = setmetatable({}, {__gc = function() log('base') end})", .{});

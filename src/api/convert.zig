@@ -219,7 +219,7 @@ fn pointerToRuntimeValue(state: *State, value: anytype, comptime pointer: std.bu
                 return arrayToRuntimeValue(state, value[0..]);
             },
             .@"struct" => return toRuntimeValue(state, value.*),
-            .@"fn" => @compileError("pass a function to Lua directly instead of through a pointer, or wrap the pointer with State.registerTyped"),
+            .@"fn" => @compileError("pass a function to Lua directly instead of through a pointer, or wrap the pointer with State.newTypedFunction"),
             else => return error.UnsupportedType,
         },
         else => return error.UnsupportedType,
@@ -261,8 +261,7 @@ fn tupleToRuntimeValue(state: *State, value: anytype, comptime len: usize) !runt
 
 pub fn fromRuntimeResults(state: *State, results: []const runtime.Value, comptime R: type) !R {
     if (R == void) return {};
-    if (comptime isTupleResult(R)) return .{ .values = try tupleFromResults(state, results, @Tuple(R.field_types)) };
-    if (comptime isPlainTuple(R)) return tupleFromResults(state, results, R);
+    if (comptime isTuple(R)) return tupleFromResults(state, results, R);
 
     const raw = if (results.len == 0) runtime.Value.nil else results[0];
     return fromRuntimeValue(state, raw, R);
@@ -381,25 +380,18 @@ fn tupleFromResults(state: *State, results: []const runtime.Value, comptime T: t
     return values;
 }
 
-fn isPlainTuple(comptime T: type) bool {
+fn isTuple(comptime T: type) bool {
     return switch (@typeInfo(T)) {
         .@"struct" => |info| info.is_tuple,
         else => false,
     };
 }
 
-fn isTupleResult(comptime T: type) bool {
-    return switch (@typeInfo(T)) {
-        .@"struct" => @hasDecl(T, "is_zlua_tuple") and T.is_zlua_tuple,
-        else => false,
-    };
-}
-
 pub fn isOwnedApiValue(comptime T: type) bool {
-    return isTupleResult(T) or T == Value or T == Ref or T == String or T == Table or T == Function or T == Coroutine or T == ErrorRef or T == AnyUserdata or userdata_mod.isHandle(T);
+    return T == Value or T == Ref or T == String or T == Table or T == Function or T == Coroutine or T == ErrorRef or T == AnyUserdata or userdata_mod.isHandle(T);
 }
 
-/// Releases the handles in `value`, a pointer to a handle, `Value`, `Tuple`, optional, or Zig tuple.
+/// Releases the handles in `value`, a pointer to a handle, `Value`, optional, or tuple.
 pub fn deinit(value: anytype) void {
     deinitIfOwned(@typeInfo(@TypeOf(value)).pointer.child, value);
 }
@@ -409,7 +401,7 @@ pub fn deinitIfOwned(comptime T: type, value: *T) void {
         value.deinit();
     } else if (comptime @typeInfo(T) == .optional) {
         if (value.*) |*payload| deinitIfOwned(@typeInfo(T).optional.child, payload);
-    } else if (comptime isPlainTuple(T)) {
+    } else if (comptime isTuple(T)) {
         inline for (comptime reflection.fieldsOf(T), 0..) |name, index| deinitIfOwned(@FieldType(T, name), &value[index]);
     }
 }

@@ -32,7 +32,7 @@ pub fn main() !void {
         defer old_function.deinit();
         var old_value = try lua.getGlobal("box", zlua.Value);
         defer old_value.deinit();
-        var root_only = try lua.createTable(.{});
+        var root_only = try lua.newTable(.{});
         var root_only_live = true;
         defer if (root_only_live) root_only.deinit();
         try root_only.set("secret", "host-root-only");
@@ -61,7 +61,7 @@ pub fn main() !void {
         try lua.reset();
 
         // Fresh roots may reuse old slots; stale handles must still be rejected.
-        var fresh = try lua.createTable(.{});
+        var fresh = try lua.newTable(.{});
         defer fresh.deinit();
         try fresh.set("secret", "new-generation");
         try rejected(error.InvalidHandle, old_table.get("secret", zlua.String));

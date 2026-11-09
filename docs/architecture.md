@@ -346,7 +346,7 @@ responsible for deinitializing it.
 | `snapshot.zig` | `Snapshot`, snapshot capture, `reset`, and rollback metadata. |
 | `options.zig`, `capabilities.zig` | State, load, call, and GC options, and host capability types. |
 | `handle.zig` | `Ref` and the validation and rooting shared by every handle. |
-| `value.zig`, `table.zig`, `function.zig`, `coroutine.zig`, `userdata.zig` | `Value`, `Tuple`, and the handle types. |
+| `value.zig`, `string.zig`, `table.zig`, `function.zig`, `coroutine.zig`, `userdata.zig` | `Value` and the handle types. |
 | `errors.zig` | Error sets, `ErrorRef`, and last-error capture. |
 | `convert.zig` | Conversion between Zig values, API handles, and runtime values. |
 | `callbacks.zig`, `context.zig` | Host callback registration and dispatch, typed adapters, and `Context`. |

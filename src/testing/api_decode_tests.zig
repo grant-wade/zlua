@@ -277,13 +277,13 @@ test "typed callbacks decode aggregate parameters" {
     const lua = try State.init(a, .{});
     defer lua.deinit();
 
-    var describe = try lua.registerTyped("describe", Typed.describe);
+    var describe = try lua.newTypedFunction("describe", Typed.describe);
     defer describe.deinit();
     try lua.setGlobal("describe", describe);
-    var paint = try lua.registerTyped("paint", Typed.paint);
+    var paint = try lua.newTypedFunction("paint", Typed.paint);
     defer paint.deinit();
     try lua.setGlobal("paint", paint);
-    var load = try lua.register("load_weapon", Typed.load);
+    var load = try lua.newFunction("load_weapon", Typed.load);
     defer load.deinit();
     try lua.setGlobal("load_weapon", load);
     try lua.defineUserdata(Typed.Mesh, .{ .name = "mesh" });
@@ -366,7 +366,7 @@ test "decoded values round trip through table conversion" {
     hero.costs.set(.spear, 5);
     hero.usable.insert(.bow);
 
-    var pushed = try d.lua.push(hero);
+    var pushed = try d.lua.toValue(hero);
     defer pushed.deinit();
     const copy = try api.decode(Hero, pushed, .{ .allocator = d.arena.allocator(), .diagnostic = &d.diagnostic });
     try std.testing.expectEqual(Kind.bow, copy.kind);
@@ -402,7 +402,7 @@ test "typed callbacks can set their own return values" {
 
     const lua = try State.init(a, .{});
     defer lua.deinit();
-    var pair = try lua.registerTyped("pair", Host.pair);
+    var pair = try lua.newTypedFunction("pair", Host.pair);
     defer pair.deinit();
     try lua.setGlobal("pair", pair);
     try lua.doString(

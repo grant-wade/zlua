@@ -24,7 +24,7 @@ fn trigger(_: *api.Context) !void {
 fn initWithTrigger() !*api.State {
     const lua = try api.State.init(a, .{});
     errdefer lua.deinit();
-    var function = try lua.register("trigger", trigger);
+    var function = try lua.newFunction("trigger", trigger);
     defer function.deinit();
     try lua.setGlobal("trigger", function);
     trigger_handle = try lua.interruptHandle();
@@ -43,7 +43,7 @@ const Watchdog = struct {
 fn initWithReady(options: api.Options) !*api.State {
     const lua = try api.State.init(a, options);
     errdefer lua.deinit();
-    var ready = try lua.register("ready", markReady);
+    var ready = try lua.newFunction("ready", markReady);
     defer ready.deinit();
     try lua.setGlobal("ready", ready);
     return lua;
@@ -128,7 +128,7 @@ test "pending interrupts stop library functions called directly by the host" {
     const rep = string_lib.getLiteral("rep");
     const concat = table_lib.getLiteral("concat");
     const sort = table_lib.getLiteral("sort");
-    var items = try lua.createTable(.{});
+    var items = try lua.newTable(.{});
     defer items.deinit();
     for (0..8) |index| try items.append(@as(i64, @intCast(8 - index)));
     try lua.setGlobal("items", items);
@@ -206,7 +206,7 @@ test "interrupt propagates through host callbacks that call back into Lua" {
     };
     var lua = try initWithTrigger();
     defer lua.deinit();
-    var swallow = try lua.register("swallow", Callbacks.swallow);
+    var swallow = try lua.newFunction("swallow", Callbacks.swallow);
     defer swallow.deinit();
     try lua.setGlobal("swallow", swallow);
 
@@ -307,7 +307,7 @@ test "per-call budgets nest with the tighter budget and the state budget" {
     };
     const lua = try api.State.init(a, .{ .limits = .{ .max_instructions = 1_000_000 } });
     defer lua.deinit();
-    var nested = try lua.register("nested", Callbacks.nested);
+    var nested = try lua.newFunction("nested", Callbacks.nested);
     defer nested.deinit();
     try lua.setGlobal("nested", nested);
     try lua.doString(
@@ -319,18 +319,18 @@ test "per-call budgets nest with the tighter budget and the state budget" {
     , .{});
     var outer = try lua.getGlobal("outer", api.Function);
     defer outer.deinit();
-    const Pair = api.Tuple(&.{ bool, api.Value });
+    const Pair = struct { bool, api.Value };
 
     var tight = try outer.callWith(.{ 100, 10_000 }, Pair, .{ .max_instructions = 100_000 });
-    defer tight.deinit();
-    try std.testing.expect(!tight.get(0));
+    defer api.deinit(&tight);
+    try std.testing.expect(!tight[0]);
 
     try expectLimitError(outer.callWith(.{ 1_000_000, 10_000 }, Pair, .{ .max_instructions = 1_000 }), lua);
 
     var fits = try outer.callWith(.{ 100_000, 100 }, Pair, .{ .max_instructions = 100_000 });
-    defer fits.deinit();
-    try std.testing.expect(fits.get(0));
-    try std.testing.expectEqual(api.Value{ .integer = 5050 }, fits.get(1));
+    defer api.deinit(&fits);
+    try std.testing.expect(fits[0]);
+    try std.testing.expectEqual(api.Value{ .integer = 5050 }, fits[1]);
 
     const used = lua.instructionBudget().used;
     try std.testing.expect(used > 1_000);
@@ -410,7 +410,7 @@ test "tracebacks name host callbacks, metamethods, fields, and methods" {
     };
     const lua = try api.State.init(a, .{});
     defer lua.deinit();
-    var fail = try lua.register("host_fail", Callbacks.fail);
+    var fail = try lua.newFunction("host_fail", Callbacks.fail);
     defer fail.deinit();
     try lua.setGlobal("host_fail", fail);
     try lua.doString(
@@ -570,7 +570,7 @@ test "instruction budgets end at their exact count through nested calls" {
 
     const lua = try api.State.init(a, .{});
     defer lua.deinit();
-    var runs = try lua.register("runs", struct {
+    var runs = try lua.newFunction("runs", struct {
         fn call(ctx: *api.Context) !void {
             return Host.runs(ctx, try ctx.arg(0, api.Function));
         }

@@ -68,7 +68,7 @@ fn initialize(allocator: std.mem.Allocator) !*zlua.State {
     for (0..128) |i| {
         var buffer: [32]u8 = undefined;
         const name = try std.fmt.bufPrint(&buffer, "host_{d}", .{i});
-        var callback = try lua.registerTyped(name, hostScale);
+        var callback = try lua.newTypedFunction(name, hostScale);
         defer callback.deinit();
         try lua.setGlobal(name, callback);
     }

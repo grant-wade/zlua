@@ -44,6 +44,11 @@ pub const ErrorRef = struct {
     pub fn writeMessage(self: ErrorRef, writer: *std.Io.Writer) !void {
         try writeErrorValue(self.ref.state, try handle.rawValue(self.ref), writer);
     }
+
+    /// Writes the message for the `{f}` format specifier.
+    pub fn format(self: ErrorRef, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        self.writeMessage(writer) catch return error.WriteFailed;
+    }
 };
 
 pub fn refFromRuntime(state: *State, raw: runtime.Value) !ErrorRef {
@@ -87,10 +92,14 @@ pub fn writeErrorValue(state: *State, value: runtime.Value, writer: *std.Io.Writ
 }
 
 pub fn setLastErrorValue(state: *State, value: runtime.Value) !void {
+    clearLastError(state);
+    state.last_error_root = try state.raw_state.rootValue(value);
+}
+
+pub fn clearLastError(state: *State) void {
     clearLastErrorTraceback(state);
     if (state.last_error_root) |index| state.raw_state.unrootValue(index);
     state.last_error_root = null;
-    state.last_error_root = try state.raw_state.rootValue(value);
 }
 
 pub fn lastErrorValue(state: *State) runtime.Value {

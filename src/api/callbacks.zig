@@ -21,7 +21,7 @@ const Value = @import("value.zig").Value;
 const State = @import("state.zig").State;
 const UserdataOptions = userdata_mod.UserdataOptions;
 
-/// Untyped callback for `State.register`.
+/// Untyped callback for `State.newFunction`.
 pub const HostFn = *const fn (ctx: *Context) anyerror!void;
 
 pub const RegisteredCallback = struct {
@@ -99,7 +99,7 @@ fn append(state: *State, name: []const u8, callback: HostFn) !usize {
     return state.callbacks.items.len;
 }
 
-/// The untyped callback that calls `function` as `State.registerTyped` does.
+/// The untyped callback that calls `function` as `State.newTypedFunction` does.
 pub fn typedHostFn(comptime function: anytype) HostFn {
     return struct {
         fn call(ctx: *Context) !void {
@@ -148,20 +148,20 @@ pub fn callTyped(comptime function: anytype, ctx: *Context) !void {
         .@"fn" => FunctionType,
         .pointer => |pointer| switch (@typeInfo(pointer.child)) {
             .@"fn" => pointer.child,
-            else => @compileError("registerTyped requires a function or function pointer"),
+            else => @compileError("newTypedFunction requires a function or function pointer"),
         },
-        else => @compileError("registerTyped requires a function or function pointer"),
+        else => @compileError("newTypedFunction requires a function or function pointer"),
     };
     const function_info = switch (@typeInfo(FunctionType)) {
         .@"fn" => |info| info,
         .pointer => |pointer| switch (@typeInfo(pointer.child)) {
             .@"fn" => |info| info,
-            else => @compileError("registerTyped requires a function or function pointer"),
+            else => @compileError("newTypedFunction requires a function or function pointer"),
         },
-        else => @compileError("registerTyped requires a function or function pointer"),
+        else => @compileError("newTypedFunction requires a function or function pointer"),
     };
 
-    if (reflection.isVariadic(function_info)) @compileError("registerTyped does not support varargs functions");
+    if (reflection.isVariadic(function_info)) @compileError("newTypedFunction does not support varargs functions");
 
     var args: std.meta.ArgsTuple(SignatureType) = undefined;
     var scopes: ArgumentScopes(reflection.paramTypes(function_info).len) = .{};
@@ -170,7 +170,7 @@ pub fn callTyped(comptime function: anytype, ctx: *Context) !void {
     var bound: usize = 0;
     defer releaseArgs(reflection.paramTypes(function_info), &args, bound);
     inline for (reflection.paramTypes(function_info), 0..) |param, index| {
-        const Param = param orelse @compileError("registerTyped requires typed parameters");
+        const Param = param orelse @compileError("newTypedFunction requires typed parameters");
         if (comptime !canReadParam(Param)) @compileError("typed callbacks cannot take a " ++ @typeName(Param) ++ " parameter from Lua");
         args[index] = try scopes.param(ctx, &lua_arg_index, Param);
         bound += 1;

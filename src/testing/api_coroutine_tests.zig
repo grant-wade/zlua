@@ -29,14 +29,14 @@ test "thread lifecycle converts only active branches and preserves resume argume
     defer thread.deinit();
     try std.testing.expectEqual(api.CoroutineStatus.suspended, try thread.status());
     try std.testing.expectEqual(null, try lua.getGlobal("started", ?bool));
-    const Yield = api.Tuple(&.{ i64, ?i64 });
+    const Yield = struct { i64, ?i64 };
     var first = try thread.resumeCoroutine(.{41}, Yield, api.String);
     defer first.deinit();
-    try std.testing.expectEqual(41, first.yielded.get(0));
-    try std.testing.expectEqual(null, first.yielded.get(1));
+    try std.testing.expectEqual(41, first.yielded[0]);
+    try std.testing.expectEqual(null, first.yielded[1]);
     var second = try thread.resumeCoroutine(.{42}, Yield, api.String);
     defer second.deinit();
-    try std.testing.expectEqual(42, second.yielded.get(0));
+    try std.testing.expectEqual(42, second.yielded[0]);
     var last = try thread.resumeCoroutine(.{}, Yield, api.String);
     defer last.deinit();
     try std.testing.expectEqualStrings("finished", try last.returned.bytes());
@@ -62,18 +62,18 @@ test "thread handles round trip through globals tables dynamic values tuples and
     try lua.doString("co = coroutine.create(function(t) coroutine.yield(t); return t end)", .{});
     var thread = try lua.getGlobal("co", api.Coroutine);
     defer thread.deinit();
-    var value = try lua.push(thread);
+    var value = try lua.toValue(thread);
     defer value.deinit();
     try std.testing.expectEqual(try thread.identity(), try value.coroutine.identity());
     var read = try lua.read(value, api.Coroutine);
     defer read.deinit();
-    var table = try lua.createTable(.{});
+    var table = try lua.newTable(.{});
     defer table.deinit();
     try table.set(thread, value);
     var stored = try table.get(thread, api.Coroutine);
     defer stored.deinit();
     try std.testing.expectEqual(try thread.identity(), try stored.identity());
-    var echo = try lua.registerTyped("echo", struct {
+    var echo = try lua.newTypedFunction("echo", struct {
         fn call(t: api.Coroutine) api.Coroutine {
             return t;
         }
@@ -82,11 +82,11 @@ test "thread handles round trip through globals tables dynamic values tuples and
     var echoed = try echo.call(.{thread}, api.Coroutine);
     defer echoed.deinit();
     try std.testing.expectEqual(try thread.identity(), try echoed.identity());
-    const Threads = api.Tuple(&.{ api.Coroutine, ?api.Coroutine });
+    const Threads = struct { api.Coroutine, ?api.Coroutine };
     var first = try thread.resumeCoroutine(.{thread}, Threads, api.Coroutine);
     defer first.deinit();
-    try std.testing.expectEqual(try thread.identity(), try first.yielded.get(0).identity());
-    try std.testing.expectEqual(null, first.yielded.get(1));
+    try std.testing.expectEqual(try thread.identity(), try first.yielded[0].identity());
+    try std.testing.expectEqual(null, first.yielded[1]);
     var last = try thread.resumeCoroutine(.{}, Threads, api.Coroutine);
     defer last.deinit();
     try std.testing.expectEqual(try thread.identity(), try last.returned.identity());
@@ -99,7 +99,7 @@ test "thread handles round trip through globals tables dynamic values tuples and
 test "callback current thread survives host retirement and rejects main lifecycle operations" {
     const lua = try api.State.init(a, .{});
     defer lua.deinit();
-    var callback = try lua.register("current", struct {
+    var callback = try lua.newFunction("current", struct {
         fn call(ctx: *api.Context) !void {
             try std.testing.expect(!ctx.isYieldable());
             var thread = try ctx.coroutine();
@@ -121,10 +121,10 @@ test "callback current thread survives host retirement and rejects main lifecycl
 test "plain typed and entry callbacks yield after defers without reentering Zig" {
     const lua = try api.State.init(a, .{});
     defer lua.deinit();
-    var plain = try lua.register("ask", ask);
+    var plain = try lua.newFunction("ask", ask);
     defer plain.deinit();
     try lua.setGlobal("ask", plain);
-    var typed = try lua.registerTyped("typed", struct {
+    var typed = try lua.newTypedFunction("typed", struct {
         fn call(ctx: *api.Context, prompt: []const u8) !i64 {
             defer ctx.state().raw_state.putGlobal("cleaned", .{ .boolean = true }) catch unreachable;
             return ctx.yield(.{prompt});
@@ -159,7 +159,7 @@ test "plain typed and entry callbacks yield after defers without reentering Zig"
 test "host yield preserves Lua protected iterator metamethod tail and scope close continuations" {
     const lua = try api.State.init(a, .{ .stdlib = .full });
     defer lua.deinit();
-    var callback = try lua.register("ask", ask);
+    var callback = try lua.newFunction("ask", ask);
     defer callback.deinit();
     try lua.setGlobal("ask", callback);
     const sources = [_][]const u8{
@@ -205,12 +205,12 @@ fn uncheckedYield(ctx: *api.Context) !void {
 test "non yielding host native close and finalizer boundaries reject callback yields" {
     const lua = try api.State.init(a, .{});
     defer lua.deinit();
-    var callback = try lua.register("ask", uncheckedYield);
+    var callback = try lua.newFunction("ask", uncheckedYield);
     defer callback.deinit();
     try lua.setGlobal("ask", callback);
     try std.testing.expectError(error.LuaError, callback.call(.{}, void));
     try std.testing.expectError(error.LuaError, lua.doString("ask()", .{}));
-    var call = try lua.register("call_sync", struct {
+    var call = try lua.newFunction("call_sync", struct {
         fn run(ctx: *api.Context) !void {
             var function = try ctx.arg(0, api.Function);
             defer function.deinit();
@@ -293,12 +293,12 @@ test "conversion failures advance thread and release partial tuple handles" {
     var thread = try lua.newCoroutine(chunk);
     defer thread.deinit();
     const roots = lua.raw_state.activeRootCount();
-    try std.testing.expectError(error.TypeMismatch, thread.resumeCoroutine(.{}, api.Tuple(&.{ api.Table, ?api.Table, i64 }), void));
+    try std.testing.expectError(error.TypeMismatch, thread.resumeCoroutine(.{}, struct { api.Table, ?api.Table, i64 }, void));
     try std.testing.expectEqual(roots, lua.raw_state.activeRootCount());
     try std.testing.expectEqual(api.CoroutineStatus.suspended, try thread.status());
-    var result = try thread.resumeCoroutine(.{}, void, api.Tuple(&.{ api.Table, ?api.Table }));
+    var result = try thread.resumeCoroutine(.{}, void, struct { api.Table, ?api.Table });
     try lua.collect();
-    try result.returned.get(0).set("retained", true);
+    try result.returned[0].set("retained", true);
     result.deinit();
     try std.testing.expectEqual(roots, lua.raw_state.activeRootCount());
     try std.testing.expectEqual(api.CoroutineStatus.dead, try thread.status());
@@ -307,9 +307,9 @@ test "conversion failures advance thread and release partial tuple handles" {
 test "suspended host yield values survive GC snapshots independent resumes and reset" {
     const lua = try api.State.init(a, .{});
     defer lua.deinit();
-    var callback = try lua.register("ask", struct {
+    var callback = try lua.newFunction("ask", struct {
         fn run(ctx: *api.Context) !void {
-            var table = try ctx.state().createTable(.{});
+            var table = try ctx.state().newTable(.{});
             defer table.deinit();
             try table.set("value", 42);
             return ctx.yield(.{table});
@@ -356,7 +356,7 @@ test "suspended host yield values survive GC snapshots independent resumes and r
 test "running and normal threads reject host lifecycle changes while Lua self close still works" {
     const lua = try api.State.init(a, .{});
     defer lua.deinit();
-    var check = try lua.register("check", struct {
+    var check = try lua.newFunction("check", struct {
         fn call(ctx: *api.Context) !void {
             var current = try ctx.coroutine();
             defer current.deinit();
@@ -423,7 +423,7 @@ test "userdata method scopes finish before host yield and rejected conversion ne
     defer last.deinit();
     try std.testing.expectEqual(42, last.returned);
 
-    var bad = try lua.register("bad", struct {
+    var bad = try lua.newFunction("bad", struct {
         fn call(ctx: *api.Context) !void {
             return ctx.yield(.{ 1, @as(u128, std.math.maxInt(u128)) });
         }
@@ -477,9 +477,9 @@ test "allocation failures during thread creation resume and suspension leave val
         var failing = std.testing.FailingAllocator.init(a, .{});
         const lua = try api.State.init(failing.allocator(), .{});
         defer lua.deinit();
-        var callback = try lua.register("ask", struct {
+        var callback = try lua.newFunction("ask", struct {
             fn call(ctx: *api.Context) !void {
-                var table = try ctx.state().createTable(.{});
+                var table = try ctx.state().newTable(.{});
                 defer table.deinit();
                 return ctx.yield(.{ table, 1, 2, 3, 4, 5 });
             }
@@ -513,7 +513,7 @@ test "allocation failures during thread creation resume and suspension leave val
 test "callback yield memory limit errors are protected Lua failures without suspension" {
     const lua = try api.State.init(a, .{ .stdlib = .base, .limits = .{ .max_memory = 128 * 1024 } });
     defer lua.deinit();
-    var callback = try lua.register("large", struct {
+    var callback = try lua.newFunction("large", struct {
         const payload: [512 * 1024]u8 = @splat('x');
         fn call(ctx: *api.Context) !void {
             return ctx.yield(.{payload[0..]});
@@ -535,9 +535,9 @@ test "interleaved host yields survive repeated collection without leaking roots"
     const rounds = 64;
     const lua = try api.State.init(a, .{});
     defer lua.deinit();
-    var ask_fn = try lua.register("ask", struct {
+    var ask_fn = try lua.newFunction("ask", struct {
         fn call(ctx: *api.Context) !void {
-            var table = try ctx.state().createTable(.{});
+            var table = try ctx.state().newTable(.{});
             defer table.deinit();
             const id = try ctx.arg(0, i64);
             const step = try ctx.arg(1, i64);
@@ -685,9 +685,9 @@ const Continuations = struct {
     }
 
     fn install(lua: *api.State) !void {
-        var counter = try lua.registerClosure("count", count, .{@as(i64, 0)});
+        var counter = try lua.newClosure("count", count, .{@as(i64, 0)});
         defer counter.deinit();
-        var other = try lua.registerClosure("count", count, .{@as(i64, 10)});
+        var other = try lua.newClosure("count", count, .{@as(i64, 10)});
         defer other.deinit();
         try lua.setGlobals(.{ .counter = counter, .other = other, .ask = askDoor, .twice = twice, .fail_later = failLater });
     }
@@ -795,4 +795,20 @@ test "continuations show as C frames and reuse callback entries" {
     var identity = try lua.getGlobal("identity", api.Function);
     defer identity.deinit();
     try std.testing.expectEqual(@as(i64, 102), try lua.callGlobal("twice", .{identity}, i64));
+}
+
+test "the debug library reports a pending continuation as a C function without locals" {
+    const lua = try api.State.init(a, .{ .stdlib = .full });
+    defer lua.deinit();
+    try Continuations.install(lua);
+    try lua.doString(
+        \\local what
+        \\assert(twice(function(x)
+        \\  what = debug.getinfo(2, 'S').what
+        \\  assert(debug.getlocal(2, 1) == nil and debug.getlocal(2, -1) == nil)
+        \\  assert(debug.setlocal(2, 1, 0) == nil)
+        \\  return x
+        \\end) == 102)
+        \\assert(what == 'C', what)
+    , .{});
 }

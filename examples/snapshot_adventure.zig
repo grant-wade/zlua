@@ -75,6 +75,6 @@ fn explore(lua: *zlua.State, choice: []const u8) !i64 {
     const score = try function.call(.{choice}, i64);
     var report = try lua.getGlobal("report", zlua.String);
     defer report.deinit();
-    std.debug.print("  {s} (score {d})\n", .{ try report.bytes(), score });
+    std.debug.print("  {f} (score {d})\n", .{ report, score });
     return score;
 }

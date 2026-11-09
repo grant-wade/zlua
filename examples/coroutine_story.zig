@@ -32,12 +32,12 @@ pub fn main() !void {
         var step = try story.resumeCoroutine(.{}, zlua.String, zlua.String);
         defer step.deinit();
         switch (step) {
-            .yielded => |text| std.debug.print("yielded: {s}\n", .{try text.bytes()}),
-            .returned => |text| std.debug.print("returned: {s}\n", .{try text.bytes()}),
+            .yielded => |text| std.debug.print("yielded: {f}\n", .{text}),
+            .returned => |text| std.debug.print("returned: {f}\n", .{text}),
         }
     }
 
-    var ask = try lua.register("ask_user", askUser);
+    var ask = try lua.newFunction("ask_user", askUser);
     defer ask.deinit();
     try lua.setGlobal("ask_user", ask);
     var dialogue = try lua.loadString(
@@ -57,7 +57,7 @@ pub fn main() !void {
     var answer = try exchange.resumeCoroutine(.{"yes"}, zlua.String, zlua.String);
     defer answer.deinit();
     switch (answer) {
-        .returned => |text| std.debug.print("{s}\n", .{try text.bytes()}),
+        .returned => |text| std.debug.print("{f}\n", .{text}),
         .yielded => return error.ExpectedReturn,
     }
 
@@ -70,8 +70,8 @@ pub fn main() !void {
     defer flow.deinit();
     var asked = try flow.resumeCoroutine(.{}, zlua.String, void);
     defer asked.deinit();
-    std.debug.print("{s}\n", .{try asked.yielded.bytes()});
+    std.debug.print("{f}\n", .{asked.yielded});
     var confirmed = try flow.resumeCoroutine(.{"yes"}, void, zlua.String);
     defer confirmed.deinit();
-    std.debug.print("{s}\n", .{try confirmed.returned.bytes()});
+    std.debug.print("{f}\n", .{confirmed.returned});
 }

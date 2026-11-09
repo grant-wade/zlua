@@ -102,7 +102,7 @@ test "epoch wraparound clears stale marks in rollback originals" {
 test "reset without baseline fails" {
     const lua = try api.State.init(a, .{});
     defer lua.deinit();
-    var table = try lua.createTable(.{});
+    var table = try lua.newTable(.{});
     defer table.deinit();
     try table.set("x", 42);
     try std.testing.expectError(error.NoSnapshot, lua.reset());
@@ -195,7 +195,7 @@ test "generation exhaustion leaves active baseline and handles usable" {
     var snapshot = try lua.snapshot(a);
     snapshot.deinit();
     lua.generation = std.math.maxInt(u64);
-    var table = try lua.createTable(.{});
+    var table = try lua.newTable(.{});
     defer table.deinit();
     try table.set("x", 42);
     try std.testing.expectError(error.GenerationExhausted, lua.reset());
@@ -322,12 +322,12 @@ test "snapshot handle generations cross state arguments environments and dispatc
     };
     const lua = try api.State.init(a, .{});
     defer lua.deinit();
-    var cb = try lua.register("host", Host.set);
+    var cb = try lua.newFunction("host", Host.set);
     defer cb.deinit();
     try lua.setGlobal("host", cb);
     var function = try lua.loadString("return ...", .{});
     defer function.deinit();
-    var table = try lua.createTable(.{});
+    var table = try lua.newTable(.{});
     var snapshot = try lua.snapshot(a);
     defer snapshot.deinit();
     const other = try snapshot.newState(a);
@@ -340,7 +340,7 @@ test "snapshot handle generations cross state arguments environments and dispatc
     try other.doString("host(); assert(destination)", .{});
     try std.testing.expectEqual(api.Value.nil, try lua.getGlobal("destination", api.Value));
     try lua.reset();
-    var reused = try lua.createTable(.{});
+    var reused = try lua.newTable(.{});
     defer reused.deinit();
     table.deinit(); // Must not release the reused root slot.
     try reused.set("alive", true);
@@ -437,7 +437,7 @@ test "snapshot weak entries finalizer order and host roots are isolated" {
         \\weak = setmetatable({}, {__mode='v'})
         \\for i=1,3 do local t = setmetatable({}, {__gc=function() order=order..i end}); weak[i]=t end
     , .{});
-    var unrooted = try lua.createTable(.{});
+    var unrooted = try lua.newTable(.{});
     const extra = unrooted.ref.index;
     var snapshot = try lua.snapshot(a);
     defer snapshot.deinit();
@@ -464,7 +464,7 @@ test "snapshot rejects execution" {
     };
     const lua = try api.State.init(a, .{});
     defer lua.deinit();
-    var cb = try lua.register("busy", Host.busy);
+    var cb = try lua.newFunction("busy", Host.busy);
     defer cb.deinit();
     try cb.call(.{}, void);
 }
@@ -630,7 +630,7 @@ test "snapshot userdata copy allocation failures never run application finalizer
     defer ud.deinit();
     try lua.setGlobal("u", ud);
     // A callback and owned file force fallible allocations after payload copy.
-    var cb = try lua.registerTyped("identity", struct {
+    var cb = try lua.newTypedFunction("identity", struct {
         fn identity(v: i64) i64 {
             return v;
         }
@@ -1039,7 +1039,7 @@ test "scoped userdata copies on first write with atomic failure and unchanged re
     try lua.doString("assert(u:valueOf()==1); u:increment(4); assert(u:valueOf()==5)", .{});
     try std.testing.expectEqual(captured_copies + 2, copies);
     try lua.reset();
-    var typed = try lua.registerTyped("increment", struct {
+    var typed = try lua.newTypedFunction("increment", struct {
         fn call(p: *ScopedPayload) void {
             p.value += 2;
         }
@@ -1085,7 +1085,7 @@ test "first table write allocation failures leave baseline storage and handles i
         var failing = std.testing.FailingAllocator.init(a, .{});
         const lua = try api.State.init(failing.allocator(), .{ .stdlib = .none });
         defer lua.deinit();
-        var table = try lua.createTable(.{});
+        var table = try lua.newTable(.{});
         defer table.deinit();
         try table.set(1, 7);
         try table.set("key", 8);
@@ -1223,14 +1223,14 @@ test "journal newState first-write coroutine and GC allocation failures release 
 test "recapture retains error names when callback containers detach" {
     const lua = try api.State.init(a, .{});
     defer lua.deinit();
-    var callback = try lua.registerTyped("expected_bool", struct {
+    var callback = try lua.newTypedFunction("expected_bool", struct {
         fn call(_: bool) void {}
     }.call);
     defer callback.deinit();
     var first = try lua.snapshot(a);
     defer first.deinit();
     try std.testing.expectError(error.LuaError, callback.call(.{@as(i64, 1)}, void));
-    var extra = try lua.registerTyped("another", struct {
+    var extra = try lua.newTypedFunction("another", struct {
         fn call() void {}
     }.call);
     defer extra.deinit();
@@ -1947,7 +1947,7 @@ test "a nil last error stays out of root slots across capture and reset" {
     defer worker.deinit();
     for ([_]*api.State{ lua, worker }) |state| {
         try state.reset();
-        var table = try state.createTable(.{});
+        var table = try state.newTable(.{});
         defer table.deinit();
         try table.set("x", 1);
         try std.testing.expectError(error.LuaError, state.doString("error('next')", .{}));

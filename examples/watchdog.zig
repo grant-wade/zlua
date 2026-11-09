@@ -73,9 +73,6 @@ pub fn main(init: std.process.Init) !void {
         if (err != error.LuaError) return err;
         var failure = lua.takeError().?;
         defer failure.deinit();
-        var message: std.Io.Writer.Allocating = .init(lua.allocator());
-        defer message.deinit();
-        try failure.writeMessage(&message.writer);
-        std.debug.print("{s}\n{s}\n", .{ message.written(), failure.traceback().? });
+        std.debug.print("{f}\n{s}\n", .{ failure, failure.traceback().? });
     }
 }

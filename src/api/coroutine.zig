@@ -48,6 +48,7 @@ pub const Coroutine = struct {
         const raw = try self.rawThread();
         const state = self.ref.state;
         const raw_args = try convert.convertArgs(state, args);
+        errors.clearLastError(state);
         _ = errors.takeMemoryLimitExceeded(state);
         const resumable = raw.status == .suspended;
         const budget = CallBudget.begin(state, options.max_instructions);

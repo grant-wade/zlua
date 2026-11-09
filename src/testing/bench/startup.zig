@@ -174,13 +174,13 @@ fn hostTag(ctx: *zlua.Context) !void {
 }
 
 fn registerHostFunctions(state: *zlua.State) !void {
-    var add = try state.registerTyped("host_add", hostAdd);
+    var add = try state.newTypedFunction("host_add", hostAdd);
     defer add.deinit();
     try state.setGlobal("host_add", add);
-    var double = try state.registerTyped("host_double", hostDouble);
+    var double = try state.newTypedFunction("host_double", hostDouble);
     defer double.deinit();
     try state.setGlobal("host_double", double);
-    var tag = try state.register("host_tag", hostTag);
+    var tag = try state.newFunction("host_tag", hostTag);
     defer tag.deinit();
     try state.setGlobal("host_tag", tag);
 }

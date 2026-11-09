@@ -191,6 +191,8 @@ pub const State = struct {
     chunk_allocations: std.ArrayList(*types.Chunk) = .empty,
     source_allocations: std.ArrayList([]const u8) = .empty,
     api_roots: std.ArrayList(Value) = .empty,
+    /// Indexes of the nil slots of `api_roots`; its capacity covers that of `api_roots`.
+    api_root_free: std.ArrayList(usize) = .empty,
     stdout: std.ArrayList(u8) = .empty,
     stderr: std.ArrayList(u8) = .empty,
     options: StateOptions,
@@ -411,6 +413,7 @@ pub const State = struct {
         for (self.source_allocations.items) |source| self.allocator.free(source);
         for (self.string_allocations.items) |string| strings_mod.destroy(self.objects(), string);
         self.api_roots.deinit(self.allocator);
+        self.api_root_free.deinit(self.allocator);
         self.source_allocations.deinit(self.allocator);
         self.chunk_allocations.deinit(self.allocator);
         self.thread_allocations.deinit(self.allocator);
@@ -469,20 +472,22 @@ pub const State = struct {
 
     pub fn rootValue(self: *State, value: Value) !usize {
         if (value == .nil) return nil_root;
-        for (self.api_roots.items, 0..) |root, index| {
-            if (root == .nil) {
-                self.api_roots.items[index] = value;
-                self.gc.markValue(value);
-                return index;
-            }
+        if (self.api_root_free.pop()) |index| {
+            self.api_roots.items[index] = value;
+            self.gc.markValue(value);
+            return index;
         }
-        try self.api_roots.append(self.allocator, value);
+        try self.api_roots.ensureUnusedCapacity(self.allocator, 1);
+        try self.api_root_free.ensureTotalCapacity(self.allocator, self.api_roots.capacity);
+        self.api_roots.appendAssumeCapacity(value);
         self.gc.markValue(value);
         return self.api_roots.items.len - 1;
     }
 
     pub fn unrootValue(self: *State, index: usize) void {
-        if (index < self.api_roots.items.len) self.api_roots.items[index] = .nil;
+        if (index >= self.api_roots.items.len or self.api_roots.items[index] == .nil) return;
+        self.api_roots.items[index] = .nil;
+        self.api_root_free.appendAssumeCapacity(index);
     }
 
     pub fn pushValueRoots(self: *State, roots: *types.ValueRoots, values: []const Value) void {

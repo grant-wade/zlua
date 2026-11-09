@@ -43,7 +43,6 @@ pub const Caller = api.Caller;
 pub const Error = api.Error;
 pub const BytecodeLoadOptions = api.BytecodeLoadOptions;
 pub const BytecodeDumpOptions = api.BytecodeDumpOptions;
-pub const Tuple = api.Tuple;
 pub const deinit = api.deinit;
 pub const HostFn = api.HostFn;
 pub const Analysis = api.Analysis;

@@ -69,7 +69,7 @@ pub fn tags(comptime T: type) []const [:0]const u8 {
 }
 
 fn isExported(comptime T: type, comptime name: [:0]const u8, comptime path: Path) bool {
-    if (std.mem.eql(u8, name, "lua") or declOptions(T, name).skip) return false;
+    if (std.mem.eql(u8, name, "lua") or std.mem.eql(u8, name, "lua_userdata") or declOptions(T, name).skip) return false;
     const Decl = @TypeOf(@field(T, name));
     if (Decl == type) {
         const Nested = @field(T, name);

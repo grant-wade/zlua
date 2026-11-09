@@ -336,10 +336,10 @@ fn installHostBindings(lua: *api.State) !void {
     defer other.deinit();
     try lua.setGlobal("other", other);
 
-    var host_call = try lua.register("host_call", hostCall);
+    var host_call = try lua.newFunction("host_call", hostCall);
     defer host_call.deinit();
     try lua.setGlobal("host_call", host_call);
-    var host_load = try lua.register("host_load", hostLoad);
+    var host_load = try lua.newFunction("host_load", hostLoad);
     defer host_load.deinit();
     try lua.setGlobal("host_load", host_load);
 }

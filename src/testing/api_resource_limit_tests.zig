@@ -8,7 +8,6 @@ const Context = api.Context;
 const Function = api.Function;
 const MemoryFile = api.MemoryFile;
 const State = api.State;
-const Tuple = api.Tuple;
 
 const memory_limit_error_message = "memory limit exceeded";
 
@@ -222,11 +221,11 @@ test "api stack value limit catches coroutine recursion" {
     , .{ .name = "=api-stack-limit-coroutine-recursion" });
     defer chunk.deinit();
 
-    const Result = Tuple(&.{ bool, api.String, api.String });
+    const Result = struct { bool, api.String, api.String };
     var result = try chunk.call(.{}, Result);
-    defer result.deinit();
-    try std.testing.expectEqual(false, result.get(0));
-    try std.testing.expectEqualStrings("dead", try result.get(2).bytes());
+    defer api.deinit(&result);
+    try std.testing.expectEqual(false, result[0]);
+    try std.testing.expectEqualStrings("dead", try result[2].bytes());
 }
 
 test "api call frame limit catches coroutine recursion" {
@@ -248,12 +247,12 @@ test "api call frame limit catches coroutine recursion" {
     , .{ .name = "=api-call-frame-limit-coroutine-recursion" });
     defer chunk.deinit();
 
-    const Result = Tuple(&.{ bool, api.String, api.String });
+    const Result = struct { bool, api.String, api.String };
     var result = try chunk.call(.{}, Result);
-    defer result.deinit();
-    try std.testing.expectEqual(false, result.get(0));
-    try std.testing.expect(std.mem.indexOf(u8, try result.get(1).bytes(), "stack overflow") != null);
-    try std.testing.expectEqualStrings("dead", try result.get(2).bytes());
+    defer api.deinit(&result);
+    try std.testing.expectEqual(false, result[0]);
+    try std.testing.expect(std.mem.indexOf(u8, try result[1].bytes(), "stack overflow") != null);
+    try std.testing.expectEqualStrings("dead", try result[2].bytes());
 }
 
 test "api stack value limit catches host callback reentry" {
@@ -278,7 +277,7 @@ test "api stack value limit catches host callback reentry" {
     });
     defer lua.deinit();
 
-    var enter = try lua.register("enter", Callbacks.enter);
+    var enter = try lua.newFunction("enter", Callbacks.enter);
     defer enter.deinit();
     try lua.setGlobal("enter", enter);
 
@@ -318,7 +317,7 @@ test "api call frame limit catches host callback reentry" {
     });
     defer lua.deinit();
 
-    var enter = try lua.register("enter", Callbacks.enter);
+    var enter = try lua.newFunction("enter", Callbacks.enter);
     defer enter.deinit();
     try lua.setGlobal("enter", enter);
 

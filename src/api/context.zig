@@ -47,7 +47,7 @@ pub const Caller = struct {
     }
 };
 
-/// Callback context for functions registered with `State.register`.
+/// Callback context for functions created with `State.newFunction`.
 pub const Context = struct {
     lua: *State,
     raw: *runtime.ApiCallbackContext,
@@ -225,7 +225,7 @@ pub const Context = struct {
         self.raw.tail_callee = helper;
     }
 
-    /// The number of values bound to this callback by `State.registerClosure`.
+    /// The number of values bound to this callback by `State.newClosure`.
     pub fn upvalueCount(self: *Context) usize {
         const closure = self.raw.closure orelse return 0;
         return callbacks.closureValueCount(closure);
