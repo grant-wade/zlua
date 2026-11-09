@@ -27,6 +27,7 @@
 - `State.errorMessage`, `describeError`, and `takeErrorValue` are
   `writeError` and `takeError`, and `ErrorRef.message` is `writeMessage`.
 - `Function.dumpBytecode` writes to a `std.Io.Writer`.
+- `zlua.api` is removed; its declarations are at the top level of `zlua`.
 
 ### Embedding API
 

@@ -1,10 +1,14 @@
+//! zlua's embedding API. `frontend`, `compile`, `errors`, `runtime`, `stdlib`, and `testing` are
+//! internal and change between versions.
+
+const api = @import("api.zig");
+
 pub const version = "0.8.1";
 pub const lua_target_version = "Lua 5.5";
 
 pub const frontend = @import("frontend.zig");
 pub const compile = @import("compile.zig");
 pub const errors = @import("errors.zig");
-pub const api = @import("api.zig");
 pub const runtime = @import("runtime.zig");
 pub const stdlib = @import("stdlib.zig");
 pub const testing = @import("testing.zig");

@@ -22,10 +22,11 @@ The source tree splits into a handful of areas, each with a clear job:
 | Examples | `examples/` | Zig embedding examples and API smoke tests. |
 | Fixtures | `tests/` | Lua, extension, and benchmark fixtures. |
 
-If you're embedding zlua, `src/api.zig` (re-exported through `src/root.zig`) is
-the boundary you should build against. You can import the runtime directly, but
-doing so exposes object layouts, stack frames, GC bookkeeping, and bytecode
-details that may change between versions.
+If you're embedding zlua, the top-level declarations of `src/root.zig` are the
+boundary you should build against. Its `frontend`, `compile`, `errors`,
+`runtime`, `stdlib`, and `testing` modules are internal: they expose object
+layouts, stack frames, GC bookkeeping, and bytecode details that change between
+versions.
 
 ## Source to Execution
 
@@ -333,11 +334,11 @@ any ambient access on its own.
 
 ### Zig API
 
-`src/api.zig` is a facade that re-exports the public API from the modules in
-`src/api/`. The API wraps runtime values in typed, rooted handles such as
-`Table`, `Function`, `Ref`, `Userdata(T)`, `AnyUserdata`, `Value`, and
-`ErrorRef`. When a handle owns a root, you are responsible for deinitializing
-it.
+`src/api.zig` collects the public API from the modules in `src/api/`, and
+`src/root.zig` re-exports it. The API wraps runtime values in typed, rooted
+handles such as `String`, `Table`, `Function`, `Ref`, `Userdata(T)`,
+`AnyUserdata`, `Value`, and `ErrorRef`. When a handle owns a root, you are
+responsible for deinitializing it.
 
 | Module | Contents |
 | --- | --- |
@@ -400,7 +401,7 @@ metatable and method table.
 These rules hold across the codebase, and changes should preserve them:
 
 - Official Lua behavior wins over intuition.
-- `src/api.zig` is the stable Zig embedding boundary.
+- The top-level declarations of `src/root.zig` are the Zig embedding boundary.
 - The runtime global table is the only runtime store for globals.
 - State-owned values that escape into host code must be rooted.
 - Static strings have process lifetime, are never written, and never enter
