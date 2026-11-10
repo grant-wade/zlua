@@ -108,11 +108,12 @@
 - [testing.bench.results](../testing/bench/results.md)
 - [testing.bench.stats](../testing/bench/stats.md)
 - [testing.bench.report](../testing/bench/report.md)
+- [testing.bench.api](../testing/bench/api.md)
+- [testing.bench.allocation](../testing/bench/allocation.md)
 - [testing.bench.process](../testing/bench/process.md)
 - [testing.bench.fixtures](../testing/bench/fixtures.md)
 - [testing.bench.legacy_process](../testing/bench/legacy_process.md)
 - [testing.bench.startup](../testing/bench/startup.md)
-- [testing.bench.allocation](../testing/bench/allocation.md)
 - [testing.bench.c_startup](../testing/bench/c_startup.md)
 - [testing.bench.snapshots](../testing/bench/snapshots.md)
 - [testing.bench.gc](../testing/bench/gc.md)
@@ -156,6 +157,7 @@
 - [runtimeNativeCall](#fn-runtimenativecall)
 - [nativeCallInfo](#fn-nativecallinfo)
 - [invokeValue](#fn-invokevalue)
+- [invokeNative](#fn-invokenative)
 - [apiClosureCallbackId](#fn-apiclosurecallbackid)
 - [replaceCall](#fn-replacecall)
 - [nativeStackFits](#fn-nativestackfits)
@@ -355,7 +357,7 @@ pub fn runtimeNativeCall(thread: *Thread) types.NativeCall
 ## nativeCallInfo
 
 ```zig
-pub fn nativeCallInfo(thread: *Thread, resolved: bytecode.Call, outer: ?types.NativeCall, name: ?[]const u8, namewhat: ?[]const u8, extra_args: usize) types.NativeCall
+pub fn nativeCallInfo(thread: *Thread, resolved: bytecode.Call, outer: ?*const types.NativeCall, name: ?[]const u8, namewhat: ?[]const u8, extra_args: usize) types.NativeCall
 ```
 
 <a id="fn-invokevalue"></a>
@@ -364,6 +366,16 @@ pub fn nativeCallInfo(thread: *Thread, resolved: bytecode.Call, outer: ?types.Na
 
 ```zig
 pub fn invokeValue(self: *State, thread: *Thread, resolved: bytecode.Call, depth: usize) anyerror!void
+```
+
+<a id="fn-invokenative"></a>
+
+## invokeNative
+
+`invokeValue` for a callee that `isNativeCallable`, called with no call name pending.
+
+```zig
+pub fn invokeNative(self: *State, thread: *Thread, op: bytecode.Call, callee: Value) anyerror!void
 ```
 
 <a id="fn-apiclosurecallbackid"></a>

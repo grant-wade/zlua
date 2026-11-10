@@ -108,11 +108,12 @@
 - [testing.bench.results](../testing/bench/results.md)
 - [testing.bench.stats](../testing/bench/stats.md)
 - [testing.bench.report](../testing/bench/report.md)
+- [testing.bench.api](../testing/bench/api.md)
+- [testing.bench.allocation](../testing/bench/allocation.md)
 - [testing.bench.process](../testing/bench/process.md)
 - [testing.bench.fixtures](../testing/bench/fixtures.md)
 - [testing.bench.legacy_process](../testing/bench/legacy_process.md)
 - [testing.bench.startup](../testing/bench/startup.md)
-- [testing.bench.allocation](../testing/bench/allocation.md)
 - [testing.bench.c_startup](../testing/bench/c_startup.md)
 - [testing.bench.snapshots](../testing/bench/snapshots.md)
 - [testing.bench.gc](../testing/bench/gc.md)
@@ -133,6 +134,7 @@
 
 ## Functions
 
+- [hasFastUnaryResult](#fn-hasfastunaryresult)
 - [fastUnaryResult](#fn-fastunaryresult)
 - [abs](#fn-abs)
 - [acos](#fn-acos)
@@ -160,11 +162,23 @@
 - [typeValue](#fn-typevalue)
 - [ult](#fn-ult)
 
+<a id="fn-hasfastunaryresult"></a>
+
+## hasFastUnaryResult
+
+Non-allocating, non-throwing fast path; null falls back to the normal call.
+
+```zig
+pub inline fn hasFastUnaryResult(func: runtime.NativeFn) bool
+```
+
+References: [`runtime.NativeFn`](../runtime.md#alias-nativefn)
+
 <a id="fn-fastunaryresult"></a>
 
 ## fastUnaryResult
 
-Non-allocating, non-throwing fast path; null falls back to the normal call.
+The result of calling `func`, which `hasFastUnaryResult`, on `value`; null if it needs the general call.
 
 ```zig
 pub fn fastUnaryResult(func: runtime.NativeFn, value: Value) ?Value
