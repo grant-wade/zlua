@@ -1063,15 +1063,30 @@ pub const Thread = struct {
 
     pub fn initRoot(allocator: std.mem.Allocator, closure: *Closure, stack_value_limit: usize) !Thread {
         var thread = Thread{};
-        thread.entry = .{ .closure = closure };
-        thread.started = true;
-        thread.is_main = true;
-        thread.status = .running;
         errdefer thread.deinit(allocator);
-        const proto = closure.proto;
-        try thread.ensureStack(allocator, @max(proto.max_registers, 1), stack_value_limit);
-        try thread.frames.append(allocator, .{ .closure = closure, .base = 0, .pc = 0, .return_start = 0, .return_count = 0 });
+        try thread.startRoot(allocator, closure, stack_value_limit);
         return thread;
+    }
+
+    /// Makes a thread that has not run, or that `recycle` returned to that state, the root thread of `closure`.
+    pub fn startRoot(self: *Thread, allocator: std.mem.Allocator, closure: *Closure, stack_value_limit: usize) !void {
+        self.entry = .{ .closure = closure };
+        self.started = true;
+        self.is_main = true;
+        self.status = .running;
+        try self.ensureStack(allocator, @max(closure.proto.max_registers, 1), stack_value_limit);
+        try self.frames.append(allocator, .{ .closure = closure, .base = 0, .pc = 0, .return_start = 0, .return_count = 0 });
+    }
+
+    /// Returns the thread to the state of one that has not run, keeping the capacity of its lists.
+    pub fn recycle(self: *Thread, allocator: std.mem.Allocator) void {
+        for (0..self.frames.items.len) |index| self.releaseFrame(index, allocator);
+        var fresh = Thread{};
+        inline for (.{ "stack", "frames", "frame_extras", "yield_values", "protected_continuations", "generic_for_continuations", "pairs_continuations", "tail_call_continuations", "call_one_continuations" }) |name| {
+            @field(fresh, name) = @field(self, name);
+            @field(fresh, name).clearRetainingCapacity();
+        }
+        self.* = fresh;
     }
 
     pub fn initCoroutine(entry: Value) Thread {

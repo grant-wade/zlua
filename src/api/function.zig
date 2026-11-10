@@ -37,7 +37,8 @@ pub const Function = struct {
         const handler = try hostErrorHandler(state, options, &traceback);
         const budget = CallBudget.begin(state, options.max_instructions);
         defer budget.end(state);
-        const results = entry_mod.callFunctionHandled(&state.raw_state, try handle.rawValue(self.ref), &raw_args, handler) catch |err| {
+        var result_buffer: [result_buffer_len]runtime.Value = undefined;
+        const results = entry_mod.callFunctionInto(&state.raw_state, try handle.rawValue(self.ref), &raw_args, handler, &result_buffer) catch |err| {
             const captured = errors.captureLuaError(state, err);
             if (captured == error.LuaError) {
                 state.last_error_traceback = traceback;
@@ -45,7 +46,7 @@ pub const Function = struct {
             }
             return captured;
         };
-        defer state.allocator().free(results);
+        defer if (results.ptr != &result_buffer) state.allocator().free(results);
         return convert.fromRuntimeResults(state, results, R);
     }
 
@@ -65,6 +66,9 @@ pub const Function = struct {
         };
     }
 };
+
+/// Results a call returns without allocating.
+const result_buffer_len = 8;
 
 pub const CallBudget = struct {
     active: bool,

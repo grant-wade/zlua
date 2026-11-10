@@ -318,6 +318,7 @@ pub const Journal = struct {
         }
         const roots = state.api_roots;
         const root_free = state.api_root_free;
+        const idle_host_thread = state.idle_host_thread;
         const callback_dispatch = state.api_callback_dispatch;
         const callback_data = state.api_callback_user_data;
         const interrupt = state.budget.interrupt;
@@ -349,6 +350,7 @@ pub const Journal = struct {
         state.api_roots.clearRetainingCapacity();
         state.api_root_free = root_free;
         state.api_root_free.clearRetainingCapacity();
+        state.idle_host_thread = idle_host_thread;
         state.api_callback_dispatch = callback_dispatch;
         state.api_callback_user_data = callback_data;
         state.budget.interrupt = interrupt;

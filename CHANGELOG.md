@@ -83,7 +83,8 @@
 - Float arithmetic is faster.
 - Lua function calls and returns are faster.
 - `pcall` and `xpcall` of a Lua function are faster.
-- Calls from Zig into Lua pass their arguments without allocating.
+- Calls from Zig into Lua allocate nothing for their thread, their arguments,
+  or up to eight results.
 - Lua calls library functions and host callbacks faster.
 - Method calls and field reads on userdata are faster.
 - `string.byte` of one character, `math.max`, and `math.min` are faster.

@@ -211,6 +211,8 @@ pub const State = struct {
     api_callback_user_data: ?*anyopaque = null,
     active_api_callback: ?*ApiCallbackContext = null,
     coroutine_close_depth: usize = 0,
+    /// A finished host thread kept for the next host call; not registered with the collector.
+    idle_host_thread: ?*Thread = null,
     string_metatable: ?*Table = null,
     number_metatable: ?*Table = null,
     boolean_metatable: ?*Table = null,
@@ -400,6 +402,10 @@ pub const State = struct {
         self.gc.tables.deinit(self.allocator);
         self.gc.finalizers.deinit(self.allocator);
         for (self.thread_allocations.items) |thread| self.gc.destroyThread(thread);
+        if (self.idle_host_thread) |thread| {
+            thread.deinit(self.allocator);
+            self.allocator.destroy(thread);
+        }
         for (self.closure_allocations.items) |closure| self.gc.destroyClosure(closure);
         for (self.upvalue_allocations.items) |upvalue| self.objects().destroy(upvalue);
         for (self.userdata_allocations.items) |userdata| self.gc.destroyUserdata(userdata);

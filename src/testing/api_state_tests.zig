@@ -761,3 +761,82 @@ test "api strings and errors format with the f specifier" {
     defer lua.allocator().free(message);
     try std.testing.expectEqualStrings(message, try std.fmt.bufPrint(&buffer, "{f}", .{failure}));
 }
+
+test "api calls into Lua allocate nothing once a host thread is kept" {
+    const CountingAllocator = @import("bench/allocation.zig").CountingAllocator;
+    var counter = CountingAllocator{ .backing = std.testing.allocator };
+    const lua = try State.init(counter.allocator(), .{});
+    defer lua.deinit();
+    try lua.doString("function add(a, b) return a + b end function three() return 1, 2, 3 end", .{});
+    var add = try lua.getGlobal("add", Function);
+    defer add.deinit();
+    var three = try lua.getGlobal("three", Function);
+    defer three.deinit();
+    _ = try add.call(.{ 1, 2 }, i64);
+
+    const allocations = counter.allocations;
+    for (0..100) |i| {
+        try std.testing.expectEqual(@as(i64, @intCast(i + 1)), try add.call(.{ @as(i64, @intCast(i)), 1 }, i64));
+        const one, const two, const last = try three.call(.{}, struct { i64, i64, i64 });
+        try std.testing.expectEqual(@as(i64, 6), one + two + last);
+    }
+    try std.testing.expectEqual(allocations, counter.allocations);
+}
+
+fn callBack(ctx: *Context, function: Function, value: i64) !i64 {
+    _ = ctx;
+    return try function.call(.{value}, i64) + 1;
+}
+
+test "api a host call starts clean after calls that failed, nested, or exposed their thread" {
+    const lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    try lua.setGlobal("call_back", callBack);
+    try lua.doString(
+        \\closed = 0
+        \\function fail(...)
+        \\  local guard <close> = setmetatable({}, { __close = function() closed = closed + 1 end })
+        \\  local captured = select("#", ...)
+        \\  hold = function() return captured end
+        \\  error("failed")
+        \\end
+        \\function many() return 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 end
+        \\function double(n) return n * 2 end
+        \\function nested(n) return call_back(double, n) end
+        \\function running() return coroutine.running() end
+        \\function locals() local a, b, c, d; return a, b, c, d end
+    , .{});
+    var fail = try lua.getGlobal("fail", Function);
+    defer fail.deinit();
+    var many = try lua.getGlobal("many", Function);
+    defer many.deinit();
+    var nested = try lua.getGlobal("nested", Function);
+    defer nested.deinit();
+    var running = try lua.getGlobal("running", Function);
+    defer running.deinit();
+    var locals = try lua.getGlobal("locals", Function);
+    defer locals.deinit();
+
+    for (0..3) |round| {
+        try std.testing.expectError(error.LuaError, fail.call(.{ 1, 2, 3, 4, 5, 6, 7, 8, 9 }, void));
+        try std.testing.expectEqual(@as(i64, @intCast(round + 1)), try lua.getGlobal("closed", i64));
+        try std.testing.expectEqual(@as(i64, 9), try lua.callGlobal("hold", .{}, i64));
+
+        const empty = try locals.call(.{}, struct { ?i64, ?i64, ?i64, ?i64 });
+        inline for (empty) |value| try std.testing.expectEqual(@as(?i64, null), value);
+
+        const values = try many.call(.{}, struct { i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64 });
+        var sum: i64 = 0;
+        inline for (values) |value| sum += value;
+        try std.testing.expectEqual(@as(i64, 78), sum);
+
+        try std.testing.expectEqual(@as(i64, 43), try nested.call(.{21}, i64));
+
+        var first = try running.call(.{}, api.Coroutine);
+        defer first.deinit();
+        var second = try running.call(.{}, api.Coroutine);
+        defer second.deinit();
+        try lua.setGlobals(.{ .first = first, .second = second });
+        try lua.doString("assert(first ~= second and coroutine.status(first) == 'dead' and coroutine.status(second) == 'dead')", .{});
+    }
+}

@@ -1,5 +1,6 @@
 const compile = @import("../compile.zig");
 const errors = @import("../errors.zig");
+const budget_mod = @import("budget.zig");
 const call_mod = @import("call.zig");
 const coroutine_mod = @import("coroutine.zig");
 const debug_mod = @import("debug.zig");
@@ -21,6 +22,9 @@ const Closure = types.Closure;
 const Thread = types.Thread;
 const HostErrorHandler = state_mod.HostErrorHandler;
 
+/// Stack capacity above which a finished host thread is freed instead of kept for the next call.
+const max_idle_stack_values = 4096;
+
 pub fn execute(self: *State, proto: *proto_mod.Proto) !void {
     try value_mod.prepareProtoTree(proto);
     try executeClosure(self, try load_mod.newRootClosure(self, proto), .{ .host_frame = true });
@@ -28,10 +32,17 @@ pub fn execute(self: *State, proto: *proto_mod.Proto) !void {
 
 // Heap-allocated so coroutine.running() can expose a stable identity; unexposed ones are released after the call.
 pub fn newHostThread(self: *State, closure: *Closure) !*Thread {
-    const thread = try self.allocator.create(Thread);
-    errdefer self.allocator.destroy(thread);
-    thread.* = try Thread.initRoot(self.allocator, closure, self.stackValueLimit());
-    errdefer thread.deinit(self.allocator);
+    const thread = self.idle_host_thread orelse fresh: {
+        const fresh = try self.allocator.create(Thread);
+        fresh.* = .{};
+        break :fresh fresh;
+    };
+    self.idle_host_thread = null;
+    errdefer {
+        thread.deinit(self.allocator);
+        self.allocator.destroy(thread);
+    }
+    try thread.startRoot(self.allocator, closure, self.stackValueLimit());
     try self.registerAllocation("thread_allocations", thread);
     self.gc.noteAllocation(@sizeOf(Thread));
     return thread;
@@ -45,7 +56,9 @@ pub fn retireHostThread(self: *State, thread: *Thread) void {
         self.gc.forgetThread(thread);
         self.gc.removeRegistryItem("thread_allocations", index);
         self.gc.noteAllocationFreed(@sizeOf(Thread) + thread.storage_bytes);
-        self.gc.destroyThread(thread);
+        if (self.idle_host_thread != null or thread.rollback != null or thread.stack.capacity > max_idle_stack_values) return self.gc.destroyThread(thread);
+        thread.recycle(self.allocator);
+        self.idle_host_thread = thread;
         return;
     }
     // Drop storage borrowed from the host stack, keeping the observable thread and its hook.
@@ -70,11 +83,12 @@ pub fn retireHostThread(self: *State, thread: *Thread) void {
 }
 
 pub fn callLoadedClosure(self: *State, closure: *Closure, args: []const Value) ![]Value {
-    return callLoadedClosureHandled(self, closure, args, .{});
+    return callLoadedClosureHandled(self, closure, args, .{}, &.{});
 }
 
-/// Like `callLoadedClosure`; `handler` runs at the error point before frames unwind.
-fn callLoadedClosureHandled(self: *State, closure: *Closure, args: []const Value, handler: HostErrorHandler) ![]Value {
+/// Like `callLoadedClosure`; `handler` runs at the error point before frames unwind, and results
+/// that fit are returned in `buffer`.
+fn callLoadedClosureHandled(self: *State, closure: *Closure, args: []const Value, handler: HostErrorHandler, buffer: []Value) ![]Value {
     const thread = newHostThread(self, closure) catch |err| switch (err) {
         error.StackOverflow => return self.fail("stack overflow"),
         else => return err,
@@ -91,7 +105,11 @@ fn callLoadedClosureHandled(self: *State, closure: *Closure, args: []const Value
         return err;
     };
     thread.status = .dead;
-    return coroutine_mod.copyStackSlice(self, thread, thread.last_result_base, thread.last_result_count);
+    const count = thread.last_result_count;
+    if (count > buffer.len) return coroutine_mod.copyStackSlice(self, thread, thread.last_result_base, count);
+    self.budget.note(budget_mod.cost.registers(count));
+    @memcpy(buffer[0..count], thread.stack.items[thread.last_result_base..][0..count]);
+    return buffer[0..count];
 }
 
 /// Like `protectedCallLoadedClosure`; `handler` runs at the error point before frames unwind.
@@ -145,7 +163,13 @@ pub fn callFunction(self: *State, function: Value, args: []const Value) ![]Value
 
 /// Like `callFunction`; `handler` runs at the error point before frames unwind.
 pub fn callFunctionHandled(self: *State, function: Value, args: []const Value, handler: HostErrorHandler) ![]Value {
-    if (function == .closure) return callLoadedClosureHandled(self, function.closure, args, handler);
+    return callFunctionInto(self, function, args, handler, &.{});
+}
+
+/// Like `callFunctionHandled`; the results are in `buffer` if the returned slice starts there, and
+/// otherwise in a slice the caller frees.
+pub fn callFunctionInto(self: *State, function: Value, args: []const Value, handler: HostErrorHandler, buffer: []Value) ![]Value {
+    if (function == .closure) return callLoadedClosureHandled(self, function.closure, args, handler, buffer);
     // A native callee still needs a frame for arguments, errors, and reentrant Lua calls.
     var proto = proto_mod.Proto.init(self.allocator);
     defer proto.deinit();
