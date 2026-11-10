@@ -101,6 +101,9 @@
 - The scheduled fuzz workflow is removed.
 - Harness steps build only the binaries they run.
 - Unit test fuzz sweeps run across threads.
+- `zig build bench` has an `api` group that times embedding API operations.
+- The `sustained` benchmarks cover library calls, string methods, and
+  `table.insert` with `table.remove`.
 
 ### Fixes
 

@@ -209,7 +209,7 @@ just bench [options] [selectors...]
 | --- | --- |
 | `selectors...` | Group, case, or process fixture name or path. |
 | `--list` | List the selected benchmark cases. |
-| `--family=NAME` | Run one group: `process`, `startup`, `snapshots`, `gc`, or `all` (the default). |
+| `--family=NAME` | Run one group: `process`, `startup`, `snapshots`, `gc`, `api`, or `all` (the default). |
 | `--clua PATH`, `--zlua PATH`, `--zlua-snapshot PATH` | Override the process benchmark executables; the `=PATH` forms also work. |
 | `--iterations N` | Override the number of measured runs; must be positive. |
 | `--warmup N`, `--no-warmup` | Override the number of warmup runs. |
