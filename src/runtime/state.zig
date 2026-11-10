@@ -694,7 +694,7 @@ pub const State = struct {
     pub fn activeNativeCall(thread: *Thread) ?types.NativeCall {
         const call = thread.native_call orelse return null;
         if (call.frame_count == 0 or thread.frames.items.len != call.frame_count) return null;
-        return call;
+        return call.*;
     }
 
     fn appendLibraryWhere(self: *State, out: *std.ArrayList(u8)) !void {
@@ -878,6 +878,7 @@ pub const State = struct {
 
     pub fn argumentInteger(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) !i64 {
         const value = argValue(self, thread, op, index);
+        if (value == .integer) return value.integer;
         self.budget.noteLongString(value);
         if (toInteger(value)) |integer| return integer;
         const number = toNumberMaybe(value) orelse return self.failArgumentType(function_name, index + 1, "number", value);

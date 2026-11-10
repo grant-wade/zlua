@@ -417,7 +417,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
     if (self.budget.fastLoopInterrupted()) return false;
     if (self.stressPending()) return false;
     if (thread.hook != .nil and (thread.hook_line or thread.hook_count != 0 or thread.hook_running)) return false;
-    if (self.gc.running and self.gc.shouldRunAuto()) return false;
+    if (self.gc.running and self.gc.autoStepDue() and self.gc.shouldRunAuto()) return false;
     var budget_allowance = self.budget.fastLoopAllowance();
     if (budget_allowance == 0) return false;
 
@@ -447,12 +447,12 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             @branchHint(.unlikely);
             resync = null;
             flushed = flushExecuted(self, executed, flushed);
-            if (!try fastLoopCanResume(self, thread, target_frame_count)) {
+            const resumed = try fastLoopResume(self, thread, target_frame_count) orelse {
                 pc = 0;
                 count_bias = flushed;
                 return true;
-            }
-            budget_allowance = flushed +| self.budget.fastLoopAllowance();
+            };
+            budget_allowance = flushed +| resumed.allowance;
             frame_index = thread.frames.items.len - 1;
             frame = &thread.frames.items[frame_index];
             proto = frame.closure.proto;
@@ -463,7 +463,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
             base = frame.base;
             stack_limit = @min(thread.stack.items.len, self.stackValueLimit());
             frame_limit = @min(thread.frames.capacity, self.callFrameLimit());
-            return_floor = fastReturnFloor(thread, target_frame_count);
+            return_floor = resumed.return_floor;
         }
         if (!proto.fast_loop_entry) return segment_start != 0;
         instructions = proto.instructions.items;
@@ -672,6 +672,8 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     call_mod.namedVarargField(frame.varargs(thread.stack.items), key.bytes())
                 else if (loadValue(&stack[op.table]) == .string)
                     stringMethod(self, key) orelse break :fast_loop
+                else if (loadValue(&stack[op.table]) == .userdata)
+                    userdataField(stack[op.table].userdata, key) orelse break :fast_loop
                 else
                     fastTableFieldGet(loadValue(&stack[op.table]), key) orelse break :fast_loop;
                 storeValue(&stack[op.dest], value);
@@ -725,6 +727,8 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     hit.*
                 else if (table_value == .string)
                     stringMethod(self, key) orelse break :fast_loop
+                else if (table_value == .userdata)
+                    userdataField(table_value.userdata, key) orelse break :fast_loop
                 else
                     fastTableFieldGet(table_value, key) orelse break :fast_loop;
                 storeValue(&stack[op.dest + 1], table_value);
@@ -944,7 +948,7 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     op.arg_count = @intCast(result_end -| expected_base);
                 }
                 const callee = loadValue(&stack[op.base]);
-                if (callee == .native and !thread.hook_return and op.arg_count != 0 and @as(usize, op.base) + 1 < stack.len) math: {
+                if (callee == .native and stdlib.math.hasFastUnaryResult(callee.native) and !thread.hook_return and op.arg_count != 0 and @as(usize, op.base) + 1 < stack.len) math: {
                     const result = stdlib.math.fastUnaryResult(callee.native, loadValue(&stack[op.base + 1])) orelse break :math;
                     const return_count: usize = if (op.return_count == bytecode.multret_count) 1 else op.return_count;
                     const absolute_base = base + op.base;
@@ -975,7 +979,25 @@ fn runPlainFastLoop(self: *State, thread: *Thread, target_frame_count: usize) an
                     frame.pc = @intCast(pc);
                     segment_start = pc +% count_bias;
                     flushed = flushExecuted(self, segment_start, flushed);
-                    try call_mod.callValue(self, thread, op);
+                    if (callee == .closure) {
+                        try call_mod.callValue(self, thread, op);
+                    } else if (value_mod.isNativeCallable(callee) and thread.next_call_name == null and thread.next_call_namewhat == null) {
+                        try call_mod.invokeNative(self, thread, op, callee);
+                        if (thread.frames.items.len == frame_index + 1 and nativeLeftFastLoopIntact(self, thread)) intact: {
+                            const fresh_allowance = flushed +| @call(.always_inline, budget_mod.Budget.fastLoopAllowance, .{&self.budget});
+                            if (segment_start >= fresh_allowance or hookLineSet(thread, frame_index)) break :intact;
+                            budget_allowance = fresh_allowance;
+                            allowance = fresh_allowance;
+                            return_floor = @call(.always_inline, fastReturnFloor, .{ thread, target_frame_count });
+                            frame = &thread.frames.items[frame_index];
+                            stack_limit = @min(thread.stack.items.len, self.stackValueLimit());
+                            frame_limit = @min(thread.frames.capacity, self.callFrameLimit());
+                            stack = thread.stack.items[base..];
+                            continue :fast_loop std.meta.activeTag(instructions[pc]);
+                        }
+                    } else {
+                        try call_mod.invokeValue(self, thread, op, 0);
+                    }
                     resync = segment_start;
                     continue :frames;
                 }
@@ -1361,16 +1383,38 @@ inline fn flushExecuted(self: *State, executed: u64, flushed: u64) u64 {
     return executed;
 }
 
-/// After a general call from the fast loop: runs a due collector step, then reports
-/// whether the fast loop may continue with the thread's new top frame.
-noinline fn fastLoopCanResume(self: *State, thread: *Thread, target_frame_count: usize) !bool {
-    if (self.gc.running and (self.gc.shouldRunAuto() or self.stressPending())) try self.gc.autoStep(thread);
+/// Whether a native that returned to the frame it was called from left nothing for
+/// `fastLoopResume` to act on.
+inline fn nativeLeftFastLoopIntact(self: *State, thread: *Thread) bool {
+    if (self.gc.running and self.gc.autoStepDue()) return false;
+    if (self.stressPending() or self.budget.interruptRequested()) return false;
+    if (thread.hook != .nil or thread.pending_unwind_error != null or thread.pending_yield_hook_return) return false;
+    return !call_mod.hasPendingContinuations(thread) or thread.frames.items.len > thread.continuation_frame_count;
+}
+
+const FastLoopResume = struct {
+    /// `Budget.fastLoopAllowance` for the instructions to come.
+    allowance: u64,
+    return_floor: usize,
+};
+
+/// After a general operation from the fast loop: runs a due collector step, then returns
+/// what the fast loop continues the thread's new top frame with, or null if it may not.
+noinline fn fastLoopResume(self: *State, thread: *Thread, target_frame_count: usize) !?FastLoopResume {
+    if (self.gc.running and (self.gc.autoStepDue() or self.stressPending())) {
+        if (self.gc.shouldRunAuto() or self.stressPending()) try self.gc.autoStep(thread);
+    }
     const frame_count = thread.frames.items.len;
-    if (frame_count <= target_frame_count) return false;
-    if (thread.pending_unwind_error != null or thread.pending_yield_hook_return) return false;
-    if (call_mod.hasPendingContinuations(thread) and frame_count <= thread.continuation_frame_count) return false;
-    if (thread.hook != .nil or self.options.trace_vm or self.budget.fastLoopInterrupted() or self.stressPending()) return false;
-    return thread.frames.items[frame_count - 1].pc < thread.frames.items[frame_count - 1].closure.proto.instructions.items.len;
+    if (frame_count <= target_frame_count) return null;
+    if (thread.pending_unwind_error != null or thread.pending_yield_hook_return) return null;
+    const pending = call_mod.hasPendingContinuations(thread);
+    if (pending and frame_count <= thread.continuation_frame_count) return null;
+    if (thread.hook != .nil or self.options.trace_vm or self.budget.fastLoopInterrupted() or self.stressPending()) return null;
+    if (thread.frames.items[frame_count - 1].pc >= thread.frames.items[frame_count - 1].closure.proto.instructions.items.len) return null;
+    return .{
+        .allowance = self.budget.fastLoopAllowance(),
+        .return_floor = if (thread.hook_return) std.math.maxInt(usize) else if (pending) @max(target_frame_count, thread.continuation_frame_count) else target_frame_count,
+    };
 }
 
 fn fastTableArraySet(self: *State, table_value: Value, key_value: Value, value: Value) !bool {
@@ -1857,6 +1901,17 @@ fn fastGlobalSetExisting(self: *State, key: *const String, value: Value) bool {
 fn stringMethod(self: *State, key: *const String) ?Value {
     if (!key.isShort()) return null;
     const metatable = self.string_metatable orelse return null;
+    const handler = metatable.metaEvent(.__index);
+    if (handler != .table) return null;
+    const value = handler.table.getString(key);
+    if (value != .nil or index_mod.noIndexMetamethod(handler.table)) return value;
+    return null;
+}
+
+/// A userdata's field through its metatable's `__index` table, when that needs no metamethod call.
+fn userdataField(userdata: *const types.Userdata, key: *const String) ?Value {
+    if (!key.isShort()) return null;
+    const metatable = userdata.metatable orelse return null;
     const handler = metatable.metaEvent(.__index);
     if (handler != .table) return null;
     const value = handler.table.getString(key);

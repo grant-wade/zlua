@@ -278,7 +278,7 @@ pub const ApiCallbackContext = struct {
         return self.op.arg_count;
     }
 
-    pub fn callbackArgValue(self: *ApiCallbackContext, index: usize) Value {
+    pub inline fn callbackArgValue(self: *ApiCallbackContext, index: usize) Value {
         if (index >= self.op.arg_count) return .nil;
         return self.thread.stack.items[self.argument_base + index];
     }
@@ -1032,7 +1032,7 @@ pub const Thread = struct {
     yield_result_base: usize = 0,
     yield_result_count: u16 = 0,
     native_call_depth: usize = 0,
-    native_call: ?NativeCall = null,
+    native_call: ?*const NativeCall = null,
     protected_close_depth: usize = 0,
     /// Message handler for errors raised on this thread, like `L->errfunc`.
     error_handler: Value = .nil,

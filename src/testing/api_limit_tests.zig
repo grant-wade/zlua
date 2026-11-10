@@ -609,3 +609,30 @@ test "cumulative instruction limits end at their exact count" {
     try std.testing.expectError(error.LuaError, lua.doString("while true do end", .{}));
     try std.testing.expectEqual(@as(u64, 3_000_000), lua.instructionBudget().used);
 }
+
+fn hostAdd(a_value: i64, b_value: i64) i64 {
+    return a_value +% b_value;
+}
+
+test "instruction budgets and interrupts stop loops that only call natives" {
+    const lua = try initWithTrigger();
+    defer lua.deinit();
+    try lua.setGlobal("host_add", hostAdd);
+    try lua.doString(
+        \\local max, host_add, select, trigger = math.max, host_add, select, trigger
+        \\function spin_builtin() local s = 0 while true do s = max(s, 1) end end
+        \\function spin_host() local s = 0 while true do s = host_add(s, 1) end end
+        \\function spin_select() local s = 0 while true do s = select("#", s, s) end end
+        \\function spin_trigger() local n = 0 while true do n = n + 1 if n == 1000 then trigger() end end end
+    , .{});
+    inline for (.{ "spin_builtin", "spin_host", "spin_select" }) |name| {
+        var spin = try lua.getGlobal(name, api.Function);
+        defer spin.deinit();
+        try expectLimitError(spin.callWith(.{}, void, .{ .max_instructions = 10_000 }), lua);
+    }
+    var spin_trigger = try lua.getGlobal("spin_trigger", api.Function);
+    defer spin_trigger.deinit();
+    try std.testing.expectError(error.Interrupted, spin_trigger.call(.{}, void));
+    lua.clearInterrupt();
+    try std.testing.expectEqual(@as(i64, 3), try lua.callGlobal("host_add", .{ 1, 2 }, i64));
+}

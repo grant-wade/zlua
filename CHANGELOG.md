@@ -84,6 +84,9 @@
 - Lua function calls and returns are faster.
 - `pcall` and `xpcall` of a Lua function are faster.
 - Calls from Zig into Lua pass their arguments without allocating.
+- Lua calls library functions and host callbacks faster.
+- Method calls and field reads on userdata are faster.
+- `string.byte` of one character, `math.max`, and `math.min` are faster.
 - Creating a handle takes the same time however many handles are live.
 
 ### Packaging

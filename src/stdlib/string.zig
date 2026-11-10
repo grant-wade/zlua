@@ -27,13 +27,14 @@ pub fn byte(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const source = try state.expectArgumentString(thread, op, "string.byte", 0);
     const start = normalizeIndex(try state.optionalArgumentInteger(thread, op, "string.byte", 1, 1), source.len);
     const stop = normalizeIndex(try state.optionalArgumentInteger(thread, op, "string.byte", 2, @as(i64, @intCast(start))), source.len);
-    var values = std.ArrayList(Value).empty;
-    defer values.deinit(state.allocator);
     const first = @max(start, 1);
     const last = @min(stop, source.len);
+    var values = std.ArrayList(Value).empty;
+    defer values.deinit(state.allocator);
     if (first <= last) {
         if (!call_mod.nativeStackFits(state, thread, op, last - first + 1)) return state.failLibrary("stack overflow (string slice too long)");
         try state.budget.charge(cost.elements(last - first + 1));
+        if (first == last) return state.returnValues(thread, op.base, op.return_count, &.{.{ .integer = source[first - 1] }});
         var index = first;
         while (index <= last) : (index += 1) try values.append(state.allocator, .{ .integer = source[index - 1] });
     }

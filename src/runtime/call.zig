@@ -459,7 +459,8 @@ fn callMessageHandler(self: *State, thread: *Thread, handler: Value, error_value
     defer thread.native_call_depth -= 1;
     const previous_native_call = thread.native_call;
     defer thread.native_call = previous_native_call;
-    if (!debug_mod.errorRaisedByLuaCode(thread)) thread.native_call = runtimeNativeCall(thread);
+    const handler_call = runtimeNativeCall(thread);
+    if (!debug_mod.errorRaisedByLuaCode(thread)) thread.native_call = &handler_call;
     const name = debug_mod.messageHandlerCallName(thread);
     thread.next_call_name = if (name) |known| known.name else null;
     thread.next_call_namewhat = if (name) |known| known.namewhat else null;
@@ -555,7 +556,7 @@ pub fn runtimeNativeCall(thread: *Thread) types.NativeCall {
     return .{ .base = thread.scratchRegister(), .arg_count = 0, .frame_count = thread.frames.items.len, .from_native = false };
 }
 
-pub fn nativeCallInfo(thread: *Thread, resolved: bytecode.Call, outer: ?types.NativeCall, name: ?[]const u8, namewhat: ?[]const u8, extra_args: usize) types.NativeCall {
+pub fn nativeCallInfo(thread: *Thread, resolved: bytecode.Call, outer: ?*const types.NativeCall, name: ?[]const u8, namewhat: ?[]const u8, extra_args: usize) types.NativeCall {
     const frame_count = thread.frames.items.len;
     return .{
         .base = resolved.base,
@@ -582,7 +583,8 @@ pub fn invokeValue(self: *State, thread: *Thread, resolved: bytecode.Call, depth
     if (callee == .coroutine_wrapper) {
         const previous_native_call = thread.native_call;
         defer thread.native_call = previous_native_call;
-        thread.native_call = nativeCallInfo(thread, resolved, previous_native_call, null, null, depth);
+        const wrapper_call = nativeCallInfo(thread, resolved, previous_native_call, null, null, depth);
+        thread.native_call = &wrapper_call;
         try coroutine_mod.callCoroutineWrapper(self, thread, resolved, callee.coroutine_wrapper);
         return;
     }
@@ -598,34 +600,107 @@ pub fn invokeValue(self: *State, thread: *Thread, resolved: bytecode.Call, depth
     thread.next_call_namewhat = null;
     const previous_native_call = thread.native_call;
     defer thread.native_call = previous_native_call;
+    var native_call: types.NativeCall = undefined;
     if (isNativeCallable(callee) or callee == .gmatch_iterator) {
-        thread.native_call = nativeCallInfo(thread, resolved, previous_native_call, call_name, call_namewhat, depth);
+        native_call = nativeCallInfo(thread, resolved, previous_native_call, call_name, call_namewhat, depth);
+        thread.native_call = &native_call;
     }
     const hook_native = isNativeCallable(callee) and !thread.hook_running;
-    if (hook_native and thread.hook_call) {
-        const previous_hook_func = thread.hook_level2_func;
-        const previous_transfer_index_base = thread.hook_transfer_index_base;
-        const previous_transfer_stack_base = thread.hook_transfer_stack_base;
-        const previous_transfer_count = thread.hook_transfer_count;
-        const previous_transfer_values = thread.hook_transfer_values;
-        thread.hook_level2_func = callee;
-        thread.hook_transfer_index_base = 1;
-        thread.hook_transfer_stack_base = thread.frames.items[thread.frames.items.len - 1].base + resolved.base + 1;
-        thread.hook_transfer_count = resolved.arg_count;
-        thread.hook_transfer_values = &.{};
-        defer {
-            thread.hook_level2_func = previous_hook_func;
-            thread.hook_transfer_index_base = previous_transfer_index_base;
-            thread.hook_transfer_stack_base = previous_transfer_stack_base;
-            thread.hook_transfer_count = previous_transfer_count;
-            thread.hook_transfer_values = previous_transfer_values;
-        }
-        try debug_mod.callHook(self, thread, "call");
-    }
+    if (hook_native and thread.hook_call) try nativeCallHook(self, thread, resolved, callee);
     switch (callee) {
         .closure => |closure| try callClosure(self, thread, resolved, closure, call_name, call_namewhat),
         .api_callback => |id| try self.callApiCallbackDispatch(thread, resolved, id, null),
         .api_closure => |table| try self.callApiCallbackDispatch(thread, resolved, apiClosureCallbackId(table), table),
+        .native => |native| try callNative(self, native, thread, resolved),
+        .native_select => try selectValues(self, thread, resolved),
+        .native_assert => try assertValues(self, thread, resolved),
+        .native_error => try errorValue(self, thread, resolved),
+        .native_pcall => try pcallValues(self, thread, resolved),
+        .native_xpcall => try xpcallValues(self, thread, resolved),
+        else => if (!try invokeBuiltin(self, thread, resolved, callee, call_name, call_namewhat, depth)) return,
+    }
+    if (hook_native and thread.hook_return) try nativeReturnHook(self, thread, callee, call_name);
+}
+
+/// `invokeValue` for a callee that `isNativeCallable`, called with no call name pending.
+pub fn invokeNative(self: *State, thread: *Thread, op: bytecode.Call, callee: Value) anyerror!void {
+    if (self.native_invoke_depth != 0) {
+        if (self.native_stack.exceeded()) return self.fail("C stack overflow");
+    } else if (self.execution_depth == 0) {
+        self.native_stack = self.entryStackGuard();
+    }
+    self.native_invoke_depth += 1;
+    defer self.native_invoke_depth -= 1;
+    const entering_native = isYieldBlockingNative(callee);
+    if (entering_native) thread.native_call_depth += 1;
+    defer {
+        if (entering_native) thread.native_call_depth -= 1;
+    }
+    const previous_native_call = thread.native_call;
+    defer thread.native_call = previous_native_call;
+    const native_call = nativeCallInfo(thread, op, previous_native_call, null, null, 0);
+    thread.native_call = &native_call;
+    const hook_native = !thread.hook_running;
+    if (hook_native and thread.hook_call) try nativeCallHook(self, thread, op, callee);
+    switch (callee) {
+        .api_callback => |id| try self.callApiCallbackDispatch(thread, op, id, null),
+        .api_closure => |table| try self.callApiCallbackDispatch(thread, op, apiClosureCallbackId(table), table),
+        .native => |native| try callNative(self, native, thread, op),
+        .native_select => try selectValues(self, thread, op),
+        .native_assert => try assertValues(self, thread, op),
+        .native_error => try errorValue(self, thread, op),
+        .native_pcall => try pcallValues(self, thread, op),
+        .native_xpcall => try xpcallValues(self, thread, op),
+        else => if (!try invokeBuiltin(self, thread, op, callee, null, null, 0)) return,
+    }
+    if (hook_native and thread.hook_return) try nativeReturnHook(self, thread, callee, null);
+}
+
+noinline fn nativeCallHook(self: *State, thread: *Thread, resolved: bytecode.Call, callee: Value) !void {
+    const previous_hook_func = thread.hook_level2_func;
+    const previous_transfer_index_base = thread.hook_transfer_index_base;
+    const previous_transfer_stack_base = thread.hook_transfer_stack_base;
+    const previous_transfer_count = thread.hook_transfer_count;
+    const previous_transfer_values = thread.hook_transfer_values;
+    thread.hook_level2_func = callee;
+    thread.hook_transfer_index_base = 1;
+    thread.hook_transfer_stack_base = thread.frames.items[thread.frames.items.len - 1].base + resolved.base + 1;
+    thread.hook_transfer_count = resolved.arg_count;
+    thread.hook_transfer_values = &.{};
+    defer {
+        thread.hook_level2_func = previous_hook_func;
+        thread.hook_transfer_index_base = previous_transfer_index_base;
+        thread.hook_transfer_stack_base = previous_transfer_stack_base;
+        thread.hook_transfer_count = previous_transfer_count;
+        thread.hook_transfer_values = previous_transfer_values;
+    }
+    try debug_mod.callHook(self, thread, "call");
+}
+
+noinline fn nativeReturnHook(self: *State, thread: *Thread, callee: Value, call_name: ?[]const u8) !void {
+    const previous_hook_func = thread.hook_level2_func;
+    const previous_transfer_index_base = thread.hook_transfer_index_base;
+    const previous_transfer_stack_base = thread.hook_transfer_stack_base;
+    const previous_transfer_count = thread.hook_transfer_count;
+    const previous_transfer_values = thread.hook_transfer_values;
+    thread.hook_level2_func = callee;
+    thread.hook_transfer_index_base = 2;
+    thread.hook_transfer_stack_base = thread.last_transfer_base;
+    thread.hook_transfer_count = thread.last_transfer_count;
+    thread.hook_transfer_values = &.{};
+    defer {
+        thread.hook_level2_func = previous_hook_func;
+        thread.hook_transfer_index_base = previous_transfer_index_base;
+        thread.hook_transfer_stack_base = previous_transfer_stack_base;
+        thread.hook_transfer_count = previous_transfer_count;
+        thread.hook_transfer_values = previous_transfer_values;
+    }
+    try debug_mod.callReturnHook(self, thread, call_name orelse nativeHookName(callee));
+}
+
+/// The callees `invokeValue` does not dispatch itself; false when a `__pairs` metamethod took over the call.
+noinline fn invokeBuiltin(self: *State, thread: *Thread, resolved: bytecode.Call, callee: Value, call_name: ?[]const u8, call_namewhat: ?[]const u8, depth: usize) anyerror!bool {
+    switch (callee) {
         .native_print => {
             for (0..resolved.arg_count) |index| {
                 if (index != 0) try io_mod.writeStdout(self, "\t");
@@ -689,7 +764,7 @@ pub fn invokeValue(self: *State, thread: *Thread, resolved: bytecode.Call, depth
                 thread.native_call_depth -= 1;
                 defer thread.native_call_depth += 1;
                 try index_mod.callPairsMetamethod(self, thread, resolved, metamethod, value);
-                return;
+                return false;
             }
             try self.returnValues(thread, resolved.base, resolved.return_count, &.{ .native_next, value, .nil, .nil });
         },
@@ -710,11 +785,6 @@ pub fn invokeValue(self: *State, thread: *Thread, resolved: bytecode.Call, depth
             try self.gc.reserve(thread, hinted *| @sizeOf(Value));
             try self.returnValues(thread, resolved.base, resolved.return_count, &.{try self.newTableWithHints(array_hint, hash_hint)});
         },
-        .native_select => try selectValues(self, thread, resolved),
-        .native_assert => try assertValues(self, thread, resolved),
-        .native_error => try errorValue(self, thread, resolved),
-        .native_pcall => try pcallValues(self, thread, resolved),
-        .native_xpcall => try xpcallValues(self, thread, resolved),
         .native_collectgarbage => try self.gc.collectGarbageValue(thread, resolved),
         .native_debug_traceback => try debug_mod.tracebackValue(self, thread, resolved),
         .native_coroutine_create => try coroutine_mod.coroutineCreate(self, thread, resolved),
@@ -739,7 +809,6 @@ pub fn invokeValue(self: *State, thread: *Thread, resolved: bytecode.Call, depth
                 try self.returnValues(thread, resolved.base, resolved.return_count, values.slice());
             }
         },
-        .native => |native| try callNative(self, native, thread, resolved),
         else => {
             const metamethod = try metatable_mod.getMetaEvent(self, callee, .__call) orelse return failure_mod.failCallTypeError(self, thread, callee, call_name, call_namewhat);
             try prependCallArgument(self, thread, resolved, metamethod, callee);
@@ -748,26 +817,7 @@ pub fn invokeValue(self: *State, thread: *Thread, resolved: bytecode.Call, depth
             try invokeValue(self, thread, .{ .base = resolved.base, .arg_count = resolved.arg_count + 1, .return_count = resolved.return_count }, depth + 1);
         },
     }
-    if (hook_native and thread.hook_return) {
-        const previous_hook_func = thread.hook_level2_func;
-        const previous_transfer_index_base = thread.hook_transfer_index_base;
-        const previous_transfer_stack_base = thread.hook_transfer_stack_base;
-        const previous_transfer_count = thread.hook_transfer_count;
-        const previous_transfer_values = thread.hook_transfer_values;
-        thread.hook_level2_func = callee;
-        thread.hook_transfer_index_base = 2;
-        thread.hook_transfer_stack_base = thread.last_transfer_base;
-        thread.hook_transfer_count = thread.last_transfer_count;
-        thread.hook_transfer_values = &.{};
-        defer {
-            thread.hook_level2_func = previous_hook_func;
-            thread.hook_transfer_index_base = previous_transfer_index_base;
-            thread.hook_transfer_stack_base = previous_transfer_stack_base;
-            thread.hook_transfer_count = previous_transfer_count;
-            thread.hook_transfer_values = previous_transfer_values;
-        }
-        try debug_mod.callReturnHook(self, thread, call_name orelse nativeHookName(callee));
-    }
+    return true;
 }
 
 pub fn apiClosureCallbackId(table: *types.Table) usize {

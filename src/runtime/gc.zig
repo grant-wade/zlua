@@ -268,8 +268,9 @@ pub const Gc = struct {
         if (bytes >= old_capacity_bytes) gc.noteAllocation(bytes - old_capacity_bytes) else gc.noteAllocationFreed(old_capacity_bytes - bytes);
     }
 
-    fn syncStorage(gc: *Gc, reported: *usize, bytes: usize) void {
-        if (bytes >= reported.*) gc.noteAllocation(bytes - reported.*) else gc.noteAllocationFreed(reported.* - bytes);
+    inline fn syncStorage(gc: *Gc, reported: *usize, bytes: usize) void {
+        if (bytes == reported.*) return;
+        if (bytes > reported.*) gc.noteAllocation(bytes - reported.*) else gc.noteAllocationFreed(reported.* - bytes);
         reported.* = bytes;
     }
 
@@ -820,9 +821,14 @@ pub const Gc = struct {
         for (state.library_tables.values) |slot| if (slot) |table| if (gc.isTrackedTable(table)) gc.markTable(table);
     }
 
-    pub fn markValue(gc: *Gc, value: Value) void {
+    pub inline fn markValue(gc: *Gc, value: Value) void {
         const state = gc.parentState();
         if (state.gc.phase == .pause and !state.gc.collecting) return;
+        gc.markLiveValue(value);
+    }
+
+    fn markLiveValue(gc: *Gc, value: Value) void {
+        const state = gc.parentState();
         state.gc.work_done +|= 1;
         gc.noteYoung(value);
         switch (value) {
