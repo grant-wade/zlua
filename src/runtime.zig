@@ -66,6 +66,7 @@ pub const PopenResult = host.PopenResult;
 pub const ExitRequest = host.ExitRequest;
 pub const WarningHandler = host.WarningHandler;
 pub const default_max_file_bytes = host.default_max_file_bytes;
+pub const fileError = host.fileError;
 
 pub const CompareOp = operators_mod.CompareOp;
 pub const valuesEqual = value_mod.valuesEqual;
@@ -91,6 +92,7 @@ pub const typeName = value_mod.luaTypeName;
 pub const number_format = @import("runtime/number_format.zig");
 pub const entry = @import("runtime/entry.zig");
 pub const failure = @import("runtime/failure.zig");
+pub const load = @import("runtime/load.zig");
 pub const gc = @import("runtime/gc.zig");
 
 pub const ExecuteOptions = execute_mod.ExecuteOptions;

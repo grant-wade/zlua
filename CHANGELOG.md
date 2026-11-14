@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased
+
+### CLI
+
+- The REPL has a line editor with multi-line editing, history in
+  `.zlua_history`, history search, tab completion, and pasting.
+- The REPL highlights input as you type and colors results and errors.
+- `--color`, `NO_COLOR`, and `FORCE_COLOR` turn REPL color on or off.
+- On a terminal, the REPL prints results as Lua source, with table contents.
+- On a terminal, REPL errors show the source line of each frame, underline the
+  failing name, and suggest fixes for misspelled names, misspelled keywords,
+  and operators from other languages.
+- `exit` and `quit` leave the REPL, and Ctrl-C stops a running chunk.
+- The REPL reads its prompts from `_PROMPT` and `_PROMPT2`.
+- `-l` requires a module into a global.
+- `LUA_INIT` runs before the command-line chunks, `LUA_PATH` and `LUA_CPATH`
+  set `package.path` and `package.cpath`, and `-E` ignores all three.
+- The REPL warns when an input starts with `local`.
+- `--help` describes each option.
+
+### Fixes
+
+- A REPL line holding only a name, such as `t`, waited for more input.
+- A REPL line holding a call, such as `f()`, did not print its results.
+- REPL error messages started with `zlua:`.
+- A script's `...` did not hold its arguments.
+- Line numbers in a script with a `#` first line were one too low.
+- A script that starts with a UTF-8 byte order mark failed to load.
+- An unknown option, a missing option value, and a script that can't be opened
+  printed Zig error names.
+- Option errors exit with status 1.
+
 ## 0.9.0
 
 ### Breaking changes

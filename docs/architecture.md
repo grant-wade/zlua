@@ -14,7 +14,7 @@ The source tree splits into a handful of areas, each with a clear job:
 | --- | --- | --- |
 | Package facade | `src/root.zig` | Exports the supported Zig API and lower-level subsystems. |
 | Zig embedding API | `src/api.zig`, `src/api/` | Typed states, handles, callbacks, userdata, capabilities, and limits. |
-| CLI | `src/main.zig` | REPL, scripts, `-e`, and dump modes. |
+| CLI | `src/main.zig`, `src/cli/` | Options, scripts, and dump modes; the REPL with its line editor, value printer, and error reports. |
 | Frontend and compiler | `src/frontend/`, `src/compile/` | Lexes, parses, resolves, and compiles Lua source. |
 | Runtime | `src/runtime.zig`, `src/runtime/` | Values, VM execution, calls, coroutines, GC, errors, and host services. |
 | Standard libraries | `src/stdlib.zig`, `src/stdlib/` | Lua-visible native functions and library setup. |

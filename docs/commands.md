@@ -103,8 +103,11 @@ around: a state starts sandboxed, and the host opts in to what it needs.
 | `-v`, `--version` | Print the zlua and target Lua versions. If there is no other input and stdin is a TTY, exit afterward. |
 | `--stdlib MODE` or `--stdlib=MODE` | Select `none`, `base`, `safe`, `full`, or a comma- or plus-separated list of libraries. |
 | `-e CHUNK` or `-eCHUNK` | Execute a chunk given on the command line. You can repeat it. |
+| `-l NAME` or `-l GLOBAL=NAME` | Require a module and store it in a global: `GLOBAL`, or `NAME` up to its first `-`. |
 | `-i` | Enter the REPL after running any command-line chunks and the script. |
-| `-W` | Turn warnings on. Like `lua`, the CLI starts with warnings off and applies `-W` and `-e` in the order given. |
+| `-E` | Ignore `LUA_INIT`, `LUA_PATH`, `LUA_CPATH`, and their `_5_5` forms. |
+| `-W` | Turn warnings on. Like `lua`, the CLI starts with warnings off and applies `-W`, `-e`, and `-l` in the order given. |
+| `--color WHEN` or `--color=WHEN` | Color the REPL: `auto`, `always`, or `never`. |
 | `--debug-errors` | Print internal runtime diagnostics to stderr. |
 | `--trace-vm` | Print each VM instruction to stderr. |
 | `--dump-ast` | Parse and print an AST-oriented dump. |
@@ -117,10 +120,17 @@ The library names you can list explicitly are `base`, `table`, `string`, `math`,
 `utf8`, `coroutine`, `io`, `os`, `debug`, `package`, `json`, `toml`, `msgpack`,
 `csv`, `datetime`, and `fs`.
 
-If you give zlua no input, it starts a REPL when stdin is a TTY and otherwise
-executes whatever is piped in. Script and stdin reads are capped at 256 MiB, and
-a leading shebang line is stripped. The REPL accepts multiline input and the
-`=expr` shorthand.
+If you give zlua no input, it starts the [REPL](#repl) when stdin is a TTY and
+otherwise executes whatever is piped in. Script and stdin reads are capped at
+256 MiB, and a leading UTF-8 byte order mark and `#` line are ignored.
+
+Before the command-line chunks, the CLI runs `LUA_INIT_5_5` or `LUA_INIT`: a
+value that starts with `@` names a file, and any other value is a chunk.
+`LUA_PATH_5_5` or `LUA_PATH` sets `package.path`, and `LUA_CPATH_5_5` or
+`LUA_CPATH` sets `package.cpath`; `;;` in either stands for the default path.
+
+The arguments after the script are in the `arg` table, and a script file or `-`
+receives them as `...`.
 
 Lua output streams as it is produced and is buffered the same way C `lua`
 buffers it:
@@ -136,6 +146,55 @@ buffers it:
 Chunks run under `lua`'s message handler, so an uncaught error prints a
 traceback. `io.read`, `io.lines`, and `loadfile()` read stdin incrementally,
 which means scripts can prompt for input.
+
+### REPL
+
+A chunk that is an expression, or that returns values, prints its results. Input
+that stops in the middle of a statement continues on the next line. `=expr` is
+shorthand for `expr`, and the globals `_PROMPT` and `_PROMPT2` replace the
+prompts. Each input is its own chunk, and one that starts with `local` prints a
+warning.
+
+When stdin is a terminal:
+
+- Results print as Lua source. Strings are quoted, and tables show their
+  contents up to a nesting depth and an item count. Values with `__tostring` or
+  `__name` print through `tostring`.
+- Each input is a chunk named `input#N`.
+- An error prints a traceback from the outermost call, with the source line of
+  each frame and the failing name underlined. A hint follows for a misspelled
+  global, field, method, or keyword, and for operators Lua does not have.
+- `exit` or `quit` leaves the REPL unless a global of that name is set.
+- Ctrl-C stops a running chunk.
+
+When stdin is not a terminal, results print through `print`, chunks are named
+`stdin`, and errors print as `lua` prints them.
+
+On a terminal, input goes through a line editor. It highlights Lua as you type
+and keeps history in `.zlua_history` in the home directory. `ZLUA_HISTORY` names
+another file, and an empty value turns history off. Text pasted into a terminal
+with bracketed paste is inserted without running. The Windows console needs
+Windows 10 or later; older consoles and `TERM=dumb` read plain lines.
+
+| Key | Action |
+| --- | --- |
+| Enter | Run the input if it is complete; otherwise start an indented line. |
+| Alt-Enter | Start a line. |
+| Up, Down | Move between lines, then through history. |
+| Ctrl-R | Search history. Ctrl-R again finds an older match, and Ctrl-G cancels. |
+| Tab | Indent at the start of a line; elsewhere complete a global, field, method, or keyword. |
+| Home, End, Ctrl-A, Ctrl-E | Move to the start or end of the line. |
+| Ctrl-Left, Ctrl-Right, Alt-B, Alt-F | Move by a word. |
+| Ctrl-W, Alt-D | Delete a word backward or forward. |
+| Ctrl-U, Ctrl-K | Delete to the start or end of the line. |
+| Ctrl-Y | Insert the last deleted text. |
+| Ctrl-C | Discard the input. |
+| Ctrl-D | Leave the REPL when the input is empty. |
+| Ctrl-L | Clear the screen. |
+| Ctrl-Z | Suspend zlua. On Windows, leave the REPL when the input is empty. |
+
+With `--color=auto`, a terminal session is colored unless `NO_COLOR` is set or
+`TERM` is `dumb`; `FORCE_COLOR` or `CLICOLOR_FORCE` turns color on.
 
 ## Harnesses
 
