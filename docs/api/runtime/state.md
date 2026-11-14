@@ -648,6 +648,7 @@ pub const State = struct {
 | [closeFinalizerOrder](#fn-state-closefinalizerorder) | `userdata: *Userdata` | `?u64` |  |
 | [builtinFinalizerOrder](#fn-state-builtinfinalizerorder) | `userdata: *Userdata` | `u64` |  |
 | [discard](#fn-state-discard) | `self: *State` | `void` |  |
+| [freeIdleHostThread](#fn-state-freeidlehostthread) | `self: *State` | `void` |  |
 | [deinit](#fn-state-deinit) | `self: *State` | `void` | Like &#96;lua_close&#96;: runs pending finalizers newest first, restarting the instruction budget for each, then frees the state. |
 | [deinitWithoutFinalizers](#fn-state-deinitwithoutfinalizers) | `self: *State` | `void` | Skips Lua &#96;__gc&#96; metamethods, like exiting without &#96;lua_close&#96;; open files are still closed. |
 | [setTableRaw](#fn-state-settableraw) | `self: *State, table: *Table, key: Value, value: Value` | `!void` |  |
@@ -878,6 +879,16 @@ References: [`Userdata`](#alias-userdata)
 
 ```zig
 pub fn discard(self: *State) void
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-freeidlehostthread"></a>
+
+### State.freeIdleHostThread
+
+```zig
+pub fn freeIdleHostThread(self: *State) void
 ```
 
 References: [`State`](#type-state)
