@@ -3,7 +3,7 @@
 
 const api = @import("api.zig");
 
-pub const version = "0.8.1";
+pub const version = "0.9.0";
 pub const lua_target_version = "Lua 5.5";
 
 pub const frontend = @import("frontend.zig");

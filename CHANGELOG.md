@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.0
 
 ### Breaking changes
 
@@ -70,8 +70,8 @@
 
 ### Datetime
 
-- The `datetime` library parses, builds, compares, formats, and adds to dates and
-  times. It is in `safe` and `full`, and `datetime.now` needs `os`.
+- The `datetime` library parses, builds, compares, formats, and adds to dates
+  and times. It is in `safe` and `full`, and `datetime.now` needs `os`.
 
 ### Performance
 

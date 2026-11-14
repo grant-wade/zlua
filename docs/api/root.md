@@ -240,7 +240,7 @@ internal and change between versions.
 ## version
 
 ```zig
-pub const version = "0.8.1";
+pub const version = "0.9.0";
 ```
 
 <a id="const-lua_target_version"></a>
