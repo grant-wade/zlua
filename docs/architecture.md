@@ -218,7 +218,9 @@ where compatibility tests pin down Lua's behavior.
 ### Calls and Coroutines
 
 Each thread owns a value stack and a stack of `CallFrame`s. Calls go through
-`runtime/call.zig`, and host code enters Lua through `runtime/entry.zig`:
+`runtime/call.zig`, and host code enters Lua through `runtime/entry.zig`, which
+runs each host call on a host thread and keeps the thread of one successful call
+for the next:
 
 ```text
 value + arguments

@@ -938,3 +938,34 @@ test "api userdata lua_userdata declaration sets the options of the first use" {
         \\assert(Token.revoke and Token.lua_userdata == nil)
     , .{});
 }
+
+test "api userdata fields missing from the method table read as nil and fail when called" {
+    const Counter = struct {
+        n: i64 = 0,
+
+        pub fn add(self: *@This(), amount: i64) i64 {
+            self.n += amount;
+            return self.n;
+        }
+    };
+    const lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    var counter = try lua.newUserdata(Counter, .{}, .{});
+    defer counter.deinit();
+    try lua.setGlobal("counter", counter);
+
+    try lua.doString(
+        \\local total = 0
+        \\for i = 1, 100 do
+        \\  total = counter:add(i)
+        \\  assert(counter.missing == nil and type(counter.add) == "function")
+        \\end
+        \\assert(total == 5050)
+    , .{});
+    try std.testing.expectEqual(@as(i64, 5050), (try counter.ptr()).n);
+
+    try std.testing.expectError(error.LuaError, lua.doString("for i = 1, 3 do counter:missing() end", .{ .name = "=unit" }));
+    const message = try @import("api_expect.zig").describeError(lua, error.LuaError);
+    defer lua.allocator().free(message);
+    try std.testing.expect(std.mem.indexOf(u8, message, "attempt to call a nil value (method 'missing')") != null);
+}

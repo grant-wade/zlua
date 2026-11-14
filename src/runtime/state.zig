@@ -211,6 +211,8 @@ pub const State = struct {
     api_callback_user_data: ?*anyopaque = null,
     active_api_callback: ?*ApiCallbackContext = null,
     coroutine_close_depth: usize = 0,
+    /// A finished host thread kept for the next host call; not registered with the collector.
+    idle_host_thread: ?*Thread = null,
     string_metatable: ?*Table = null,
     number_metatable: ?*Table = null,
     boolean_metatable: ?*Table = null,
@@ -368,6 +370,13 @@ pub const State = struct {
         self.deinit();
     }
 
+    pub fn freeIdleHostThread(self: *State) void {
+        const thread = self.idle_host_thread orelse return;
+        self.idle_host_thread = null;
+        thread.deinit(self.allocator);
+        self.allocator.destroy(thread);
+    }
+
     /// Like `lua_close`: runs pending finalizers newest first, restarting the
     /// instruction budget for each, then frees the state.
     pub fn deinit(self: *State) void {
@@ -400,6 +409,7 @@ pub const State = struct {
         self.gc.tables.deinit(self.allocator);
         self.gc.finalizers.deinit(self.allocator);
         for (self.thread_allocations.items) |thread| self.gc.destroyThread(thread);
+        self.freeIdleHostThread();
         for (self.closure_allocations.items) |closure| self.gc.destroyClosure(closure);
         for (self.upvalue_allocations.items) |upvalue| self.objects().destroy(upvalue);
         for (self.userdata_allocations.items) |userdata| self.gc.destroyUserdata(userdata);
@@ -694,7 +704,7 @@ pub const State = struct {
     pub fn activeNativeCall(thread: *Thread) ?types.NativeCall {
         const call = thread.native_call orelse return null;
         if (call.frame_count == 0 or thread.frames.items.len != call.frame_count) return null;
-        return call;
+        return call.*;
     }
 
     fn appendLibraryWhere(self: *State, out: *std.ArrayList(u8)) !void {
@@ -878,6 +888,7 @@ pub const State = struct {
 
     pub fn argumentInteger(self: *State, thread: *Thread, op: bytecode.Call, function_name: []const u8, index: u32) !i64 {
         const value = argValue(self, thread, op, index);
+        if (value == .integer) return value.integer;
         self.budget.noteLongString(value);
         if (toInteger(value)) |integer| return integer;
         const number = toNumberMaybe(value) orelse return self.failArgumentType(function_name, index + 1, "number", value);

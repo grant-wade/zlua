@@ -294,7 +294,8 @@ pub fn advanceGenericFor(self: *State, thread: *Thread, op: bytecode.GenericFor,
             if (state != .table) {
                 const previous_native_call = thread.native_call;
                 defer thread.native_call = previous_native_call;
-                thread.native_call = iteratorNativeCall(thread, op);
+                const iterator_call = iteratorNativeCall(thread, op);
+                thread.native_call = &iterator_call;
                 return self.failArgumentType("next", 1, "table", state);
             }
             fixed = try nextValues(self, state, control);
@@ -315,7 +316,8 @@ pub fn advanceGenericFor(self: *State, thread: *Thread, op: bytecode.GenericFor,
             .utf8_codes_iter => blk: {
                 const previous_native_call = thread.native_call;
                 defer thread.native_call = previous_native_call;
-                thread.native_call = iteratorNativeCall(thread, op);
+                const iterator_call = iteratorNativeCall(thread, op);
+                thread.native_call = &iterator_call;
                 fixed = try stdlib.utf8.codesNext(self, state, control);
                 break :blk fixed[0..2];
             },

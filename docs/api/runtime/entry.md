@@ -108,11 +108,12 @@
 - [testing.bench.results](../testing/bench/results.md)
 - [testing.bench.stats](../testing/bench/stats.md)
 - [testing.bench.report](../testing/bench/report.md)
+- [testing.bench.api](../testing/bench/api.md)
+- [testing.bench.allocation](../testing/bench/allocation.md)
 - [testing.bench.process](../testing/bench/process.md)
 - [testing.bench.fixtures](../testing/bench/fixtures.md)
 - [testing.bench.legacy_process](../testing/bench/legacy_process.md)
 - [testing.bench.startup](../testing/bench/startup.md)
-- [testing.bench.allocation](../testing/bench/allocation.md)
 - [testing.bench.c_startup](../testing/bench/c_startup.md)
 - [testing.bench.snapshots](../testing/bench/snapshots.md)
 - [testing.bench.gc](../testing/bench/gc.md)
@@ -139,6 +140,7 @@
 - [callLoadedClosure](#fn-callloadedclosure)
 - [callFunction](#fn-callfunction)
 - [callFunctionHandled](#fn-callfunctionhandled)
+- [callFunctionInto](#fn-callfunctioninto)
 - [protectedCallFunctionHandled](#fn-protectedcallfunctionhandled)
 - [executeSourceChunk](#fn-executesourcechunk)
 - [executeSourceChunkNamed](#fn-executesourcechunknamed)
@@ -192,6 +194,17 @@ Like `callFunction`; `handler` runs at the error point before frames unwind.
 
 ```zig
 pub fn callFunctionHandled(self: *State, function: Value, args: []const Value, handler: HostErrorHandler) ![]Value
+```
+
+<a id="fn-callfunctioninto"></a>
+
+## callFunctionInto
+
+Like `callFunctionHandled`; the results are in `buffer` if the returned slice starts there, and
+otherwise in a slice the caller frees.
+
+```zig
+pub fn callFunctionInto(self: *State, function: Value, args: []const Value, handler: HostErrorHandler, buffer: []Value) ![]Value
 ```
 
 <a id="fn-protectedcallfunctionhandled"></a>

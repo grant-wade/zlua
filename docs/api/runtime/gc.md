@@ -108,11 +108,12 @@
 - [testing.bench.results](../testing/bench/results.md)
 - [testing.bench.stats](../testing/bench/stats.md)
 - [testing.bench.report](../testing/bench/report.md)
+- [testing.bench.api](../testing/bench/api.md)
+- [testing.bench.allocation](../testing/bench/allocation.md)
 - [testing.bench.process](../testing/bench/process.md)
 - [testing.bench.fixtures](../testing/bench/fixtures.md)
 - [testing.bench.legacy_process](../testing/bench/legacy_process.md)
 - [testing.bench.startup](../testing/bench/startup.md)
-- [testing.bench.allocation](../testing/bench/allocation.md)
 - [testing.bench.c_startup](../testing/bench/c_startup.md)
 - [testing.bench.snapshots](../testing/bench/snapshots.md)
 - [testing.bench.gc](../testing/bench/gc.md)
@@ -547,7 +548,7 @@ References: [`Gc`](#type-gc)
 ### Gc.markValue
 
 ```zig
-pub fn markValue(gc: *Gc, value: Value) void
+pub inline fn markValue(gc: *Gc, value: Value) void
 ```
 
 References: [`Gc`](#type-gc)

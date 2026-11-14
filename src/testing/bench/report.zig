@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const results = @import("results.zig");
 const stats = @import("stats.zig");
+const api_batch = @import("api.zig").batch;
 const Result = results.BenchmarkResult;
 const Suite = results.Suite;
 
@@ -57,6 +58,27 @@ fn timeText(a: std.mem.Allocator, ns: ?u64) ![]const u8 {
     if (value < 1_000_000_000) return std.fmt.allocPrint(a, "{d:.2} ms", .{@as(f64, @floatFromInt(value)) / 1_000_000});
     return std.fmt.allocPrint(a, "{d:.2} s", .{@as(f64, @floatFromInt(value)) / 1_000_000_000});
 }
+/// The width of a column holding the case names of `group`, or of every group; at least `min`.
+fn caseWidth(suite: *const Suite, group: ?[]const u8, min: usize) usize {
+    var width = min;
+    for (suite.results.items) |r| {
+        if (group) |name| if (!std.mem.eql(u8, r.group, name)) continue;
+        width = @max(width, r.case.len);
+    }
+    return width;
+}
+
+fn pad(a: std.mem.Allocator, text: []const u8, width: usize) ![]const u8 {
+    if (text.len >= width) return text;
+    const padded = try a.alloc(u8, width);
+    @memcpy(padded[0..text.len], text);
+    @memset(padded[text.len..], ' ');
+    return padded;
+}
+
+fn perOperation(batch_ns: u64) f64 {
+    return @as(f64, @floatFromInt(batch_ns)) / api_batch;
+}
 fn ratioText(a: std.mem.Allocator, value: ?f64) ![]const u8 {
     return if (value) |v| std.fmt.allocPrint(a, "{d:.2}x", .{v}) else "-";
 }
@@ -74,25 +96,26 @@ pub fn human(allocator: std.mem.Allocator, out: *std.Io.Writer, suite: *const Su
     }
     try out.writeAll("Benchmarks\n");
     const comparisons_list = try comparisons(a, suite);
-    for ([_][]const u8{ "process", "startup", "snapshots", "gc" }) |group| {
+    for ([_][]const u8{ "process", "startup", "snapshots", "gc", "api" }) |group| {
         var has_group = false;
         for (suite.results.items) |r| if (std.mem.eql(u8, r.group, group)) {
             has_group = true;
             break;
         };
         if (!has_group) continue;
+        const case_width = caseWidth(suite, group, if (std.mem.eql(u8, group, "process") or std.mem.eql(u8, group, "startup")) 34 else 26);
         if (std.mem.eql(u8, group, "process")) {
             try out.writeAll("\nProcess\n");
             try builds(out, suite, group);
-            try out.print("{s:<34} {s:>7} {s:>7} {s:>12} {s:>14} {s:>12} {s:>11} {s:>12} {s:>13}\n", .{ "case", "n", "warmup", "zlua", "zlua snapshot", "Lua 5.5", "zlua/Lua", "snapshot/Lua", "snapshot/zlua" });
+            try out.print("{s} {s:>7} {s:>7} {s:>12} {s:>14} {s:>12} {s:>11} {s:>12} {s:>13}\n", .{ try pad(a, "case", case_width), "n", "warmup", "zlua", "zlua snapshot", "Lua 5.5", "zlua/Lua", "snapshot/Lua", "snapshot/zlua" });
             for (comparisons_list) |c| {
                 if (!std.mem.eql(u8, c.group, group) or !std.mem.eql(u8, c.numerator, "zlua")) continue;
                 const zlua = find(suite, group, c.case, "zlua", "program").?;
                 const snapshot = median(find(suite, group, c.case, "zlua_snapshot", "program"));
                 const lua = median(find(suite, group, c.case, "clua", "program"));
                 const plain = median(zlua);
-                try out.print("{s:<34} {d:>7} {d:>7} {s:>12} {s:>14} {s:>12} {s:>11} {s:>12} {s:>13}", .{
-                    c.case,
+                try out.print("{s} {d:>7} {d:>7} {s:>12} {s:>14} {s:>12} {s:>11} {s:>12} {s:>13}", .{
+                    try pad(a, c.case, case_width),
                     zlua.iterations,
                     zlua.warmup,
                     try timeText(a, plain),
@@ -107,46 +130,56 @@ pub fn human(allocator: std.mem.Allocator, out: *std.Io.Writer, suite: *const Su
         } else if (std.mem.eql(u8, group, "startup")) {
             try out.writeAll("\nStartup\n");
             try builds(out, suite, group);
-            try out.print("{s:<34} {s:<9} {s:>7} {s:>7} {s:>12} {s:>12}\n", .{ "case", "engine", "n", "warmup", "startup", "first chunk" });
+            try out.print("{s} {s:<9} {s:>7} {s:>7} {s:>12} {s:>12}\n", .{ try pad(a, "case", case_width), "engine", "n", "warmup", "startup", "first chunk" });
             for (suite.results.items) |r| {
                 if (!std.mem.eql(u8, r.group, group)) continue;
                 if (!std.mem.eql(u8, r.operation, "startup-total") and r.status == .benchmarked) continue;
-                try out.print("{s:<34} {s:<9} {d:>7} {d:>7} {s:>12} {s:>12}", .{ r.case, r.engine, r.iterations, r.warmup, try timeText(a, median(r)), try timeText(a, median(find(suite, group, r.case, r.engine, "first-chunk"))) });
+                try out.print("{s} {s:<9} {d:>7} {d:>7} {s:>12} {s:>12}", .{ try pad(a, r.case, case_width), r.engine, r.iterations, r.warmup, try timeText(a, median(r)), try timeText(a, median(find(suite, group, r.case, r.engine, "first-chunk"))) });
                 try status(out, r);
             }
         } else if (std.mem.eql(u8, group, "gc")) {
             try out.writeAll("\nGarbage collection\n");
             try builds(out, suite, group);
-            try out.print("{s:<26} {s:>7} {s:>12} {s:>12} {s:>12}\n", .{ "case", "n", "median", "p95", "max" });
+            try out.print("{s} {s:>7} {s:>12} {s:>12} {s:>12}\n", .{ try pad(a, "case", case_width), "n", "median", "p95", "max" });
             for (suite.results.items) |r| {
                 if (!std.mem.eql(u8, r.group, group)) continue;
                 const t = r.timing orelse continue;
-                try out.print("{s:<26} {d:>7} {s:>12} {s:>12} {s:>12}\n", .{ r.case, r.iterations, try timeText(a, t.median_ns), try timeText(a, t.p95_ns), try timeText(a, t.max_ns) });
+                try out.print("{s} {d:>7} {s:>12} {s:>12} {s:>12}\n", .{ try pad(a, r.case, case_width), r.iterations, try timeText(a, t.median_ns), try timeText(a, t.p95_ns), try timeText(a, t.max_ns) });
+            }
+        } else if (std.mem.eql(u8, group, "api")) {
+            try out.writeAll("\nEmbedding API\n");
+            try builds(out, suite, group);
+            try out.print("{s} {s:>7} {s:>7} {s:>12} {s:>12}\n", .{ try pad(a, "case", case_width), "n", "warmup", "ns/op", "p95 ns/op" });
+            for (suite.results.items) |r| {
+                if (!std.mem.eql(u8, r.group, group)) continue;
+                const t = r.timing orelse continue;
+                try out.print("{s} {d:>7} {d:>7} {d:>12.1} {d:>12.1}\n", .{ try pad(a, r.case, case_width), r.iterations, r.warmup, perOperation(t.median_ns), perOperation(t.p95_ns) });
             }
         } else {
             try out.writeAll("\nSnapshots\n");
             try builds(out, suite, group);
-            try out.print("{s:<26} {s:>7} {s:>7} {s:>12} {s:>12} {s:>12} {s:>9} {s:>11}\n", .{ "case", "n", "warmup", "capture", "reset", "rebuild", "speedup", "break-even" });
+            try out.print("{s} {s:>7} {s:>7} {s:>12} {s:>12} {s:>12} {s:>9} {s:>11}\n", .{ try pad(a, "case", case_width), "n", "warmup", "capture", "reset", "rebuild", "speedup", "break-even" });
             for (comparisons_list) |c| {
                 if (!std.mem.eql(u8, c.group, group)) continue;
                 const reset = find(suite, group, c.case, "native", "reset").?;
-                try out.print("{s:<26} {d:>7} {d:>7} {s:>12} {s:>12} {s:>12} {s:>9} {s:>11}", .{ c.case, reset.iterations, reset.warmup, try timeText(a, median(find(suite, group, c.case, "native", "capture"))), try timeText(a, median(reset)), try timeText(a, median(find(suite, group, c.case, "native", "rebuild"))), try ratioText(a, c.ratio), try numberText(a, c.break_even_resets) });
+                try out.print("{s} {d:>7} {d:>7} {s:>12} {s:>12} {s:>12} {s:>9} {s:>11}", .{ try pad(a, c.case, case_width), reset.iterations, reset.warmup, try timeText(a, median(find(suite, group, c.case, "native", "capture"))), try timeText(a, median(reset)), try timeText(a, median(find(suite, group, c.case, "native", "rebuild"))), try ratioText(a, c.ratio), try numberText(a, c.break_even_resets) });
                 try status(out, reset);
             }
         }
     }
     if (verbose) {
+        const case_width = caseWidth(suite, null, 34);
         try out.writeAll("\nTiming details\n");
-        try out.print("{s:<34} {s:<13} {s:<14} {s:>12} {s:>12} {s:>12} {s:>12} {s:>12} {s:>12}\n", .{ "case", "engine", "operation", "median", "p95", "min", "mean", "max", "stddev" });
+        try out.print("{s} {s:<13} {s:<14} {s:>12} {s:>12} {s:>12} {s:>12} {s:>12} {s:>12}\n", .{ try pad(a, "case", case_width), "engine", "operation", "median", "p95", "min", "mean", "max", "stddev" });
         for (suite.results.items) |r| {
             const t = r.timing orelse continue;
-            try out.print("{s:<34} {s:<13} {s:<14} {s:>12} {s:>12} {s:>12} {s:>12} {s:>12} {s:>12}\n", .{ r.case, r.engine, r.operation, try timeText(a, t.median_ns), try timeText(a, t.p95_ns), try timeText(a, t.min_ns), try timeText(a, t.mean_ns), try timeText(a, t.max_ns), try timeText(a, t.stddev_ns) });
+            try out.print("{s} {s:<13} {s:<14} {s:>12} {s:>12} {s:>12} {s:>12} {s:>12} {s:>12}\n", .{ try pad(a, r.case, case_width), r.engine, r.operation, try timeText(a, t.median_ns), try timeText(a, t.p95_ns), try timeText(a, t.min_ns), try timeText(a, t.mean_ns), try timeText(a, t.max_ns), try timeText(a, t.stddev_ns) });
         }
         try out.writeAll("\nAllocation details (bytes)\n");
-        try out.print("{s:<26} {s:<13} {s:<14} {s:<11} {s:>8} {s:>8} {s:>12} {s:>12} {s:>12} {s:>12}\n", .{ "case", "engine", "operation", "scope", "allocs", "resizes", "requested", "live", "peak", "runtime" });
+        try out.print("{s} {s:<13} {s:<14} {s:<11} {s:>8} {s:>8} {s:>12} {s:>12} {s:>12} {s:>12}\n", .{ try pad(a, "case", case_width), "engine", "operation", "scope", "allocs", "resizes", "requested", "live", "peak", "runtime" });
         for (suite.results.items) |r| {
             if (r.memory_scope == .unavailable or r.status != .benchmarked) continue;
-            try out.print("{s:<26} {s:<13} {s:<14} {s:<11}", .{ r.case, r.engine, r.operation, @tagName(r.memory_scope) });
+            try out.print("{s} {s:<13} {s:<14} {s:<11}", .{ try pad(a, r.case, case_width), r.engine, r.operation, @tagName(r.memory_scope) });
             inline for (.{ "allocations", "resizes", "requested_bytes", "live_bytes", "peak_bytes", "runtime_bytes" }, 0..) |field, index| {
                 const values = try a.alloc(u64, r.samples.len);
                 var available = true;

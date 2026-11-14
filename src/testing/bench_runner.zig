@@ -7,6 +7,7 @@ const startup = @import("bench/startup.zig");
 const c_startup = @import("bench/c_startup.zig");
 const snapshots = @import("bench/snapshots.zig");
 const gc = @import("bench/gc.zig");
+const api = @import("bench/api.zig");
 const system = @import("bench/system.zig");
 
 pub fn runCli(allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map, zlua_exe: []const u8, args: []const []const u8) !u8 {
@@ -69,6 +70,7 @@ test {
     _ = @import("bench/legacy_process.zig");
     _ = c_startup;
     _ = system;
+    _ = api;
 }
 
 fn collectFamilies(allocator: std.mem.Allocator, io: std.Io, environ_map: *const std.process.Environ.Map, zlua_exe: []const u8, options: options_module.Options, suite: *results.Suite) !void {
@@ -82,4 +84,6 @@ fn collectFamilies(allocator: std.mem.Allocator, io: std.Io, environ_map: *const
         try snapshots.collect(allocator, io, options, suite);
     if (options.family == .gc or options.family == .all)
         try gc.collect(allocator, io, options, suite);
+    if (options.family == .api or options.family == .all)
+        try api.collect(allocator, io, options, suite);
 }

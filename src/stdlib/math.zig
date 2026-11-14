@@ -12,6 +12,14 @@ const UnaryFn = enum { acos, asin, cos, exp, sin, sqrt, tan };
 const IntegerUnaryFn = enum { ceil, floor };
 
 /// Non-allocating, non-throwing fast path; null falls back to the normal call.
+pub inline fn hasFastUnaryResult(func: runtime.NativeFn) bool {
+    return switch (func) {
+        .math_abs, .math_ceil, .math_floor, .math_sqrt => true,
+        else => false,
+    };
+}
+
+/// The result of calling `func`, which `hasFastUnaryResult`, on `value`; null if it needs the general call.
 pub fn fastUnaryResult(func: runtime.NativeFn, value: Value) ?Value {
     switch (func) {
         .math_abs => return switch (value) {
@@ -266,7 +274,14 @@ fn minMax(state: *State, thread: *Thread, op: bytecode.Call, choose_min: bool) !
     var index: u32 = 1;
     while (index < op.arg_count) : (index += 1) {
         const value = runtime.argValue(state, thread, op, index);
-        const choose = if (choose_min) try operators_mod.compareValues(state, thread, value, best, .lt) else try operators_mod.compareValues(state, thread, best, value, .lt);
+        const choose = if (value == .integer and best == .integer)
+            (if (choose_min) value.integer < best.integer else best.integer < value.integer)
+        else if (value == .number and best == .number)
+            (if (choose_min) value.number < best.number else best.number < value.number)
+        else if (choose_min)
+            try operators_mod.compareValues(state, thread, value, best, .lt)
+        else
+            try operators_mod.compareValues(state, thread, best, value, .lt);
         if (choose) best = value;
     }
     try state.returnValues(thread, op.base, op.return_count, &.{best});

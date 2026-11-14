@@ -108,11 +108,12 @@
 - [testing.bench.results](../testing/bench/results.md)
 - [testing.bench.stats](../testing/bench/stats.md)
 - [testing.bench.report](../testing/bench/report.md)
+- [testing.bench.api](../testing/bench/api.md)
+- [testing.bench.allocation](../testing/bench/allocation.md)
 - [testing.bench.process](../testing/bench/process.md)
 - [testing.bench.fixtures](../testing/bench/fixtures.md)
 - [testing.bench.legacy_process](../testing/bench/legacy_process.md)
 - [testing.bench.startup](../testing/bench/startup.md)
-- [testing.bench.allocation](../testing/bench/allocation.md)
 - [testing.bench.c_startup](../testing/bench/c_startup.md)
 - [testing.bench.snapshots](../testing/bench/snapshots.md)
 - [testing.bench.gc](../testing/bench/gc.md)
@@ -606,6 +607,8 @@ pub const State = struct {
     api_callback_user_data: ?*anyopaque = null,
     active_api_callback: ?*ApiCallbackContext = null,
     coroutine_close_depth: usize = 0,
+    /// A finished host thread kept for the next host call; not registered with the collector.
+    idle_host_thread: ?*Thread = null,
     string_metatable: ?*Table = null,
     number_metatable: ?*Table = null,
     boolean_metatable: ?*Table = null,
@@ -645,6 +648,7 @@ pub const State = struct {
 | [closeFinalizerOrder](#fn-state-closefinalizerorder) | `userdata: *Userdata` | `?u64` |  |
 | [builtinFinalizerOrder](#fn-state-builtinfinalizerorder) | `userdata: *Userdata` | `u64` |  |
 | [discard](#fn-state-discard) | `self: *State` | `void` |  |
+| [freeIdleHostThread](#fn-state-freeidlehostthread) | `self: *State` | `void` |  |
 | [deinit](#fn-state-deinit) | `self: *State` | `void` | Like &#96;lua_close&#96;: runs pending finalizers newest first, restarting the instruction budget for each, then frees the state. |
 | [deinitWithoutFinalizers](#fn-state-deinitwithoutfinalizers) | `self: *State` | `void` | Skips Lua &#96;__gc&#96; metamethods, like exiting without &#96;lua_close&#96;; open files are still closed. |
 | [setTableRaw](#fn-state-settableraw) | `self: *State, table: *Table, key: Value, value: Value` | `!void` |  |
@@ -875,6 +879,16 @@ References: [`Userdata`](#alias-userdata)
 
 ```zig
 pub fn discard(self: *State) void
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-freeidlehostthread"></a>
+
+### State.freeIdleHostThread
+
+```zig
+pub fn freeIdleHostThread(self: *State) void
 ```
 
 References: [`State`](#type-state)

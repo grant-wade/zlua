@@ -108,11 +108,12 @@
 - [testing.bench.results](../testing/bench/results.md)
 - [testing.bench.stats](../testing/bench/stats.md)
 - [testing.bench.report](../testing/bench/report.md)
+- [testing.bench.api](../testing/bench/api.md)
+- [testing.bench.allocation](../testing/bench/allocation.md)
 - [testing.bench.process](../testing/bench/process.md)
 - [testing.bench.fixtures](../testing/bench/fixtures.md)
 - [testing.bench.legacy_process](../testing/bench/legacy_process.md)
 - [testing.bench.startup](../testing/bench/startup.md)
-- [testing.bench.allocation](../testing/bench/allocation.md)
 - [testing.bench.c_startup](../testing/bench/c_startup.md)
 - [testing.bench.snapshots](../testing/bench/snapshots.md)
 - [testing.bench.gc](../testing/bench/gc.md)
@@ -436,7 +437,7 @@ References: [`Value`](#alias-value)
 ## runtimeArgValue
 
 ```zig
-pub fn runtimeArgValue(state: anytype, thread: *Thread, op: bytecode.Call, index: u32) Value
+pub inline fn runtimeArgValue(state: anytype, thread: *Thread, op: bytecode.Call, index: u32) Value
 ```
 
 References: [`Thread`](#alias-thread), [`Value`](#alias-value)
@@ -446,7 +447,7 @@ References: [`Thread`](#alias-thread), [`Value`](#alias-value)
 ## argValue
 
 ```zig
-pub fn argValue(state: anytype, thread: *Thread, op: bytecode.Call, index: u32) Value
+pub inline fn argValue(state: anytype, thread: *Thread, op: bytecode.Call, index: u32) Value
 ```
 
 References: [`Thread`](#alias-thread), [`Value`](#alias-value)

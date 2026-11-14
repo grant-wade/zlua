@@ -412,7 +412,7 @@ comptime {
         .rebuilt = "object_pool strings api_roots api_root_free gc budget",
         .remapped = "global_table table_finalizers table_pending_finalizers userdata_pending_finalizer_head userdata_lua_pending_head string_metatable number_metatable boolean_metatable nil_metatable file_metatable fs_file_metatable io_input io_output library_tables last_error",
         .copied = "output_bytes opened_libraries string_allocations table_allocations userdata_allocations closure_allocations upvalue_allocations thread_allocations chunk_allocations source_allocations stdout stderr table_finalizer_serial stdin_pos file_generation error_handled warnings_on random_state",
-        .transient = "execution_depth native_invoke_depth native_stack userdata_scope value_roots rollback snapshot_busy discarding exit_request local_zone current_thread api_callback_dispatch api_callback_user_data active_api_callback coroutine_close_depth",
+        .transient = "execution_depth native_invoke_depth native_stack userdata_scope value_roots rollback snapshot_busy discarding exit_request local_zone current_thread api_callback_dispatch api_callback_user_data active_api_callback coroutine_close_depth idle_host_thread",
     });
     review(budget_mod.Budget, .{
         .copied = "instructions base",

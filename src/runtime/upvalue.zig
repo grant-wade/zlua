@@ -210,8 +210,10 @@ pub fn closeFramesTo(self: *State, thread: *Thread, frame_count: usize, error_va
     var close_failed = false;
     const previous_native_call = thread.native_call;
     defer thread.native_call = previous_native_call;
+    var close_call: types.NativeCall = undefined;
     while (thread.frames.items.len > frame_count) {
-        thread.native_call = call_mod.runtimeNativeCall(thread);
+        close_call = call_mod.runtimeNativeCall(thread);
+        thread.native_call = &close_call;
         closeActiveToBeClosedInTopFrame(self, thread, pending_error) catch |err| {
             pending_error = self.currentErrorValue();
             close_failed = close_failed or call_mod.isRuntimeError(err);

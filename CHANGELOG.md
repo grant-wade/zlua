@@ -83,7 +83,11 @@
 - Float arithmetic is faster.
 - Lua function calls and returns are faster.
 - `pcall` and `xpcall` of a Lua function are faster.
-- Calls from Zig into Lua pass their arguments without allocating.
+- Calls from Zig into Lua allocate nothing for their thread, their arguments,
+  or up to eight results.
+- Lua calls library functions and host callbacks faster.
+- Method calls and field reads on userdata are faster.
+- `string.byte` of one character, `math.max`, and `math.min` are faster.
 - Creating a handle takes the same time however many handles are live.
 
 ### Packaging
@@ -101,6 +105,9 @@
 - The scheduled fuzz workflow is removed.
 - Harness steps build only the binaries they run.
 - Unit test fuzz sweeps run across threads.
+- `zig build bench` has an `api` group that times embedding API operations.
+- The `sustained` benchmarks cover library calls, string methods, and
+  `table.insert` with `table.remove`.
 
 ### Fixes
 

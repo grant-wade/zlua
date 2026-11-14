@@ -108,11 +108,12 @@
 - [testing.bench.results](../testing/bench/results.md)
 - [testing.bench.stats](../testing/bench/stats.md)
 - [testing.bench.report](../testing/bench/report.md)
+- [testing.bench.api](../testing/bench/api.md)
+- [testing.bench.allocation](../testing/bench/allocation.md)
 - [testing.bench.process](../testing/bench/process.md)
 - [testing.bench.fixtures](../testing/bench/fixtures.md)
 - [testing.bench.legacy_process](../testing/bench/legacy_process.md)
 - [testing.bench.startup](../testing/bench/startup.md)
-- [testing.bench.allocation](../testing/bench/allocation.md)
 - [testing.bench.c_startup](../testing/bench/c_startup.md)
 - [testing.bench.snapshots](../testing/bench/snapshots.md)
 - [testing.bench.gc](../testing/bench/gc.md)
@@ -713,7 +714,7 @@ References: [`ApiCallbackContext`](#type-apicallbackcontext)
 ### ApiCallbackContext.callbackArgValue
 
 ```zig
-pub fn callbackArgValue(self: *ApiCallbackContext, index: usize) Value
+pub inline fn callbackArgValue(self: *ApiCallbackContext, index: usize) Value
 ```
 
 References: [`ApiCallbackContext`](#type-apicallbackcontext), [`Value`](#type-value)
@@ -1839,7 +1840,7 @@ pub const Thread = struct {
     yield_result_base: usize = 0,
     yield_result_count: u16 = 0,
     native_call_depth: usize = 0,
-    native_call: ?NativeCall = null,
+    native_call: ?*const NativeCall = null,
     protected_close_depth: usize = 0,
     /// Message handler for errors raised on this thread, like `L->errfunc`.
     error_handler: Value = .nil,
@@ -1875,6 +1876,8 @@ pub const Thread = struct {
 | Name | Parameters | Return Type | Description |
 | --- | --- | --- | --- |
 | [initRoot](#fn-thread-initroot) | `allocator: std.mem.Allocator, closure: *Closure, stack_value_limit: usize` | `!Thread` |  |
+| [startRoot](#fn-thread-startroot) | `self: *Thread, allocator: std.mem.Allocator, closure: *Closure, stack_value_limit: usize` | `!void` | Makes a thread that has not run, or that &#96;recycle&#96; returned to that state, the root thread of &#96;closure&#96;. |
+| [recycle](#fn-thread-recycle) | `self: *Thread, allocator: std.mem.Allocator` | `void` | Returns the thread to the state of one that has not run, keeping the capacity of its lists. |
 | [initCoroutine](#fn-thread-initcoroutine) | `entry: Value` | `Thread` |  |
 | [deinit](#fn-thread-deinit) | `self: *Thread, allocator: std.mem.Allocator` | `void` |  |
 | [releaseFrame](#fn-thread-releaseframe) | `self: *Thread, index: usize, allocator: std.mem.Allocator` | `void` | Frees the extra state of frame &#96;index&#96;, which stays on the frame list. |
@@ -1896,6 +1899,30 @@ pub fn initRoot(allocator: std.mem.Allocator, closure: *Closure, stack_value_lim
 ```
 
 References: [`Closure`](#type-closure), [`Thread`](#type-thread)
+
+<a id="fn-thread-startroot"></a>
+
+### Thread.startRoot
+
+Makes a thread that has not run, or that `recycle` returned to that state, the root thread of `closure`.
+
+```zig
+pub fn startRoot(self: *Thread, allocator: std.mem.Allocator, closure: *Closure, stack_value_limit: usize) !void
+```
+
+References: [`Thread`](#type-thread), [`Closure`](#type-closure)
+
+<a id="fn-thread-recycle"></a>
+
+### Thread.recycle
+
+Returns the thread to the state of one that has not run, keeping the capacity of its lists.
+
+```zig
+pub fn recycle(self: *Thread, allocator: std.mem.Allocator) void
+```
+
+References: [`Thread`](#type-thread)
 
 <a id="fn-thread-initcoroutine"></a>
 

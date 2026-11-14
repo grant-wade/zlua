@@ -10,12 +10,13 @@ group below in turn and produces a single report:
 | Startup | State creation, library opening, and the first chunk, through both the native Zig API and upstream Lua’s C API. |
 | Snapshots | Capture, new State creation (`new_state`), first-work mutation, reset-only, no-op reset, full work/reset cycles, and an equivalent rebuild. |
 | GC | Single basic collector steps over several workloads, including transient garbage, stable heaps, weak tables, and finalizers, with setup excluded. |
+| API | Embedding API operations in batches of 1,000: calls from Zig into Lua, host callbacks, userdata methods, table access, and object creation. |
 
 Every benchmark builds both zlua and C Lua with ReleaseFast on Zig 0.16 and
 `fast` on Zig 0.17, including the process comparisons and the C startup workers,
-whatever `-Doptimize` you pass. The in-process groups (startup, snapshots, and
-GC) don't include process launch in their timings. Startup totals are the sum of
-the measured phases, not a separately timed operation.
+whatever `-Doptimize` you pass. The in-process groups (startup, snapshots, GC,
+and API) don't include process launch in their timings. Startup totals are the
+sum of the measured phases, not a separately timed operation.
 
 ## Running a benchmark
 
@@ -25,6 +26,7 @@ zig build bench -- table/pairs_iteration --iterations=20
 zig build bench -- sustained --iterations=10 --warmup=2
 zig build bench -- startup --iterations=1000 --warmup=100
 zig build bench -- callbacks --verbose
+zig build bench -- --family=api
 zig build bench -- --json /tmp/bench.json --csv /tmp/bench.csv
 ```
 
@@ -36,9 +38,9 @@ the paths printed by `--list`. For the in-process groups it matches a case, an
 engine, or one of the paths printed by `--list`.
 
 Process fixtures default to 30 samples per engine and 1 warmup unless their
-metadata says otherwise. The startup, snapshot, and GC groups default to 1,000
-samples and 100 warmups. `--category` selects either a process metadata category
-or one of the `startup`, `snapshots`, or `gc` groups.
+metadata says otherwise. The startup, snapshot, GC, and API groups default to
+1,000 samples and 100 warmups. `--category` selects either a process metadata
+category or one of the `startup`, `snapshots`, `gc`, or `api` groups.
 
 If you want to measure longer-running Lua code without process startup
 dominating the result, use the `sustained` fixtures. They default to 10 samples
@@ -52,7 +54,8 @@ ratios: zlua/Lua, snapshot/Lua, and snapshot/zlua. **A ratio below 1 means the
 numerator is faster.** The snapshot tables report speedup instead, where **a
 speedup above 1 is faster**. Break-even estimates how many resets it takes to
 recover the cost of a capture: `ceil(capture / (rebuild - reset))`. A dash means
-there is no saving or the result is unavailable.
+there is no saving or the result is unavailable. The API table shows nanoseconds
+per operation, and the JSON and CSV reports hold the time of each batch.
 
 Use `--verbose` to see phase timings, p95, spread, and allocation details. With
 only a few samples, p95 is usually just the maximum, so collect more samples
@@ -153,6 +156,7 @@ Without metadata, the name is the fixture path and the category is `misc`.
 `reason`.
 
 For an in-process case, add it to `src/testing/bench/startup.zig`,
-`snapshots.zig`, or `gc.zig`. Keep setup and cleanup visibly outside the timer
-unless they are the operation you are measuring. The upstream Lua worker in
-`tools/bench_c_api_startup.c` returns raw measurements to the same Zig reporter.
+`snapshots.zig`, `gc.zig`, or `api.zig`. Keep setup and cleanup visibly outside
+the timer unless they are the operation you are measuring. The upstream Lua
+worker in `tools/bench_c_api_startup.c` returns raw measurements to the same Zig
+reporter.
