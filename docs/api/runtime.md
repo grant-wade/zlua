@@ -186,6 +186,7 @@
 - [ExitRequest](#alias-exitrequest)
 - [WarningHandler](#alias-warninghandler)
 - [default_max_file_bytes](#alias-default_max_file_bytes)
+- [fileError](#alias-fileerror)
 - [CompareOp](#alias-compareop)
 - [valuesEqual](#alias-valuesequal)
 - [truthy](#alias-truthy)
@@ -217,6 +218,7 @@
 - [number_format](#import-number_format) `@import("runtime/number_format.zig")`
 - [entry](#import-entry) `@import("runtime/entry.zig")`
 - [failure](#import-failure) `@import("runtime/failure.zig")`
+- [load](#import-load) `@import("runtime/load.zig")`
 - [gc](#import-gc) `@import("runtime/gc.zig")`
 
 <a id="alias-runtimeerror"></a>
@@ -725,6 +727,16 @@ pub const default_max_file_bytes = host.default_max_file_bytes;
 
 References: [`host.default_max_file_bytes`](runtime/host.md#const-default_max_file_bytes)
 
+<a id="alias-fileerror"></a>
+
+## fileError
+
+```zig
+pub const fileError = host.fileError;
+```
+
+References: [`host.fileError`](runtime/host.md#fn-fileerror)
+
 <a id="alias-compareop"></a>
 
 ## CompareOp
@@ -915,6 +927,14 @@ pub const entry = @import("runtime/entry.zig");
 
 ```zig
 pub const failure = @import("runtime/failure.zig");
+```
+
+<a id="import-load"></a>
+
+## load
+
+```zig
+pub const load = @import("runtime/load.zig");
 ```
 
 <a id="import-gc"></a>

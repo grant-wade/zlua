@@ -136,6 +136,7 @@
 
 - [usesPortablePaths](#fn-usesportablepaths)
 - [loadfile](#fn-loadfile)
+- [prepareTextFileSource](#fn-preparetextfilesource)
 - [dofile](#fn-dofile)
 - [require](#fn-require)
 - [searchpath](#fn-searchpath)
@@ -173,6 +174,14 @@ pub fn usesPortablePaths(state: *const State) bool
 
 ```zig
 pub fn loadfile(state: *State, thread: *Thread, op: bytecode.Call) !void
+```
+
+<a id="fn-preparetextfilesource"></a>
+
+## prepareTextFileSource
+
+```zig
+pub fn prepareTextFileSource(source: []u8) void
 ```
 
 <a id="fn-dofile"></a>

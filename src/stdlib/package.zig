@@ -97,7 +97,7 @@ fn fileChunkStart(source: []const u8) []const u8 {
     return source[index..];
 }
 
-fn prepareTextFileSource(source: []u8) void {
+pub fn prepareTextFileSource(source: []u8) void {
     var index = initialBomLen(source);
     for (source[0..index]) |*byte| byte.* = ' ';
     if (index < source.len and source[index] == '#') {

@@ -1,11 +1,14 @@
 const std = @import("std");
 const zlua = @import("zlua");
+const repl = @import("cli/repl.zig");
+const term = @import("cli/term.zig");
 const entry_mod = zlua.runtime.entry;
 const failure_mod = zlua.runtime.failure;
 
 const ast = zlua.frontend.ast;
 const Dir = std.Io.Dir;
 const File = std.Io.File;
+const EnvMap = std.process.Environ.Map;
 
 const DumpMode = enum {
     none,
@@ -14,24 +17,38 @@ const DumpMode = enum {
     bytecode,
 };
 
+/// A command-line step that runs before the script, in the order given.
+const Action = union(enum) {
+    eval: []const u8,
+    /// `NAME` or `GLOBAL=NAME` from `-l`.
+    require: []const u8,
+    warnings_on,
+};
+
 const CliOptions = struct {
-    evals: std.ArrayList([]const u8) = .empty,
-    /// For each `-W`, the number of `-e` chunks before it, preserving option order.
-    warning_points: std.ArrayList(usize) = .empty,
+    actions: std.ArrayList(Action) = .empty,
     script_path: ?[]const u8 = null,
     script_index: ?usize = null,
     interactive: bool = false,
+    ignore_env: bool = false,
     debug_errors: bool = false,
     trace_vm: bool = false,
     print_version: bool = false,
     print_help: bool = false,
     dump_mode: DumpMode = .none,
     stdlib: zlua.runtime.StdlibMode = .full,
+    color: term.ColorMode = .auto,
+    /// The argument a parse error is about.
+    rejected: []const u8 = "",
 
     fn deinit(self: *CliOptions, allocator: std.mem.Allocator) void {
-        self.evals.deinit(allocator);
-        self.warning_points.deinit(allocator);
+        self.actions.deinit(allocator);
         self.* = undefined;
+    }
+
+    fn hasEval(self: *const CliOptions) bool {
+        for (self.actions.items) |action| if (action == .eval) return true;
+        return false;
     }
 };
 
@@ -53,14 +70,23 @@ fn runCliProgram(
     environ_map: *const std.process.Environ.Map,
     args: []const []const u8,
 ) !u8 {
-    var options = parseCliOptions(allocator, args) catch |err| {
-        try stderrPrint(io, "zlua: {s}\n", .{@errorName(err)});
-        return 2;
-    };
+    var options: CliOptions = .{};
     defer options.deinit(allocator);
+    parseCliOptions(allocator, args, &options) catch |err| {
+        const rejected = options.rejected;
+        switch (err) {
+            error.OutOfMemory => return err,
+            error.UnknownOption => try stderrPrint(io, "zlua: unrecognized option '{s}'\n", .{rejected}),
+            error.MissingOptionValue => try stderrPrint(io, "zlua: '{s}' needs argument\n", .{rejected}),
+            error.InvalidStdlibMode => try stderrPrint(io, "zlua: invalid --stdlib value '{s}'\n", .{rejected}),
+            error.InvalidColorMode => try stderrPrint(io, "zlua: invalid --color value '{s}' (expected auto, always, or never)\n", .{rejected}),
+        }
+        try stderrPrint(io, "{s}", .{usage});
+        return 1;
+    };
 
     if (options.print_help) {
-        try printUsage(io);
+        try stdoutPrint(io, "{s}", .{usage});
         return 0;
     }
     if (options.print_version) try printVersion(io);
@@ -69,7 +95,7 @@ fn runCliProgram(
         return runDumpMode(allocator, io, &options);
     }
 
-    const no_input = options.evals.items.len == 0 and options.script_path == null;
+    const no_input = !options.hasEval() and options.script_path == null;
     if (options.print_version and no_input and !options.interactive and try stdinIsTty(io)) return 0;
     if (no_input and !options.interactive and try stdinIsTty(io)) {
         options.interactive = true;
@@ -82,7 +108,7 @@ fn runCliProgram(
     var stdin_buffer: [64 * 1024]u8 = undefined;
     var stdin_reader = File.stdin().readerStreaming(io, &stdin_buffer);
     const stdout_tty = File.stdout().isTty(io) catch false;
-    var cli: Cli = .{ .io = io, .stdout = &stdout_writer.interface, .stdin = &stdin_reader.interface };
+    var cli: Cli = .{ .io = io, .stdout = &stdout_writer.interface, .stdin = &stdin_reader.interface, .env = environ_map };
 
     const state_allocator = std.heap.smp_allocator;
     var state = try zlua.runtime.State.initWithOptions(state_allocator, .{
@@ -115,51 +141,127 @@ fn runCliChunks(
     options: *CliOptions,
 ) !u8 {
     const io = cli.io;
-    const no_input = options.evals.items.len == 0 and options.script_path == null;
+    const no_input = !options.hasEval() and options.script_path == null;
     try installArgTable(state_allocator, state, args, options.script_index);
 
-    for (options.evals.items, 0..) |source, index| {
-        enableWarningsAt(state, options, index);
-        if (try executeChunkNamed(state_allocator, io, state, source, "=(command line)")) |exit_code| return exit_code;
+    if (!options.ignore_env) {
+        try applyPathVariables(state_allocator, state, cli.env);
+        if (cli.env.get("LUA_INIT_5_5") orelse cli.env.get("LUA_INIT")) |init| {
+            if (std.mem.startsWith(u8, init, "@")) {
+                if (try executeFile(state_allocator, io, state, init[1..], .chunk)) |exit_code| return exit_code;
+            } else {
+                if (try executeChunkNamed(state_allocator, io, state, init, "=LUA_INIT")) |exit_code| return exit_code;
+            }
+        }
     }
-    enableWarningsAt(state, options, options.evals.items.len);
+
+    for (options.actions.items) |action| switch (action) {
+        .eval => |source| if (try executeChunkNamed(state_allocator, io, state, source, "=(command line)")) |exit_code| return exit_code,
+        .require => |spec| if (try requireLibrary(state_allocator, io, state, spec)) |exit_code| return exit_code,
+        .warnings_on => state.warnings_on = true,
+    };
 
     if (options.script_path) |path| {
         if (std.mem.eql(u8, path, "-")) {
             const source = cli.readStdinAlloc(state_allocator) catch |err| {
-                try stderrPrint(io, "cannot read stdin: {s}\n", .{@errorName(err)});
+                try stderrPrint(io, "zlua: cannot read stdin: {s}\n", .{zlua.runtime.fileError(err).message});
                 return 1;
             };
             defer state_allocator.free(source);
-            if (try executeChunkNamed(state_allocator, io, state, stripInitialShebang(source), "@stdin")) |exit_code| return exit_code;
+            if (try executeScript(state_allocator, io, state, scriptSource(source), "@stdin")) |exit_code| return exit_code;
         } else {
-            const source = Dir.cwd().readFileAlloc(io, path, state_allocator, .limited(zlua.runtime.default_max_file_bytes)) catch |err| {
-                try stderrPrint(io, "cannot read script {s}: {s}\n", .{ path, @errorName(err) });
-                return 1;
-            };
-            defer state_allocator.free(source);
-            const source_name = try std.fmt.allocPrint(state_allocator, "@{s}", .{path});
-            defer state_allocator.free(source_name);
-            if (try executeChunkNamed(state_allocator, io, state, stripInitialShebang(source), source_name)) |exit_code| return exit_code;
+            if (try executeFile(state_allocator, io, state, path, .script)) |exit_code| return exit_code;
         }
     } else if (no_input and !options.interactive) {
         const source = cli.readStdinAlloc(state_allocator) catch |err| {
-            try stderrPrint(io, "cannot read stdin: {s}\n", .{@errorName(err)});
+            try stderrPrint(io, "zlua: cannot read stdin: {s}\n", .{zlua.runtime.fileError(err).message});
             return 1;
         };
         defer state_allocator.free(source);
-        if (try executeChunkNamed(state_allocator, io, state, stripInitialShebang(source), "@stdin")) |exit_code| return exit_code;
+        if (try executeChunkNamed(state_allocator, io, state, scriptSource(source), "@stdin")) |exit_code| return exit_code;
     }
 
-    if (options.interactive) if (try runRepl(state_allocator, cli, state)) |exit_code| return exit_code;
+    if (options.interactive) {
+        const outcome = try repl.run(.{
+            .allocator = state_allocator,
+            .io = io,
+            .state = state,
+            .stdin = cli.stdin,
+            .stdout = cli.stdout,
+            .env = cli.env,
+            .color = options.color,
+            .banner = !options.print_version,
+        });
+        if (outcome == .exit_requested) return exitCode(state);
+    }
 
     return 0;
+}
+
+fn executeFile(allocator: std.mem.Allocator, io: std.Io, state: *zlua.runtime.State, path: []const u8, kind: enum { script, chunk }) !?u8 {
+    const source = Dir.cwd().readFileAlloc(io, path, allocator, .limited(zlua.runtime.default_max_file_bytes)) catch |err| {
+        const failure = zlua.runtime.fileError(err);
+        try stderrPrint(io, "zlua: cannot {s} {s}: {s}\n", .{ if (failure.read_phase) "read" else "open", path, failure.message });
+        return 1;
+    };
+    defer allocator.free(source);
+    const source_name = try std.fmt.allocPrint(allocator, "@{s}", .{path});
+    defer allocator.free(source_name);
+    return switch (kind) {
+        .script => executeScript(allocator, io, state, scriptSource(source), source_name),
+        .chunk => executeChunkNamed(allocator, io, state, scriptSource(source), source_name),
+    };
+}
+
+fn requireLibrary(allocator: std.mem.Allocator, io: std.Io, state: *zlua.runtime.State, spec: []const u8) !?u8 {
+    var global = spec;
+    var module = spec;
+    if (std.mem.indexOfScalar(u8, spec, '=')) |equals| {
+        global = spec[0..equals];
+        module = spec[equals + 1 ..];
+    } else if (std.mem.indexOfScalar(u8, spec, '-')) |mark| {
+        global = spec[0..mark];
+    }
+    const require = state.getGlobalValue("require");
+    const argument: zlua.runtime.Value = .{ .string = try state.strings.intern(module) };
+    const results = entry_mod.callFunctionHandled(state, require, &.{argument}, cli_error_handler) catch |err| return try reportFailure(allocator, io, state, err);
+    defer state.allocator.free(results);
+    var roots: zlua.runtime.ValueRoots = undefined;
+    state.pushValueRoots(&roots, results);
+    defer state.popValueRoots(&roots);
+    try state.putGlobal(global, if (results.len == 0) .nil else results[0]);
+    return null;
+}
+
+fn applyPathVariables(allocator: std.mem.Allocator, state: *zlua.runtime.State, env: *const EnvMap) !void {
+    const package = state.getGlobalValue("package");
+    if (package != .table) return;
+    const variables = [_][3][]const u8{
+        .{ "path", "LUA_PATH_5_5", "LUA_PATH" },
+        .{ "cpath", "LUA_CPATH_5_5", "LUA_CPATH" },
+    };
+    for (variables) |variable| {
+        const value = env.get(variable[1]) orelse env.get(variable[2]) orelse continue;
+        const default = package.table.getBytes(variable[0]);
+        const path = try expandPathVariable(allocator, value, if (default == .string) default.string.bytes() else "");
+        defer allocator.free(path);
+        const key = try state.strings.intern(variable[0]);
+        try state.setTableRaw(package.table, .{ .string = key }, .{ .string = try state.strings.intern(path) });
+    }
+}
+
+fn expandPathVariable(allocator: std.mem.Allocator, value: []const u8, default: []const u8) ![]u8 {
+    const mark = std.mem.indexOf(u8, value, ";;") orelse return allocator.dupe(u8, value);
+    const before = value[0..mark];
+    const after = value[mark + 2 ..];
+    return std.mem.concat(allocator, u8, &.{ before, if (before.len != 0) ";" else "", default, if (after.len != 0) ";" else "", after });
 }
 
 const Cli = struct {
     io: std.Io,
     stdout: *std.Io.Writer,
     stdin: *std.Io.Reader,
+    env: *const EnvMap,
 
     fn flushStdout(self: *Cli) void {
         self.stdout.flush() catch {};
@@ -191,13 +293,13 @@ fn closeState(state: *zlua.runtime.State) ?u8 {
     return finalizer_exit;
 }
 
-fn parseCliOptions(allocator: std.mem.Allocator, args: []const []const u8) !CliOptions {
-    var options: CliOptions = .{};
-    errdefer options.deinit(allocator);
+const ParseError = error{ OutOfMemory, UnknownOption, MissingOptionValue, InvalidStdlibMode, InvalidColorMode };
 
+fn parseCliOptions(allocator: std.mem.Allocator, args: []const []const u8, options: *CliOptions) ParseError!void {
     var index: usize = 1;
     while (index < args.len) : (index += 1) {
         const arg = args[index];
+        options.rejected = arg;
         if (std.mem.eql(u8, arg, "--")) {
             index += 1;
             if (index < args.len) {
@@ -215,26 +317,39 @@ fn parseCliOptions(allocator: std.mem.Allocator, args: []const []const u8) !CliO
             options.trace_vm = true;
         } else if (std.mem.eql(u8, arg, "-i")) {
             options.interactive = true;
+        } else if (std.mem.eql(u8, arg, "-E")) {
+            options.ignore_env = true;
         } else if (std.mem.eql(u8, arg, "-W")) {
-            try options.warning_points.append(allocator, options.evals.items.len);
+            try options.actions.append(allocator, .warnings_on);
         } else if (std.mem.eql(u8, arg, "--dump-ast")) {
             options.dump_mode = .ast;
         } else if (std.mem.eql(u8, arg, "--dump-scope")) {
             options.dump_mode = .scope;
         } else if (std.mem.eql(u8, arg, "--dump-bytecode")) {
             options.dump_mode = .bytecode;
-        } else if (std.mem.eql(u8, arg, "--stdlib")) {
+        } else if (std.mem.eql(u8, arg, "--stdlib") or std.mem.eql(u8, arg, "--color")) {
             index += 1;
             if (index >= args.len) return error.MissingOptionValue;
-            options.stdlib = try parseStdlibMode(args[index]);
+            options.rejected = args[index];
+            if (std.mem.eql(u8, arg, "--stdlib")) {
+                options.stdlib = try parseStdlibMode(args[index]);
+            } else {
+                options.color = term.ColorMode.parse(args[index]) orelse return error.InvalidColorMode;
+            }
         } else if (std.mem.startsWith(u8, arg, "--stdlib=")) {
+            options.rejected = arg[9..];
             options.stdlib = try parseStdlibMode(arg[9..]);
-        } else if (std.mem.eql(u8, arg, "-e")) {
-            index += 1;
-            if (index >= args.len) return error.MissingOptionValue;
-            try options.evals.append(allocator, args[index]);
-        } else if (std.mem.startsWith(u8, arg, "-e") and arg.len > 2) {
-            try options.evals.append(allocator, arg[2..]);
+        } else if (std.mem.startsWith(u8, arg, "--color=")) {
+            options.rejected = arg[8..];
+            options.color = term.ColorMode.parse(arg[8..]) orelse return error.InvalidColorMode;
+        } else if (std.mem.startsWith(u8, arg, "-e") or std.mem.startsWith(u8, arg, "-l")) {
+            var value = arg[2..];
+            if (value.len == 0) {
+                index += 1;
+                if (index >= args.len) return error.MissingOptionValue;
+                value = args[index];
+            }
+            try options.actions.append(allocator, if (arg[1] == 'e') .{ .eval = value } else .{ .require = value });
         } else if (std.mem.eql(u8, arg, "-")) {
             options.script_path = arg;
             options.script_index = index;
@@ -246,14 +361,6 @@ fn parseCliOptions(allocator: std.mem.Allocator, args: []const []const u8) !CliO
             options.script_index = index;
             break;
         }
-    }
-
-    return options;
-}
-
-fn enableWarningsAt(state: *zlua.runtime.State, options: *const CliOptions, index: usize) void {
-    for (options.warning_points.items) |point| {
-        if (point == index) state.warnings_on = true;
     }
 }
 
@@ -318,8 +425,12 @@ fn parseStdlibLibrary(name: []const u8, libraries: *zlua.stdlib.LibrarySet) !voi
 
 fn runDumpMode(allocator: std.mem.Allocator, io: std.Io, options: *const CliOptions) !u8 {
     var source_info = readDumpInput(allocator, io, options) catch |err| {
-        try stderrPrint(io, "zlua: {s}\n", .{@errorName(err)});
-        return 2;
+        switch (err) {
+            error.OutOfMemory => return err,
+            error.MissingInput => try stderrPrint(io, "zlua: a dump option needs a script or an -e chunk\n", .{}),
+            else => try stderrPrint(io, "zlua: cannot read {s}: {s}\n", .{ options.script_path orelse "stdin", zlua.runtime.fileError(err).message }),
+        }
+        return 1;
     };
     defer source_info.deinit(allocator);
 
@@ -358,11 +469,12 @@ fn readDumpInput(allocator: std.mem.Allocator, io: std.Io, options: *const CliOp
             .name = try std.fmt.allocPrint(allocator, "@{s}", .{path}),
         };
     }
-    if (options.evals.items.len != 0) {
+    if (options.hasEval()) {
         var source = std.ArrayList(u8).empty;
         errdefer source.deinit(allocator);
-        for (options.evals.items) |eval| {
-            try source.appendSlice(allocator, eval);
+        for (options.actions.items) |action| {
+            if (action != .eval) continue;
+            try source.appendSlice(allocator, action.eval);
             try source.append(allocator, '\n');
         }
         return .{ .source = try source.toOwnedSlice(allocator), .name = try allocator.dupe(u8, "=(command line)") };
@@ -507,114 +619,39 @@ fn indent(out: anytype, depth: usize) !void {
     for (0..depth) |_| try out.writeAll("  ");
 }
 
-fn runRepl(allocator: std.mem.Allocator, cli: *Cli, state: *zlua.runtime.State) !?u8 {
-    const io = cli.io;
-    const tty = try stdinIsTty(io);
-    var source = std.ArrayList(u8).empty;
-    defer source.deinit(allocator);
-
-    while (true) {
-        if (tty) cli.stdout.writeAll(if (source.items.len == 0) "> " else ">> ") catch {};
-        cli.flushStdout();
-        const maybe_line = cli.stdin.takeDelimiter('\n') catch |err| switch (err) {
-            error.StreamTooLong => {
-                try stderrPrint(io, "input line too long\n", .{});
-                cli.stdin.tossBuffered();
-                source.items.len = 0;
-                continue;
-            },
-            error.ReadFailed => return err,
-        };
-        const line = maybe_line orelse break;
-        try source.appendSlice(allocator, line);
-        try source.append(allocator, '\n');
-
-        if (std.mem.trim(u8, source.items, " \t\r\n").len == 0) {
-            source.items.len = 0;
-            continue;
-        }
-        if (sourceLooksIncomplete(allocator, source.items)) continue;
-
-        const repl_source = try replSourceAlloc(allocator, source.items);
-        defer allocator.free(repl_source);
-        if (try executeReplChunk(allocator, cli, state, repl_source)) |exit_code| return exit_code;
-        source.items.len = 0;
-    }
-
-    if (source.items.len != 0) {
-        const repl_source = try replSourceAlloc(allocator, source.items);
-        defer allocator.free(repl_source);
-        if (try executeReplChunk(allocator, cli, state, repl_source)) |exit_code| return exit_code;
-    }
-    return null;
-}
-
-fn replSourceAlloc(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
-    const trimmed_left = std.mem.trimStart(u8, source, " \t");
-    if (std.mem.startsWith(u8, trimmed_left, "=")) {
-        return std.fmt.allocPrint(allocator, "print({s})", .{trimmed_left[1..]});
-    }
-    if (canParseChunk(allocator, source)) return allocator.dupe(u8, source);
-
-    const echo = try std.fmt.allocPrint(allocator, "print({s})", .{source});
-    if (canParseChunk(allocator, echo)) return echo;
-    allocator.free(echo);
-    return allocator.dupe(u8, source);
-}
-
-fn canParseChunk(allocator: std.mem.Allocator, source: []const u8) bool {
-    var tree = zlua.frontend.parse(allocator, source) catch return false;
-    tree.deinit();
-    return true;
-}
-
-fn sourceLooksIncomplete(allocator: std.mem.Allocator, source: []const u8) bool {
-    var diagnostic: ?zlua.errors.Diagnostic = null;
-    var tree = zlua.frontend.parseWithDiagnostic(allocator, source, &diagnostic) catch return diagnosticNearEof(diagnostic);
-    tree.deinit();
-    return false;
-}
-
-fn diagnosticNearEof(diagnostic: ?zlua.errors.Diagnostic) bool {
-    const diag = diagnostic orelse return false;
-    return switch (diag) {
-        .syntax => |syntax| switch (syntax) {
-            .unexpected => |unexpected| unexpected.token.tag == .eof,
-            .expected => |expected| expected.near.tag == .eof,
-            .expected_close => |expected| expected.near.tag == .eof,
-        },
-        else => false,
-    };
-}
-
 fn executeChunkNamed(allocator: std.mem.Allocator, io: std.Io, state: *zlua.runtime.State, source: []const u8, source_name: []const u8) !?u8 {
-    entry_mod.executeSourceChunkNamedHandled(state, source, source_name, cli_error_handler) catch |err| {
-        if (err == error.LuaExit) return exitCode(state);
-        const message = try errorReportAlloc(allocator, state, err);
-        defer allocator.free(message);
-        try stderrWrite(io, message);
-        return 1;
-    };
+    entry_mod.executeSourceChunkNamedHandled(state, source, source_name, cli_error_handler) catch |err| return try reportFailure(allocator, io, state, err);
     return null;
+}
+
+/// The script's arguments are the positive entries of the `arg` table.
+fn executeScript(allocator: std.mem.Allocator, io: std.Io, state: *zlua.runtime.State, source: []const u8, source_name: []const u8) !?u8 {
+    const arg = state.getGlobalValue("arg");
+    if (arg != .table) {
+        try stderrPrint(io, "zlua: 'arg' is not a table\n", .{});
+        return 1;
+    }
+    const loaded = zlua.runtime.load.loadSourceAsClosureNamed(state, source, source_name) catch |err| return try reportFailure(allocator, io, state, err);
+    const args = try allocator.alloc(zlua.runtime.Value, @intCast(@max(arg.table.len(), 0)));
+    defer allocator.free(args);
+    for (args, 1..) |*value, position| value.* = arg.table.get(.{ .integer = @intCast(position) });
+    const results = entry_mod.callFunctionHandled(state, loaded, args, cli_error_handler) catch |err| return try reportFailure(allocator, io, state, err);
+    state.allocator.free(results);
+    return null;
+}
+
+fn reportFailure(allocator: std.mem.Allocator, io: std.Io, state: *zlua.runtime.State, err: anyerror) !u8 {
+    if (err == error.LuaExit) return exitCode(state);
+    const message = try errorReportAlloc(allocator, state, err);
+    defer allocator.free(message);
+    try stderrWrite(io, message);
+    return 1;
 }
 
 const cli_error_handler: zlua.runtime.HostErrorHandler = .{
     .message_handler = .{ .native = .traceback_message_handler },
     .host_frame = true,
 };
-
-fn executeReplChunk(allocator: std.mem.Allocator, cli: *Cli, state: *zlua.runtime.State, source: []const u8) !?u8 {
-    defer cli.flushStdout();
-    entry_mod.executeSourceChunkNamedHandled(state, source, "=stdin", cli_error_handler) catch |err| {
-        if (err == error.LuaExit) return exitCode(state);
-        const message = try errorReportAlloc(allocator, state, err);
-        defer allocator.free(message);
-        cli.flushStdout();
-        try stderrWrite(cli.io, message);
-        return null;
-    };
-    return null;
-}
 
 fn errorReportAlloc(allocator: std.mem.Allocator, state: *zlua.runtime.State, err: anyerror) ![]u8 {
     if (state.last_error != null) {
@@ -657,34 +694,38 @@ fn stdinIsTty(io: std.Io) !bool {
     return File.stdin().isTty(io) catch false;
 }
 
-fn stripInitialShebang(source: []const u8) []const u8 {
-    if (source.len == 0 or source[0] != '#') return source;
-    const newline = std.mem.indexOfScalar(u8, source, '\n') orelse return "";
-    return source[newline + 1 ..];
+fn scriptSource(source: []u8) []const u8 {
+    zlua.stdlib.package.prepareTextFileSource(source);
+    return source;
 }
 
 fn printVersion(io: std.Io) !void {
     try stdoutPrint(io, "zlua {s} ({s} target)\n", .{ zlua.version, zlua.lua_target_version });
 }
 
-fn printUsage(io: std.Io) !void {
-    try stdoutPrint(io,
-        \\Usage: zlua [options] [script [args...]]
-        \\
-        \\Options:
-        \\  --version, -v
-        \\  --debug-errors
-        \\  --stdlib=none|base|safe|full|LIB[,LIB...]
-        \\  -e 'chunk'
-        \\  -i
-        \\  -W
-        \\  --dump-ast [script]
-        \\  --dump-scope [script]
-        \\  --dump-bytecode [script]
-        \\  --trace-vm [script]
-        \\
-    , .{});
-}
+const usage =
+    \\Usage: zlua [options] [script [args...]]
+    \\
+    \\Options:
+    \\  -e CHUNK          run CHUNK
+    \\  -l NAME           require NAME into the global NAME
+    \\  -l GLOBAL=NAME    require NAME into the global GLOBAL
+    \\  -i                enter the REPL after the script
+    \\  -E                ignore LUA_INIT, LUA_PATH, and LUA_CPATH
+    \\  -W                turn warnings on
+    \\  -v, --version     print the version
+    \\  -h, --help        print this help
+    \\  --stdlib=MODE     open none, base, safe, full, or a comma-separated list of libraries
+    \\  --color=WHEN      color the REPL: auto, always, or never
+    \\  --debug-errors    print internal runtime diagnostics
+    \\  --trace-vm        print each VM instruction
+    \\  --dump-ast        print the parsed script
+    \\  --dump-scope      print the resolved scopes of the script
+    \\  --dump-bytecode   print the compiled script
+    \\  --                stop handling options
+    \\  -                 run stdin as the script
+    \\
+;
 
 fn stdoutPrint(io: std.Io, comptime fmt: []const u8, args: anytype) !void {
     var buffer: [4096]u8 = undefined;
@@ -707,43 +748,106 @@ fn stderrWrite(io: std.Io, bytes: []const u8) !void {
     try writer.interface.flush();
 }
 
+test {
+    _ = repl;
+}
+
 test "version constants are wired" {
     try std.testing.expect(std.mem.eql(u8, zlua.lua_target_version, "Lua 5.5"));
 }
 
-test "strips initial shebang for script execution" {
-    try std.testing.expect(std.mem.eql(u8, stripInitialShebang("#!lua\nprint(1)"), "print(1)"));
+test "a script's byte order mark and shebang line keep its line numbers" {
+    var source = "\xEF\xBB\xBF#!lua\nerror('x')".*;
+    var state = try zlua.runtime.State.initWithOptions(std.testing.allocator, .{ .stdlib = .base });
+    defer state.deinit();
+    try std.testing.expectError(error.RuntimeError, entry_mod.executeSourceChunkNamed(&state, scriptSource(&source), "@script.lua"));
+    try std.testing.expectEqualStrings("script.lua:2: x", state.currentErrorValue().string.bytes());
 }
 
-test "CLI parser accepts milestone 20 options" {
-    const args = [_][]const u8{ "zlua", "--stdlib=safe", "--trace-vm", "-i", "-e", "x=1", "script.lua", "a" };
-    var options = try parseCliOptions(std.testing.allocator, &args);
+test "CLI parser reads options up to the script" {
+    const args = [_][]const u8{ "zlua", "--stdlib=safe", "--trace-vm", "-E", "--color", "never", "-i", "-e", "x=1", "script.lua", "-e", "a" };
+    var options: CliOptions = .{};
     defer options.deinit(std.testing.allocator);
+    try parseCliOptions(std.testing.allocator, &args, &options);
     try std.testing.expectEqual(zlua.runtime.StdlibMode.safe, options.stdlib);
     try std.testing.expect(options.trace_vm);
     try std.testing.expect(options.interactive);
-    try std.testing.expectEqual(@as(usize, 1), options.evals.items.len);
+    try std.testing.expect(options.ignore_env);
+    try std.testing.expectEqual(term.ColorMode.never, options.color);
+    try std.testing.expectEqual(@as(usize, 1), options.actions.items.len);
     try std.testing.expectEqualStrings("script.lua", options.script_path.?);
-    try std.testing.expectEqual(@as(usize, 6), options.script_index.?);
+    try std.testing.expectEqual(@as(usize, 9), options.script_index.?);
 }
 
-test "CLI parser keeps -W in order with -e chunks" {
-    const args = [_][]const u8{ "zlua", "-e", "a()", "-W", "-e", "b()" };
-    var options = try parseCliOptions(std.testing.allocator, &args);
+test "CLI parser keeps -e, -l, and -W in order" {
+    const args = [_][]const u8{ "zlua", "-e", "a()", "-W", "-lmod", "-l", "g=mod", "-eb()" };
+    var options: CliOptions = .{};
     defer options.deinit(std.testing.allocator);
-    try std.testing.expectEqualSlices(usize, &.{1}, options.warning_points.items);
-    var state = try zlua.runtime.State.initWithOptions(std.testing.allocator, .{ .stdlib = .base });
+    try parseCliOptions(std.testing.allocator, &args, &options);
+    const actions = options.actions.items;
+    try std.testing.expectEqual(@as(usize, 5), actions.len);
+    try std.testing.expectEqualStrings("a()", actions[0].eval);
+    try std.testing.expect(actions[1] == .warnings_on);
+    try std.testing.expectEqualStrings("mod", actions[2].require);
+    try std.testing.expectEqualStrings("g=mod", actions[3].require);
+    try std.testing.expectEqualStrings("b()", actions[4].eval);
+}
+
+test "CLI parser names the argument it rejects" {
+    const cases = [_]struct { args: []const []const u8, err: ParseError, rejected: []const u8 }{
+        .{ .args = &.{ "zlua", "--bogus" }, .err = error.UnknownOption, .rejected = "--bogus" },
+        .{ .args = &.{ "zlua", "-e" }, .err = error.MissingOptionValue, .rejected = "-e" },
+        .{ .args = &.{ "zlua", "--stdlib=base,nope" }, .err = error.InvalidStdlibMode, .rejected = "base,nope" },
+        .{ .args = &.{ "zlua", "--color=blue" }, .err = error.InvalidColorMode, .rejected = "blue" },
+    };
+    for (cases) |case| {
+        var options: CliOptions = .{};
+        defer options.deinit(std.testing.allocator);
+        try std.testing.expectError(case.err, parseCliOptions(std.testing.allocator, case.args, &options));
+        try std.testing.expectEqualStrings(case.rejected, options.rejected);
+    }
+}
+
+test "a script receives the arg table's positive entries" {
+    var buffer: [64]u8 = undefined;
+    var stdout: std.Io.Writer = .fixed(&buffer);
+    var state = try zlua.runtime.State.initWithOptions(std.testing.allocator, .{ .stdlib = .base, .stdout = &stdout, .capture_output = false });
     defer state.deinit();
-    enableWarningsAt(&state, &options, 0);
-    try std.testing.expect(!state.warnings_on);
-    enableWarningsAt(&state, &options, 1);
-    try std.testing.expect(state.warnings_on);
+    const args = [_][]const u8{ "zlua", "script.lua", "a", "b" };
+    try installArgTable(std.testing.allocator, &state, &args, 1);
+    try std.testing.expect(try executeScript(std.testing.allocator, std.testing.io, &state, "print(select('#', ...), ...)", "@script.lua") == null);
+    try std.testing.expectEqualStrings("2\ta\tb\n", stdout.buffered());
+}
+
+test "-l stores the required module in a global" {
+    var state = try zlua.runtime.State.initWithOptions(std.testing.allocator, .{ .stdlib = .full });
+    defer state.deinit();
+    try entry_mod.executeSourceChunkNamed(&state, "package.preload['mod-v2'] = function() return {answer = 42} end", "=setup");
+    try std.testing.expect(try requireLibrary(std.testing.allocator, std.testing.io, &state, "mod-v2") == null);
+    try std.testing.expect(try requireLibrary(std.testing.allocator, std.testing.io, &state, "m=mod-v2") == null);
+    try entry_mod.executeSourceChunkNamed(&state, "assert(mod.answer == 42 and m == mod)", "=check");
+}
+
+test "LUA_PATH replaces ;; with the default path" {
+    const cases = [_][2][]const u8{
+        .{ "./?.lua", "./?.lua" },
+        .{ ";;", "DEFAULT" },
+        .{ "a/?.lua;;", "a/?.lua;DEFAULT" },
+        .{ ";;b/?.lua", "DEFAULT;b/?.lua" },
+        .{ "a/?.lua;;b/?.lua", "a/?.lua;DEFAULT;b/?.lua" },
+    };
+    for (cases) |case| {
+        const path = try expandPathVariable(std.testing.allocator, case[0], "DEFAULT");
+        defer std.testing.allocator.free(path);
+        try std.testing.expectEqualStrings(case[1], path);
+    }
 }
 
 test "CLI parser accepts granular stdlib libraries" {
     const args = [_][]const u8{ "zlua", "--stdlib=base,string,json,toml,msgpack,csv,fs", "-e", "print('ok')" };
-    var options = try parseCliOptions(std.testing.allocator, &args);
+    var options: CliOptions = .{};
     defer options.deinit(std.testing.allocator);
+    try parseCliOptions(std.testing.allocator, &args, &options);
 
     const libraries = options.stdlib.libraries;
     try std.testing.expect(libraries.base);
