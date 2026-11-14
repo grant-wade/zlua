@@ -46,10 +46,14 @@ pub fn getinfo(state: *State, thread: *Thread, op: bytecode.Call) !void {
             const frame_index = info_thread.frames.items.len - depth;
             const frame = info_thread.frames.items[frame_index];
             const tail = frame.is_tail_call or (depth == 2 and info_thread.frames.items.len != 0 and info_thread.frames.items[info_thread.frames.items.len - 1].is_tail_call);
+            if (debug_mod.isHostHelper(frame.closure)) break :blk .{ null, .{ .closure = frame.closure }, "[C]", "C", @as(i64, -1), debug_mod.currentFunctionName(state, info_thread, target.integer), tail };
             break :blk .{ frame.closure, .{ .closure = frame.closure }, frame.closure.proto.source_name, debug_mod.currentWhat(state, info_thread, target.integer), if (debug_mod.currentLine(state, info_thread, target.integer)) |line| @as(i64, @intCast(line)) else -1, debug_mod.currentFunctionName(state, info_thread, target.integer), tail };
         },
-        .closure => .{ target.closure, target, target.closure.proto.source_name, "Lua", @as(i64, -1), null, false },
-        .api_callback, .gmatch_iterator, .native, .native_print, .native_tostring, .native_getmetatable, .native_setmetatable, .native_rawequal, .native_rawget, .native_rawset, .native_rawlen, .native_next, .native_pairs, .native_ipairs, .native_ipairs_iter, .native_table_create, .native_select, .native_assert, .native_error, .native_pcall, .native_xpcall, .native_collectgarbage, .native_debug_traceback, .native_coroutine_create, .native_coroutine_resume, .native_coroutine_yield, .native_coroutine_status, .native_coroutine_running, .native_coroutine_isyieldable, .native_coroutine_close, .native_coroutine_wrap => .{ null, target, "[C]", "C", @as(i64, -1), null, false },
+        .closure => if (debug_mod.isHostHelper(target.closure))
+            .{ null, target, "[C]", "C", @as(i64, -1), null, false }
+        else
+            .{ target.closure, target, target.closure.proto.source_name, "Lua", @as(i64, -1), null, false },
+        .api_callback, .api_closure, .gmatch_iterator, .native, .native_print, .native_tostring, .native_getmetatable, .native_setmetatable, .native_rawequal, .native_rawget, .native_rawset, .native_rawlen, .native_next, .native_pairs, .native_ipairs, .native_ipairs_iter, .native_table_create, .native_select, .native_assert, .native_error, .native_pcall, .native_xpcall, .native_collectgarbage, .native_debug_traceback, .native_coroutine_create, .native_coroutine_resume, .native_coroutine_yield, .native_coroutine_status, .native_coroutine_running, .native_coroutine_isyieldable, .native_coroutine_close, .native_coroutine_wrap => .{ null, target, "[C]", "C", @as(i64, -1), null, false },
         else => return state.failArgumentMessage("debug.getinfo", 1, "function or level expected"),
     };
 
@@ -270,6 +274,7 @@ pub fn getlocal(state: *State, thread: *Thread, op: bytecode.Call) !void {
     }
     const frame_index = frameIndexAtLevel(local_thread, level) orelse return state.failArgumentMessage("debug.getlocal", 1, "level out of range");
     const frame = &local_thread.frames.items[frame_index];
+    if (debug_mod.isHostHelper(frame.closure)) return state.returnValues(thread, op.base, op.return_count, &.{.nil});
     if (index < 0) {
         const vararg_index: usize = @intCast(-index - 1);
         if (vararg_index >= frame.vararg_count) return state.returnValues(thread, op.base, op.return_count, &.{.nil});
@@ -298,6 +303,7 @@ pub fn setlocal(state: *State, thread: *Thread, op: bytecode.Call) !void {
     const frame_index = frameIndexAtLevel(local_thread, level) orelse return state.failArgumentMessage("debug.setlocal", level_arg_index + 1, "level out of range");
     try @import("../runtime/rollback.zig").threadWritable(local_thread);
     const frame = &local_thread.frames.items[frame_index];
+    if (debug_mod.isHostHelper(frame.closure)) return state.returnValues(thread, op.base, op.return_count, &.{.nil});
     if (index < 0) {
         const vararg_index: usize = @intCast(-index - 1);
         if (vararg_index >= frame.vararg_count) return state.returnValues(thread, op.base, op.return_count, &.{.nil});

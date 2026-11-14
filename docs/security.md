@@ -30,7 +30,7 @@ bug in zlua.
 ## Configuration
 
 ```zig
-var lua = try zlua.State.init(allocator, .{
+const lua = try zlua.State.init(allocator, .{
     .limits = zlua.Limits.untrusted,
 });
 ```
@@ -92,8 +92,8 @@ verifier, and you should only enable them for chunks you trust.
 ## Host Responsibilities
 
 - Release resources in `UserdataOptions.finalizer`, which Lua can't call or
-  remove. A `__gc` method bound with `newUserdataAuto` runs at most once per
-  object, and later typed access to that object fails with `userdata is closed`.
+  remove. A `__gc` method of the userdata type runs at most once per object,
+  and later typed access to that object fails with `userdata is closed`.
 - Keep userdata metatables hidden. `UserdataType.expose_metatable` lets
   `getmetatable` return them, and scripts can then change the methods of every
   object of that type.

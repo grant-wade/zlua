@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const api = @import("../api.zig");
+const expectString = @import("api_expect.zig").expectString;
 const ExitRequest = api.ExitRequest;
 const MemoryFile = api.MemoryFile;
 const MemoryFilesystem = api.MemoryFilesystem;
@@ -10,7 +11,7 @@ const State = api.State;
 const UtcOffset = api.UtcOffset;
 
 test "api full stdlib still denies ambient host access by default" {
-    var lua = try State.init(std.testing.allocator, .{ .stdlib = .full });
+    const lua = try State.init(std.testing.allocator, .{ .stdlib = .full });
     defer lua.deinit();
 
     try lua.doString(
@@ -55,7 +56,7 @@ test "api full stdlib still denies ambient host access by default" {
 }
 
 test "api default stdlib omits host-facing libraries" {
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
     try lua.doString(
@@ -67,7 +68,7 @@ test "api default stdlib omits host-facing libraries" {
 }
 
 test "api host-backed capabilities require explicit I/O access" {
-    var lua = try State.init(std.testing.allocator, .{
+    const lua = try State.init(std.testing.allocator, .{
         .stdlib = .full,
         .capabilities = .{
             .filesystem = .host_cwd,
@@ -95,7 +96,7 @@ test "dotted require finds modules through portable filesystems" {
     ;
     const files = [_]MemoryFile{.{ .path = "pkg/mod.lua", .contents = "return 7" }};
     {
-        var lua = try State.init(std.testing.allocator, .{ .stdlib = .full, .capabilities = .{ .filesystem = .{ .memory = &files } } });
+        const lua = try State.init(std.testing.allocator, .{ .stdlib = .full, .capabilities = .{ .filesystem = .{ .memory = &files } } });
         defer lua.deinit();
         try lua.doString(script, .{});
     }
@@ -107,7 +108,7 @@ test "dotted require finds modules through portable filesystems" {
         try temporary.dir.writeFile(io, .{ .sub_path = "pkg/mod.lua", .data = "return 7" });
         var root = try temporary.dir.openDir(io, ".", .{});
         defer root.close(io);
-        var lua = try State.init(std.testing.allocator, .{
+        const lua = try State.init(std.testing.allocator, .{
             .stdlib = .full,
             .capabilities = .{ .io = .{ .runtime = io }, .filesystem = .{ .host_dir = .{ .dir = root } } },
         });
@@ -124,7 +125,7 @@ test "host_dir stat and list reject windows paths outside the directory" {
     try temporary.dir.writeFile(io, .{ .sub_path = "plain.txt", .data = "data" });
     var root = try temporary.dir.openDir(io, ".", .{});
     defer root.close(io);
-    var lua = try State.init(std.testing.allocator, .{
+    const lua = try State.init(std.testing.allocator, .{
         .stdlib = .full,
         .capabilities = .{ .io = .{ .runtime = io }, .filesystem = .{ .host_dir = .{ .dir = root } } },
     });
@@ -146,7 +147,7 @@ test "api os filesystem mutations respect filesystem capability" {
     const files = [_]MemoryFile{
         .{ .path = "keep.lua", .contents = "return 42" },
     };
-    var lua = try State.init(std.testing.allocator, .{
+    const lua = try State.init(std.testing.allocator, .{
         .stdlib = .full,
         .capabilities = .{ .filesystem = .{ .memory = &files } },
     });
@@ -165,7 +166,7 @@ test "api read-only memory filesystem denies stdlib writes" {
     const files = [_]MemoryFile{
         .{ .path = "seed.txt", .contents = "seed" },
     };
-    var lua = try State.init(std.testing.allocator, .{
+    const lua = try State.init(std.testing.allocator, .{
         .stdlib = .full,
         .capabilities = .{ .filesystem = .{ .memory = &files } },
     });
@@ -197,7 +198,7 @@ test "fs extension supports memory filesystem directory utilities" {
     defer filesystem.deinit();
     try filesystem.writeFile("seed/sub/a.txt", "alpha");
 
-    var lua = try State.init(std.testing.allocator, .{
+    const lua = try State.init(std.testing.allocator, .{
         .stdlib = .full,
         .capabilities = .{ .filesystem = .{ .memory_rw = &filesystem } },
     });
@@ -225,7 +226,7 @@ test "fs host directory capability confines paths to borrowed root" {
     var temporary = std.testing.tmpDir(.{});
     defer temporary.cleanup();
 
-    var lua = try State.init(std.testing.allocator, .{
+    const lua = try State.init(std.testing.allocator, .{
         .stdlib = .full,
         .capabilities = .{
             .io = .{ .runtime = std.testing.io },
@@ -256,7 +257,7 @@ test "api writable memory filesystem supports Lua writes and mutations" {
     defer filesystem.deinit();
     try filesystem.writeFile("seed.lua", "return 'seed'");
 
-    var lua = try State.init(std.testing.allocator, .{
+    const lua = try State.init(std.testing.allocator, .{
         .stdlib = .full,
         .capabilities = .{ .filesystem = .{ .memory_rw = &filesystem } },
     });
@@ -293,7 +294,7 @@ test "api writable memory filesystem rejects sandbox escape writes" {
     defer filesystem.deinit();
     try filesystem.writeFile("seed.txt", "seed");
 
-    var lua = try State.init(std.testing.allocator, .{
+    const lua = try State.init(std.testing.allocator, .{
         .stdlib = .full,
         .capabilities = .{ .filesystem = .{ .memory_rw = &filesystem } },
     });
@@ -332,7 +333,7 @@ test "api file reads share the max_file_bytes limit" {
         .{ .path = "big.lua", .contents = "return 123456789" },
         .{ .path = "dir/inner.txt", .contents = "x" },
     };
-    var lua = try State.init(std.testing.allocator, .{
+    const lua = try State.init(std.testing.allocator, .{
         .stdlib = .full,
         .capabilities = .{ .filesystem = .{ .memory = &files } },
         .limits = .{ .max_file_bytes = 8 },
@@ -361,7 +362,7 @@ test "api file reads share the max_file_bytes limit" {
 }
 
 test "api base loadfile and dofile fail cleanly without filesystem access" {
-    var lua = try State.init(std.testing.allocator, .{ .capabilities = .{ .io = .{ .stdin = "return 40 + 2" } } });
+    const lua = try State.init(std.testing.allocator, .{ .capabilities = .{ .io = .{ .stdin = "return 40 + 2" } } });
     defer lua.deinit();
     try lua.doString(
         \\assert(package == nil and type(loadfile) == 'function' and type(dofile) == 'function')
@@ -374,7 +375,7 @@ test "api base loadfile and dofile fail cleanly without filesystem access" {
 }
 
 test "api os.exit unwinds past pcall as error.LuaExit" {
-    var lua = try State.init(std.testing.allocator, .{
+    const lua = try State.init(std.testing.allocator, .{
         .stdlib = .full,
         .capabilities = .{ .process = .enabled },
     });
@@ -397,7 +398,7 @@ test "api os.exit unwinds past pcall as error.LuaExit" {
     try std.testing.expectEqual(ExitRequest{ .code = 1, .close = false }, lua.exitRequest().?);
     try lua.doString("assert(true)", .{});
 
-    var sandboxed = try State.init(std.testing.allocator, .{ .stdlib = .full });
+    const sandboxed = try State.init(std.testing.allocator, .{ .stdlib = .full });
     defer sandboxed.deinit();
     try sandboxed.doString(
         \\local ok, err = pcall(os.exit, 0)
@@ -436,7 +437,7 @@ test "api custom process callbacks back io.popen and os.exit" {
     var host: Host = .{};
     defer host.input.deinit(std.testing.allocator);
 
-    var lua = try State.init(std.testing.allocator, .{
+    const lua = try State.init(std.testing.allocator, .{
         .stdlib = .full,
         .capabilities = .{ .process = .{ .custom = .{
             .context = &host,
@@ -477,7 +478,7 @@ test "api clock callbacks provide cpu time and local offsets" {
             return if (timestamp >= 86400) .{ .offset = 3600, .is_dst = true } else .{ .offset = 0 };
         }
     };
-    var lua = try State.init(std.testing.allocator, .{
+    const lua = try State.init(std.testing.allocator, .{
         .stdlib = .full,
         .capabilities = .{ .clock = .{ .custom = .{ .now = Host.now, .cpu = Host.cpu, .utc_offset = Host.offset } } },
     });
@@ -492,7 +493,7 @@ test "api clock callbacks provide cpu time and local offsets" {
 }
 
 test "api debug.getmetatable bypasses __metatable" {
-    var lua = try State.init(std.testing.allocator, .{
+    const lua = try State.init(std.testing.allocator, .{
         .stdlib = .full,
         .capabilities = .{ .io = .{ .stdin = "debugged = 1\nerror('oops')\ncont\nafter = true\n" } },
     });
@@ -518,7 +519,7 @@ test "api custom stdout captures print and io writes" {
     var errors = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer errors.deinit();
 
-    var lua = try State.init(std.testing.allocator, .{
+    const lua = try State.init(std.testing.allocator, .{
         .stdlib = .full,
         .capabilities = .{ .io = .{ .stdin = "input\n", .stdout = &output.writer, .stderr = &errors.writer } },
     });
@@ -542,7 +543,7 @@ test "api memory filesystem backs loadfile dofile and require" {
         .{ .path = "moddir/chunk.lua", .contents = "return 7" },
         .{ .path = "plugins//plugin.lua", .contents = "return { value = 9 }" },
     };
-    var lua = try State.init(std.testing.allocator, .{
+    const lua = try State.init(std.testing.allocator, .{
         .stdlib = .full,
         .capabilities = .{ .filesystem = .{ .memory = &files } },
     });
@@ -564,7 +565,7 @@ test "api extension readers accept Lua file handles" {
         .{ .path = "data.toml", .contents = "name = \"Ada\"\nok = true\nnums = [1, 2]\n" },
         .{ .path = "data.csv", .contents = "name,age\nAda,37\nBob,\n" },
     };
-    var lua = try State.init(std.testing.allocator, .{
+    const lua = try State.init(std.testing.allocator, .{
         .stdlib = .full,
         .capabilities = .{ .filesystem = .{ .memory = &files } },
     });
@@ -611,7 +612,7 @@ test "api memory filesystem rejects sandbox escape paths" {
         .capabilities = .{ .filesystem = .{ .memory = &bad_files } },
     }));
 
-    var lua = try State.init(std.testing.allocator, .{ .stdlib = .full });
+    const lua = try State.init(std.testing.allocator, .{ .stdlib = .full });
     defer lua.deinit();
     try std.testing.expectError(error.InvalidPath, lua.addMemoryFile("/tmp/plugin.lua", "return 1"));
     try std.testing.expectError(error.InvalidPath, lua.addMemoryFile("plugins/../secret.lua", "return 1"));
@@ -619,7 +620,7 @@ test "api memory filesystem rejects sandbox escape paths" {
     const files = [_]MemoryFile{
         .{ .path = "plugins/safe.lua", .contents = "return true" },
     };
-    var sandboxed = try State.init(std.testing.allocator, .{
+    const sandboxed = try State.init(std.testing.allocator, .{
         .stdlib = .full,
         .capabilities = .{ .filesystem = .{ .memory = &files } },
     });
@@ -637,7 +638,7 @@ test "api package loading rejects sandbox escape module paths" {
         .{ .path = "plugins/safe.lua", .contents = "return true" },
         .{ .path = "secret.lua", .contents = "return 'secret'" },
     };
-    var lua = try State.init(std.testing.allocator, .{
+    const lua = try State.init(std.testing.allocator, .{
         .stdlib = .full,
         .capabilities = .{ .filesystem = .{ .memory = &files } },
     });
@@ -662,7 +663,7 @@ test "api environment and fixed clock capabilities are explicit" {
     defer env.deinit();
     try env.put("ZLUA_API_ENV", "present");
 
-    var lua = try State.init(std.testing.allocator, .{
+    const lua = try State.init(std.testing.allocator, .{
         .stdlib = .full,
         .capabilities = .{
             .environment = .{ .map = &env },
@@ -696,7 +697,7 @@ test "host directory rejects symlinks that leave its root" {
     try root.symLink(io, "sub", "alias", .{});
     try root.symLink(io, "loop", "loop", .{});
 
-    var lua = try State.init(std.testing.allocator, .{
+    const lua = try State.init(std.testing.allocator, .{
         .stdlib = .full,
         .capabilities = .{ .io = .{ .runtime = io }, .filesystem = .{ .host_dir = .{ .dir = root } } },
     });
@@ -738,33 +739,33 @@ test "child processes get only the granted environment" {
         \\status = os.execute('test "${HOME-unset}" = unset')
     ;
     {
-        var lua = try State.init(std.testing.allocator, .{
+        const lua = try State.init(std.testing.allocator, .{
             .stdlib = .full,
             .capabilities = .{ .io = .{ .runtime = io }, .process = .enabled },
         });
         defer lua.deinit();
         try lua.doString(script, .{});
-        try std.testing.expectEqualStrings("unset:unset", try lua.getGlobal("result", []const u8));
+        try expectString("unset:unset", lua.getGlobal("result", api.String));
         try std.testing.expect(try lua.getGlobal("status", bool));
     }
     {
         var environment = std.process.Environ.Map.init(std.testing.allocator);
         defer environment.deinit();
         try environment.put("ZLUA_CHILD", "granted");
-        var lua = try State.init(std.testing.allocator, .{
+        const lua = try State.init(std.testing.allocator, .{
             .stdlib = .full,
             .capabilities = .{ .io = .{ .runtime = io }, .process = .enabled, .environment = .{ .map = &environment } },
         });
         defer lua.deinit();
         try lua.doString(script, .{});
-        try std.testing.expectEqualStrings("unset:granted", try lua.getGlobal("result", []const u8));
+        try expectString("unset:granted", lua.getGlobal("result", api.String));
     }
 }
 
 test "fs.write respects the file size limit" {
     var filesystem = MemoryFilesystem.init(std.testing.allocator);
     defer filesystem.deinit();
-    var lua = try State.init(std.testing.allocator, .{
+    const lua = try State.init(std.testing.allocator, .{
         .stdlib = .full,
         .limits = .{ .max_file_bytes = 8 },
         .capabilities = .{ .filesystem = .{ .memory_rw = &filesystem } },
@@ -828,7 +829,7 @@ const CrossDeviceFilesystem = struct {
 test "fs.move copies and removes across devices" {
     var filesystem = MemoryFilesystem.init(std.testing.allocator);
     defer filesystem.deinit();
-    var lua = try State.init(std.testing.allocator, .{
+    const lua = try State.init(std.testing.allocator, .{
         .stdlib = .full,
         .capabilities = .{ .filesystem = .{ .custom = .{
             .context = &filesystem,

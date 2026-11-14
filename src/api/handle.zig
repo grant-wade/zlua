@@ -5,7 +5,7 @@ const convert = @import("convert.zig");
 const State = @import("state.zig").State;
 const Value = @import("value.zig").Value;
 
-/// Rooted handle to any Lua value; unlike `Value.string`, keeps string bytes alive.
+/// Rooted handle to any Lua value.
 pub const Ref = struct {
     state: *State,
     index: usize,
@@ -50,6 +50,7 @@ pub const HandleScope = struct {
         const T = @TypeOf(handle);
         if (T == Value) {
             switch (handle) {
+                .string => |h| forgetScopedRoot(self.state, h.ref.index),
                 .table => |h| forgetScopedRoot(self.state, h.ref.index),
                 .function => |h| forgetScopedRoot(self.state, h.ref.index),
                 .coroutine => |h| forgetScopedRoot(self.state, h.ref.index),

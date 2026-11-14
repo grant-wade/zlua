@@ -1,5 +1,7 @@
 const std = @import("std");
 const api = @import("../api.zig");
+const describeError = @import("api_expect.zig").describeError;
+const expectString = @import("api_expect.zig").expectString;
 const runtime = @import("../runtime.zig");
 const a = std.testing.allocator;
 
@@ -35,11 +37,11 @@ test "shared userdata metatables equality raw table traversal and host type chec
             try ctx.returnValues((try lhs.ptr()).id == (try rhs.ptr()).id);
         }
     };
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
-    var meta = try lua.createTable(.{});
+    var meta = try lua.newTable(.{});
     defer meta.deinit();
-    var eq = try lua.register("equal", Host.eq);
+    var eq = try lua.newFunction("equal", Host.eq);
     defer eq.deinit();
     try meta.set("__eq", eq);
     try lua.setGlobal("host_eq", eq);
@@ -56,7 +58,7 @@ test "shared userdata metatables equality raw table traversal and host type chec
     try lua.setGlobal("y", y);
     try lua.setGlobal("z", z);
     try std.testing.expect(lua.raw_state.rootedValue(x.ref.index).userdata.metatable == lua.raw_state.rootedValue(meta.ref.index).table);
-    try runLua(&lua,
+    try runLua(lua,
         \\assert(getmetatable(x) == 'private', 'meta before'); assert(host_eq(x,y), 'direct eq'); assert(x == y, 'eq'); assert(x ~= z, 'ne'); assert(not rawequal(x, y), 'raw')
         \\local equal = x == y; assert(equal)
         \\if x ~= y then error('branch equality') end
@@ -71,18 +73,12 @@ test "shared userdata metatables equality raw table traversal and host type chec
     try std.testing.expectEqual(try data.identity(), try alias.identity());
     var actual_meta = (try data.getMetatable()).?;
     defer actual_meta.deinit();
-    try std.testing.expectEqualStrings("hidden", try actual_meta.get("__metatable", []const u8));
+    try expectString("hidden", actual_meta.get("__metatable", api.String));
     try std.testing.expect((try data.rawGet("absent", ?bool)) == null);
-    var key: api.Value = .nil;
-    defer key.deinit();
+    var iterator = try data.rawIterator();
+    defer iterator.deinit();
     var count: usize = 0;
-    while (try data.rawNext(key)) |entry_value| {
-        var entry = entry_value;
-        key.deinit();
-        key = entry.key;
-        defer entry.value.deinit();
-        count += 1;
-    }
+    while (try iterator.next()) |_| count += 1;
     try std.testing.expectEqual(3, count);
     var any = try lua.getGlobal("x", api.AnyUserdata);
     defer any.deinit();
@@ -90,7 +86,7 @@ test "shared userdata metatables equality raw table traversal and host type chec
     defer typed.deinit();
     try std.testing.expectEqual(1, (try typed.ptr()).id);
     try std.testing.expectError(error.TypeMismatch, any.as(struct { other: bool }));
-    var foreign = try api.State.init(a, .{});
+    const foreign = try api.State.init(a, .{});
     defer foreign.deinit();
     try std.testing.expectError(error.InvalidHandle, foreign.newUserdata(Payload, .{ .id = 1 }, .{ .metatable = meta }));
 }
@@ -100,24 +96,24 @@ test "inline and spilled callback results remain rooted across GC and nested cal
         fn results(ctx: *api.Context) !void {
             const count = try ctx.arg(0, usize);
             for (0..count) |i| {
-                var table = try ctx.state().createTable(.{});
+                var table = try ctx.state().newTable(.{});
                 try table.set("n", i);
                 try ctx.pushReturn(table);
                 table.deinit();
                 if (ctx.state().raw_state.gc.stress_step) {
-                    _ = try ctx.state().stepGc(.{});
+                    _ = try ctx.state().stepGc(1);
                 } else try ctx.state().collect();
             }
             var callback = try ctx.arg(1, api.Function);
             defer callback.deinit();
             try ctx.callNonYielding(callback, .{}, void);
             if (ctx.state().raw_state.gc.stress_step) {
-                _ = try ctx.state().stepGc(.{});
+                _ = try ctx.state().stepGc(1);
             } else try ctx.state().collect();
         }
     };
     for ([_]bool{ false, true }) |tiny_steps| {
-        var lua = try api.State.init(a, .{});
+        const lua = try api.State.init(a, .{});
         defer lua.deinit();
         lua.raw_state.gc.stress_step = tiny_steps;
         if (tiny_steps) {
@@ -125,10 +121,10 @@ test "inline and spilled callback results remain rooted across GC and nested cal
             _ = try lua.setGcParam(.stepsize, 8);
             _ = try lua.setGcParam(.stepmul, 100);
         }
-        var function = try lua.register("results", Host.results);
+        var function = try lua.newFunction("results", Host.results);
         defer function.deinit();
         try lua.setGlobal("results", function);
-        try runLua(&lua,
+        try runLua(lua,
             \\for _, n in ipairs({0,1,4,5,8}) do
             \\ local r = table.pack(results(n, function()
             \\   local inner = table.pack(results(4, function() collectgarbage() end))
@@ -155,12 +151,12 @@ test "non-yielding callback stays on the current thread and unwinds before retur
             };
         }
     };
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
-    var function = try lua.register("host_call", Host.call);
+    var function = try lua.newFunction("host_call", Host.call);
     defer function.deinit();
     try lua.setGlobal("host_call", function);
-    try runLua(&lua,
+    try runLua(lua,
         \\local marker = {}
         \\local co = coroutine.create(function()
         \\ local me = coroutine.running()
@@ -186,7 +182,7 @@ test "non-yielding callback stays on the current thread and unwinds before retur
 
 fn runLua(lua: *api.State, source: []const u8) !void {
     lua.doString(source, .{}) catch |err| {
-        const message = try lua.errorMessage();
+        const message = try describeError(lua, error.LuaError);
         defer lua.allocator().free(message);
         std.debug.print("host test: {s}\n", .{message});
         return err;
@@ -202,12 +198,12 @@ test "failed userdata construction never takes the host finalizer obligation" {
     };
     for (0..12) |offset| {
         var failing = std.testing.FailingAllocator.init(a, .{});
-        var lua = try api.State.init(failing.allocator(), .{});
+        const lua = try api.State.init(failing.allocator(), .{});
         var finalized: usize = 0;
         var payload: Payload = .{ .finalized = &finalized };
         failing.fail_index = failing.alloc_index + offset;
         var success = false;
-        if (lua.newUserdataPtr(Payload, &payload, .{ .finalizer = Payload.release })) |result| {
+        if (lua.wrapUserdata(Payload, &payload, .{ .finalizer = Payload.release })) |result| {
             var handle = result;
             handle.deinit();
             success = true;
@@ -231,7 +227,7 @@ test "warnings go to stderr or the host warning handler" {
     var collector: Collector = .{};
     defer collector.messages.deinit(std.testing.allocator);
     {
-        var lua = try api.State.init(std.testing.allocator, .{ .capabilities = .{ .io = .{ .warning_handler = .{ .context = &collector, .emit = Collector.emit } } } });
+        const lua = try api.State.init(std.testing.allocator, .{ .capabilities = .{ .io = .{ .warning_handler = .{ .context = &collector, .emit = Collector.emit } } } });
         defer lua.deinit();
         try lua.doString(
             \\warn("off by default")
@@ -250,7 +246,7 @@ test "warnings go to stderr or the host warning handler" {
 
     var buffer: [128]u8 = undefined;
     var stderr: std.Io.Writer = .fixed(&buffer);
-    var lua = try api.State.init(std.testing.allocator, .{ .capabilities = .{ .io = .{ .stderr = &stderr, .warnings = true } } });
+    const lua = try api.State.init(std.testing.allocator, .{ .capabilities = .{ .io = .{ .stderr = &stderr, .warnings = true } } });
     defer lua.deinit();
     try lua.doString("warn('hi', 1)", .{});
     try std.testing.expectEqualStrings("Lua warning: hi1\n", stderr.buffered());
@@ -275,7 +271,7 @@ test "userdata __gc metamethods run before host finalizers" {
     defer log.deinit(std.testing.allocator);
     var hits: usize = 0;
     {
-        var lua = try api.State.init(std.testing.allocator, .{});
+        const lua = try api.State.init(std.testing.allocator, .{});
         defer lua.deinit();
         try lua.doString(
             \\events = {}
@@ -294,12 +290,12 @@ test "userdata __gc metamethods run before host finalizers" {
         try lua.doString("assert(#events == 1)", .{});
         try std.testing.expectEqualStrings("host;", log.items);
 
-        var counted = try lua.newUserdataAuto(Counted, .{ .hits = &hits }, .{});
+        var counted = try lua.newUserdata(Counted, .{ .hits = &hits }, .{});
         counted.deinit();
         try lua.collect();
         try std.testing.expectEqual(@as(usize, 1), hits);
 
-        var kept = try lua.newUserdataAuto(Counted, .{ .hits = &hits }, .{});
+        var kept = try lua.newUserdata(Counted, .{ .hits = &hits }, .{});
         try lua.setGlobal("kept", kept);
         kept.deinit();
     }
@@ -323,7 +319,7 @@ test "os.exit in a finalizer reaches the exit callback and deinit runs the rest"
     var buffer: [64]u8 = undefined;
     var stdout: std.Io.Writer = .fixed(&buffer);
     {
-        var lua = try api.State.init(std.testing.allocator, .{
+        const lua = try api.State.init(std.testing.allocator, .{
             .stdlib = .full,
             .capabilities = .{
                 .io = .{ .stdout = &stdout },
@@ -350,22 +346,22 @@ test "deinit calls each queued userdata __gc once" {
     var buffer: [128]u8 = undefined;
     var stdout: std.Io.Writer = .fixed(&buffer);
     {
-        var lua = try api.State.init(a, .{ .capabilities = .{ .io = .{ .stdout = &stdout } } });
+        const lua = try api.State.init(a, .{ .capabilities = .{ .io = .{ .stdout = &stdout } } });
         defer lua.deinit();
         _ = lua.setGcMode(.incremental);
-        try runLua(&lua, "ran = 0");
+        try runLua(lua, "ran = 0");
         lua.stopGc();
         for (1..5) |id| {
             var source: [96]u8 = undefined;
-            try runLua(&lua, try std.fmt.bufPrint(&source, "meta = {{ __gc = function() ran = ran + 1; print('gc', {d}) end }}", .{id}));
+            try runLua(lua, try std.fmt.bufPrint(&source, "meta = {{ __gc = function() ran = ran + 1; print('gc', {d}) end }}", .{id}));
             var meta = try lua.getGlobal("meta", api.Table);
             defer meta.deinit();
             var item = try lua.newUserdata(Item, .{ .id = id }, .{ .metatable = meta });
             item.deinit();
         }
-        try runLua(&lua, "meta = nil");
+        try runLua(lua, "meta = nil");
         lua.restartGc();
-        while (try lua.getGlobal("ran", i64) == 0) _ = try lua.stepGc(.{});
+        while (try lua.getGlobal("ran", i64) == 0) _ = try lua.stepGc(1);
     }
     try std.testing.expectEqualStrings("gc\t4\ngc\t3\ngc\t2\ngc\t1\n", stdout.buffered());
 }
@@ -380,12 +376,12 @@ test "host callback arguments from multiple results survive a full collection" {
             try ctx.returnValues(.{out.items});
         }
     };
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
-    var function = try lua.register("join", Host.join);
+    var function = try lua.newFunction("join", Host.join);
     defer function.deinit();
     try lua.setGlobal("join", function);
-    try runLua(&lua,
+    try runLua(lua,
         \\local function parts() return ("a"):rep(3), ("b"):rep(3), ("c"):rep(3) end
         \\assert(join(parts()) == "aaabbbccc")
         \\assert(select(2, pcall(join, parts())) == "aaabbbccc")
@@ -403,12 +399,12 @@ test "thread frame storage stays current while frames hold pending returns" {
         }
     };
     Host.count = 0;
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
-    var function = try lua.register("probe", Host.probe);
+    var function = try lua.newFunction("probe", Host.probe);
     defer function.deinit();
     try lua.setGlobal("probe", function);
-    try runLua(&lua,
+    try runLua(lua,
         \\local function va(...) probe() return select("#", ...) end
         \\local function nested(...) local n = va(...) probe() return n end
         \\local function closing(...)
@@ -427,7 +423,7 @@ test "thread frame storage stays current while frames hold pending returns" {
 test "states keep no copy of output sent to writers" {
     var output = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer output.deinit();
-    var lua = try api.State.init(std.testing.allocator, .{
+    const lua = try api.State.init(std.testing.allocator, .{
         .limits = .{ .max_memory = 1024 * 1024 },
         .capabilities = .{ .io = .{ .stdout = &output.writer } },
     });
@@ -440,7 +436,7 @@ test "states keep no copy of output sent to writers" {
 test "trace and debug output reach the stderr writer" {
     var output = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer output.deinit();
-    var lua = try api.State.init(std.testing.allocator, .{
+    const lua = try api.State.init(std.testing.allocator, .{
         .debug = .{ .trace_vm = true, .errors = true },
         .capabilities = .{ .io = .{ .stderr = &output.writer } },
     });

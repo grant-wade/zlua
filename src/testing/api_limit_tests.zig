@@ -1,6 +1,11 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const api = @import("../root.zig");
+const describeError = @import("api_expect.zig").describeError;
+const errorMessage = @import("api_expect.zig").errorMessage;
+const callErrorWith = @import("api_expect.zig").callErrorWith;
+const callError = @import("api_expect.zig").callError;
+const takeError = @import("api_expect.zig").takeError;
 const entry_mod = @import("../runtime/entry.zig");
 const a = std.testing.allocator;
 
@@ -16,10 +21,10 @@ fn trigger(_: *api.Context) !void {
     trigger_handle.?.interrupt();
 }
 
-fn initWithTrigger() !api.State {
-    var lua = try api.State.init(a, .{});
+fn initWithTrigger() !*api.State {
+    const lua = try api.State.init(a, .{});
     errdefer lua.deinit();
-    var function = try lua.register("trigger", trigger);
+    var function = try lua.newFunction("trigger", trigger);
     defer function.deinit();
     try lua.setGlobal("trigger", function);
     trigger_handle = try lua.interruptHandle();
@@ -35,10 +40,10 @@ const Watchdog = struct {
     }
 };
 
-fn initWithReady(options: api.Options) !api.State {
-    var lua = try api.State.init(a, options);
+fn initWithReady(options: api.Options) !*api.State {
+    const lua = try api.State.init(a, options);
     errdefer lua.deinit();
-    var ready = try lua.register("ready", markReady);
+    var ready = try lua.newFunction("ready", markReady);
     defer ready.deinit();
     try lua.setGlobal("ready", ready);
     return lua;
@@ -64,10 +69,10 @@ test "interrupt from another thread stops tight loops and leaves the state usabl
     var lua = try initWithReady(.{});
     defer lua.deinit();
 
-    try runInterrupted(&lua, "ready() while true do end");
-    try runInterrupted(&lua, "ready() local i = 0 while true do i = i + 1 end");
-    try runInterrupted(&lua, "counter = 0 ready() while true do counter = counter + 1 end");
-    try runInterrupted(&lua, "local function f(n) if n == 0 then return 0 end return f(n - 1) + f(n - 1) end ready() f(60)");
+    try runInterrupted(lua, "ready() while true do end");
+    try runInterrupted(lua, "ready() local i = 0 while true do i = i + 1 end");
+    try runInterrupted(lua, "counter = 0 ready() while true do counter = counter + 1 end");
+    try runInterrupted(lua, "local function f(n) if n == 0 then return 0 end return f(n - 1) + f(n - 1) end ready() f(60)");
 
     try lua.doString("after = 40 + 2", .{});
     try std.testing.expectEqual(@as(i64, 42), try lua.getGlobal("after", i64));
@@ -79,15 +84,15 @@ test "interrupt cannot be caught by pcall, xpcall, or coroutines" {
     var lua = try initWithReady(.{});
     defer lua.deinit();
 
-    try runInterrupted(&lua, "ready() while true do pcall(function() end) end");
-    try runInterrupted(&lua, "ready() while true do pcall(function() while true do end end) end");
-    try runInterrupted(&lua, "ready() while true do xpcall(function() while true do end end, function(e) return e end) end");
-    try runInterrupted(&lua,
+    try runInterrupted(lua, "ready() while true do pcall(function() end) end");
+    try runInterrupted(lua, "ready() while true do pcall(function() while true do end end) end");
+    try runInterrupted(lua, "ready() while true do xpcall(function() while true do end end, function(e) return e end) end");
+    try runInterrupted(lua,
         \\local co = coroutine.wrap(function() while true do coroutine.yield() end end)
         \\ready()
         \\while true do co() end
     );
-    try runInterrupted(&lua,
+    try runInterrupted(lua,
         \\ready()
         \\while true do
         \\  local ok = coroutine.resume(coroutine.create(function() while true do end end))
@@ -95,7 +100,7 @@ test "interrupt cannot be caught by pcall, xpcall, or coroutines" {
         \\end
     );
     try std.testing.expectEqual(api.Value.nil, try lua.getGlobal("caught", api.Value));
-    try runInterrupted(&lua,
+    try runInterrupted(lua,
         \\local co = coroutine.create(function() ready() while true do end end)
         \\while true do pcall(coroutine.resume, co) end
     );
@@ -107,14 +112,14 @@ test "interrupt stops long-running library functions" {
     var lua = try initWithReady(.{ .limits = .{ .max_memory = 512 * 1024 * 1024 } });
     defer lua.deinit();
 
-    try runInterrupted(&lua, "ready() local s = string.rep('x', 1 << 28)");
-    try runInterrupted(&lua, "local s = string.rep('a', 1 << 16) ready() while true do s:gsub('a', 'b') end");
-    try runInterrupted(&lua, "local s = string.rep('a', 1 << 16) .. 'c' ready() while true do s:find('a-a-a-b') end");
+    try runInterrupted(lua, "ready() local s = string.rep('x', 1 << 28)");
+    try runInterrupted(lua, "local s = string.rep('a', 1 << 16) ready() while true do s:gsub('a', 'b') end");
+    try runInterrupted(lua, "local s = string.rep('a', 1 << 16) .. 'c' ready() while true do s:find('a-a-a-b') end");
     try lua.doString("assert(('ab'):rep(3) == 'ababab')", .{});
 }
 
 test "pending interrupts stop library functions called directly by the host" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
     const handle = try lua.interruptHandle();
     const raw = &lua.raw_state;
@@ -123,7 +128,7 @@ test "pending interrupts stop library functions called directly by the host" {
     const rep = string_lib.getLiteral("rep");
     const concat = table_lib.getLiteral("concat");
     const sort = table_lib.getLiteral("sort");
-    var items = try lua.createTable(.{});
+    var items = try lua.newTable(.{});
     defer items.deinit();
     for (0..8) |index| try items.append(@as(i64, @intCast(8 - index)));
     try lua.setGlobal("items", items);
@@ -145,7 +150,7 @@ test "pending interrupts stop library functions called directly by the host" {
 }
 
 test "interrupt requested while idle applies to the next run unless cleared" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
     const handle = try lua.interruptHandle();
     const copy = handle;
@@ -163,7 +168,7 @@ test "interrupt requested while idle applies to the next run unless cleared" {
     var loop = try lua.loadString("while true do end", .{});
     defer loop.deinit();
     handle.interrupt();
-    try std.testing.expectError(error.Interrupted, loop.protectedCall(.{}, void));
+    try std.testing.expectError(error.Interrupted, loop.call(.{}, void));
 }
 
 test "interrupt skips pending close handlers and keeps captured locals" {
@@ -201,7 +206,7 @@ test "interrupt propagates through host callbacks that call back into Lua" {
     };
     var lua = try initWithTrigger();
     defer lua.deinit();
-    var swallow = try lua.register("swallow", Callbacks.swallow);
+    var swallow = try lua.newFunction("swallow", Callbacks.swallow);
     defer swallow.deinit();
     try lua.setGlobal("swallow", swallow);
 
@@ -212,7 +217,7 @@ test "interrupt propagates through host callbacks that call back into Lua" {
 }
 
 test "interrupt handles survive reset" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
     try lua.doString("value = 1", .{});
     var snapshot = try lua.snapshot(a);
@@ -224,20 +229,20 @@ test "interrupt handles survive reset" {
     try lua.reset();
     try std.testing.expectEqual(@as(i64, 1), try lua.getGlobal("value", i64));
 
-    var worker = try snapshot.newState(a);
+    const worker = try snapshot.newState(a);
     defer worker.deinit();
     try worker.doString("assert(value == 1)", .{});
 }
 
 fn expectLimitError(result: anytype, lua: *api.State) !void {
     try std.testing.expectError(error.LuaError, result);
-    const message = try lua.errorMessage();
+    const message = try describeError(lua, error.LuaError);
     defer lua.allocator().free(message);
     try std.testing.expect(std.mem.indexOf(u8, message, "instruction limit exceeded") != null);
 }
 
 test "per-call instruction budgets bound one call and keep the state usable" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
     try lua.doString(
         \\function spin() while true do end end
@@ -262,26 +267,20 @@ test "per-call instruction budgets bound one call and keep the state usable" {
     var count = try lua.getGlobal("count", api.Function);
     defer count.deinit();
 
-    try expectLimitError(spin.callWith(.{}, void, .{ .max_instructions = 1_000 }), &lua);
-    try expectLimitError(guarded.callWith(.{}, void, .{ .max_instructions = 10_000 }), &lua);
-    try expectLimitError(resumer.callWith(.{}, void, .{ .max_instructions = 10_000 }), &lua);
+    try expectLimitError(spin.callWith(.{}, void, .{ .max_instructions = 1_000 }), lua);
+    try expectLimitError(guarded.callWith(.{}, void, .{ .max_instructions = 10_000 }), lua);
+    try expectLimitError(resumer.callWith(.{}, void, .{ .max_instructions = 10_000 }), lua);
 
-    const result = try spin.protectedCallWith(.{}, void, .{ .max_instructions = 500 });
-    switch (result) {
-        .ok => return error.TestExpectedLuaError,
-        .lua_error => |error_ref| {
-            var err = error_ref;
-            defer err.deinit();
-            const message = try err.message();
-            defer lua.allocator().free(message);
-            try std.testing.expect(std.mem.indexOf(u8, message, "instruction limit exceeded") != null);
-        },
-    }
+    var err = try callErrorWith(spin, .{}, void, .{ .max_instructions = 500 });
+    defer err.deinit();
+    const message = try errorMessage(err);
+    defer lua.allocator().free(message);
+    try std.testing.expect(std.mem.indexOf(u8, message, "instruction limit exceeded") != null);
 
     var handled_spin = try lua.getGlobal("handled_spin", api.Function);
     defer handled_spin.deinit();
-    try expectLimitError(handled_spin.callWith(.{}, void, .{ .max_instructions = 1_000 }), &lua);
-    try expectLimitError(spin.callWith(.{}, void, .{ .max_instructions = 1_000, .message_handler = count }), &lua);
+    try expectLimitError(handled_spin.callWith(.{}, void, .{ .max_instructions = 1_000 }), lua);
+    try expectLimitError(spin.callWith(.{}, void, .{ .max_instructions = 1_000, .message_handler = count }), lua);
     try std.testing.expectEqual(@as(i64, 0), try lua.getGlobal("handled", i64));
 
     try std.testing.expectEqual(@as(i64, 5050), try count.callWith(.{100}, i64, .{ .max_instructions = 10_000 }));
@@ -306,9 +305,9 @@ test "per-call budgets nest with the tighter budget and the state budget" {
             try ctx.returnValues(.{ true, total });
         }
     };
-    var lua = try api.State.init(a, .{ .limits = .{ .max_instructions = 1_000_000 } });
+    const lua = try api.State.init(a, .{ .limits = .{ .max_instructions = 1_000_000 } });
     defer lua.deinit();
-    var nested = try lua.register("nested", Callbacks.nested);
+    var nested = try lua.newFunction("nested", Callbacks.nested);
     defer nested.deinit();
     try lua.setGlobal("nested", nested);
     try lua.doString(
@@ -320,24 +319,24 @@ test "per-call budgets nest with the tighter budget and the state budget" {
     , .{});
     var outer = try lua.getGlobal("outer", api.Function);
     defer outer.deinit();
-    const Pair = api.Tuple(&.{ bool, api.Value });
+    const Pair = struct { bool, api.Value };
 
     var tight = try outer.callWith(.{ 100, 10_000 }, Pair, .{ .max_instructions = 100_000 });
-    defer tight.deinit();
-    try std.testing.expect(!tight.get(0));
+    defer api.deinit(&tight);
+    try std.testing.expect(!tight[0]);
 
-    try expectLimitError(outer.callWith(.{ 1_000_000, 10_000 }, Pair, .{ .max_instructions = 1_000 }), &lua);
+    try expectLimitError(outer.callWith(.{ 1_000_000, 10_000 }, Pair, .{ .max_instructions = 1_000 }), lua);
 
     var fits = try outer.callWith(.{ 100_000, 100 }, Pair, .{ .max_instructions = 100_000 });
-    defer fits.deinit();
-    try std.testing.expect(fits.get(0));
-    try std.testing.expectEqual(api.Value{ .integer = 5050 }, fits.get(1));
+    defer api.deinit(&fits);
+    try std.testing.expect(fits[0]);
+    try std.testing.expectEqual(api.Value{ .integer = 5050 }, fits[1]);
 
     const used = lua.instructionBudget().used;
     try std.testing.expect(used > 1_000);
     var count = try lua.getGlobal("count", api.Function);
     defer count.deinit();
-    try expectLimitError(count.callWith(.{100_000_000}, i64, .{ .max_instructions = std.math.maxInt(u64) }), &lua);
+    try expectLimitError(count.callWith(.{100_000_000}, i64, .{ .max_instructions = std.math.maxInt(u64) }), lua);
     try std.testing.expectEqual(@as(?u64, 0), lua.instructionBudget().remaining);
     lua.resetInstructionBudget();
     try std.testing.expectEqual(@as(i64, 55), try count.callWith(.{10}, i64, .{ .max_instructions = 1_000 }));
@@ -351,7 +350,7 @@ fn expectContains(haystack: []const u8, needle: []const u8) !void {
 }
 
 test "protected calls capture tracebacks at the error point" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
     try lua.doString(
         \\local function inner(x)
@@ -370,51 +369,33 @@ test "protected calls capture tracebacks at the error point" {
     var outer = try lua.getGlobal("outer", api.Function);
     defer outer.deinit();
 
-    const result = try outer.protectedCallWith(.{1}, void, .{ .traceback = true });
-    switch (result) {
-        .ok => return error.TestExpectedLuaError,
-        .lua_error => |error_ref| {
-            var err = error_ref;
-            defer err.deinit();
-            const message = try err.message();
-            defer lua.allocator().free(message);
-            try std.testing.expectEqualStrings("app.lua:2: boom 1", message);
-            try std.testing.expectEqualStrings("stack traceback:\n" ++
-                "\t[C]: in global 'error'\n" ++
-                "\tapp.lua:2: in upvalue 'inner'\n" ++
-                "\tapp.lua:5: in upvalue 'middle'\n" ++
-                "\tapp.lua:9: in function 'outer'", err.traceback().?);
-        },
-    }
+    var err = try callErrorWith(outer, .{1}, void, .{ .traceback = true });
+    defer err.deinit();
+    const message = try errorMessage(err);
+    defer lua.allocator().free(message);
+    try std.testing.expectEqualStrings("app.lua:2: boom 1", message);
+    try std.testing.expectEqualStrings("stack traceback:\n" ++
+        "\t[C]: in global 'error'\n" ++
+        "\tapp.lua:2: in upvalue 'inner'\n" ++
+        "\tapp.lua:5: in upvalue 'middle'\n" ++
+        "\tapp.lua:9: in function 'outer'", err.traceback().?);
 
-    const plain = try outer.protectedCall(.{2}, void);
-    switch (plain) {
-        .ok => return error.TestExpectedLuaError,
-        .lua_error => |error_ref| {
-            var err = error_ref;
-            defer err.deinit();
-            try std.testing.expectEqual(@as(?[]const u8, null), err.traceback());
-        },
-    }
+    var untraced = try callError(outer, .{2}, void);
+    defer untraced.deinit();
+    try std.testing.expectEqual(@as(?[]const u8, null), untraced.traceback());
 
     var fail_table = try lua.getGlobal("fail_table", api.Function);
     defer fail_table.deinit();
-    const table_result = try fail_table.protectedCallWith(.{}, void, .{ .traceback = true });
-    switch (table_result) {
-        .ok => return error.TestExpectedLuaError,
-        .lua_error => |error_ref| {
-            var err = error_ref;
-            defer err.deinit();
-            var value = try err.value();
-            defer value.deinit();
-            try std.testing.expect(value == .table);
-            try std.testing.expectEqual(@as(i64, 7), try value.table.get("code", i64));
-            try expectContains(err.traceback().?, "\n\t[C]: in global 'error'\n\tapp.lua:12: in function 'fail_table'");
-        },
-    }
+    var table_error = try callErrorWith(fail_table, .{}, void, .{ .traceback = true });
+    defer table_error.deinit();
+    var value = try table_error.value();
+    defer value.deinit();
+    try std.testing.expect(value == .table);
+    try std.testing.expectEqual(@as(i64, 7), try value.table.get("code", i64));
+    try expectContains(table_error.traceback().?, "\n\t[C]: in global 'error'\n\tapp.lua:12: in function 'fail_table'");
 
     try std.testing.expectError(error.LuaError, outer.callWith(.{3}, void, .{ .traceback = true }));
-    var taken = lua.takeErrorValue().?;
+    var taken = lua.takeError().?;
     defer taken.deinit();
     try expectContains(taken.traceback().?, "app.lua:2: in upvalue 'inner'");
     try std.testing.expectError(error.LuaError, outer.callWith(.{4}, void, .{ .traceback = true }));
@@ -427,9 +408,9 @@ test "tracebacks name host callbacks, metamethods, fields, and methods" {
             return ctx.raise("host failure");
         }
     };
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
-    var fail = try lua.register("host_fail", Callbacks.fail);
+    var fail = try lua.newFunction("host_fail", Callbacks.fail);
     defer fail.deinit();
     try lua.setGlobal("host_fail", fail);
     try lua.doString(
@@ -443,70 +424,46 @@ test "tracebacks name host callbacks, metamethods, fields, and methods" {
 
     var run = try lua.getGlobal("run", api.Function);
     defer run.deinit();
-    const result = try run.protectedCallWith(.{}, void, .{ .traceback = true });
-    switch (result) {
-        .ok => return error.TestExpectedLuaError,
-        .lua_error => |error_ref| {
-            var err = error_ref;
-            defer err.deinit();
-            try std.testing.expectEqualStrings("stack traceback:\n" ++
-                "\t[C]: in global 'host_fail'\n" ++
-                "\tcb.lua:2: in method 'method'\n" ++
-                "\tcb.lua:3: in metamethod 'index'\n" ++
-                "\tcb.lua:4: in function 'run'", err.traceback().?);
-        },
-    }
+    var err = try callErrorWith(run, .{}, void, .{ .traceback = true });
+    defer err.deinit();
+    try std.testing.expectEqualStrings("stack traceback:\n" ++
+        "\t[C]: in global 'host_fail'\n" ++
+        "\tcb.lua:2: in method 'method'\n" ++
+        "\tcb.lua:3: in metamethod 'index'\n" ++
+        "\tcb.lua:4: in function 'run'", err.traceback().?);
 
     var sorted = try lua.getGlobal("sorted", api.Function);
     defer sorted.deinit();
-    const sort_result = try sorted.protectedCallWith(.{}, void, .{ .traceback = true });
-    switch (sort_result) {
-        .ok => return error.TestExpectedLuaError,
-        .lua_error => |error_ref| {
-            var err = error_ref;
-            defer err.deinit();
-            try std.testing.expectEqualStrings("stack traceback:\n" ++
-                "\t[C]: in global 'host_fail'\n" ++
-                "\tcb.lua:5: in function <cb.lua:5>\n" ++
-                "\t[C]: in field 'sort'\n" ++
-                "\tcb.lua:5: in function 'sorted'", err.traceback().?);
-        },
-    }
+    var sorted_error = try callErrorWith(sorted, .{}, void, .{ .traceback = true });
+    defer sorted_error.deinit();
+    try std.testing.expectEqualStrings("stack traceback:\n" ++
+        "\t[C]: in global 'host_fail'\n" ++
+        "\tcb.lua:5: in function <cb.lua:5>\n" ++
+        "\t[C]: in field 'sort'\n" ++
+        "\tcb.lua:5: in function 'sorted'", sorted_error.traceback().?);
 
     var tail = try lua.getGlobal("tail", api.Function);
     defer tail.deinit();
-    const tail_result = try tail.protectedCallWith(.{}, void, .{ .traceback = true });
-    switch (tail_result) {
-        .ok => return error.TestExpectedLuaError,
-        .lua_error => |error_ref| {
-            var err = error_ref;
-            defer err.deinit();
-            try expectContains(err.traceback().?, "cb.lua:4: in function 'run'\n\t(...tail calls...)");
-        },
-    }
+    var tail_error = try callErrorWith(tail, .{}, void, .{ .traceback = true });
+    defer tail_error.deinit();
+    try expectContains(tail_error.traceback().?, "cb.lua:4: in function 'run'\n\t(...tail calls...)");
 }
 
 test "tracebacks of deep recursion skip middle levels like Lua" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
     try lua.doString("function deep(n) if n == 0 then error('bottom') end deep(n - 1) end", .{ .name = "=deep.lua" });
     var deep = try lua.getGlobal("deep", api.Function);
     defer deep.deinit();
-    const result = try deep.protectedCallWith(.{40}, void, .{ .traceback = true });
-    switch (result) {
-        .ok => return error.TestExpectedLuaError,
-        .lua_error => |error_ref| {
-            var err = error_ref;
-            defer err.deinit();
-            const text = err.traceback().?;
-            try expectContains(text, "\n\t...\t(skipping 20 levels)\n");
-            try std.testing.expectEqual(@as(usize, 22), std.mem.count(u8, text, "\n\t"));
-        },
-    }
+    var err = try callErrorWith(deep, .{40}, void, .{ .traceback = true });
+    defer err.deinit();
+    const text = err.traceback().?;
+    try expectContains(text, "\n\t...\t(skipping 20 levels)\n");
+    try std.testing.expectEqual(@as(usize, 22), std.mem.count(u8, text, "\n\t"));
 }
 
 test "protected call message handlers run on the failing frames" {
-    var lua = try api.State.init(a, .{ .stdlib = .full });
+    const lua = try api.State.init(a, .{ .stdlib = .full });
     defer lua.deinit();
     try lua.doString(
         \\function fail(x) local secret = x error("bad") end
@@ -524,36 +481,25 @@ test "protected call message handlers run on the failing frames" {
     var broken = try lua.getGlobal("broken", api.Function);
     defer broken.deinit();
 
-    const result = try fail.protectedCallWith(.{5}, void, .{ .message_handler = handler, .traceback = true });
-    switch (result) {
-        .ok => return error.TestExpectedLuaError,
-        .lua_error => |error_ref| {
-            var err = error_ref;
-            defer err.deinit();
-            var value = try err.value();
-            defer value.deinit();
-            try std.testing.expect(value == .table);
-            const message = try value.table.get("message", []const u8);
-            try std.testing.expectEqualStrings("handled.lua:1: bad", message);
-            try std.testing.expect(try value.table.get("levels", i64) >= 2);
-            try expectContains(err.traceback().?, "handled.lua:1: in function 'fail'");
-        },
-    }
+    var err = try callErrorWith(fail, .{5}, void, .{ .message_handler = handler, .traceback = true });
+    defer err.deinit();
+    var value = try err.value();
+    defer value.deinit();
+    try std.testing.expect(value == .table);
+    var message = try value.table.get("message", api.String);
+    defer message.deinit();
+    try std.testing.expectEqualStrings("handled.lua:1: bad", try message.bytes());
+    try std.testing.expect(try value.table.get("levels", i64) >= 2);
+    try expectContains(err.traceback().?, "handled.lua:1: in function 'fail'");
 
-    const broken_result = try fail.protectedCallWith(.{5}, void, .{ .message_handler = broken });
-    switch (broken_result) {
-        .ok => return error.TestExpectedLuaError,
-        .lua_error => |error_ref| {
-            var err = error_ref;
-            defer err.deinit();
-            const message = try err.message();
-            defer lua.allocator().free(message);
-            try std.testing.expectEqualStrings("error in error handling", message);
-        },
-    }
+    var broken_error = try callErrorWith(fail, .{5}, void, .{ .message_handler = broken });
+    defer broken_error.deinit();
+    const broken_message = try errorMessage(broken_error);
+    defer lua.allocator().free(broken_message);
+    try std.testing.expectEqualStrings("error in error handling", broken_message);
 
     try std.testing.expectError(error.LuaError, fail.callWith(.{5}, void, .{ .message_handler = handler }));
-    var taken = lua.takeErrorValue().?;
+    var taken = lua.takeError().?;
     defer taken.deinit();
     var taken_value = try taken.value();
     defer taken_value.deinit();
@@ -561,25 +507,19 @@ test "protected call message handlers run on the failing frames" {
 }
 
 test "tracebacks and handlers respect memory limits without leaking" {
-    var lua = try api.State.init(a, .{ .limits = .{ .max_memory = 4 * 1024 * 1024 } });
+    const lua = try api.State.init(a, .{ .limits = .{ .max_memory = 4 * 1024 * 1024 } });
     defer lua.deinit();
     try lua.doString("function fail() error('x') end", .{});
     var fail = try lua.getGlobal("fail", api.Function);
     defer fail.deinit();
     for (0..100) |_| {
-        const result = try fail.protectedCallWith(.{}, void, .{ .traceback = true });
-        switch (result) {
-            .ok => return error.TestExpectedLuaError,
-            .lua_error => |error_ref| {
-                var err = error_ref;
-                err.deinit();
-            },
-        }
+        var error_ref = try callErrorWith(fail, .{}, void, .{ .traceback = true });
+        error_ref.deinit();
     }
 }
 
 test "nil error objects reach hosts and message handlers as nil" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
     try lua.doString(
         \\function fail() error(nil) end
@@ -591,50 +531,32 @@ test "nil error objects reach hosts and message handlers as nil" {
     var kind = try lua.getGlobal("kind", api.Function);
     defer kind.deinit();
 
-    const plain = try fail.protectedCall(.{}, void);
-    switch (plain) {
-        .ok => return error.TestExpectedLuaError,
-        .lua_error => |error_ref| {
-            var err = error_ref;
-            defer err.deinit();
-            var value = try err.value();
-            defer value.deinit();
-            try std.testing.expect(value == .nil);
-            const message = try err.message();
-            defer lua.allocator().free(message);
-            try std.testing.expectEqualStrings("<no error object>", message);
-        },
-    }
-    try std.testing.expectError(error.LuaError, fail.call(.{}, void));
-    const message = try lua.errorMessage();
+    var err = try callError(fail, .{}, void);
+    defer err.deinit();
+    var value = try err.value();
+    defer value.deinit();
+    try std.testing.expect(value == .nil);
+    const message = try errorMessage(err);
     defer lua.allocator().free(message);
     try std.testing.expectEqualStrings("<no error object>", message);
+    try std.testing.expectError(error.LuaError, fail.call(.{}, void));
+    const last_message = try describeError(lua, error.LuaError);
+    defer lua.allocator().free(last_message);
+    try std.testing.expectEqualStrings("<no error object>", last_message);
 
-    const handled = try fail.protectedCallWith(.{}, void, .{ .message_handler = kind });
-    switch (handled) {
-        .ok => return error.TestExpectedLuaError,
-        .lua_error => |error_ref| {
-            var err = error_ref;
-            defer err.deinit();
-            var value = try err.value();
-            defer value.deinit();
-            try std.testing.expectEqualStrings("nil", value.string);
-        },
-    }
+    var handled = try callErrorWith(fail, .{}, void, .{ .message_handler = kind });
+    defer handled.deinit();
+    var handled_value = try handled.value();
+    defer handled_value.deinit();
+    try std.testing.expectEqualStrings("nil", try handled_value.string.bytes());
 
     var co = try lua.getGlobal("co", api.Coroutine);
     defer co.deinit();
-    const resumed = try co.protectedResume(.{}, void, void);
-    switch (resumed) {
-        .ok => return error.TestExpectedLuaError,
-        .lua_error => |error_ref| {
-            var err = error_ref;
-            defer err.deinit();
-            var value = try err.value();
-            defer value.deinit();
-            try std.testing.expectEqualStrings("<no error object>", value.string);
-        },
-    }
+    var resumed = try takeError(lua, co.resumeCoroutine(.{}, void, void));
+    defer resumed.deinit();
+    var resumed_value = try resumed.value();
+    defer resumed_value.deinit();
+    try std.testing.expectEqualStrings("<no error object>", try resumed_value.string.bytes());
 }
 
 test "instruction budgets end at their exact count through nested calls" {
@@ -646,9 +568,9 @@ test "instruction budgets end at their exact count through nested calls" {
         }
     };
 
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
-    var runs = try lua.register("runs", struct {
+    var runs = try lua.newFunction("runs", struct {
         fn call(ctx: *api.Context) !void {
             return Host.runs(ctx, try ctx.arg(0, api.Function));
         }
@@ -667,7 +589,7 @@ test "instruction budgets end at their exact count through nested calls" {
         var function = try lua.getGlobal(name, api.Function);
         defer function.deinit();
         const before = lua.instructionBudget().used;
-        try expectLimitError(function.callWith(.{}, void, .{ .max_instructions = 2_000_000 }), &lua);
+        try expectLimitError(function.callWith(.{}, void, .{ .max_instructions = 2_000_000 }), lua);
         try std.testing.expectEqual(@as(u64, 2_000_000), lua.instructionBudget().used - before);
     }
 
@@ -682,7 +604,7 @@ test "instruction budgets end at their exact count through nested calls" {
 }
 
 test "cumulative instruction limits end at their exact count" {
-    var lua = try api.State.init(a, .{ .limits = .{ .max_instructions = 3_000_000 } });
+    const lua = try api.State.init(a, .{ .limits = .{ .max_instructions = 3_000_000 } });
     defer lua.deinit();
     try std.testing.expectError(error.LuaError, lua.doString("while true do end", .{}));
     try std.testing.expectEqual(@as(u64, 3_000_000), lua.instructionBudget().used);

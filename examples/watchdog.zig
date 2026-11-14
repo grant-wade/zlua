@@ -34,7 +34,7 @@ const Watchdog = struct {
 
 pub fn main(init: std.process.Init) !void {
     const allocator = std.heap.smp_allocator;
-    var lua = try zlua.State.init(allocator, .{});
+    const lua = try zlua.State.init(allocator, .{});
     defer lua.deinit();
     try lua.doString(script, .{ .name = "=plugin.lua" });
 
@@ -61,22 +61,18 @@ pub fn main(init: std.process.Init) !void {
 
     if (runaway.callWith(.{}, void, .{ .max_instructions = 100_000 })) |_| return error.ExpectedLimit else |err| switch (err) {
         error.LuaError => {
-            const message = try lua.errorMessage();
-            defer lua.allocator().free(message);
-            std.debug.print("budgeted call failed: {s}\n", .{message});
+            var message: std.Io.Writer.Allocating = .init(lua.allocator());
+            defer message.deinit();
+            try lua.writeError(err, &message.writer);
+            std.debug.print("budgeted call failed: {s}\n", .{message.written()});
         },
         else => return err,
     }
 
-    const checked = try validate.protectedCallWith(.{5}, void, .{ .traceback = true });
-    switch (checked) {
-        .ok => return error.ExpectedLuaError,
-        .lua_error => |error_ref| {
-            var failure = error_ref;
-            defer failure.deinit();
-            const message = try failure.message();
-            defer lua.allocator().free(message);
-            std.debug.print("{s}\n{s}\n", .{ message, failure.traceback().? });
-        },
+    if (validate.callWith(.{5}, void, .{ .traceback = true })) |_| return error.ExpectedLuaError else |err| {
+        if (err != error.LuaError) return err;
+        var failure = lua.takeError().?;
+        defer failure.deinit();
+        std.debug.print("{f}\n{s}\n", .{ failure, failure.traceback().? });
     }
 }

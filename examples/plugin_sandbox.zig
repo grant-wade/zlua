@@ -8,14 +8,14 @@ const plugin_source =
 
 pub fn main() !void {
     const allocator = std.heap.smp_allocator;
-    const files = [_]zlua.api.MemoryFile{
+    const files = [_]zlua.MemoryFile{
         .{ .path = "plugin.lua", .contents = plugin_source },
     };
 
     var output = std.Io.Writer.Allocating.init(allocator);
     defer output.deinit();
 
-    var lua = try zlua.State.init(allocator, .{
+    const lua = try zlua.State.init(allocator, .{
         .stdlib = .safe,
         .capabilities = .{
             .io = .{ .stdout = &output.writer },
@@ -30,7 +30,7 @@ pub fn main() !void {
     });
     defer lua.deinit();
 
-    var emit_fn = try lua.register("emit", emit);
+    var emit_fn = try lua.newFunction("emit", emit);
     defer emit_fn.deinit();
     try lua.setGlobal("emit", emit_fn);
     try lua.doFile("plugin.lua", .{ .name = "@plugin.lua" });
@@ -42,9 +42,10 @@ fn emit(ctx: *zlua.Context) !void {
     var event = try ctx.arg(0, zlua.Table);
     defer event.deinit();
 
-    const kind = try event.get("kind", []const u8);
+    var kind = try event.get("kind", zlua.String);
+    defer kind.deinit();
     const version = try event.get("version", i64);
-    if (!std.mem.eql(u8, kind, "loaded") or version != 1) {
+    if (!std.mem.eql(u8, try kind.bytes(), "loaded") or version != 1) {
         return ctx.raise("unexpected plugin event");
     }
 

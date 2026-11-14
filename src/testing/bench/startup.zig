@@ -85,9 +85,13 @@ fn runSample(io: std.Io, selection: Selection) !Sample {
         .phase_before = counter.beginPhase(),
     };
     // Wrap the observed runtime so host registration keeps per-phase init timings.
-    var api_state: zlua.State = .{
+    const api_state = try allocator.create(zlua.State);
+    api_state.* = .{
         .base_allocator = allocator,
-        .raw_state = try zlua.runtime.State.initWithOptionsObserved(allocator, .{ .stdlib = selection.stdlib }, &init_observer, InitObserver.observe),
+        .raw_state = zlua.runtime.State.initWithOptionsObserved(allocator, .{ .stdlib = selection.stdlib }, &init_observer, InitObserver.observe) catch |err| {
+            allocator.destroy(api_state);
+            return err;
+        },
     };
     var alive = true;
     defer if (alive) api_state.deinit();
@@ -96,7 +100,7 @@ fn runSample(io: std.Io, selection: Selection) !Sample {
     if (selection.host_functions) {
         const before = counter.beginPhase();
         const start = Timestamp.now(io, .awake);
-        try registerHostFunctions(&api_state);
+        try registerHostFunctions(api_state);
         sample.phases[@intFromEnum(Phase.register)] = phaseMetric(&counter, before, elapsedSince(io, start), state.gc.allocationStats().bytes);
     }
 
@@ -170,13 +174,13 @@ fn hostTag(ctx: *zlua.Context) !void {
 }
 
 fn registerHostFunctions(state: *zlua.State) !void {
-    var add = try state.registerTyped("host_add", hostAdd);
+    var add = try state.newTypedFunction("host_add", hostAdd);
     defer add.deinit();
     try state.setGlobal("host_add", add);
-    var double = try state.registerTyped("host_double", hostDouble);
+    var double = try state.newTypedFunction("host_double", hostDouble);
     defer double.deinit();
     try state.setGlobal("host_double", double);
-    var tag = try state.register("host_tag", hostTag);
+    var tag = try state.newFunction("host_tag", hostTag);
     defer tag.deinit();
     try state.setGlobal("host_tag", tag);
 }

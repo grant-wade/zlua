@@ -27,7 +27,7 @@ zlua --stdlib=base,string,json -e 'print(json.write({ ok = true }))'
 ```
 
 ```zig
-var lua = try zlua.State.init(allocator, .{
+const lua = try zlua.State.init(allocator, .{
     .stdlib = .{ .custom = .{
         .math = true,
         .json = true,

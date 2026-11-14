@@ -9,6 +9,7 @@ const decode_mod = @import("decode.zig");
 const Coroutine = @import("coroutine.zig").Coroutine;
 const ErrorRef = errors.ErrorRef;
 const Function = @import("function.zig").Function;
+const String = @import("string.zig").String;
 const Ref = handle.Ref;
 const State = @import("state.zig").State;
 const Table = @import("table.zig").Table;
@@ -19,6 +20,7 @@ const namespace = @import("namespace.zig");
 
 pub fn expectedLuaType(comptime T: type) []const u8 {
     if (T == Value or T == Ref or T == ErrorRef) return "value";
+    if (T == String) return "string";
     if (T == Table) return "table";
     if (T == Function) return "function";
     if (T == Coroutine) return "thread";
@@ -37,16 +39,16 @@ pub fn expectedLuaType(comptime T: type) []const u8 {
     };
 }
 
-pub fn convertArgs(state: *State, args: anytype) ![]runtime.Value {
-    const Args = @TypeOf(args);
+pub fn convertArgs(state: *State, args: anytype) ![argCount(@TypeOf(args))]runtime.Value {
+    var raw_args: [argCount(@TypeOf(args))]runtime.Value = undefined;
+    inline for (0..raw_args.len) |index| raw_args[index] = try toRuntimeValue(state, args[index]);
+    return raw_args;
+}
+
+fn argCount(comptime Args: type) usize {
     const info = @typeInfo(Args);
     if (info != .@"struct" or !info.@"struct".is_tuple) @compileError("calls require tuple arguments: .{ ... }");
-
-    const fields = reflection.fieldNames(info.@"struct");
-    const raw_args = try state.allocator().alloc(runtime.Value, fields.len);
-    errdefer state.allocator().free(raw_args);
-    inline for (fields, 0..) |_, index| raw_args[index] = try toRuntimeValue(state, args[index]);
-    return raw_args;
+    return reflection.fieldNames(info.@"struct").len;
 }
 
 pub fn toRuntimeValue(state: *State, value: anytype) !runtime.Value {
@@ -61,7 +63,7 @@ pub fn toRuntimeValueNamed(state: *State, value: anytype, name: []const u8) !run
         .boolean => |v| .{ .boolean = v },
         .integer => |v| .{ .integer = v },
         .number => |v| .{ .number = v },
-        .string => |v| .{ .string = try state.raw_state.strings.intern(v) },
+        .string => |v| toRuntimeValue(state, v),
         .table => |v| toRuntimeValue(state, v),
         .function => |v| toRuntimeValue(state, v),
         .coroutine => |v| toRuntimeValue(state, v),
@@ -71,7 +73,7 @@ pub fn toRuntimeValueNamed(state: *State, value: anytype, name: []const u8) !run
         try handle.validate(value, state);
         return handle.rawValue(value);
     }
-    if (comptime T == Table or T == Function or T == Coroutine or T == ErrorRef or T == AnyUserdata or userdata_mod.isHandle(T)) {
+    if (comptime T == String or T == Table or T == Function or T == Coroutine or T == ErrorRef or T == AnyUserdata or userdata_mod.isHandle(T)) {
         try handle.validate(value.ref, state);
         return handle.rawValue(value.ref);
     }
@@ -102,7 +104,7 @@ pub fn toRuntimeValueNamed(state: *State, value: anytype, name: []const u8) !run
 
 /// Whether `toRuntimeValue` accepts a `T`; pointers to structs are assumed convertible.
 pub fn canConvert(comptime T: type) bool {
-    if (T == Value or T == Ref or T == Table or T == Function or T == Coroutine or T == ErrorRef or T == AnyUserdata or userdata_mod.isHandle(T)) return true;
+    if (T == Value or T == Ref or T == String or T == Table or T == Function or T == Coroutine or T == ErrorRef or T == AnyUserdata or userdata_mod.isHandle(T)) return true;
     if (decode_mod.hasToLua(T) or decode_mod.isEnumArray(T) or decode_mod.isEnumSet(T)) return true;
     return switch (@typeInfo(T)) {
         .null, .bool, .int, .comptime_int, .float, .comptime_float, .@"enum", .enum_literal, .@"fn", .type => true,
@@ -217,7 +219,7 @@ fn pointerToRuntimeValue(state: *State, value: anytype, comptime pointer: std.bu
                 return arrayToRuntimeValue(state, value[0..]);
             },
             .@"struct" => return toRuntimeValue(state, value.*),
-            .@"fn" => @compileError("pass a function to Lua directly instead of through a pointer, or wrap the pointer with State.registerTyped"),
+            .@"fn" => @compileError("pass a function to Lua directly instead of through a pointer, or wrap the pointer with State.newTypedFunction"),
             else => return error.UnsupportedType,
         },
         else => return error.UnsupportedType,
@@ -259,27 +261,26 @@ fn tupleToRuntimeValue(state: *State, value: anytype, comptime len: usize) !runt
 
 pub fn fromRuntimeResults(state: *State, results: []const runtime.Value, comptime R: type) !R {
     if (R == void) return {};
-    if (comptime isTupleResult(R)) {
-        var values: @Tuple(R.field_types) = undefined;
-        var initialized: usize = 0;
-        errdefer inline for (R.field_types, 0..) |Field, index| {
-            if (index < initialized) deinitIfOwned(Field, &values[index]);
-        };
-        inline for (R.field_types, 0..) |Field, index| {
-            const raw = if (index < results.len) results[index] else runtime.Value.nil;
-            values[index] = try fromRuntimeValue(state, raw, Field);
-            initialized += 1;
-        }
-        return .{ .values = values };
-    }
+    if (comptime isTuple(R)) return tupleFromResults(state, results, R);
 
     const raw = if (results.len == 0) runtime.Value.nil else results[0];
     return fromRuntimeValue(state, raw, R);
 }
 
 pub fn fromRuntimeValue(state: *State, raw: runtime.Value, comptime T: type) !T {
+    return fromRuntime(state, raw, T, false);
+}
+
+/// Like `fromRuntimeValue`, also reading `[]const u8` and `*T` that borrow VM memory. `raw` must
+/// stay reachable while the result is used, as a callback argument does.
+pub fn fromRuntimeBorrowed(state: *State, raw: runtime.Value, comptime T: type) !T {
+    return fromRuntime(state, raw, T, true);
+}
+
+fn fromRuntime(state: *State, raw: runtime.Value, comptime T: type, comptime borrow: bool) !T {
     if (T == Value) return valueFromRuntime(state, raw);
     if (T == Ref) return handle.fromRuntime(state, raw);
+    if (T == String) return if (raw == .string) rooted(String, state, raw) else error.TypeMismatch;
     if (T == Table) return if (raw == .table) rooted(Table, state, raw) else error.TypeMismatch;
     if (T == Function) return if (isFunction(raw)) rooted(Function, state, raw) else error.TypeMismatch;
     if (T == Coroutine) return if (raw == .thread) rooted(Coroutine, state, raw) else error.TypeMismatch;
@@ -311,20 +312,26 @@ pub fn fromRuntimeValue(state: *State, raw: runtime.Value, comptime T: type) !T 
         .optional => |optional| if (raw == .nil)
             null
         else
-            try fromRuntimeValue(state, raw, optional.child),
-        .pointer => |pointer| switch (pointer.size) {
-            .slice => if (pointer.child == u8) switch (raw) {
+            try fromRuntime(state, raw, optional.child, borrow),
+        .pointer => |pointer| if (comptime pointer.size == .slice and pointer.child == u8) {
+            if (!borrow) @compileError("a []const u8 read here can outlive the Lua string; read a zlua.String and call bytes()");
+            return switch (raw) {
                 .string => |value| value.bytes(),
                 else => error.TypeMismatch,
-            } else error.UnsupportedType,
-            .one => if (@typeInfo(pointer.child) == .@"struct") switch (raw) {
+            };
+        } else if (comptime pointer.size == .one and @typeInfo(pointer.child) == .@"struct") {
+            if (!borrow) @compileError("a " ++ @typeName(T) ++ " read here can outlive the userdata; read a zlua.Userdata(" ++ @typeName(pointer.child) ++ ") and call ptr()");
+            return switch (raw) {
                 .userdata => |userdata| userdata_mod.payloadPtr(pointer.child, userdata),
                 else => error.TypeMismatch,
-            } else error.UnsupportedType,
-            else => error.UnsupportedType,
-        },
-        else => error.UnsupportedType,
+            };
+        } else @compileError(unsupportedRead(T)),
+        else => @compileError(unsupportedRead(T)),
     };
+}
+
+fn unsupportedRead(comptime T: type) []const u8 {
+    return @typeName(T) ++ " has no direct Lua conversion; read a zlua.Value and pass it to zlua.decode";
 }
 
 fn valueFromRuntime(state: *State, raw: runtime.Value) !Value {
@@ -333,7 +340,7 @@ fn valueFromRuntime(state: *State, raw: runtime.Value) !Value {
         .boolean => |boolean| .{ .boolean = boolean },
         .integer => |integer| .{ .integer = integer },
         .number => |number| .{ .number = number },
-        .string => |string| .{ .string = string.bytes() },
+        .string => .{ .string = try rooted(String, state, raw) },
         .table => .{ .table = try rooted(Table, state, raw) },
         .userdata => .{ .userdata = try rooted(AnyUserdata, state, raw) },
         .thread => .{ .coroutine = try rooted(Coroutine, state, raw) },
@@ -359,15 +366,34 @@ pub fn integerFromFloat(value: f64) ?i64 {
     return @intFromFloat(value);
 }
 
-fn isTupleResult(comptime T: type) bool {
+fn tupleFromResults(state: *State, results: []const runtime.Value, comptime T: type) !T {
+    var values: T = undefined;
+    var initialized: usize = 0;
+    errdefer inline for (comptime reflection.fieldsOf(T), 0..) |name, index| {
+        if (index < initialized) deinitIfOwned(@FieldType(T, name), &values[index]);
+    };
+    inline for (comptime reflection.fieldsOf(T), 0..) |name, index| {
+        const raw = if (index < results.len) results[index] else runtime.Value.nil;
+        values[index] = try fromRuntimeValue(state, raw, @FieldType(T, name));
+        initialized += 1;
+    }
+    return values;
+}
+
+fn isTuple(comptime T: type) bool {
     return switch (@typeInfo(T)) {
-        .@"struct" => @hasDecl(T, "is_zlua_tuple") and T.is_zlua_tuple,
+        .@"struct" => |info| info.is_tuple,
         else => false,
     };
 }
 
 pub fn isOwnedApiValue(comptime T: type) bool {
-    return isTupleResult(T) or T == Value or T == Ref or T == Table or T == Function or T == Coroutine or T == ErrorRef or T == AnyUserdata or userdata_mod.isHandle(T);
+    return T == Value or T == Ref or T == String or T == Table or T == Function or T == Coroutine or T == ErrorRef or T == AnyUserdata or userdata_mod.isHandle(T);
+}
+
+/// Releases the handles in `value`, a pointer to a handle, `Value`, optional, or tuple.
+pub fn deinit(value: anytype) void {
+    deinitIfOwned(@typeInfo(@TypeOf(value)).pointer.child, value);
 }
 
 pub fn deinitIfOwned(comptime T: type, value: *T) void {
@@ -375,5 +401,7 @@ pub fn deinitIfOwned(comptime T: type, value: *T) void {
         value.deinit();
     } else if (comptime @typeInfo(T) == .optional) {
         if (value.*) |*payload| deinitIfOwned(@typeInfo(T).optional.child, payload);
+    } else if (comptime isTuple(T)) {
+        inline for (comptime reflection.fieldsOf(T), 0..) |name, index| deinitIfOwned(@FieldType(T, name), &value[index]);
     }
 }

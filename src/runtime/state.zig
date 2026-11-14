@@ -191,6 +191,8 @@ pub const State = struct {
     chunk_allocations: std.ArrayList(*types.Chunk) = .empty,
     source_allocations: std.ArrayList([]const u8) = .empty,
     api_roots: std.ArrayList(Value) = .empty,
+    /// Indexes of the nil slots of `api_roots`; its capacity covers that of `api_roots`.
+    api_root_free: std.ArrayList(usize) = .empty,
     stdout: std.ArrayList(u8) = .empty,
     stderr: std.ArrayList(u8) = .empty,
     options: StateOptions,
@@ -411,6 +413,7 @@ pub const State = struct {
         for (self.source_allocations.items) |source| self.allocator.free(source);
         for (self.string_allocations.items) |string| strings_mod.destroy(self.objects(), string);
         self.api_roots.deinit(self.allocator);
+        self.api_root_free.deinit(self.allocator);
         self.source_allocations.deinit(self.allocator);
         self.chunk_allocations.deinit(self.allocator);
         self.thread_allocations.deinit(self.allocator);
@@ -469,20 +472,22 @@ pub const State = struct {
 
     pub fn rootValue(self: *State, value: Value) !usize {
         if (value == .nil) return nil_root;
-        for (self.api_roots.items, 0..) |root, index| {
-            if (root == .nil) {
-                self.api_roots.items[index] = value;
-                self.gc.markValue(value);
-                return index;
-            }
+        if (self.api_root_free.pop()) |index| {
+            self.api_roots.items[index] = value;
+            self.gc.markValue(value);
+            return index;
         }
-        try self.api_roots.append(self.allocator, value);
+        try self.api_roots.ensureUnusedCapacity(self.allocator, 1);
+        try self.api_root_free.ensureTotalCapacity(self.allocator, self.api_roots.capacity);
+        self.api_roots.appendAssumeCapacity(value);
         self.gc.markValue(value);
         return self.api_roots.items.len - 1;
     }
 
     pub fn unrootValue(self: *State, index: usize) void {
-        if (index < self.api_roots.items.len) self.api_roots.items[index] = .nil;
+        if (index >= self.api_roots.items.len or self.api_roots.items[index] == .nil) return;
+        self.api_roots.items[index] = .nil;
+        self.api_root_free.appendAssumeCapacity(index);
     }
 
     pub fn pushValueRoots(self: *State, roots: *types.ValueRoots, values: []const Value) void {
@@ -513,7 +518,7 @@ pub const State = struct {
         self.api_callback_user_data = user_data;
     }
 
-    pub fn callApiCallbackDispatch(self: *State, thread: *Thread, op: bytecode.Call, callback_id: usize) !void {
+    pub fn callApiCallbackDispatch(self: *State, thread: *Thread, op: bytecode.Call, callback_id: usize, closure: ?*Table) !void {
         const dispatch = self.api_callback_dispatch orelse return self.fail("host callback dispatcher unavailable");
         var context = ApiCallbackContext{
             .state = self,
@@ -523,6 +528,7 @@ pub const State = struct {
             .argument_base = thread.frames.items[thread.frames.items.len - 1].base + op.base + 1,
             .parent = self.active_api_callback,
             .user_data = self.api_callback_user_data,
+            .closure = closure,
         };
         defer context.deinit();
         self.active_api_callback = &context;
@@ -530,12 +536,17 @@ pub const State = struct {
 
         dispatch(&context) catch |err| switch (err) {
             error.HostCallbackYield => return coroutine_mod.suspendCoroutine(self, thread, op, context.returns.items()),
+            error.HostCallbackTailCall => if (context.tail_callee == null) return self.fail("host callback tail call unavailable"),
             error.RuntimeError, error.StackOverflow, error.UnsupportedOpcode => return err,
             error.LuaError => return self.failValue(context.error_value orelse .{ .string = try self.strings.intern("host callback raised an error") }),
             error.OutOfMemory, error.LuaExit, error.Interrupted => return err,
             else => return self.fail(@errorName(err)),
         };
 
+        if (context.tail_callee) |callee| {
+            self.active_api_callback = context.parent;
+            return call_mod.replaceCall(self, thread, op, callee, context.returns.items());
+        }
         try self.returnValues(thread, op.base, op.return_count, context.returns.items());
     }
 

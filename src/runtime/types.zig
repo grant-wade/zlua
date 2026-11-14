@@ -59,6 +59,8 @@ pub const Value = union(enum(u8)) {
     native_coroutine_wrap,
     native: NativeFn,
     api_callback: usize,
+    /// A host callback with bound values: its callback id, the value count, then the values.
+    api_closure: *Table,
 };
 
 pub const NativeFn = @import("native_fn.zig").NativeFn;
@@ -263,6 +265,10 @@ pub const ApiCallbackContext = struct {
     function_name: []const u8 = "host callback",
     returns: CallbackReturns = .{},
     error_value: ?Value = null,
+    /// Bound values of an `api_closure` callee.
+    closure: ?*Table = null,
+    /// Function the callback finishes by tail calling with `returns` as its arguments.
+    tail_callee: ?Value = null,
 
     pub fn deinit(self: *ApiCallbackContext) void {
         self.returns.deinit(self.state.allocator);

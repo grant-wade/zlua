@@ -6,7 +6,7 @@ fn add(a: i64, b: i64) i64 {
 }
 
 pub fn main(init: std.process.Init) !void {
-    var lua = try zlua.State.init(init.gpa, .{
+    const lua = try zlua.State.init(init.gpa, .{
         .limits = .{ .max_instructions = 1_000_000 },
     });
     defer lua.deinit();
@@ -20,10 +20,9 @@ pub fn main(init: std.process.Init) !void {
         \\function greet(name)
         \\  return greeting .. ", " .. name .. "! 2 + 3 = " .. add(2, 3)
         \\end
-    , .{ .name = "=readme" });
+    , .{ .name = "=quickstart" });
 
-    var greet = try lua.getGlobal("greet", zlua.Function);
-    defer greet.deinit();
-    const message = try greet.call(.{"zlua"}, []const u8);
-    std.debug.print("{s}\n", .{message});
+    var message = try lua.callGlobal("greet", .{"zlua"}, zlua.String);
+    defer message.deinit();
+    std.debug.print("{f}\n", .{message});
 }

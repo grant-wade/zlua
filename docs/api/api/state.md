@@ -9,16 +9,18 @@
 <summary>All documents</summary>
 
 - [root](../root.md)
-- [frontend](../frontend.md)
+- [api](../api.md)
+- [api.analyze](../api/analyze.md)
+- [compile](../compile.md)
 - [errors](../errors.md)
 - [frontend.source](../frontend/source.md)
 - [frontend.token](../frontend/token.md)
+- [frontend](../frontend.md)
 - [frontend.diagnostic](../frontend/diagnostic.md)
 - [frontend.lexer](../frontend/lexer.md)
 - [stack_guard](../stack_guard.md)
 - [frontend.ast](../frontend/ast.md)
 - [frontend.parser](../frontend/parser.md)
-- [compile](../compile.md)
 - [compile.resolver](../compile/resolver.md)
 - [compile.bytecode](../compile/bytecode.md)
 - [compile.proto](../compile/proto.md)
@@ -80,8 +82,6 @@
 - [compile.compiler](../compile/compiler.md)
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
-- [api](../api.md)
-- [api.analyze](../api/analyze.md)
 - [api.callbacks](../api/callbacks.md)
 - [api.convert](../api/convert.md)
 - [api.errors](../api/errors.md)
@@ -94,12 +94,13 @@
 - [api.table](../api/table.md)
 - [api.value](../api/value.md)
 - [api.userdata](../api/userdata.md)
+- [api.namespace](../api/namespace.md)
 - [api.context](../api/context.md)
 - [api.decode](../api/decode.md)
 - [api.coroutine](../api/coroutine.md)
+- [api.string](../api/string.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
-- [api.namespace](../api/namespace.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
 - [testing.bench_runner](../testing/bench_runner.md)
@@ -237,7 +238,7 @@ pub const State = struct {
 
 | Name | Parameters | Return Type | Description |
 | --- | --- | --- | --- |
-| [init](#fn-state-init) | `state_allocator: std.mem.Allocator, options: Options` | `!State` | &#96;state_allocator&#96; must remain valid until &#96;deinit&#96;. |
+| [init](#fn-state-init) | `state_allocator: std.mem.Allocator, options: Options` | `!*State` | &#96;state_allocator&#96; must remain valid until &#96;deinit&#96;. |
 | [deinit](#fn-state-deinit) | `self: *State` | `void` | Runs pending finalizers like &#96;lua_close&#96; (errors ignored, open files flushed), then frees the state and invalidates all handles. &#96;reset&#96; runs no finalizers. |
 | [snapshot](#fn-state-snapshot) | `self: *State, snapshot_allocator: std.mem.Allocator` | `!Snapshot` | Captures an idle VM, including suspended coroutines, as the new reset baseline. Borrowed capabilities and &#96;snapshot_allocator&#96; must outlive every state retaining it. |
 | [reset](#fn-state-reset) | `self: *State` | `!void` | Restores the active baseline and invalidates prior handles; &#96;error.NoSnapshot&#96; without one. Fails atomically. Skips Lua &#96;__gc&#96; and &#96;__close&#96; handlers and discards file handles opened since the baseline without flushing them. |
@@ -254,7 +255,7 @@ pub const State = struct {
 | [isInterruptPending](#fn-state-isinterruptpending) | `self: *const State` | `bool` |  |
 | [openLibs](#fn-state-openlibs) | `self: *State, selection: Stdlib` | `!void` |  |
 | [collect](#fn-state-collect) | `self: *State` | `!void` | Runs a full collection and pending finalizers, even while automatic GC is stopped. |
-| [stepGc](#fn-state-stepgc) | `self: *State, budget: GcBudget` | `!GcStepResult` | Runs at most &#96;budget.steps&#96; basic steps, even while stopped; bounds work, not time. |
+| [stepGc](#fn-state-stepgc) | `self: *State, steps: usize` | `!GcStepResult` | Runs up to &#96;steps&#96; basic steps, and at least one, even while stopped; bounds work, not time. |
 | [gcMode](#fn-state-gcmode) | `self: *const State` | `GcMode` |  |
 | [setGcMode](#fn-state-setgcmode) | `self: *State, mode: GcMode` | `GcMode` | Returns the previous mode. |
 | [gcParam](#fn-state-gcparam) | `self: *const State, param: GcParam` | `i64` |  |
@@ -263,40 +264,38 @@ pub const State = struct {
 | [restartGc](#fn-state-restartgc) | `self: *State` | `void` |  |
 | [isGcRunning](#fn-state-isgcrunning) | `self: *const State` | `bool` |  |
 | [handleScope](#fn-state-handlescope) | `self: *State` | `HandleScope` | Starts a scope that releases the handles created until its &#96;end&#96;, except those given to its &#96;keep&#96;: &#96;var scope = lua.handleScope(); defer scope.end();&#96;. |
-| [push](#fn-state-push) | `self: *State, value: anytype` | `!Value` | Converts a Zig value into a rooted &#96;Value&#96;. |
-| [read](#fn-state-read) | `self: *State, value: Value, comptime T: type` | `!T` | A &#96;[]const u8&#96; result borrows VM memory; see &#96;Value.string&#96;. |
+| [toValue](#fn-state-tovalue) | `self: *State, value: anytype` | `!Value` | Converts a Zig value into a rooted &#96;Value&#96;. |
+| [read](#fn-state-read) | `self: *State, value: Value, comptime T: type` | `!T` |  |
 | [setGlobal](#fn-state-setglobal) | `self: *State, name: []const u8, value: anytype` | `!void` |  |
 | [setGlobals](#fn-state-setglobals) | `self: *State, values: anytype` | `!void` | Sets a global for each field of struct &#96;values&#96;, or for each tag and exported public declaration of struct or enum type &#96;values&#96;. |
-| [createTableFrom](#fn-state-createtablefrom) | `self: *State, values: anytype` | `!Table` | Creates a table holding the fields of struct &#96;values&#96;, or the tags and exported public declarations of struct or enum type &#96;values&#96;. |
-| [getGlobal](#fn-state-getglobal) | `self: *State, name: []const u8, comptime T: type` | `!T` | A &#96;[]const u8&#96; result borrows VM memory; see &#96;Value.string&#96;. |
-| [register](#fn-state-register) | `self: *State, name: []const u8, callback: HostFn` | `!Function` | Wraps an untyped callback as a Lua function; it is not installed automatically. |
-| [registerTyped](#fn-state-registertyped) | `self: *State, name: []const u8, comptime function: anytype` | `!Function` | Like &#96;register&#96;, reading parameters from Lua arguments by type; &#96;*Context&#96; is injected. |
-| [registerUserdataInitializerWith](#fn-state-registeruserdatainitializerwith) | `self: *State, comptime T: type, name: []const u8, comptime initializer: anytype, comptime options: UserdataOptions(T)` | `!Function` | Registers a Lua constructor that reads &#96;initializer&#96;'s arguments by type (&#96;*Context&#96; is injected) and wraps its &#96;T&#96; or &#96;!T&#96; result with &#96;newUserdataAuto&#96;. |
-| [createTable](#fn-state-createtable) | `self: *State, options: TableOptions` | `!Table` |  |
+| [newTableFrom](#fn-state-newtablefrom) | `self: *State, values: anytype` | `!Table` | Creates a table holding the fields of struct &#96;values&#96;, or the tags and exported public declarations of struct or enum type &#96;values&#96;. |
+| [getGlobal](#fn-state-getglobal) | `self: *State, name: []const u8, comptime T: type` | `!T` |  |
+| [callGlobal](#fn-state-callglobal) | `self: *State, name: []const u8, args: anytype, comptime R: type` | `!R` | Calls the global function &#96;name&#96; as &#96;Function.call&#96; does. |
+| [newFunction](#fn-state-newfunction) | `self: *State, name: []const u8, callback: HostFn` | `!Function` | Wraps an untyped callback as a Lua function; it is not installed automatically. |
+| [newTypedFunction](#fn-state-newtypedfunction) | `self: *State, name: []const u8, comptime function: anytype` | `!Function` | Like &#96;newFunction&#96;, reading parameters from Lua arguments by type; &#96;*Context&#96; is injected. |
+| [newClosure](#fn-state-newclosure) | `self: *State, name: []const u8, comptime function: anytype, upvalues: anytype` | `!Function` | Like &#96;newTypedFunction&#96;, binding the values of tuple &#96;upvalues&#96; to the function; the callback reads them with &#96;Context.upvalue&#96; and replaces them with &#96;Context.setUpvalue&#96;. |
+| [newConstructor](#fn-state-newconstructor) | `self: *State, comptime T: type, name: []const u8, comptime initializer: anytype, comptime options: UserdataOptions(T)` | `!Function` | Creates a Lua constructor that reads &#96;initializer&#96;'s arguments by type (&#96;*Context&#96; is injected) and wraps its &#96;T&#96; or &#96;!T&#96; result with &#96;newUserdata&#96;. |
+| [newTable](#fn-state-newtable) | `self: *State, options: TableOptions` | `!Table` |  |
 | [newCoroutine](#fn-state-newcoroutine) | `self: *State, entry: Function` | `!Coroutine` | Creates a suspended coroutine; first resume arguments become &#96;entry&#96;'s arguments. |
 | [defineUserdata](#fn-state-defineuserdata) | `self: *State, comptime T: type, comptime options: UserdataType` | `!void` | Gives every later &#96;T&#96; userdata one metatable holding &#96;options.methods&#96;, unless it passes its own &#96;metatable&#96;. Returns &#96;error.UserdataTypeDefined&#96; when &#96;T&#96; already has a definition. |
-| [newUserdata](#fn-state-newuserdata) | `self: *State, comptime T: type, value: T, options: UserdataOptions(T)` | `!Userdata(T)` | Allocates Lua-owned userdata initialized with &#96;value&#96;. |
-| [newUserdataAuto](#fn-state-newuserdataauto) | `self: *State, comptime T: type, value: T, options: UserdataOptions(T)` | `!Userdata(T)` | Like &#96;newUserdata&#96;, defining &#96;T&#96; with &#96;defineUserdata&#96; on first use. With an explicit &#96;metatable&#96;, installs &#96;T&#96;'s methods on it instead. |
-| [newUserdataPtr](#fn-state-newuserdataptr) | `self: *State, comptime T: type, ptr: *T, options: UserdataPtrOptions(T)` | `!Userdata(T)` | Wraps host-owned &#96;ptr&#96; as userdata without taking ownership. |
-| [newUserdataPtrAuto](#fn-state-newuserdataptrauto) | `self: *State, comptime T: type, ptr: *T, options: UserdataPtrOptions(T)` | `!Userdata(T)` | Like &#96;newUserdataPtr&#96;, also installing &#96;T&#96;'s methods as in &#96;newUserdataAuto&#96;. |
-| [createModule](#fn-state-createmodule) | `self: *State, name: []const u8` | `!Table` | Creates a module table; it is not installed (see &#96;setLoadedModule&#96;). |
+| [newUserdata](#fn-state-newuserdata) | `self: *State, comptime T: type, value: T, options: UserdataOptions(T)` | `!Userdata(T)` | Allocates Lua-owned userdata initialized with &#96;value&#96;, defining &#96;T&#96; on first use with its &#96;lua_userdata&#96; options. An explicit &#96;options.metatable&#96; gets &#96;T&#96;'s methods instead. |
+| [wrapUserdata](#fn-state-wrapuserdata) | `self: *State, comptime T: type, ptr: *T, options: UserdataOptions(T)` | `!Userdata(T)` | Wraps host-owned &#96;ptr&#96; as userdata without taking ownership, binding methods as &#96;newUserdata&#96; does. |
 | [setLoadedModule](#fn-state-setloadedmodule) | `self: *State, name: []const u8, module: anytype` | `!void` | Sets &#96;package.loaded[name]&#96; so &#96;require(name)&#96; returns &#96;module&#96;; opens &#96;package&#96; if needed. |
 | [preloadModule](#fn-state-preloadmodule) | `self: *State, name: []const u8, loader: Function` | `!void` | Sets &#96;package.preload[name]&#96;, opening &#96;package&#96; if needed. The host keeps its &#96;loader&#96; handle. |
-| [preloadModuleFn](#fn-state-preloadmodulefn) | `self: *State, name: []const u8, comptime loader: anytype` | `!void` | Registers &#96;loader&#96; like &#96;registerTyped&#96; and installs it with &#96;preloadModule&#96;. |
-| [require](#fn-state-require) | `self: *State, name: []const u8, comptime T: type` | `!T` | Calls the built-in &#96;require(name)&#96;, opening &#96;package&#96; if needed, and converts the result. Loaders cannot yield; use &#96;Tuple(&.{ M, []const u8 })&#96; to also read the loader data. |
+| [preloadModuleFn](#fn-state-preloadmodulefn) | `self: *State, name: []const u8, comptime loader: anytype` | `!void` | Wraps &#96;loader&#96; as &#96;newTypedFunction&#96; does and installs it with &#96;preloadModule&#96;. |
+| [require](#fn-state-require) | `self: *State, name: []const u8, comptime T: type` | `!T` | Calls the built-in &#96;require(name)&#96;, opening &#96;package&#96; if needed, and converts the result. Loaders cannot yield; read a &#96;struct { M, String }&#96; to also get the loader data. |
 | [setPackagePath](#fn-state-setpackagepath) | `self: *State, path: []const u8` | `!void` | Sets &#96;package.path&#96;, opening the package library if needed. |
 | [addMemoryFile](#fn-state-addmemoryfile) | `self: *State, path: []const u8, contents: []const u8` | `!void` | Adds an owned copy to the memory filesystem, or writes through a writable one. Host and custom filesystems return &#96;error.UnsupportedOption&#96;. |
 | [loadString](#fn-state-loadstring) | `self: *State, source: []const u8, options: LoadOptions` | `!Function` |  |
 | [loadFile](#fn-state-loadfile) | `self: *State, path: []const u8, options: LoadOptions` | `!Function` | Loads through the configured filesystem capability. |
 | [loadBytecode](#fn-state-loadbytecode) | `self: *State, bytecode: []const u8, options: BytecodeLoadOptions` | `!Function` |  |
-| [doString](#fn-state-dostring) | `self: *State, source: []const u8, options: DoOptions` | `!void` |  |
-| [doFile](#fn-state-dofile) | `self: *State, path: []const u8, options: DoOptions` | `!void` |  |
+| [doString](#fn-state-dostring) | `self: *State, source: []const u8, options: LoadOptions` | `!void` |  |
+| [doFile](#fn-state-dofile) | `self: *State, path: []const u8, options: LoadOptions` | `!void` |  |
 | [exitRequest](#fn-state-exitrequest) | `self: *const State` | `?ExitRequest` | Exit recorded by &#96;os.exit&#96; after &#96;error.LuaExit&#96;, or null. &#96;close&#96; means Lua asked to close the state; pending to-be-closed variables have already run. |
 | [clearExitRequest](#fn-state-clearexitrequest) | `self: *State` | `void` |  |
 | [setWarnings](#fn-state-setwarnings) | `self: *State, on: bool` | `void` |  |
-| [errorMessage](#fn-state-errormessage) | `self: *State` | `![]const u8` | Formats the last Lua error; the caller frees the result with &#96;allocator()&#96;. |
-| [describeError](#fn-state-describeerror) | `self: *State, err: anyerror` | `![]const u8` | The last Lua error's message for &#96;error.LuaError&#96;, otherwise the name of &#96;err&#96;; the caller frees the result with &#96;allocator()&#96;. |
-| [takeErrorValue](#fn-state-takeerrorvalue) | `self: *State` | `?ErrorRef` | Takes ownership of the last Lua error value; the caller must &#96;deinit&#96; it. |
+| [writeError](#fn-state-writeerror) | `self: *State, err: anyerror, writer: *std.Io.Writer` | `!void` | Writes the last Lua error's message for &#96;error.LuaError&#96;, otherwise the name of &#96;err&#96;. |
+| [takeError](#fn-state-takeerror) | `self: *State` | `?ErrorRef` | Takes the Lua error of the last call or resume, with its traceback when one was captured; the caller must &#96;deinit&#96; it. |
 
 <a id="fn-state-init"></a>
 
@@ -305,7 +304,7 @@ pub const State = struct {
 `state_allocator` must remain valid until `deinit`.
 
 ```zig
-pub fn init(state_allocator: std.mem.Allocator, options: Options) !State
+pub fn init(state_allocator: std.mem.Allocator, options: Options) !*State
 ```
 
 References: [`State`](#type-state)
@@ -500,10 +499,10 @@ References: [`State`](#type-state)
 
 ### State.stepGc
 
-Runs at most `budget.steps` basic steps, even while stopped; bounds work, not time.
+Runs up to `steps` basic steps, and at least one, even while stopped; bounds work, not time.
 
 ```zig
-pub fn stepGc(self: *State, budget: GcBudget) !GcStepResult
+pub fn stepGc(self: *State, steps: usize) !GcStepResult
 ```
 
 References: [`State`](#type-state)
@@ -595,14 +594,14 @@ pub fn handleScope(self: *State) HandleScope
 
 References: [`State`](#type-state)
 
-<a id="fn-state-push"></a>
+<a id="fn-state-tovalue"></a>
 
-### State.push
+### State.toValue
 
 Converts a Zig value into a rooted `Value`.
 
 ```zig
-pub fn push(self: *State, value: anytype) !Value
+pub fn toValue(self: *State, value: anytype) !Value
 ```
 
 References: [`State`](#type-state)
@@ -610,8 +609,6 @@ References: [`State`](#type-state)
 <a id="fn-state-read"></a>
 
 ### State.read
-
-A `[]const u8` result borrows VM memory; see `Value.string`.
 
 ```zig
 pub fn read(self: *State, value: Value, comptime T: type) !T
@@ -642,15 +639,15 @@ pub fn setGlobals(self: *State, values: anytype) !void
 
 References: [`State`](#type-state)
 
-<a id="fn-state-createtablefrom"></a>
+<a id="fn-state-newtablefrom"></a>
 
-### State.createTableFrom
+### State.newTableFrom
 
 Creates a table holding the fields of struct `values`, or the tags and exported public
 declarations of struct or enum type `values`.
 
 ```zig
-pub fn createTableFrom(self: *State, values: anytype) !Table
+pub fn newTableFrom(self: *State, values: anytype) !Table
 ```
 
 References: [`State`](#type-state)
@@ -659,57 +656,80 @@ References: [`State`](#type-state)
 
 ### State.getGlobal
 
-A `[]const u8` result borrows VM memory; see `Value.string`.
-
 ```zig
 pub fn getGlobal(self: *State, name: []const u8, comptime T: type) !T
 ```
 
 References: [`State`](#type-state)
 
-<a id="fn-state-register"></a>
+<a id="fn-state-callglobal"></a>
 
-### State.register
+### State.callGlobal
+
+Calls the global function `name` as `Function.call` does.
+
+```zig
+pub fn callGlobal(self: *State, name: []const u8, args: anytype, comptime R: type) !R
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-newfunction"></a>
+
+### State.newFunction
 
 Wraps an untyped callback as a Lua function; it is not installed automatically.
 
 ```zig
-pub fn register(self: *State, name: []const u8, callback: HostFn) !Function
+pub fn newFunction(self: *State, name: []const u8, callback: HostFn) !Function
 ```
 
 References: [`State`](#type-state)
 
-<a id="fn-state-registertyped"></a>
+<a id="fn-state-newtypedfunction"></a>
 
-### State.registerTyped
+### State.newTypedFunction
 
-Like `register`, reading parameters from Lua arguments by type; `*Context` is injected.
+Like `newFunction`, reading parameters from Lua arguments by type; `*Context` is injected.
 
 ```zig
-pub fn registerTyped(self: *State, name: []const u8, comptime function: anytype) !Function
+pub fn newTypedFunction(self: *State, name: []const u8, comptime function: anytype) !Function
 ```
 
 References: [`State`](#type-state)
 
-<a id="fn-state-registeruserdatainitializerwith"></a>
+<a id="fn-state-newclosure"></a>
 
-### State.registerUserdataInitializerWith
+### State.newClosure
 
-Registers a Lua constructor that reads `initializer`'s arguments by type (`*Context` is
-injected) and wraps its `T` or `!T` result with `newUserdataAuto`.
+Like `newTypedFunction`, binding the values of tuple `upvalues` to the function; the
+callback reads them with `Context.upvalue` and replaces them with `Context.setUpvalue`.
 
 ```zig
-pub fn registerUserdataInitializerWith(self: *State, comptime T: type, name: []const u8, comptime initializer: anytype, comptime options: UserdataOptions(T)) !Function
+pub fn newClosure(self: *State, name: []const u8, comptime function: anytype, upvalues: anytype) !Function
 ```
 
 References: [`State`](#type-state)
 
-<a id="fn-state-createtable"></a>
+<a id="fn-state-newconstructor"></a>
 
-### State.createTable
+### State.newConstructor
+
+Creates a Lua constructor that reads `initializer`'s arguments by type (`*Context` is
+injected) and wraps its `T` or `!T` result with `newUserdata`.
 
 ```zig
-pub fn createTable(self: *State, options: TableOptions) !Table
+pub fn newConstructor(self: *State, comptime T: type, name: []const u8, comptime initializer: anytype, comptime options: UserdataOptions(T)) !Function
+```
+
+References: [`State`](#type-state)
+
+<a id="fn-state-newtable"></a>
+
+### State.newTable
+
+```zig
+pub fn newTable(self: *State, options: TableOptions) !Table
 ```
 
 References: [`State`](#type-state)
@@ -743,7 +763,8 @@ References: [`State`](#type-state)
 
 ### State.newUserdata
 
-Allocates Lua-owned userdata initialized with `value`.
+Allocates Lua-owned userdata initialized with `value`, defining `T` on first use with its
+`lua_userdata` options. An explicit `options.metatable` gets `T`'s methods instead.
 
 ```zig
 pub fn newUserdata(self: *State, comptime T: type, value: T, options: UserdataOptions(T)) !Userdata(T)
@@ -751,51 +772,15 @@ pub fn newUserdata(self: *State, comptime T: type, value: T, options: UserdataOp
 
 References: [`State`](#type-state)
 
-<a id="fn-state-newuserdataauto"></a>
+<a id="fn-state-wrapuserdata"></a>
 
-### State.newUserdataAuto
+### State.wrapUserdata
 
-Like `newUserdata`, defining `T` with `defineUserdata` on first use. With an explicit
-`metatable`, installs `T`'s methods on it instead.
-
-```zig
-pub fn newUserdataAuto(self: *State, comptime T: type, value: T, options: UserdataOptions(T)) !Userdata(T)
-```
-
-References: [`State`](#type-state)
-
-<a id="fn-state-newuserdataptr"></a>
-
-### State.newUserdataPtr
-
-Wraps host-owned `ptr` as userdata without taking ownership.
+Wraps host-owned `ptr` as userdata without taking ownership, binding methods as
+`newUserdata` does.
 
 ```zig
-pub fn newUserdataPtr(self: *State, comptime T: type, ptr: *T, options: UserdataPtrOptions(T)) !Userdata(T)
-```
-
-References: [`State`](#type-state)
-
-<a id="fn-state-newuserdataptrauto"></a>
-
-### State.newUserdataPtrAuto
-
-Like `newUserdataPtr`, also installing `T`'s methods as in `newUserdataAuto`.
-
-```zig
-pub fn newUserdataPtrAuto(self: *State, comptime T: type, ptr: *T, options: UserdataPtrOptions(T)) !Userdata(T)
-```
-
-References: [`State`](#type-state)
-
-<a id="fn-state-createmodule"></a>
-
-### State.createModule
-
-Creates a module table; it is not installed (see `setLoadedModule`).
-
-```zig
-pub fn createModule(self: *State, name: []const u8) !Table
+pub fn wrapUserdata(self: *State, comptime T: type, ptr: *T, options: UserdataOptions(T)) !Userdata(T)
 ```
 
 References: [`State`](#type-state)
@@ -828,7 +813,7 @@ References: [`State`](#type-state)
 
 ### State.preloadModuleFn
 
-Registers `loader` like `registerTyped` and installs it with `preloadModule`.
+Wraps `loader` as `newTypedFunction` does and installs it with `preloadModule`.
 
 ```zig
 pub fn preloadModuleFn(self: *State, name: []const u8, comptime loader: anytype) !void
@@ -841,7 +826,7 @@ References: [`State`](#type-state)
 ### State.require
 
 Calls the built-in `require(name)`, opening `package` if needed, and converts the result.
-Loaders cannot yield; use `Tuple(&.{ M, []const u8 })` to also read the loader data.
+Loaders cannot yield; read a `struct { M, String }` to also get the loader data.
 
 ```zig
 pub fn require(self: *State, name: []const u8, comptime T: type) !T
@@ -911,7 +896,7 @@ References: [`State`](#type-state)
 ### State.doString
 
 ```zig
-pub fn doString(self: *State, source: []const u8, options: DoOptions) !void
+pub fn doString(self: *State, source: []const u8, options: LoadOptions) !void
 ```
 
 References: [`State`](#type-state)
@@ -921,7 +906,7 @@ References: [`State`](#type-state)
 ### State.doFile
 
 ```zig
-pub fn doFile(self: *State, path: []const u8, options: DoOptions) !void
+pub fn doFile(self: *State, path: []const u8, options: LoadOptions) !void
 ```
 
 References: [`State`](#type-state)
@@ -959,39 +944,27 @@ pub fn setWarnings(self: *State, on: bool) void
 
 References: [`State`](#type-state)
 
-<a id="fn-state-errormessage"></a>
+<a id="fn-state-writeerror"></a>
 
-### State.errorMessage
+### State.writeError
 
-Formats the last Lua error; the caller frees the result with `allocator()`.
+Writes the last Lua error's message for `error.LuaError`, otherwise the name of `err`.
 
 ```zig
-pub fn errorMessage(self: *State) ![]const u8
+pub fn writeError(self: *State, err: anyerror, writer: *std.Io.Writer) !void
 ```
 
 References: [`State`](#type-state)
 
-<a id="fn-state-describeerror"></a>
+<a id="fn-state-takeerror"></a>
 
-### State.describeError
+### State.takeError
 
-The last Lua error's message for `error.LuaError`, otherwise the name of `err`; the caller
-frees the result with `allocator()`.
-
-```zig
-pub fn describeError(self: *State, err: anyerror) ![]const u8
-```
-
-References: [`State`](#type-state)
-
-<a id="fn-state-takeerrorvalue"></a>
-
-### State.takeErrorValue
-
-Takes ownership of the last Lua error value; the caller must `deinit` it.
+Takes the Lua error of the last call or resume, with its traceback when one was captured;
+the caller must `deinit` it.
 
 ```zig
-pub fn takeErrorValue(self: *State) ?ErrorRef
+pub fn takeError(self: *State) ?ErrorRef
 ```
 
 References: [`State`](#type-state)

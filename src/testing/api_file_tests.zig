@@ -24,20 +24,20 @@ fn countFiles(dir: std.Io.Dir) !usize {
 
 test "tmpfile is an anonymous memory file in every filesystem mode" {
     {
-        var lua = try api.State.init(a, .{ .stdlib = .full });
+        const lua = try api.State.init(a, .{ .stdlib = .full });
         defer lua.deinit();
         try lua.doString(tmpfile_round_trip, .{ .name = "=disabled" });
     }
     {
         const files = [_]api.MemoryFile{.{ .path = "seed.txt", .contents = "seed" }};
-        var lua = try api.State.init(a, .{ .stdlib = .full, .capabilities = .{ .filesystem = .{ .memory = &files } } });
+        const lua = try api.State.init(a, .{ .stdlib = .full, .capabilities = .{ .filesystem = .{ .memory = &files } } });
         defer lua.deinit();
         try lua.doString(tmpfile_round_trip, .{ .name = "=memory" });
     }
     {
         var filesystem = api.MemoryFilesystem.init(a);
         defer filesystem.deinit();
-        var lua = try api.State.init(a, .{ .stdlib = .full, .capabilities = .{ .filesystem = .{ .memory_rw = &filesystem } } });
+        const lua = try api.State.init(a, .{ .stdlib = .full, .capabilities = .{ .filesystem = .{ .memory_rw = &filesystem } } });
         defer lua.deinit();
         try lua.doString(tmpfile_round_trip, .{ .name = "=memory_rw" });
         try std.testing.expectEqual(@as(usize, 0), filesystem.files.items.len);
@@ -46,7 +46,7 @@ test "tmpfile is an anonymous memory file in every filesystem mode" {
     {
         var temporary = std.testing.tmpDir(.{ .iterate = true });
         defer temporary.cleanup();
-        var lua = try api.State.init(a, .{
+        const lua = try api.State.init(a, .{
             .stdlib = .full,
             .capabilities = .{ .io = .{ .runtime = std.testing.io }, .filesystem = .{ .host_dir = .{ .dir = temporary.dir } } },
         });
@@ -65,7 +65,7 @@ test "tmpfile is an anonymous memory file in every filesystem mode" {
                 calls += 1;
             }
         };
-        var lua = try api.State.init(a, .{
+        const lua = try api.State.init(a, .{
             .stdlib = .full,
             .capabilities = .{ .filesystem = .{ .custom = .{ .read_file_alloc = Callbacks.read, .write_file = Callbacks.write } } },
         });
@@ -77,7 +77,7 @@ test "tmpfile is an anonymous memory file in every filesystem mode" {
 
 test "tmpfile writes are bounded by max_file_bytes and max_memory" {
     {
-        var lua = try api.State.init(a, .{ .stdlib = .full, .limits = .{ .max_file_bytes = 10 } });
+        const lua = try api.State.init(a, .{ .stdlib = .full, .limits = .{ .max_file_bytes = 10 } });
         defer lua.deinit();
         try lua.doString(
             \\local f = assert(io.tmpfile())
@@ -88,7 +88,7 @@ test "tmpfile writes are bounded by max_file_bytes and max_memory" {
         , .{});
     }
     {
-        var lua = try api.State.init(a, .{ .stdlib = .full, .limits = .{ .max_memory = 2 * 1024 * 1024 } });
+        const lua = try api.State.init(a, .{ .stdlib = .full, .limits = .{ .max_memory = 2 * 1024 * 1024 } });
         defer lua.deinit();
         try lua.doString(
             \\local chunk = string.rep('x', 64 * 1024)
@@ -103,7 +103,7 @@ test "tmpfile writes are bounded by max_file_bytes and max_memory" {
 }
 
 test "file buffers count toward collector memory accounting" {
-    var lua = try api.State.init(a, .{ .stdlib = .full });
+    const lua = try api.State.init(a, .{ .stdlib = .full });
     defer lua.deinit();
     try lua.doString(
         \\local chunk = string.rep('x', 1024 * 1024)
@@ -124,7 +124,7 @@ test "file buffers count toward collector memory accounting" {
 test "collecting an unreachable open file flushes and closes it" {
     var filesystem = api.MemoryFilesystem.init(a);
     defer filesystem.deinit();
-    var lua = try api.State.init(a, .{ .stdlib = .full, .capabilities = .{ .filesystem = .{ .memory_rw = &filesystem } } });
+    const lua = try api.State.init(a, .{ .stdlib = .full, .capabilities = .{ .filesystem = .{ .memory_rw = &filesystem } } });
     defer lua.deinit();
     try lua.doString(
         \\do local f = assert(io.open('lost.txt', 'w')); f:write('flushed by gc') end
@@ -145,7 +145,7 @@ test "collecting an unreachable open file flushes and closes it" {
 }
 
 test "file handles are FILE* userdata with no Lua-visible fields" {
-    var lua = try api.State.init(a, .{ .stdlib = .full });
+    const lua = try api.State.init(a, .{ .stdlib = .full });
     defer lua.deinit();
     try lua.doString(
         \\for _, f in ipairs({ io.stdin, io.stdout, io.stderr, io.tmpfile() }) do
@@ -175,10 +175,12 @@ test "os.tmpname reserves unique names inside sandboxed filesystems" {
     {
         var filesystem = api.MemoryFilesystem.init(a);
         defer filesystem.deinit();
-        var lua = try api.State.init(a, .{ .stdlib = .full, .capabilities = .{ .filesystem = .{ .memory_rw = &filesystem } } });
+        const lua = try api.State.init(a, .{ .stdlib = .full, .capabilities = .{ .filesystem = .{ .memory_rw = &filesystem } } });
         defer lua.deinit();
         try lua.doString("kept = os.tmpname()", .{});
-        const kept = try lua.getGlobal("kept", []const u8);
+        var kept_string = try lua.getGlobal("kept", api.String);
+        defer kept_string.deinit();
+        const kept = try kept_string.bytes();
         try std.testing.expectEqual(@as(usize, 0), (try filesystem.statPath(kept)).size);
         try lua.doString("assert(os.remove(kept))", .{});
         try lua.doString(script, .{ .name = "=memory_rw" });
@@ -187,7 +189,7 @@ test "os.tmpname reserves unique names inside sandboxed filesystems" {
     {
         var temporary = std.testing.tmpDir(.{ .iterate = true });
         defer temporary.cleanup();
-        var lua = try api.State.init(a, .{
+        const lua = try api.State.init(a, .{
             .stdlib = .full,
             .capabilities = .{ .io = .{ .runtime = std.testing.io }, .filesystem = .{ .host_dir = .{ .dir = temporary.dir } } },
         });
@@ -200,7 +202,7 @@ test "os.tmpname reserves unique names inside sandboxed filesystems" {
     }
     {
         const files = [_]api.MemoryFile{.{ .path = "seed.txt", .contents = "seed" }};
-        var lua = try api.State.init(a, .{ .stdlib = .full, .capabilities = .{ .filesystem = .{ .memory = &files } } });
+        const lua = try api.State.init(a, .{ .stdlib = .full, .capabilities = .{ .filesystem = .{ .memory = &files } } });
         defer lua.deinit();
         try lua.doString(
             \\local ok, err = pcall(os.tmpname)
@@ -219,7 +221,7 @@ test "deinit closes open files like lua_close, flushing buffered writes" {
     var filesystem = api.MemoryFilesystem.init(a);
     defer filesystem.deinit();
     {
-        var lua = try api.State.init(a, .{ .stdlib = .full, .capabilities = .{ .filesystem = .{ .memory_rw = &filesystem } } });
+        const lua = try api.State.init(a, .{ .stdlib = .full, .capabilities = .{ .filesystem = .{ .memory_rw = &filesystem } } });
         defer lua.deinit();
         try lua.doString(
             \\open = assert(io.open('open.txt', 'w')); open:write('buffered')
@@ -240,13 +242,13 @@ test "deinit closes open files like lua_close, flushing buffered writes" {
 test "deinit closes worker and rollback files but not snapshot images" {
     var filesystem = api.MemoryFilesystem.init(a);
     defer filesystem.deinit();
-    var lua = try api.State.init(a, .{ .stdlib = .full, .capabilities = .{ .filesystem = .{ .memory_rw = &filesystem } } });
+    const lua = try api.State.init(a, .{ .stdlib = .full, .capabilities = .{ .filesystem = .{ .memory_rw = &filesystem } } });
     var lua_alive = true;
     defer if (lua_alive) lua.deinit();
     try lua.doString("image = assert(io.open('image.txt', 'w')); image:write('in image')", .{});
     var snapshot = try lua.snapshot(a);
     {
-        var worker = try snapshot.newState(a);
+        const worker = try snapshot.newState(a);
         defer worker.deinit();
         try worker.doString("assert(io.open('worker.txt', 'w')):write('from worker')", .{});
     }
@@ -267,7 +269,7 @@ test "deinit closes worker and rollback files but not snapshot images" {
 test "writes to regular files stop at max_file_bytes" {
     var filesystem = api.MemoryFilesystem.init(a);
     defer filesystem.deinit();
-    var lua = try api.State.init(a, .{
+    const lua = try api.State.init(a, .{
         .stdlib = .full,
         .limits = .{ .max_file_bytes = 10 },
         .capabilities = .{ .filesystem = .{ .memory_rw = &filesystem } },
@@ -311,7 +313,7 @@ test "append opens leave the file alone and writes land at its current end" {
             .{ .custom = .{ .context = &filesystem, .read_file_alloc = Backed.read, .write_file = Backed.write } }
         else
             .{ .memory_rw = &filesystem };
-        var lua = try api.State.init(a, .{ .stdlib = .full, .capabilities = .{ .filesystem = capability } });
+        const lua = try api.State.init(a, .{ .stdlib = .full, .capabilities = .{ .filesystem = capability } });
         defer lua.deinit();
         try lua.doString(
             \\local a = assert(io.open('log.txt', 'a'))
@@ -335,7 +337,7 @@ test "__close and collection ignore flush failures like f_gc" {
             if (contents.len != 0) return error.NoSpaceLeft;
         }
     };
-    var lua = try api.State.init(a, .{
+    const lua = try api.State.init(a, .{
         .stdlib = .full,
         .capabilities = .{ .filesystem = .{ .custom = .{ .read_file_alloc = Failing.read, .write_file = Failing.write } } },
     });
@@ -371,7 +373,7 @@ test "explicit close and flush failures return luaL_fileresult values" {
         }
     };
     {
-        var lua = try api.State.init(a, .{
+        const lua = try api.State.init(a, .{
             .stdlib = .full,
             .capabilities = .{ .filesystem = .{ .custom = .{ .read_file_alloc = Failing.read, .write_file = Failing.write } } },
         });
@@ -404,7 +406,7 @@ test "explicit close and flush failures return luaL_fileresult values" {
     }
     {
         const files = [_]api.MemoryFile{.{ .path = "seed.txt", .contents = "seed" }};
-        var lua = try api.State.init(a, .{ .stdlib = .full, .capabilities = .{ .filesystem = .{ .memory = &files } } });
+        const lua = try api.State.init(a, .{ .stdlib = .full, .capabilities = .{ .filesystem = .{ .memory = &files } } });
         defer lua.deinit();
         try lua.doString(
             \\local f = assert(io.open('seed.txt', 'r+'))
@@ -441,9 +443,9 @@ test "deinit calls pending __gc metamethods like lua_close" {
     defer filesystem.deinit();
     FinalizerLog.reset();
     {
-        var lua = try api.State.init(a, .{ .stdlib = .full, .capabilities = .{ .filesystem = .{ .memory_rw = &filesystem } } });
+        const lua = try api.State.init(a, .{ .stdlib = .full, .capabilities = .{ .filesystem = .{ .memory_rw = &filesystem } } });
         defer lua.deinit();
-        var log = try lua.register("log", FinalizerLog.log);
+        var log = try lua.newFunction("log", FinalizerLog.log);
         defer log.deinit();
         try lua.setGlobal("log", log);
         try lua.doString(
@@ -473,16 +475,16 @@ test "deinit calls pending __gc metamethods like lua_close" {
 test "deinit finalizers run collected tables first and respect limits and interrupts" {
     FinalizerLog.reset();
     {
-        var lua = try api.State.init(a, .{ .gc = .{ .running = false, .mode = .incremental } });
+        const lua = try api.State.init(a, .{ .gc = .{ .running = false, .mode = .incremental } });
         defer lua.deinit();
-        var log = try lua.register("log", FinalizerLog.log);
+        var log = try lua.newFunction("log", FinalizerLog.log);
         defer log.deinit();
         try lua.setGlobal("log", log);
         try lua.doString(
             \\keep = setmetatable({}, {__gc = function() log('kept') end})
             \\setmetatable({}, {__gc = function() log('separated') end})
         , .{});
-        while (lua.raw_state.gc.phase != .finalize) _ = try lua.stepGc(.{});
+        while (lua.raw_state.gc.phase != .finalize) _ = try lua.stepGc(1);
         try std.testing.expect(lua.raw_state.table_pending_finalizers.items.len != 0);
         try lua.doString("late = setmetatable({}, {__gc = function() log('late') end})", .{});
     }
@@ -490,9 +492,9 @@ test "deinit finalizers run collected tables first and respect limits and interr
 
     FinalizerLog.reset();
     {
-        var lua = try api.State.init(a, .{ .limits = .{ .max_instructions = 10_000 } });
+        const lua = try api.State.init(a, .{ .limits = .{ .max_instructions = 10_000 } });
         defer lua.deinit();
-        var log = try lua.register("log", FinalizerLog.log);
+        var log = try lua.newFunction("log", FinalizerLog.log);
         defer log.deinit();
         try lua.setGlobal("log", log);
         try lua.doString(
@@ -505,9 +507,9 @@ test "deinit finalizers run collected tables first and respect limits and interr
 
     FinalizerLog.reset();
     {
-        var lua = try api.State.init(a, .{});
+        const lua = try api.State.init(a, .{});
         defer lua.deinit();
-        var log = try lua.register("log", FinalizerLog.log);
+        var log = try lua.newFunction("log", FinalizerLog.log);
         defer log.deinit();
         try lua.setGlobal("log", log);
         try lua.doString(
@@ -522,14 +524,14 @@ test "deinit finalizers run collected tables first and respect limits and interr
 
 test "reset skips finalizers while workers and sources finalize at deinit" {
     FinalizerLog.reset();
-    var lua = try api.State.init(a, .{});
-    var log = try lua.register("log", FinalizerLog.log);
+    const lua = try api.State.init(a, .{});
+    var log = try lua.newFunction("log", FinalizerLog.log);
     try lua.setGlobal("log", log);
     log.deinit();
     try lua.doString("base = setmetatable({}, {__gc = function() log('base') end})", .{});
     var snapshot = try lua.snapshot(a);
     {
-        var worker = try snapshot.newState(a);
+        const worker = try snapshot.newState(a);
         defer worker.deinit();
         try worker.doString("extra = setmetatable({}, {__gc = function() log('worker') end})", .{});
         try worker.reset();

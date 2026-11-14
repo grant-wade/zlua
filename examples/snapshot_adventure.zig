@@ -4,7 +4,7 @@ const zlua = @import("zlua");
 
 pub fn main() !void {
     const allocator = std.heap.smp_allocator;
-    var lua = try zlua.State.init(allocator, .{ .stdlib = .full });
+    const lua = try zlua.State.init(allocator, .{ .stdlib = .full });
     defer lua.deinit();
 
     try lua.doString(
@@ -56,7 +56,7 @@ pub fn main() !void {
     var best_score: i64 = -1;
     for ([_][]const u8{ "fight", "sneak", "bargain" }) |choice| {
         try lua.reset();
-        const score = try explore(&lua, choice);
+        const score = try explore(lua, choice);
         if (score > best_score) {
             best_choice = choice;
             best_score = score;
@@ -65,7 +65,7 @@ pub fn main() !void {
 
     std.debug.print("\nReplay winner (HP + gold = {d}):\n", .{best_score});
     try lua.reset();
-    if (try explore(&lua, best_choice) != best_score) return error.ReplayMismatch;
+    if (try explore(lua, best_choice) != best_score) return error.ReplayMismatch;
 }
 
 fn explore(lua: *zlua.State, choice: []const u8) !i64 {
@@ -73,7 +73,8 @@ fn explore(lua: *zlua.State, choice: []const u8) !i64 {
     var function = try lua.getGlobal("explore", zlua.Function);
     defer function.deinit();
     const score = try function.call(.{choice}, i64);
-    const report = try lua.getGlobal("report", []const u8);
-    std.debug.print("  {s} (score {d})\n", .{ report, score });
+    var report = try lua.getGlobal("report", zlua.String);
+    defer report.deinit();
+    std.debug.print("  {f} (score {d})\n", .{ report, score });
     return score;
 }

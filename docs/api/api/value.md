@@ -9,16 +9,18 @@
 <summary>All documents</summary>
 
 - [root](../root.md)
-- [frontend](../frontend.md)
+- [api](../api.md)
+- [api.analyze](../api/analyze.md)
+- [compile](../compile.md)
 - [errors](../errors.md)
 - [frontend.source](../frontend/source.md)
 - [frontend.token](../frontend/token.md)
+- [frontend](../frontend.md)
 - [frontend.diagnostic](../frontend/diagnostic.md)
 - [frontend.lexer](../frontend/lexer.md)
 - [stack_guard](../stack_guard.md)
 - [frontend.ast](../frontend/ast.md)
 - [frontend.parser](../frontend/parser.md)
-- [compile](../compile.md)
 - [compile.resolver](../compile/resolver.md)
 - [compile.bytecode](../compile/bytecode.md)
 - [compile.proto](../compile/proto.md)
@@ -80,8 +82,6 @@
 - [compile.compiler](../compile/compiler.md)
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
-- [api](../api.md)
-- [api.analyze](../api/analyze.md)
 - [api.callbacks](../api/callbacks.md)
 - [api.convert](../api/convert.md)
 - [api.errors](../api/errors.md)
@@ -94,12 +94,13 @@
 - [api.table](../api/table.md)
 - [api.value](../api/value.md)
 - [api.userdata](../api/userdata.md)
+- [api.namespace](../api/namespace.md)
 - [api.context](../api/context.md)
 - [api.decode](../api/decode.md)
 - [api.coroutine](../api/coroutine.md)
+- [api.string](../api/string.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
-- [api.namespace](../api/namespace.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
 - [testing.bench_runner](../testing/bench_runner.md)
@@ -130,10 +131,6 @@
 
 </details>
 
-## Functions
-
-- [Tuple](#fn-tuple)
-
 ## Types
 
 - [Value](#type-value)
@@ -150,9 +147,7 @@ pub const Value = union(enum) {
     boolean: bool,
     integer: i64,
     number: f64,
-    /// Borrowed, unrooted VM bytes, valid while Lua can reach the string. Once unreachable, any
-    /// GC-capable call may free them; `deinit` and `reset` always do. Copy or use `Ref` to keep.
-    string: []const u8,
+    string: String,
     table: Table,
     function: Function,
     coroutine: Coroutine,
@@ -188,14 +183,4 @@ pub fn typeName(self: Value) []const u8
 ```
 
 References: [`Value`](#type-value)
-
-<a id="fn-tuple"></a>
-
-## Tuple
-
-Converts multiple Lua return values.
-
-```zig
-pub fn Tuple(comptime types: []const type) type
-```
 

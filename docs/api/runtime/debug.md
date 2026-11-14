@@ -9,16 +9,18 @@
 <summary>All documents</summary>
 
 - [root](../root.md)
-- [frontend](../frontend.md)
+- [api](../api.md)
+- [api.analyze](../api/analyze.md)
+- [compile](../compile.md)
 - [errors](../errors.md)
 - [frontend.source](../frontend/source.md)
 - [frontend.token](../frontend/token.md)
+- [frontend](../frontend.md)
 - [frontend.diagnostic](../frontend/diagnostic.md)
 - [frontend.lexer](../frontend/lexer.md)
 - [stack_guard](../stack_guard.md)
 - [frontend.ast](../frontend/ast.md)
 - [frontend.parser](../frontend/parser.md)
-- [compile](../compile.md)
 - [compile.resolver](../compile/resolver.md)
 - [compile.bytecode](../compile/bytecode.md)
 - [compile.proto](../compile/proto.md)
@@ -80,8 +82,6 @@
 - [compile.compiler](../compile/compiler.md)
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
-- [api](../api.md)
-- [api.analyze](../api/analyze.md)
 - [api.callbacks](../api/callbacks.md)
 - [api.convert](../api/convert.md)
 - [api.errors](../api/errors.md)
@@ -94,12 +94,13 @@
 - [api.table](../api/table.md)
 - [api.value](../api/value.md)
 - [api.userdata](../api/userdata.md)
+- [api.namespace](../api/namespace.md)
 - [api.context](../api/context.md)
 - [api.decode](../api/decode.md)
 - [api.coroutine](../api/coroutine.md)
+- [api.string](../api/string.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
-- [api.namespace](../api/namespace.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
 - [testing.bench_runner](../testing/bench_runner.md)
@@ -138,6 +139,7 @@
 - [indirectFrameCount](#fn-indirectframecount)
 - [errorRaisedByLuaCode](#fn-errorraisedbyluacode)
 - [messageHandlerCallName](#fn-messagehandlercallname)
+- [isHostHelper](#fn-ishosthelper)
 - [isCoroutineEntryFrame](#fn-iscoroutineentryframe)
 - [chunkId](#fn-chunkid)
 - [currentLine](#fn-currentline)
@@ -242,6 +244,16 @@ pub fn messageHandlerCallName(thread: *Thread) ?CallName
 ```
 
 References: [`CallName`](#type-callname)
+
+<a id="fn-ishosthelper"></a>
+
+## isHostHelper
+
+True for the Lua function that runs a host callback's continuation.
+
+```zig
+pub fn isHostHelper(closure: *const types.Closure) bool
+```
 
 <a id="const-coroutine_entry_source"></a>
 

@@ -1,22 +1,22 @@
 const std = @import("std");
 const api = @import("../api.zig");
+const callErrorWith = @import("api_expect.zig").callErrorWith;
+const dumpBytecode = @import("api_expect.zig").dumpBytecode;
+const errorMessage = @import("api_expect.zig").errorMessage;
+const callError = @import("api_expect.zig").callError;
+const expectString = @import("api_expect.zig").expectString;
 const a = std.testing.allocator;
 
 fn expectErrorMessage(lua: *api.State, source: []const u8, expected: []const u8) !void {
     var function = try lua.loadString(source, .{ .name = "=test" });
     defer function.deinit();
-    var result = try function.protectedCall(.{}, void);
-    switch (result) {
-        .ok => return error.TestExpectedError,
-        .lua_error => |*lua_error| {
-            defer lua_error.deinit();
-            const message = try lua_error.message();
-            defer lua.allocator().free(message);
-            if (std.mem.indexOf(u8, message, expected) == null) {
-                std.debug.print("unexpected error: {s}\n", .{message});
-                return error.TestUnexpectedError;
-            }
-        },
+    var lua_error = try callError(function, .{}, void);
+    defer lua_error.deinit();
+    const message = try errorMessage(lua_error);
+    defer lua.allocator().free(message);
+    if (std.mem.indexOf(u8, message, expected) == null) {
+        std.debug.print("unexpected error: {s}\n", .{message});
+        return error.TestUnexpectedError;
     }
 }
 
@@ -26,22 +26,22 @@ test "load rejects binary chunks unless the state allows them" {
         \\return f and f() or err
     ;
     {
-        var lua = try api.State.init(a, .{});
+        const lua = try api.State.init(a, .{});
         defer lua.deinit();
         var function = try lua.loadString(script, .{});
         defer function.deinit();
-        try std.testing.expectEqualStrings("binary chunks are disabled", try function.call(.{}, []const u8));
+        try expectString("binary chunks are disabled", function.call(.{}, api.String));
 
         var dumped = try lua.loadString("return 8", .{});
         defer dumped.deinit();
-        const bytes = try dumped.dumpBytecode(.{});
+        const bytes = try dumpBytecode(dumped, .{});
         defer lua.allocator().free(bytes);
         var loaded = try lua.loadBytecode(bytes, .{});
         defer loaded.deinit();
         try std.testing.expectEqual(@as(i64, 8), try loaded.call(.{}, i64));
     }
     {
-        var lua = try api.State.init(a, .{ .binary_chunks = true });
+        const lua = try api.State.init(a, .{ .binary_chunks = true });
         defer lua.deinit();
         var function = try lua.loadString(script, .{});
         defer function.deinit();
@@ -50,18 +50,18 @@ test "load rejects binary chunks unless the state allows them" {
 }
 
 test "file loaders reject binary chunks unless the state allows them" {
-    var dumper = try api.State.init(a, .{});
+    const dumper = try api.State.init(a, .{});
     defer dumper.deinit();
     var chunk = try dumper.loadString("return 8", .{});
     defer chunk.deinit();
-    const bytes = try chunk.dumpBytecode(.{});
+    const bytes = try dumpBytecode(chunk, .{});
     defer dumper.allocator().free(bytes);
     const files = [_]api.MemoryFile{
         .{ .path = "evil.luac", .contents = bytes },
         .{ .path = "text.lua", .contents = "return 5" },
     };
     {
-        var lua = try api.State.init(a, .{ .stdlib = .full, .capabilities = .{ .filesystem = .{ .memory = &files } } });
+        const lua = try api.State.init(a, .{ .stdlib = .full, .capabilities = .{ .filesystem = .{ .memory = &files } } });
         defer lua.deinit();
         try lua.doString(
             \\local disabled = "binary chunks are disabled"
@@ -76,7 +76,7 @@ test "file loaders reject binary chunks unless the state allows them" {
         , .{});
     }
     {
-        var lua = try api.State.init(a, .{ .stdlib = .full, .binary_chunks = true, .capabilities = .{ .filesystem = .{ .memory = &files } } });
+        const lua = try api.State.init(a, .{ .stdlib = .full, .binary_chunks = true, .capabilities = .{ .filesystem = .{ .memory = &files } } });
         defer lua.deinit();
         try lua.doString(
             \\assert(loadfile("evil.luac")() == 8)
@@ -90,7 +90,7 @@ test "file loaders reject binary chunks unless the state allows them" {
 test "output limit counts every stream, survives pcall, and can be reset" {
     var buffer: [64]u8 = undefined;
     var sink: std.Io.Writer.Discarding = .init(&buffer);
-    var lua = try api.State.init(a, .{
+    const lua = try api.State.init(a, .{
         .capabilities = .{ .io = .{ .stdout = &sink.writer, .stderr = &sink.writer } },
         .limits = .{ .max_output_bytes = 16 },
     });
@@ -98,8 +98,8 @@ test "output limit counts every stream, survives pcall, and can be reset" {
 
     try lua.doString("print('0123456')", .{});
     try std.testing.expectEqual(@as(u64, 8), lua.outputBytes());
-    try expectErrorMessage(&lua, "pcall(print, 'more than the rest of the limit') while true do end", "output limit exceeded");
-    try expectErrorMessage(&lua, "return 1", "output limit exceeded");
+    try expectErrorMessage(lua, "pcall(print, 'more than the rest of the limit') while true do end", "output limit exceeded");
+    try expectErrorMessage(lua, "return 1", "output limit exceeded");
     try std.testing.expectEqual(@as(u64, 8), lua.outputBytes());
 
     lua.resetOutputLimit();
@@ -139,9 +139,9 @@ test "snapshot workers keep closed userdata closed" {
         }
     };
     Handle.gc_runs = 0;
-    var lua = try api.State.init(a, .{ .stdlib = .full });
+    const lua = try api.State.init(a, .{ .stdlib = .full });
     defer lua.deinit();
-    var handle = try lua.newUserdataAuto(Handle, .{}, .{ .snapshot = .{ .copy = Hooks.copy, .dispose = Hooks.dispose } });
+    var handle = try lua.newUserdata(Handle, .{}, .{ .snapshot = .{ .copy = Hooks.copy, .dispose = Hooks.dispose } });
     defer handle.deinit();
     try lua.setGlobal("handle", handle);
     try lua.doString("debug.getmetatable(handle).__gc(handle)", .{});
@@ -149,7 +149,7 @@ test "snapshot workers keep closed userdata closed" {
 
     var snapshot = try lua.snapshot(a);
     defer snapshot.deinit();
-    var worker = try snapshot.newState(a);
+    const worker = try snapshot.newState(a);
     defer worker.deinit();
     try worker.doString(
         \\debug.getmetatable(handle).__gc(handle)
@@ -160,12 +160,12 @@ test "snapshot workers keep closed userdata closed" {
 }
 
 test "snapshot workers collect garbage before the memory limit" {
-    var lua = try api.State.init(a, .{ .limits = .{ .max_memory = 10 << 20 } });
+    const lua = try api.State.init(a, .{ .limits = .{ .max_memory = 10 << 20 } });
     defer lua.deinit();
     try lua.doString("source = ('x'):rep(2 << 20)", .{});
     var snapshot = try lua.snapshot(a);
     defer snapshot.deinit();
-    var worker = try snapshot.newState(a);
+    const worker = try snapshot.newState(a);
     defer worker.deinit();
     for (0..2) |_| {
         try worker.doString(
@@ -181,7 +181,7 @@ test "snapshot workers collect garbage before the memory limit" {
 test "snapshot workers inherit the output count" {
     var buffer: [64]u8 = undefined;
     var sink: std.Io.Writer.Discarding = .init(&buffer);
-    var lua = try api.State.init(a, .{
+    const lua = try api.State.init(a, .{
         .capabilities = .{ .io = .{ .stdout = &sink.writer, .stderr = &sink.writer } },
         .limits = .{ .max_output_bytes = 16 },
     });
@@ -191,16 +191,16 @@ test "snapshot workers inherit the output count" {
 
     var snapshot = try lua.snapshot(a);
     defer snapshot.deinit();
-    var worker = try snapshot.newState(a);
+    const worker = try snapshot.newState(a);
     defer worker.deinit();
     try std.testing.expectEqual(@as(u64, 9), worker.outputBytes());
-    try expectErrorMessage(&worker, "print('12345678')", "output limit exceeded");
+    try expectErrorMessage(worker, "print('12345678')", "output limit exceeded");
 }
 
 test "finalizer budget bounds deinit and collect and host finalizers still run" {
     Handle.finalized = 0;
-    var lua = try api.State.init(a, .{ .limits = .{ .max_finalizer_instructions = 10_000 } });
-    var handle = try lua.newUserdataAuto(Handle, .{}, .{ .finalizer = Handle.finalize });
+    const lua = try api.State.init(a, .{ .limits = .{ .max_finalizer_instructions = 10_000 } });
+    var handle = try lua.newUserdata(Handle, .{}, .{ .finalizer = Handle.finalize });
     try lua.setGlobal("handle", handle);
     handle.deinit();
 
@@ -215,7 +215,7 @@ test "finalizer budget bounds deinit and collect and host finalizers still run" 
 }
 
 test "native stack limit raises a catchable error and leaves the state usable" {
-    var lua = try api.State.init(a, .{ .limits = .{ .max_native_stack = 256 << 10 } });
+    const lua = try api.State.init(a, .{ .limits = .{ .max_native_stack = 256 << 10 } });
     defer lua.deinit();
     try lua.doString(
         \\local function f() return ("x"):gsub("x", f) end
@@ -233,8 +233,8 @@ test "native stack limit raises a catchable error and leaves the state usable" {
 test "bound __gc runs once and closes the payload" {
     Handle.gc_runs = 0;
     Handle.finalized = 0;
-    var lua = try api.State.init(a, .{ .stdlib = .full });
-    var handle = try lua.newUserdataAuto(Handle, .{}, .{ .finalizer = Handle.finalize });
+    const lua = try api.State.init(a, .{ .stdlib = .full });
+    var handle = try lua.newUserdata(Handle, .{}, .{ .finalizer = Handle.finalize });
     try lua.setGlobal("handle", handle);
     try std.testing.expect((try handle.ptr()).id == 1);
 
@@ -255,7 +255,7 @@ test "bound __gc runs once and closes the payload" {
 }
 
 test "expose_metatable keeps getmetatable working" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
     try lua.defineUserdata(Handle, .{ .expose_metatable = true });
     var handle = try lua.newUserdata(Handle, .{}, .{});
@@ -265,7 +265,7 @@ test "expose_metatable keeps getmetatable working" {
 }
 
 test "the instruction budget charges native work" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
 
     const Case = struct { source: []const u8 };
@@ -280,11 +280,8 @@ test "the instruction budget charges native work" {
     for (cases) |case| {
         var function = try lua.loadString(case.source, .{ .name = "=charge" });
         defer function.deinit();
-        var result = try function.protectedCallWith(.{}, void, .{ .max_instructions = 2_000 });
-        switch (result) {
-            .ok => return error.TestExpectedError,
-            .lua_error => |*lua_error| lua_error.deinit(),
-        }
+        var lua_error = try callErrorWith(function, .{}, void, .{ .max_instructions = 2_000 });
+        lua_error.deinit();
     }
 
     const before = lua.instructionBudget().used;
@@ -294,7 +291,7 @@ test "the instruction budget charges native work" {
 }
 
 test "garbage is collected before the memory limit fails an allocation" {
-    var lua = try api.State.init(a, .{ .limits = .{ .max_memory = 16 << 20 } });
+    const lua = try api.State.init(a, .{ .limits = .{ .max_memory = 16 << 20 } });
     defer lua.deinit();
     try lua.doString(
         \\for i = 1, 10 do local s = ("x"):rep(7 << 20) end
@@ -302,11 +299,11 @@ test "garbage is collected before the memory limit fails an allocation" {
         \\collectgarbage("stop")
         \\for i = 1, 10 do local s = ("x"):rep(7 << 20) end
     , .{});
-    try expectErrorMessage(&lua, "local t = {} while true do t[#t + 1] = ('x'):rep(1 << 20) .. #t end", "memory limit exceeded");
+    try expectErrorMessage(lua, "local t = {} while true do t[#t + 1] = ('x'):rep(1 << 20) .. #t end", "memory limit exceeded");
 }
 
 test "long chains compile to working code" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
     try lua.doString(
         \\local function f() return f end
@@ -323,9 +320,9 @@ test "long chains compile to working code" {
 }
 
 test "long chains report their real error lines" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
-    try expectErrorMessage(&lua,
+    try expectErrorMessage(lua,
         \\local function f() return nil end
         \\return f()
         \\  ()
@@ -333,7 +330,7 @@ test "long chains report their real error lines" {
 }
 
 test "interrupts stop host compilation" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
     const handle = try lua.interruptHandle();
     handle.interrupt();
@@ -348,7 +345,7 @@ test "decoding rejects tables nested through themselves" {
         name: i64 = 0,
         kids: []const @This() = &.{},
     };
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
     try lua.doString("cycle = {name = 1} cycle.kids = {cycle}", .{});
     var cycle = try lua.getGlobal("cycle", api.Value);
@@ -362,7 +359,7 @@ test "decoding rejects tables nested through themselves" {
 }
 
 test "reset undoes what a script changed in shared state" {
-    var lua = try api.State.init(a, .{ .stdlib = .full, .limits = .{ .max_output_bytes = 1 << 16, .max_instructions = 10_000_000 } });
+    const lua = try api.State.init(a, .{ .stdlib = .full, .limits = .{ .max_output_bytes = 1 << 16, .max_instructions = 10_000_000 } });
     defer lua.deinit();
     try lua.doString(
         \\pristine = string.rep
@@ -436,7 +433,7 @@ test "file handles fail cleanly when a script exhausts the descriptor limit" {
     try temporary.dir.writeFile(io, .{ .sub_path = "f.txt", .data = "data" });
     var root = try temporary.dir.openDir(io, ".", .{});
     defer root.close(io);
-    var lua = try api.State.init(a, .{
+    const lua = try api.State.init(a, .{
         .stdlib = .full,
         .capabilities = .{ .io = .{ .runtime = io }, .filesystem = .{ .host_dir = .{ .dir = root } } },
     });

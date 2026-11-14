@@ -8,16 +8,18 @@
 <summary>All documents</summary>
 
 - [root](root.md)
-- [frontend](frontend.md)
+- [api](api.md)
+- [api.analyze](api/analyze.md)
+- [compile](compile.md)
 - [errors](errors.md)
 - [frontend.source](frontend/source.md)
 - [frontend.token](frontend/token.md)
+- [frontend](frontend.md)
 - [frontend.diagnostic](frontend/diagnostic.md)
 - [frontend.lexer](frontend/lexer.md)
 - [stack_guard](stack_guard.md)
 - [frontend.ast](frontend/ast.md)
 - [frontend.parser](frontend/parser.md)
-- [compile](compile.md)
 - [compile.resolver](compile/resolver.md)
 - [compile.bytecode](compile/bytecode.md)
 - [compile.proto](compile/proto.md)
@@ -79,8 +81,6 @@
 - [compile.compiler](compile/compiler.md)
 - [compile.fold](compile/fold.md)
 - [compile.disasm](compile/disasm.md)
-- [api](api.md)
-- [api.analyze](api/analyze.md)
 - [api.callbacks](api/callbacks.md)
 - [api.convert](api/convert.md)
 - [api.errors](api/errors.md)
@@ -93,12 +93,13 @@
 - [api.table](api/table.md)
 - [api.value](api/value.md)
 - [api.userdata](api/userdata.md)
+- [api.namespace](api/namespace.md)
 - [api.context](api/context.md)
 - [api.decode](api/decode.md)
 - [api.coroutine](api/coroutine.md)
+- [api.string](api/string.md)
 - [api.snapshot](api/snapshot.md)
 - [api.memory_limit](api/memory_limit.md)
-- [api.namespace](api/namespace.md)
 - [testing](testing.md)
 - [testing.clua](testing/clua.md)
 - [testing.bench_runner](testing/bench_runner.md)
@@ -129,6 +130,11 @@
 
 </details>
 
+## Overview
+
+zlua's embedding API. `frontend`, `compile`, `errors`, `runtime`, `stdlib`, and `testing` are
+internal and change between versions.
+
 ## Constants
 
 - [version](#const-version)
@@ -144,19 +150,18 @@
 - [GcParam](#alias-gcparam)
 - [GcParams](#alias-gcparams)
 - [GcOptions](#alias-gcoptions)
-- [GcBudget](#alias-gcbudget)
 - [GcStepResult](#alias-gcstepresult)
 - [Stdlib](#alias-stdlib)
 - [LibrarySet](#alias-libraryset)
 - [Value](#alias-value)
 - [Ref](#alias-ref)
+- [String](#alias-string)
 - [HandleScope](#alias-handlescope)
 - [Table](#alias-table)
 - [Function](#alias-function)
 - [Coroutine](#alias-coroutine)
 - [CoroutineStatus](#alias-coroutinestatus)
 - [ResumeResult](#alias-resumeresult)
-- [CallResult](#alias-callresult)
 - [ErrorRef](#alias-errorref)
 - [CallOptions](#alias-calloptions)
 - [ResumeOptions](#alias-resumeoptions)
@@ -167,7 +172,7 @@
 - [Error](#alias-error)
 - [BytecodeLoadOptions](#alias-bytecodeloadoptions)
 - [BytecodeDumpOptions](#alias-bytecodedumpoptions)
-- [Tuple](#alias-tuple)
+- [deinit](#alias-deinit)
 - [HostFn](#alias-hostfn)
 - [Analysis](#alias-analysis)
 - [GlobalUse](#alias-globaluse)
@@ -210,7 +215,6 @@
 - [DebugOptions](#alias-debugoptions)
 - [LoadMode](#alias-loadmode)
 - [LoadOptions](#alias-loadoptions)
-- [DoOptions](#alias-dooptions)
 - [TableOptions](#alias-tableoptions)
 - [IoCapability](#alias-iocapability)
 - [FixedClock](#alias-fixedclock)
@@ -220,14 +224,12 @@
 - [WarningHandler](#alias-warninghandler)
 - [Capabilities](#alias-capabilities)
 - [UserdataOptions](#alias-userdataoptions)
-- [UserdataPtrOptions](#alias-userdataptroptions)
 
 ## Imports
 
 - [frontend](#import-frontend) `@import("frontend.zig")`
 - [compile](#import-compile) `@import("compile.zig")`
 - [errors](#import-errors) `@import("errors.zig")`
-- [api](#import-api) `@import("api.zig")`
 - [runtime](#import-runtime) `@import("runtime.zig")`
 - [stdlib](#import-stdlib) `@import("stdlib.zig")`
 - [testing](#import-testing) `@import("testing.zig")`
@@ -270,14 +272,6 @@ pub const compile = @import("compile.zig");
 
 ```zig
 pub const errors = @import("errors.zig");
-```
-
-<a id="import-api"></a>
-
-## api
-
-```zig
-pub const api = @import("api.zig");
 ```
 
 <a id="import-runtime"></a>
@@ -384,16 +378,6 @@ pub const GcOptions = api.GcOptions;
 
 References: [`api.GcOptions`](api.md#alias-gcoptions)
 
-<a id="alias-gcbudget"></a>
-
-## GcBudget
-
-```zig
-pub const GcBudget = api.GcBudget;
-```
-
-References: [`api.GcBudget`](api.md#alias-gcbudget)
-
 <a id="alias-gcstepresult"></a>
 
 ## GcStepResult
@@ -443,6 +427,16 @@ pub const Ref = api.Ref;
 ```
 
 References: [`api.Ref`](api.md#alias-ref)
+
+<a id="alias-string"></a>
+
+## String
+
+```zig
+pub const String = api.String;
+```
+
+References: [`api.String`](api.md#alias-string)
 
 <a id="alias-handlescope"></a>
 
@@ -503,16 +497,6 @@ pub const ResumeResult = api.ResumeResult;
 ```
 
 References: [`api.ResumeResult`](api.md#alias-resumeresult)
-
-<a id="alias-callresult"></a>
-
-## CallResult
-
-```zig
-pub const CallResult = api.CallResult;
-```
-
-References: [`api.CallResult`](api.md#alias-callresult)
 
 <a id="alias-errorref"></a>
 
@@ -614,15 +598,15 @@ pub const BytecodeDumpOptions = api.BytecodeDumpOptions;
 
 References: [`api.BytecodeDumpOptions`](api.md#alias-bytecodedumpoptions)
 
-<a id="alias-tuple"></a>
+<a id="alias-deinit"></a>
 
-## Tuple
+## deinit
 
 ```zig
-pub const Tuple = api.Tuple;
+pub const deinit = api.deinit;
 ```
 
-References: [`api.Tuple`](api.md#alias-tuple)
+References: [`api.deinit`](api.md#import-deinit)
 
 <a id="alias-hostfn"></a>
 
@@ -1044,16 +1028,6 @@ pub const LoadOptions = api.LoadOptions;
 
 References: [`api.LoadOptions`](api.md#alias-loadoptions)
 
-<a id="alias-dooptions"></a>
-
-## DoOptions
-
-```zig
-pub const DoOptions = api.DoOptions;
-```
-
-References: [`api.DoOptions`](api.md#alias-dooptions)
-
 <a id="alias-tableoptions"></a>
 
 ## TableOptions
@@ -1143,14 +1117,4 @@ pub const UserdataOptions = api.UserdataOptions;
 ```
 
 References: [`api.UserdataOptions`](api.md#alias-userdataoptions)
-
-<a id="alias-userdataptroptions"></a>
-
-## UserdataPtrOptions
-
-```zig
-pub const UserdataPtrOptions = api.UserdataPtrOptions;
-```
-
-References: [`api.UserdataPtrOptions`](api.md#alias-userdataptroptions)
 

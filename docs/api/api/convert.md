@@ -9,16 +9,18 @@
 <summary>All documents</summary>
 
 - [root](../root.md)
-- [frontend](../frontend.md)
+- [api](../api.md)
+- [api.analyze](../api/analyze.md)
+- [compile](../compile.md)
 - [errors](../errors.md)
 - [frontend.source](../frontend/source.md)
 - [frontend.token](../frontend/token.md)
+- [frontend](../frontend.md)
 - [frontend.diagnostic](../frontend/diagnostic.md)
 - [frontend.lexer](../frontend/lexer.md)
 - [stack_guard](../stack_guard.md)
 - [frontend.ast](../frontend/ast.md)
 - [frontend.parser](../frontend/parser.md)
-- [compile](../compile.md)
 - [compile.resolver](../compile/resolver.md)
 - [compile.bytecode](../compile/bytecode.md)
 - [compile.proto](../compile/proto.md)
@@ -80,8 +82,6 @@
 - [compile.compiler](../compile/compiler.md)
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
-- [api](../api.md)
-- [api.analyze](../api/analyze.md)
 - [api.callbacks](../api/callbacks.md)
 - [api.convert](../api/convert.md)
 - [api.errors](../api/errors.md)
@@ -94,12 +94,13 @@
 - [api.table](../api/table.md)
 - [api.value](../api/value.md)
 - [api.userdata](../api/userdata.md)
+- [api.namespace](../api/namespace.md)
 - [api.context](../api/context.md)
 - [api.decode](../api/decode.md)
 - [api.coroutine](../api/coroutine.md)
+- [api.string](../api/string.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
-- [api.namespace](../api/namespace.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
 - [testing.bench_runner](../testing/bench_runner.md)
@@ -140,8 +141,10 @@
 - [writeEntries](#fn-writeentries)
 - [fromRuntimeResults](#fn-fromruntimeresults)
 - [fromRuntimeValue](#fn-fromruntimevalue)
+- [fromRuntimeBorrowed](#fn-fromruntimeborrowed)
 - [integerFromFloat](#fn-integerfromfloat)
 - [isOwnedApiValue](#fn-isownedapivalue)
+- [deinit](#fn-deinit)
 - [deinitIfOwned](#fn-deinitifowned)
 
 ## Types
@@ -161,7 +164,7 @@ pub fn expectedLuaType(comptime T: type) []const u8
 ## convertArgs
 
 ```zig
-pub fn convertArgs(state: *State, args: anytype) ![]runtime.Value
+pub fn convertArgs(state: *State, args: anytype) ![argCount(@TypeOf(args))]runtime.Value
 ```
 
 References: [`runtime.Value`](../runtime.md#alias-value)
@@ -257,6 +260,19 @@ pub fn fromRuntimeValue(state: *State, raw: runtime.Value, comptime T: type) !T
 
 References: [`runtime.Value`](../runtime.md#alias-value)
 
+<a id="fn-fromruntimeborrowed"></a>
+
+## fromRuntimeBorrowed
+
+Like `fromRuntimeValue`, also reading `[]const u8` and `*T` that borrow VM memory. `raw` must
+stay reachable while the result is used, as a callback argument does.
+
+```zig
+pub fn fromRuntimeBorrowed(state: *State, raw: runtime.Value, comptime T: type) !T
+```
+
+References: [`runtime.Value`](../runtime.md#alias-value)
+
 <a id="fn-integerfromfloat"></a>
 
 ## integerFromFloat
@@ -271,6 +287,16 @@ pub fn integerFromFloat(value: f64) ?i64
 
 ```zig
 pub fn isOwnedApiValue(comptime T: type) bool
+```
+
+<a id="fn-deinit"></a>
+
+## deinit
+
+Releases the handles in `value`, a pointer to a handle, `Value`, optional, or tuple.
+
+```zig
+pub fn deinit(value: anytype) void
 ```
 
 <a id="fn-deinitifowned"></a>

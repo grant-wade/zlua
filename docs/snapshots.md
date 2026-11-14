@@ -72,7 +72,7 @@ With a thread-safe allocator `a` that outlives the joined workers:
 const Worker = struct {
     fn run(owned: zlua.Snapshot, allocator: std.mem.Allocator) void {
         var snapshot = owned; // ownership moved from the spawning thread
-        var vm = snapshot.newState(allocator) catch {
+        const vm = snapshot.newState(allocator) catch {
             snapshot.deinit();
             return;
         };
@@ -163,7 +163,7 @@ up to the host.
 
 ### Copy Hooks
 
-Hooks passed to `newUserdata` or `newUserdataPtr` give each worker its own copy:
+Hooks passed to `newUserdata` or `wrapUserdata` give each worker its own copy:
 
 ```zig
 const Counter = struct {
@@ -235,9 +235,8 @@ const count = try tracked.withRead({}, struct {
   `error.ScopedAccessConflict`. Overlapping write scopes are allowed.
 - Typed callbacks and auto-bound methods open a read scope for `*const T`
   arguments and a mutable scope for `*T` arguments.
-- `ptr`, `getGlobal(..., *T)`, and `Context.arg(..., *T)` return
-  `error.ScopedAccessRequired`.
-- Scoped tracking requires owned userdata, and `newUserdataPtr` rejects it.
+- `ptr` and `Context.arg(..., *T)` return `error.ScopedAccessRequired`.
+- Scoped tracking requires owned userdata, and `wrapUserdata` rejects it.
 - A failed mutable scope keeps its writes, and the payload stays dirty.
 - Reset disposes of the private copy and restores the pristine storage.
   Unchanged payloads need no copies.

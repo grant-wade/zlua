@@ -1,49 +1,41 @@
 const std = @import("std");
 const api = @import("../api.zig");
+const errorMessage = @import("api_expect.zig").errorMessage;
+const callError = @import("api_expect.zig").callError;
 const Context = api.Context;
 const Function = api.Function;
 const Ref = api.Ref;
 const State = api.State;
 const Table = api.Table;
-const Tuple = api.Tuple;
 const Userdata = api.Userdata;
 
 fn expectProtectedErrorContains(lua: *State, function: Function, needle: []const u8) !void {
-    const result = try function.protectedCall(.{}, void);
-    switch (result) {
-        .ok => return error.TestExpectedLuaError,
-        .lua_error => |err_ref| {
-            var err = err_ref;
-            defer err.deinit();
-            const message = try err.message();
-            defer lua.allocator().free(message);
-            try std.testing.expect(std.mem.indexOf(u8, message, needle) != null);
-        },
-    }
+    var err = try callError(function, .{}, void);
+    defer err.deinit();
+    const message = try errorMessage(err);
+    defer lua.allocator().free(message);
+    try std.testing.expect(std.mem.indexOf(u8, message, needle) != null);
 }
 
 test "api typed host callback can create userdata through context" {
     const Budget = struct {
         remaining: i64,
 
-        fn spend(self: *@This(), amount: i64) i64 {
+        pub fn spend(self: *@This(), amount: i64) i64 {
             self.remaining = @max(self.remaining - amount, 0);
             return self.remaining;
         }
     };
     const Callbacks = struct {
         fn newBudget(ctx: *Context, amount: i64) !Userdata(Budget) {
-            var budget = try ctx.state().newUserdata(Budget, .{ .remaining = amount }, .{});
-            errdefer budget.deinit();
-            try budget.method("spend", Budget.spend);
-            return budget;
+            return ctx.state().newUserdata(Budget, .{ .remaining = amount }, .{});
         }
     };
 
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
-    var new_budget = try lua.registerTyped("new_budget", Callbacks.newBudget);
+    var new_budget = try lua.newTypedFunction("new_budget", Callbacks.newBudget);
     defer new_budget.deinit();
     try lua.setGlobal("new_budget", new_budget);
 
@@ -65,18 +57,17 @@ test "api userdata methods receive typed Zig pointers" {
     const Counter = struct {
         value: i64,
 
-        fn inc(self: *@This(), amount: i64) i64 {
+        pub fn inc(self: *@This(), amount: i64) i64 {
             self.value += amount;
             return self.value;
         }
     };
 
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
     var counter = try lua.newUserdata(Counter, .{ .value = 0 }, .{});
     defer counter.deinit();
-    try counter.method("inc", Counter.inc);
     try lua.setGlobal("counter", counter);
 
     try lua.doString(
@@ -116,10 +107,10 @@ test "api auto userdata binding installs receiver methods" {
         }
     };
 
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
-    var counter = try lua.newUserdataAuto(Counter, .{ .value = 0 }, .{});
+    var counter = try lua.newUserdata(Counter, .{ .value = 0 }, .{});
     defer counter.deinit();
     try lua.setGlobal("counter", counter);
 
@@ -146,11 +137,11 @@ test "api auto userdata pointer wrappers bind methods" {
         }
     };
 
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
     var backing = Counter{ .value = 10 };
-    var counter = try lua.newUserdataPtrAuto(Counter, &backing, .{});
+    var counter = try lua.wrapUserdata(Counter, &backing, .{});
     defer counter.deinit();
     try lua.setGlobal("counter", counter);
 
@@ -178,10 +169,10 @@ test "api userdata initializer with returns auto-bound userdata" {
         }
     };
 
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
-    var new_budget = try lua.registerUserdataInitializerWith(Budget, "new_budget", Budget.init, .{});
+    var new_budget = try lua.newConstructor(Budget, "new_budget", Budget.init, .{});
     defer new_budget.deinit();
     try lua.setGlobal("new_budget", new_budget);
 
@@ -212,10 +203,10 @@ test "api userdata initializer with accepts plain initializer functions" {
         }
     };
 
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
-    var new_counter = try lua.registerUserdataInitializerWith(Counter, "new_counter", Counter.init, .{});
+    var new_counter = try lua.newConstructor(Counter, "new_counter", Counter.init, .{});
     defer new_counter.deinit();
     try lua.setGlobal("new_counter", new_counter);
 
@@ -231,28 +222,22 @@ test "api userdata initializer with argument errors become Lua errors" {
         }
     };
 
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
-    var new_counter = try lua.registerUserdataInitializerWith(Counter, "new_counter", Counter.init, .{});
+    var new_counter = try lua.newConstructor(Counter, "new_counter", Counter.init, .{});
     defer new_counter.deinit();
     try lua.setGlobal("new_counter", new_counter);
 
     var chunk = try lua.loadString("new_counter('bad')", .{ .name = "=api-userdata-initializer-arg-error" });
     defer chunk.deinit();
 
-    const result = try chunk.protectedCall(.{}, void);
-    switch (result) {
-        .ok => return error.TestExpectedLuaError,
-        .lua_error => |err_ref| {
-            var err = err_ref;
-            defer err.deinit();
-            const message = try err.message();
-            defer lua.allocator().free(message);
-            try std.testing.expect(std.mem.indexOf(u8, message, "new_counter") != null);
-            try std.testing.expect(std.mem.indexOf(u8, message, "number") != null);
-        },
-    }
+    var err = try callError(chunk, .{}, void);
+    defer err.deinit();
+    const message = try errorMessage(err);
+    defer lua.allocator().free(message);
+    try std.testing.expect(std.mem.indexOf(u8, message, "new_counter") != null);
+    try std.testing.expect(std.mem.indexOf(u8, message, "number") != null);
 }
 
 test "api userdata initializer with can raise Lua errors" {
@@ -265,17 +250,17 @@ test "api userdata initializer with can raise Lua errors" {
         }
     };
 
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
-    var new_counter = try lua.registerUserdataInitializerWith(Counter, "new_counter", Counter.init, .{});
+    var new_counter = try lua.newConstructor(Counter, "new_counter", Counter.init, .{});
     defer new_counter.deinit();
     try lua.setGlobal("new_counter", new_counter);
 
     var chunk = try lua.loadString("new_counter(-1)", .{ .name = "=api-userdata-initializer-raise" });
     defer chunk.deinit();
 
-    try expectProtectedErrorContains(&lua, chunk, "negative counter");
+    try expectProtectedErrorContains(lua, chunk, "negative counter");
 }
 
 test "api auto userdata binding skips non receiver declarations" {
@@ -302,10 +287,10 @@ test "api auto userdata binding skips non receiver declarations" {
         }
     };
 
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
-    var fixture = try lua.newUserdataAuto(Fixture, .{ .value = 7 }, .{});
+    var fixture = try lua.newUserdata(Fixture, .{ .value = 7 }, .{});
     defer fixture.deinit();
     try lua.setGlobal("fixture", fixture);
 
@@ -337,10 +322,10 @@ test "api userdata method context injection works in later positions" {
         }
     };
 
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
-    var counter = try lua.newUserdataAuto(Counter, .{ .value = 0 }, .{});
+    var counter = try lua.newUserdata(Counter, .{ .value = 0 }, .{});
     defer counter.deinit();
     try lua.setGlobal("counter", counter);
 
@@ -365,14 +350,14 @@ test "api userdata pointer wrappers and Context.arg typed reads" {
         }
     };
 
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
     var backing = Counter{ .value = 10 };
-    var counter = try lua.newUserdataPtr(Counter, &backing, .{});
+    var counter = try lua.wrapUserdata(Counter, &backing, .{});
     defer counter.deinit();
     try lua.setGlobal("counter", counter);
-    var add_counter = try lua.register("add_counter", Callbacks.add);
+    var add_counter = try lua.newFunction("add_counter", Callbacks.add);
     defer add_counter.deinit();
     try lua.setGlobal("add_counter", add_counter);
 
@@ -390,32 +375,26 @@ test "api userdata wrong type errors are clear" {
         }
     };
 
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
     var other = try lua.newUserdata(Other, .{ .value = 1 }, .{});
     defer other.deinit();
     try lua.setGlobal("other", other);
-    var need_counter = try lua.register("need_counter", Callbacks.needCounter);
+    var need_counter = try lua.newFunction("need_counter", Callbacks.needCounter);
     defer need_counter.deinit();
     try lua.setGlobal("need_counter", need_counter);
 
     var chunk = try lua.loadString("need_counter(other)", .{ .name = "=api-21.5-wrong-userdata" });
     defer chunk.deinit();
 
-    const result = try chunk.protectedCall(.{}, void);
-    switch (result) {
-        .ok => return error.TestExpectedLuaError,
-        .lua_error => |err_ref| {
-            var err = err_ref;
-            defer err.deinit();
-            const message = try err.message();
-            defer lua.allocator().free(message);
-            try std.testing.expect(std.mem.indexOf(u8, message, "need_counter") != null);
-            try std.testing.expect(std.mem.indexOf(u8, message, @typeName(Counter)) != null);
-            try std.testing.expect(std.mem.indexOf(u8, message, @typeName(Other)) != null);
-        },
-    }
+    var err = try callError(chunk, .{}, void);
+    defer err.deinit();
+    const message = try errorMessage(err);
+    defer lua.allocator().free(message);
+    try std.testing.expect(std.mem.indexOf(u8, message, "need_counter") != null);
+    try std.testing.expect(std.mem.indexOf(u8, message, @typeName(Counter)) != null);
+    try std.testing.expect(std.mem.indexOf(u8, message, @typeName(Other)) != null);
 }
 
 test "api userdata method wrong receiver errors are clear" {
@@ -429,10 +408,10 @@ test "api userdata method wrong receiver errors are clear" {
     };
     const Other = struct { value: i64 };
 
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
-    var counter = try lua.newUserdataAuto(Counter, .{ .value = 0 }, .{});
+    var counter = try lua.newUserdata(Counter, .{ .value = 0 }, .{});
     defer counter.deinit();
     try lua.setGlobal("counter", counter);
 
@@ -443,19 +422,13 @@ test "api userdata method wrong receiver errors are clear" {
     var chunk = try lua.loadString("counter.inc(other, 1)", .{ .name = "=api-userdata-wrong-receiver" });
     defer chunk.deinit();
 
-    const result = try chunk.protectedCall(.{}, void);
-    switch (result) {
-        .ok => return error.TestExpectedLuaError,
-        .lua_error => |err_ref| {
-            var err = err_ref;
-            defer err.deinit();
-            const message = try err.message();
-            defer lua.allocator().free(message);
-            try std.testing.expect(std.mem.indexOf(u8, message, "inc") != null);
-            try std.testing.expect(std.mem.indexOf(u8, message, @typeName(Counter)) != null);
-            try std.testing.expect(std.mem.indexOf(u8, message, @typeName(Other)) != null);
-        },
-    }
+    var err = try callError(chunk, .{}, void);
+    defer err.deinit();
+    const message = try errorMessage(err);
+    defer lua.allocator().free(message);
+    try std.testing.expect(std.mem.indexOf(u8, message, "inc") != null);
+    try std.testing.expect(std.mem.indexOf(u8, message, @typeName(Counter)) != null);
+    try std.testing.expect(std.mem.indexOf(u8, message, @typeName(Other)) != null);
 }
 
 test "api userdata finalizers run under forced GC" {
@@ -467,7 +440,7 @@ test "api userdata finalizers run under forced GC" {
         }
     };
 
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
     var finalized: usize = 0;
@@ -484,18 +457,17 @@ test "api userdata close metamethod runs for to-be-closed locals" {
     const Closer = struct {
         closed: *usize,
 
-        fn close(self: *@This()) void {
+        pub fn __close(self: *@This()) void {
             self.closed.* += 1;
         }
     };
 
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
     var closed: usize = 0;
     var closer = try lua.newUserdata(Closer, .{ .closed = &closed }, .{});
     defer closer.deinit();
-    try closer.metamethod("__close", Closer.close);
     try lua.setGlobal("closer", closer);
 
     try lua.doString(
@@ -506,7 +478,7 @@ test "api userdata close metamethod runs for to-be-closed locals" {
     try std.testing.expectEqual(@as(usize, 1), closed);
 }
 
-test "api userdata pairs and ipairs use explicit and automatic metamethods" {
+test "api userdata pairs and ipairs use bound metamethods" {
     const Sequence = struct {
         values: [4]?bool,
         fail: bool = false,
@@ -517,59 +489,50 @@ test "api userdata pairs and ipairs use explicit and automatic metamethods" {
             return self.values[@intCast(index - 1)];
         }
 
-        pub fn __pairs(self: *const @This(), ctx: *Context) !@Tuple(&.{ Ref, Table }) {
+        pub fn __pairs(self: *const @This(), ctx: *Context) !struct { Ref, Table } {
             if (self.fail) return ctx.raise("pairs failed");
-            var table = try ctx.state().createTable(.{});
+            var table = try ctx.state().newTable(.{});
             errdefer table.deinit();
             for (self.values, 1..) |value, index| try table.set(index, value);
             return .{ try ctx.state().getGlobal("next", Ref), table };
         }
     };
-    var lua = try State.init(std.testing.allocator, .{ .stdlib = .full });
+    const lua = try State.init(std.testing.allocator, .{ .stdlib = .full });
     defer lua.deinit();
-    for ([_]bool{ false, true }) |automatic| {
-        for ([_][4]?bool{
-            .{ null, null, null, null },
-            .{ false, true, null, null },
-            .{ true, null, false, null },
-        }) |values| {
-            const payload: Sequence = .{ .values = values };
-            var sequence = if (automatic)
-                try lua.newUserdataAuto(Sequence, payload, .{})
-            else
-                try lua.newUserdata(Sequence, payload, .{});
-            defer sequence.deinit();
-            if (!automatic) {
-                try sequence.metamethod("__index", Sequence.__index);
-                try sequence.metamethod("__pairs", Sequence.__pairs);
-            }
-            try lua.setGlobal("sequence", sequence);
-            var expected = try lua.createTable(.{});
-            defer expected.deinit();
-            for (values, 1..) |value, index| try expected.set(index, value);
-            try lua.setGlobal("expected", expected);
-            try lua.doString(
-                \\assert(type(sequence) == 'userdata')
-                \\assert(select('#', pairs(sequence)) == 4)
-                \\local found = {}
-                \\for k, v in pairs(sequence) do assert(v == expected[k]); found[k] = v end
-                \\for k, v in pairs(expected) do assert(found[k] == v) end
-                \\local iter, state, key = ipairs(sequence)
-                \\assert(state == sequence and key == 0)
-                \\local count = 0
-                \\for k, v in ipairs(sequence) do
-                \\  count = count + 1
-                \\  assert(k == count and v == expected[k])
-                \\  local direct_k, direct_v = iter(state, key)
-                \\  assert(direct_k == k and direct_v == v)
-                \\  key = k
-                \\end
-                \\assert(expected[count + 1] == nil)
-                \\assert(select('#', iter(state, key)) == 1 and iter(state, key) == nil)
-            , .{});
-        }
+    for ([_][4]?bool{
+        .{ null, null, null, null },
+        .{ false, true, null, null },
+        .{ true, null, false, null },
+    }) |values| {
+        const payload: Sequence = .{ .values = values };
+        var sequence = try lua.newUserdata(Sequence, payload, .{});
+        defer sequence.deinit();
+        try lua.setGlobal("sequence", sequence);
+        var expected = try lua.newTable(.{});
+        defer expected.deinit();
+        for (values, 1..) |value, index| try expected.set(index, value);
+        try lua.setGlobal("expected", expected);
+        try lua.doString(
+            \\assert(type(sequence) == 'userdata')
+            \\assert(select('#', pairs(sequence)) == 4)
+            \\local found = {}
+            \\for k, v in pairs(sequence) do assert(v == expected[k]); found[k] = v end
+            \\for k, v in pairs(expected) do assert(found[k] == v) end
+            \\local iter, state, key = ipairs(sequence)
+            \\assert(state == sequence and key == 0)
+            \\local count = 0
+            \\for k, v in ipairs(sequence) do
+            \\  count = count + 1
+            \\  assert(k == count and v == expected[k])
+            \\  local direct_k, direct_v = iter(state, key)
+            \\  assert(direct_k == k and direct_v == v)
+            \\  key = k
+            \\end
+            \\assert(expected[count + 1] == nil)
+            \\assert(select('#', iter(state, key)) == 1 and iter(state, key) == nil)
+        , .{});
     }
-    var failing = try lua.newUserdataAuto(Sequence, .{ .values = @splat(null), .fail = true }, .{});
+    var failing = try lua.newUserdata(Sequence, .{ .values = @splat(null), .fail = true }, .{});
     defer failing.deinit();
     try lua.setGlobal("failing", failing);
     try lua.doString(
@@ -586,7 +549,7 @@ test "api userdata pairs and ipairs use explicit and automatic metamethods" {
 }
 
 test "api userdata table index and Lua iteration metamethods" {
-    var lua = try State.init(std.testing.allocator, .{ .stdlib = .full });
+    const lua = try State.init(std.testing.allocator, .{ .stdlib = .full });
     defer lua.deinit();
     var userdata = try lua.newUserdata(u8, 0, .{});
     defer userdata.deinit();
@@ -652,9 +615,9 @@ test "api finalizers receive the state allocator and external bytes keep garbage
     Buffer.live = 0;
     Buffer.peak = 0;
 
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
-    var create = try lua.register("create", Buffer.create);
+    var create = try lua.newFunction("create", Buffer.create);
     defer create.deinit();
     try lua.setGlobal("create", create);
 
@@ -696,9 +659,9 @@ fn collectExternalBytes(allocator: std.mem.Allocator) !void {
     Buffer.live = 0;
     Buffer.peak = 0;
 
-    var lua = try State.init(allocator, .{});
+    const lua = try State.init(allocator, .{});
     defer lua.deinit();
-    var create = try lua.register("create", Buffer.create);
+    var create = try lua.newFunction("create", Buffer.create);
     defer create.deinit();
     try lua.setGlobal("create", create);
 
@@ -713,7 +676,7 @@ fn collectExternalBytes(allocator: std.mem.Allocator) !void {
 test "api setExternalBytes replaces the reported amount" {
     const Blob = struct { size: usize };
 
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
     var blob = try lua.newUserdata(Blob, .{ .size = 1 }, .{});
     defer blob.deinit();
@@ -754,7 +717,7 @@ const DefinedMesh = struct {
 };
 
 test "api defined userdata share one metatable and one set of callbacks" {
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
     try lua.defineUserdata(DefinedCanvas, .{ .name = "canvas", .expose_metatable = true });
@@ -780,7 +743,7 @@ test "api defined userdata share one metatable and one set of callbacks" {
 }
 
 test "api defined userdata names appear in argument errors" {
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
     try lua.defineUserdata(DefinedCanvas, .{ .name = "canvas" });
@@ -811,7 +774,7 @@ test "api defined userdata can take methods from another struct and a default na
         }
     };
 
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
     try lua.defineUserdata(Payload, .{ .methods = Methods, .expose_metatable = true });
     var payload = try lua.newUserdata(Payload, .{ .value = 4 }, .{});
@@ -824,18 +787,18 @@ test "api defined userdata can take methods from another struct and a default na
 }
 
 test "api auto userdata define their type once" {
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
-    var first = try lua.newUserdataAuto(DefinedCanvas, .{ .width = 1 }, .{});
+    var first = try lua.newUserdata(DefinedCanvas, .{ .width = 1 }, .{});
     defer first.deinit();
     const callbacks = lua.callbacks.items.len;
     for (0..8) |_| {
-        var more = try lua.newUserdataAuto(DefinedCanvas, .{ .width = 2 }, .{});
+        var more = try lua.newUserdata(DefinedCanvas, .{ .width = 2 }, .{});
         more.deinit();
     }
     var backing = DefinedCanvas{ .width = 3 };
-    var pointer = try lua.newUserdataPtrAuto(DefinedCanvas, &backing, .{});
+    var pointer = try lua.wrapUserdata(DefinedCanvas, &backing, .{});
     defer pointer.deinit();
     try std.testing.expectEqual(callbacks, lua.callbacks.items.len);
     try lua.setGlobal("pointer", pointer);
@@ -843,13 +806,13 @@ test "api auto userdata define their type once" {
 }
 
 test "api userdata definitions follow snapshots and reset" {
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
     try lua.defineUserdata(DefinedCanvas, .{ .name = "canvas" });
 
     var snapshot = try lua.snapshot(std.testing.allocator);
     defer snapshot.deinit();
-    var worker = try snapshot.newState(std.testing.allocator);
+    const worker = try snapshot.newState(std.testing.allocator);
     defer worker.deinit();
 
     var canvas = try worker.newUserdata(DefinedCanvas, .{ .width = 5 }, .{});
@@ -874,7 +837,7 @@ test "api userdata definitions follow snapshots and reset" {
 
 test "api userdata method raises an error naming the current Lua line" {
     const Scene = struct {
-        fn text(self: *@This(), ctx: *Context, parent_id: i64) !void {
+        pub fn text(self: *@This(), ctx: *Context, parent_id: i64) !void {
             _ = self;
             if (parent_id == 1) return;
             const line = ctx.currentLine() orelse 0;
@@ -884,12 +847,11 @@ test "api userdata method raises an error naming the current Lua line" {
         }
     };
 
-    var lua = try State.init(std.testing.allocator, .{});
+    const lua = try State.init(std.testing.allocator, .{});
     defer lua.deinit();
 
     var scene = try lua.newUserdata(Scene, .{}, .{});
     defer scene.deinit();
-    try scene.method("text", Scene.text);
     try lua.setGlobal("s", scene);
 
     var chunk = try lua.loadString(
@@ -899,15 +861,80 @@ test "api userdata method raises an error naming the current Lua line" {
     , .{ .name = "=config" });
     defer chunk.deinit();
 
-    const result = try chunk.protectedCall(.{}, void);
-    switch (result) {
-        .ok => return error.TestExpectedLuaError,
-        .lua_error => |err_ref| {
-            var err = err_ref;
-            defer err.deinit();
-            const message = try err.message();
-            defer lua.allocator().free(message);
-            try std.testing.expectEqualStrings("line 3: parent_id not found", message);
-        },
-    }
+    var err = try callError(chunk, .{}, void);
+    defer err.deinit();
+    const message = try errorMessage(err);
+    defer lua.allocator().free(message);
+    try std.testing.expectEqualStrings("line 3: parent_id not found", message);
+}
+
+test "api userdata lua declaration renames and leaves out methods" {
+    const Buffer = struct {
+        size: i64,
+        open: bool = true,
+
+        pub const lua = .{
+            .deinit = .{ .skip = true },
+            .release = .{ .skip = true },
+            .length = .{ .key = "len" },
+            .close = .{ .key = "__close" },
+        };
+
+        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            _ = allocator;
+            self.open = false;
+        }
+
+        pub fn release(self: *@This()) void {
+            self.open = false;
+        }
+
+        pub fn length(self: *const @This()) i64 {
+            return self.size;
+        }
+
+        pub fn close(self: *@This()) void {
+            self.open = false;
+        }
+    };
+
+    const lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    var buffer = try lua.newUserdata(Buffer, .{ .size = 3 }, .{});
+    defer buffer.deinit();
+    try lua.setGlobal("buffer", buffer);
+    try lua.doString(
+        \\assert(buffer:len() == 3)
+        \\assert(buffer.deinit == nil and buffer.release == nil)
+        \\assert(buffer.length == nil and buffer.close == nil)
+    , .{});
+    try std.testing.expect((try buffer.ptr()).open);
+    try lua.doString("do local scoped <close> = buffer end", .{});
+    try std.testing.expect(!(try buffer.ptr()).open);
+}
+
+test "api userdata lua_userdata declaration sets the options of the first use" {
+    const Token = struct {
+        id: i64,
+
+        pub const lua_userdata = .{ .name = "token", .methods = struct {} };
+
+        pub fn revoke(self: *@This()) void {
+            self.id = 0;
+        }
+    };
+
+    const lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    var owned = try lua.newUserdata(Token, .{ .id = 1 }, .{});
+    defer owned.deinit();
+    var backing = Token{ .id = 2 };
+    var wrapped = try lua.wrapUserdata(Token, &backing, .{});
+    defer wrapped.deinit();
+    try lua.setGlobals(.{ .owned = owned, .wrapped = wrapped, .Token = Token });
+    try lua.doString(
+        \\assert(tostring(owned):find("^token: ") and tostring(wrapped):find("^token: "))
+        \\assert(owned.revoke == nil and wrapped.revoke == nil)
+        \\assert(Token.revoke and Token.lua_userdata == nil)
+    , .{});
 }

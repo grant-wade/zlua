@@ -18,14 +18,6 @@ pub const ConversionError = error{
 
 const memory_limit_error_message = "memory limit exceeded";
 
-/// Result of protected calls and coroutine operations.
-pub fn CallResult(comptime R: type) type {
-    return union(enum) {
-        ok: R,
-        lua_error: ErrorRef,
-    };
-}
-
 /// Rooted handle to a Lua error value.
 pub const ErrorRef = struct {
     ref: Ref,
@@ -48,12 +40,14 @@ pub const ErrorRef = struct {
         return self.ref.value();
     }
 
-    /// Formats the error value; the caller frees it with the state's allocator.
-    pub fn message(self: ErrorRef) ![]const u8 {
-        var out = std.ArrayList(u8).empty;
-        defer out.deinit(self.ref.state.allocator());
-        try runtime.appendErrorValue(self.ref.state.allocator(), &out, try handle.rawValue(self.ref));
-        return self.ref.state.allocator().dupe(u8, out.items);
+    /// Writes the error value as the CLI reports it.
+    pub fn writeMessage(self: ErrorRef, writer: *std.Io.Writer) !void {
+        try writeErrorValue(self.ref.state, try handle.rawValue(self.ref), writer);
+    }
+
+    /// Writes the message for the `{f}` format specifier.
+    pub fn format(self: ErrorRef, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        self.writeMessage(writer) catch return error.WriteFailed;
     }
 };
 
@@ -83,18 +77,29 @@ pub fn takeMemoryLimitExceeded(state: *State) bool {
     return true;
 }
 
-pub fn memoryLimitErrorRef(state: *State) !ErrorRef {
+/// Records the memory limit failure as the last Lua error and returns `error.LuaError`.
+pub fn memoryLimitError(state: *State) error{LuaError} {
     state.raw_state.last_error = .{ .diagnostic = memory_limit_error_message };
-    const value = state.raw_state.currentErrorValue();
-    setLastErrorValue(state, value) catch {};
-    return refFromRuntime(state, value);
+    setLastErrorValue(state, state.raw_state.currentErrorValue()) catch {};
+    return error.LuaError;
+}
+
+pub fn writeErrorValue(state: *State, value: runtime.Value, writer: *std.Io.Writer) !void {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(state.allocator());
+    try runtime.appendErrorValue(state.allocator(), &out, value);
+    try writer.writeAll(out.items);
 }
 
 pub fn setLastErrorValue(state: *State, value: runtime.Value) !void {
+    clearLastError(state);
+    state.last_error_root = try state.raw_state.rootValue(value);
+}
+
+pub fn clearLastError(state: *State) void {
     clearLastErrorTraceback(state);
     if (state.last_error_root) |index| state.raw_state.unrootValue(index);
     state.last_error_root = null;
-    state.last_error_root = try state.raw_state.rootValue(value);
 }
 
 pub fn lastErrorValue(state: *State) runtime.Value {

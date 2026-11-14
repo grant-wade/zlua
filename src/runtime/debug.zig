@@ -284,7 +284,7 @@ fn appendTracebackFrame(self: *State, out: *std.ArrayList(u8), thread: *const Th
     }
     var id_buffer: [chunk_id_size]u8 = undefined;
     const stripped = frame.closure.stripped_debug;
-    const source = if (stripped) "?" else chunkId(&id_buffer, frame.closure.proto.source_name);
+    const source = if (isHostHelper(frame.closure)) "[C]" else if (stripped) "?" else chunkId(&id_buffer, frame.closure.proto.source_name);
     if (if (stripped) null else lineForFrame(frame)) |line| {
         try appendFmt(allocator, out, "\n\t{s}:{d}: in ", .{ source, line });
     } else {
@@ -405,6 +405,11 @@ fn callOrigin(frame: CallFrame) ?proto_mod.OperandOrigin {
     if (site.call_name) |origin| return origin;
     if (site.operands.len != 0) return site.operands[0];
     return null;
+}
+
+/// True for the Lua function that runs a host callback's continuation.
+pub fn isHostHelper(closure: *const types.Closure) bool {
+    return closure.stripped_debug and std.mem.eql(u8, closure.proto.source_name, "=[C]");
 }
 
 fn isNativeEntryFrame(frame: CallFrame) bool {

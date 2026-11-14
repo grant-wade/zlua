@@ -1,10 +1,14 @@
+//! zlua's embedding API. `frontend`, `compile`, `errors`, `runtime`, `stdlib`, and `testing` are
+//! internal and change between versions.
+
+const api = @import("api.zig");
+
 pub const version = "0.8.1";
 pub const lua_target_version = "Lua 5.5";
 
 pub const frontend = @import("frontend.zig");
 pub const compile = @import("compile.zig");
 pub const errors = @import("errors.zig");
-pub const api = @import("api.zig");
 pub const runtime = @import("runtime.zig");
 pub const stdlib = @import("stdlib.zig");
 pub const testing = @import("testing.zig");
@@ -17,19 +21,18 @@ pub const GcMode = api.GcMode;
 pub const GcParam = api.GcParam;
 pub const GcParams = api.GcParams;
 pub const GcOptions = api.GcOptions;
-pub const GcBudget = api.GcBudget;
 pub const GcStepResult = api.GcStepResult;
 pub const Stdlib = api.Stdlib;
 pub const LibrarySet = api.LibrarySet;
 pub const Value = api.Value;
 pub const Ref = api.Ref;
+pub const String = api.String;
 pub const HandleScope = api.HandleScope;
 pub const Table = api.Table;
 pub const Function = api.Function;
 pub const Coroutine = api.Coroutine;
 pub const CoroutineStatus = api.CoroutineStatus;
 pub const ResumeResult = api.ResumeResult;
-pub const CallResult = api.CallResult;
 pub const ErrorRef = api.ErrorRef;
 pub const CallOptions = api.CallOptions;
 pub const ResumeOptions = api.ResumeOptions;
@@ -40,7 +43,7 @@ pub const Caller = api.Caller;
 pub const Error = api.Error;
 pub const BytecodeLoadOptions = api.BytecodeLoadOptions;
 pub const BytecodeDumpOptions = api.BytecodeDumpOptions;
-pub const Tuple = api.Tuple;
+pub const deinit = api.deinit;
 pub const HostFn = api.HostFn;
 pub const Analysis = api.Analysis;
 pub const GlobalUse = api.GlobalUse;
@@ -83,7 +86,6 @@ pub const InstructionBudget = api.InstructionBudget;
 pub const DebugOptions = api.DebugOptions;
 pub const LoadMode = api.LoadMode;
 pub const LoadOptions = api.LoadOptions;
-pub const DoOptions = api.DoOptions;
 pub const TableOptions = api.TableOptions;
 pub const IoCapability = api.IoCapability;
 pub const FixedClock = api.FixedClock;
@@ -93,7 +95,6 @@ pub const ExitRequest = api.ExitRequest;
 pub const WarningHandler = api.WarningHandler;
 pub const Capabilities = api.Capabilities;
 pub const UserdataOptions = api.UserdataOptions;
-pub const UserdataPtrOptions = api.UserdataPtrOptions;
 
 test "root exports the types host callbacks must name" {
     comptime {

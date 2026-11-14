@@ -9,16 +9,18 @@
 <summary>All documents</summary>
 
 - [root](../root.md)
-- [frontend](../frontend.md)
+- [api](../api.md)
+- [api.analyze](../api/analyze.md)
+- [compile](../compile.md)
 - [errors](../errors.md)
 - [frontend.source](../frontend/source.md)
 - [frontend.token](../frontend/token.md)
+- [frontend](../frontend.md)
 - [frontend.diagnostic](../frontend/diagnostic.md)
 - [frontend.lexer](../frontend/lexer.md)
 - [stack_guard](../stack_guard.md)
 - [frontend.ast](../frontend/ast.md)
 - [frontend.parser](../frontend/parser.md)
-- [compile](../compile.md)
 - [compile.resolver](../compile/resolver.md)
 - [compile.bytecode](../compile/bytecode.md)
 - [compile.proto](../compile/proto.md)
@@ -80,8 +82,6 @@
 - [compile.compiler](../compile/compiler.md)
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
-- [api](../api.md)
-- [api.analyze](../api/analyze.md)
 - [api.callbacks](../api/callbacks.md)
 - [api.convert](../api/convert.md)
 - [api.errors](../api/errors.md)
@@ -94,12 +94,13 @@
 - [api.table](../api/table.md)
 - [api.value](../api/value.md)
 - [api.userdata](../api/userdata.md)
+- [api.namespace](../api/namespace.md)
 - [api.context](../api/context.md)
 - [api.decode](../api/decode.md)
 - [api.coroutine](../api/coroutine.md)
+- [api.string](../api/string.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
-- [api.namespace](../api/namespace.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
 - [testing.bench_runner](../testing/bench_runner.md)
@@ -132,12 +133,13 @@
 
 ## Functions
 
-- [CallResult](#fn-callresult)
 - [refFromRuntime](#fn-reffromruntime)
 - [captureLuaError](#fn-captureluaerror)
 - [takeMemoryLimitExceeded](#fn-takememorylimitexceeded)
-- [memoryLimitErrorRef](#fn-memorylimiterrorref)
+- [memoryLimitError](#fn-memorylimiterror)
+- [writeErrorValue](#fn-writeerrorvalue)
 - [setLastErrorValue](#fn-setlasterrorvalue)
+- [clearLastError](#fn-clearlasterror)
 - [lastErrorValue](#fn-lasterrorvalue)
 - [clearLastErrorTraceback](#fn-clearlasterrortraceback)
 
@@ -186,16 +188,6 @@ pub const ConversionError = error{
 };
 ```
 
-<a id="fn-callresult"></a>
-
-## CallResult
-
-Result of protected calls and coroutine operations.
-
-```zig
-pub fn CallResult(comptime R: type) type
-```
-
 <a id="type-errorref"></a>
 
 ## ErrorRef
@@ -217,7 +209,8 @@ pub const ErrorRef = struct {
 | [deinit](#fn-errorref-deinit) | `self: *ErrorRef` | `void` |  |
 | [traceback](#fn-errorref-traceback) | `self: ErrorRef` | `?[]const u8` | Traceback when &#96;CallOptions.traceback&#96; or &#96;ResumeOptions.traceback&#96; was set, formatted like &#96;debug.traceback&#96;; valid until &#96;deinit&#96;. |
 | [value](#fn-errorref-value) | `self: ErrorRef` | `!Value` |  |
-| [message](#fn-errorref-message) | `self: ErrorRef` | `![]const u8` | Formats the error value; the caller frees it with the state's allocator. |
+| [writeMessage](#fn-errorref-writemessage) | `self: ErrorRef, writer: *std.Io.Writer` | `!void` | Writes the error value as the CLI reports it. |
+| [format](#fn-errorref-format) | `self: ErrorRef, writer: *std.Io.Writer` | `std.Io.Writer.Error!void` | Writes the message for the &#96;{f}&#96; format specifier. |
 
 <a id="fn-errorref-deinit"></a>
 
@@ -252,14 +245,26 @@ pub fn value(self: ErrorRef) !Value
 
 References: [`ErrorRef`](#type-errorref)
 
-<a id="fn-errorref-message"></a>
+<a id="fn-errorref-writemessage"></a>
 
-### ErrorRef.message
+### ErrorRef.writeMessage
 
-Formats the error value; the caller frees it with the state's allocator.
+Writes the error value as the CLI reports it.
 
 ```zig
-pub fn message(self: ErrorRef) ![]const u8
+pub fn writeMessage(self: ErrorRef, writer: *std.Io.Writer) !void
+```
+
+References: [`ErrorRef`](#type-errorref)
+
+<a id="fn-errorref-format"></a>
+
+### ErrorRef.format
+
+Writes the message for the `{f}` format specifier.
+
+```zig
+pub fn format(self: ErrorRef, writer: *std.Io.Writer) std.Io.Writer.Error!void
 ```
 
 References: [`ErrorRef`](#type-errorref)
@@ -290,15 +295,25 @@ pub fn captureLuaError(state: *State, err: anyerror) anyerror
 pub fn takeMemoryLimitExceeded(state: *State) bool
 ```
 
-<a id="fn-memorylimiterrorref"></a>
+<a id="fn-memorylimiterror"></a>
 
-## memoryLimitErrorRef
+## memoryLimitError
+
+Records the memory limit failure as the last Lua error and returns `error.LuaError`.
 
 ```zig
-pub fn memoryLimitErrorRef(state: *State) !ErrorRef
+pub fn memoryLimitError(state: *State) error{LuaError}
 ```
 
-References: [`ErrorRef`](#type-errorref)
+<a id="fn-writeerrorvalue"></a>
+
+## writeErrorValue
+
+```zig
+pub fn writeErrorValue(state: *State, value: runtime.Value, writer: *std.Io.Writer) !void
+```
+
+References: [`runtime.Value`](../runtime.md#alias-value)
 
 <a id="fn-setlasterrorvalue"></a>
 
@@ -309,6 +324,14 @@ pub fn setLastErrorValue(state: *State, value: runtime.Value) !void
 ```
 
 References: [`runtime.Value`](../runtime.md#alias-value)
+
+<a id="fn-clearlasterror"></a>
+
+## clearLastError
+
+```zig
+pub fn clearLastError(state: *State) void
+```
 
 <a id="fn-lasterrorvalue"></a>
 

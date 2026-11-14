@@ -39,7 +39,7 @@ const Weapon = struct {
 const Decoded = struct {
     arena: std.heap.ArenaAllocator,
     diagnostic: api.Diagnostic,
-    lua: State,
+    lua: *State,
 
     fn init() !Decoded {
         return .{ .arena = .init(a), .diagnostic = .{ .gpa = a }, .lua = try State.init(a, .{}) };
@@ -133,7 +133,7 @@ test "decode rejects floats outside the integer range" {
 }
 
 test "converted results reject floats outside the integer range" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
     var function = try lua.loadString("return 2^63", .{});
     defer function.deinit();
@@ -188,13 +188,14 @@ const Catalog = struct {
 
     pub fn decode(d: anytype, comptime T: type, value: Value, out: *T) api.DecodeError!void {
         if (value != .string) return d.fail("expected an id, got {s}", .{value.typeName()});
+        const given = value.string.bytes() catch |err| return d.apiFail(err);
         for (d.context.ids, 0..) |id, index| {
-            if (std.mem.eql(u8, id, value.string)) {
+            if (std.mem.eql(u8, id, given)) {
                 out.* = @enumFromInt(index);
                 return;
             }
         }
-        return d.fail("unknown id \"{s}\"", .{value.string});
+        return d.fail("unknown id \"{s}\"", .{given});
     }
 };
 
@@ -273,16 +274,16 @@ const Typed = struct {
 };
 
 test "typed callbacks decode aggregate parameters" {
-    var lua = try State.init(a, .{});
+    const lua = try State.init(a, .{});
     defer lua.deinit();
 
-    var describe = try lua.registerTyped("describe", Typed.describe);
+    var describe = try lua.newTypedFunction("describe", Typed.describe);
     defer describe.deinit();
     try lua.setGlobal("describe", describe);
-    var paint = try lua.registerTyped("paint", Typed.paint);
+    var paint = try lua.newTypedFunction("paint", Typed.paint);
     defer paint.deinit();
     try lua.setGlobal("paint", paint);
-    var load = try lua.register("load_weapon", Typed.load);
+    var load = try lua.newFunction("load_weapon", Typed.load);
     defer load.deinit();
     try lua.setGlobal("load_weapon", load);
     try lua.defineUserdata(Typed.Mesh, .{ .name = "mesh" });
@@ -326,7 +327,7 @@ test "values convert to tables by the same field options" {
         };
     };
 
-    var lua = try State.init(a, .{});
+    const lua = try State.init(a, .{});
     defer lua.deinit();
     var hero = Hero{};
     hero.usable.insert(.spear);
@@ -365,7 +366,7 @@ test "decoded values round trip through table conversion" {
     hero.costs.set(.spear, 5);
     hero.usable.insert(.bow);
 
-    var pushed = try d.lua.push(hero);
+    var pushed = try d.lua.toValue(hero);
     defer pushed.deinit();
     const copy = try api.decode(Hero, pushed, .{ .allocator = d.arena.allocator(), .diagnostic = &d.diagnostic });
     try std.testing.expectEqual(Kind.bow, copy.kind);
@@ -399,9 +400,9 @@ test "typed callbacks can set their own return values" {
         }
     };
 
-    var lua = try State.init(a, .{});
+    const lua = try State.init(a, .{});
     defer lua.deinit();
-    var pair = try lua.registerTyped("pair", Host.pair);
+    var pair = try lua.newTypedFunction("pair", Host.pair);
     defer pair.deinit();
     try lua.setGlobal("pair", pair);
     try lua.doString(

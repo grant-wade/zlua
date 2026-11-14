@@ -20,7 +20,7 @@ fn report(weapon: Weapon) Weapon.Kind {
 pub fn main() !void {
     const allocator = std.heap.smp_allocator;
 
-    var lua = try zlua.State.init(allocator, .{});
+    const lua = try zlua.State.init(allocator, .{});
     defer lua.deinit();
 
     var chunk = try lua.loadString("return { name = 'pike', kind = 'spear', might = 7, tags = { 'long' } }", .{ .name = "=config" });
@@ -41,7 +41,7 @@ pub fn main() !void {
     };
     _ = report(weapon);
 
-    var report_fn = try lua.registerTyped("report", report);
+    var report_fn = try lua.newTypedFunction("report", report);
     defer report_fn.deinit();
     try lua.setGlobal("report", report_fn);
     var checked = try lua.loadString(
@@ -49,7 +49,7 @@ pub fn main() !void {
         \\return pcall(report, { kind = "bow", might = 1.5 })
     , .{ .name = "=checked" });
     defer checked.deinit();
-    var result = try checked.call(.{}, zlua.Tuple(&.{ bool, []const u8 }));
-    defer result.deinit();
-    std.debug.print("accepted: {}, {s}\n", .{ result.get(0), result.get(1) });
+    const accepted, var reason = try checked.call(.{}, struct { bool, zlua.String });
+    defer reason.deinit();
+    std.debug.print("accepted: {}, {f}\n", .{ accepted, reason });
 }

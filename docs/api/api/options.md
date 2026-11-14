@@ -9,16 +9,18 @@
 <summary>All documents</summary>
 
 - [root](../root.md)
-- [frontend](../frontend.md)
+- [api](../api.md)
+- [api.analyze](../api/analyze.md)
+- [compile](../compile.md)
 - [errors](../errors.md)
 - [frontend.source](../frontend/source.md)
 - [frontend.token](../frontend/token.md)
+- [frontend](../frontend.md)
 - [frontend.diagnostic](../frontend/diagnostic.md)
 - [frontend.lexer](../frontend/lexer.md)
 - [stack_guard](../stack_guard.md)
 - [frontend.ast](../frontend/ast.md)
 - [frontend.parser](../frontend/parser.md)
-- [compile](../compile.md)
 - [compile.resolver](../compile/resolver.md)
 - [compile.bytecode](../compile/bytecode.md)
 - [compile.proto](../compile/proto.md)
@@ -80,8 +82,6 @@
 - [compile.compiler](../compile/compiler.md)
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
-- [api](../api.md)
-- [api.analyze](../api/analyze.md)
 - [api.callbacks](../api/callbacks.md)
 - [api.convert](../api/convert.md)
 - [api.errors](../api/errors.md)
@@ -94,12 +94,13 @@
 - [api.table](../api/table.md)
 - [api.value](../api/value.md)
 - [api.userdata](../api/userdata.md)
+- [api.namespace](../api/namespace.md)
 - [api.context](../api/context.md)
 - [api.decode](../api/decode.md)
 - [api.coroutine](../api/coroutine.md)
+- [api.string](../api/string.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
-- [api.namespace](../api/namespace.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
 - [testing.bench_runner](../testing/bench_runner.md)
@@ -151,7 +152,6 @@
 - [BytecodeLoadOptions](#type-bytecodeloadoptions)
 - [BytecodeDumpOptions](#type-bytecodedumpoptions)
 - [TableOptions](#type-tableoptions)
-- [GcBudget](#type-gcbudget)
 - [GcStepResult](#type-gcstepresult)
 
 ## Aliases
@@ -160,7 +160,6 @@
 - [GcMode](#alias-gcmode)
 - [GcParam](#alias-gcparam)
 - [GcParams](#alias-gcparams)
-- [DoOptions](#alias-dooptions)
 
 <a id="alias-libraryset"></a>
 
@@ -238,14 +237,14 @@ References: [`Limits`](#type-limits)
 
 ## CallOptions
 
-[Options](#type-options) for `Function.callWith` and `Function.protectedCallWith`.
+[Options](#type-options) for `Function.callWith`.
 
 ```zig
 pub const CallOptions = struct {
     /// Per-call instruction budget covering nested calls and coroutines; nested budgets keep
     /// the tighter limit, and `Limits.max_instructions` still applies.
     max_instructions: ?u64 = null,
-    /// Capture a traceback before failing frames unwind; read it via `ErrorRef.traceback`.
+    /// Capture a traceback before failing frames unwind; read it from `State.takeError`.
     traceback: bool = false,
     /// `xpcall`-style handler run at the error point before `__close` handlers; its first
     /// result becomes the error value. Must belong to the called state.
@@ -257,14 +256,14 @@ pub const CallOptions = struct {
 
 ## ResumeOptions
 
-[Options](#type-options) for `Coroutine.protectedResumeWith`.
+[Options](#type-options) for `Coroutine.resumeCoroutineWith`.
 
 ```zig
 pub const ResumeOptions = struct {
     /// Instruction budget for this resume, covering nested calls and coroutines; nested budgets
     /// keep the tighter limit, and `Limits.max_instructions` still applies.
     max_instructions: ?u64 = null,
-    /// Capture a traceback of the failed coroutine; read it via `ErrorRef.traceback`.
+    /// Capture a traceback of the failed coroutine; read it from `State.takeError`.
     traceback: bool = false,
 };
 ```
@@ -329,8 +328,6 @@ pub const DebugOptions = struct {
     /// Richer internal error diagnostics.
     errors: bool = false,
     trace_vm: bool = false,
-    /// Keep Lua output in `raw_state.stdout` and `raw_state.stderr`, for test harnesses.
-    capture_output: bool = false,
 };
 ```
 
@@ -376,16 +373,6 @@ pub const LoadOptions = struct {
 };
 ```
 
-<a id="alias-dooptions"></a>
-
-## DoOptions
-
-```zig
-pub const DoOptions = LoadOptions;
-```
-
-References: [`LoadOptions`](#type-loadoptions)
-
 <a id="type-bytecodeloadoptions"></a>
 
 ## BytecodeLoadOptions
@@ -415,17 +402,6 @@ pub const BytecodeDumpOptions = struct {
 pub const TableOptions = struct {
     array_hint: u32 = 0,
     hash_hint: u32 = 0,
-};
-```
-
-<a id="type-gcbudget"></a>
-
-## GcBudget
-
-```zig
-pub const GcBudget = struct {
-    /// Maximum basic steps; zero requests one.
-    steps: usize = 0,
 };
 ```
 

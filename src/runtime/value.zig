@@ -62,6 +62,7 @@ pub fn valuesEqual(lhs: Value, rhs: Value) bool {
         .native_coroutine_wrap => rhs == .native_coroutine_wrap,
         .native => |native| rhs == .native and rhs.native == native,
         .api_callback => |id| rhs == .api_callback and rhs.api_callback == id,
+        .api_closure => |table| rhs == .api_closure and rhs.api_closure == table,
     };
 }
 
@@ -70,7 +71,7 @@ pub fn hashValue(value: Value) u64 {
         .integer => |payload| hashInteger(payload),
         .number => |payload| if (floatToInteger(payload)) |integer| hashInteger(integer) else mix(@as(u64, @bitCast(payload)) ^ 0x3c6ef372fe94f82b),
         .string => |payload| payload.tableHash(),
-        .table, .gmatch_iterator => |payload| hashPointer(5, payload),
+        .table, .gmatch_iterator, .api_closure => |payload| hashPointer(5, payload),
         .userdata => |payload| hashPointer(6, payload),
         .closure => |payload| hashPointer(7, payload),
         .thread => |payload| hashPointer(9, payload),
@@ -258,6 +259,7 @@ pub fn debugValueTypeName(value: Value) []const u8 {
         .native_coroutine_wrap,
         .native,
         .api_callback,
+        .api_closure,
         => "function",
     };
 }
@@ -507,7 +509,7 @@ pub fn appendValue(allocator: std.mem.Allocator, out: *std.ArrayList(u8), value:
         .closure => |closure| try appendFmt(allocator, out, "function: 0x{x}", .{@intFromPtr(closure)}),
         .thread => |thread| try appendFmt(allocator, out, "thread: 0x{x}", .{@intFromPtr(thread)}),
         .coroutine_wrapper => |thread| try appendFmt(allocator, out, "function: 0x{x}", .{@intFromPtr(thread)}),
-        .gmatch_iterator => |table| try appendFmt(allocator, out, "function: 0x{x}", .{@intFromPtr(table)}),
+        .gmatch_iterator, .api_closure => |table| try appendFmt(allocator, out, "function: 0x{x}", .{@intFromPtr(table)}),
         .native_print => try out.appendSlice(allocator, "function: print"),
         .native_tostring => try out.appendSlice(allocator, "function: tostring"),
         .native_getmetatable => try out.appendSlice(allocator, "function: getmetatable"),
@@ -641,6 +643,7 @@ pub fn luaTypeName(value: Value) []const u8 {
         .native_coroutine_wrap,
         .native,
         .api_callback,
+        .api_closure,
         => "function",
     };
 }
@@ -677,6 +680,7 @@ pub fn isNativeCallable(value: Value) bool {
         .native_coroutine_wrap,
         .native,
         .api_callback,
+        .api_closure,
         => true,
         else => false,
     };

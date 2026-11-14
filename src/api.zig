@@ -1,8 +1,8 @@
 //! Zig-native embedding API for zlua: a Lua 5.5 state driven with Zig values,
 //! explicit host capabilities, rooted handles, and Zig errors.
 //!
-//! Rooted handles (`Table`, `Function`, `Coroutine`, `Ref`, `Userdata(T)`, `AnyUserdata`,
-//! `ErrorRef`, and `Value`s holding them) must be released with `deinit`. `State.reset`
+//! Rooted handles (`String`, `Table`, `Function`, `Coroutine`, `Ref`, `Userdata(T)`,
+//! `AnyUserdata`, `ErrorRef`, and `Value`s holding them) must be released with `deinit`. `State.reset`
 //! invalidates prior handles and borrowed VM slices. The `runtime` module is internal.
 //! See `docs/embedding.md` for capabilities, error handling, snapshots, and ownership.
 
@@ -18,6 +18,7 @@ const handle = @import("api/handle.zig");
 const options = @import("api/options.zig");
 const snapshot = @import("api/snapshot.zig");
 const state = @import("api/state.zig");
+const string = @import("api/string.zig");
 const table = @import("api/table.zig");
 const userdata = @import("api/userdata.zig");
 const value = @import("api/value.zig");
@@ -25,7 +26,6 @@ const value = @import("api/value.zig");
 pub const Error = errors.Error;
 pub const UnsupportedOption = errors.UnsupportedOption;
 pub const ConversionError = errors.ConversionError;
-pub const CallResult = errors.CallResult;
 pub const ErrorRef = errors.ErrorRef;
 
 pub const State = state.State;
@@ -47,11 +47,9 @@ pub const DebugOptions = options.DebugOptions;
 pub const Options = options.Options;
 pub const LoadMode = options.LoadMode;
 pub const LoadOptions = options.LoadOptions;
-pub const DoOptions = options.DoOptions;
 pub const BytecodeLoadOptions = options.BytecodeLoadOptions;
 pub const BytecodeDumpOptions = options.BytecodeDumpOptions;
 pub const TableOptions = options.TableOptions;
-pub const GcBudget = options.GcBudget;
 pub const GcStepResult = options.GcStepResult;
 
 pub const MemoryFile = capabilities.MemoryFile;
@@ -81,8 +79,9 @@ pub const WarningHandler = capabilities.WarningHandler;
 pub const Capabilities = capabilities.Capabilities;
 
 pub const Value = value.Value;
-pub const Tuple = value.Tuple;
+pub const deinit = @import("api/convert.zig").deinit;
 pub const Ref = handle.Ref;
+pub const String = string.String;
 pub const HandleScope = handle.HandleScope;
 pub const Table = table.Table;
 pub const Function = function.Function;
@@ -94,7 +93,6 @@ pub const Userdata = userdata.Userdata;
 pub const AnyUserdata = userdata.AnyUserdata;
 pub const UserdataOptions = userdata.UserdataOptions;
 pub const UserdataType = userdata.UserdataType;
-pub const UserdataPtrOptions = userdata.UserdataPtrOptions;
 pub const UserdataSnapshotHooks = userdata.UserdataSnapshotHooks;
 
 pub const Analysis = analysis.Analysis;

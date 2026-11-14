@@ -9,16 +9,18 @@
 <summary>All documents</summary>
 
 - [root](../root.md)
-- [frontend](../frontend.md)
+- [api](../api.md)
+- [api.analyze](../api/analyze.md)
+- [compile](../compile.md)
 - [errors](../errors.md)
 - [frontend.source](../frontend/source.md)
 - [frontend.token](../frontend/token.md)
+- [frontend](../frontend.md)
 - [frontend.diagnostic](../frontend/diagnostic.md)
 - [frontend.lexer](../frontend/lexer.md)
 - [stack_guard](../stack_guard.md)
 - [frontend.ast](../frontend/ast.md)
 - [frontend.parser](../frontend/parser.md)
-- [compile](../compile.md)
 - [compile.resolver](../compile/resolver.md)
 - [compile.bytecode](../compile/bytecode.md)
 - [compile.proto](../compile/proto.md)
@@ -80,8 +82,6 @@
 - [compile.compiler](../compile/compiler.md)
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
-- [api](../api.md)
-- [api.analyze](../api/analyze.md)
 - [api.callbacks](../api/callbacks.md)
 - [api.convert](../api/convert.md)
 - [api.errors](../api/errors.md)
@@ -94,12 +94,13 @@
 - [api.table](../api/table.md)
 - [api.value](../api/value.md)
 - [api.userdata](../api/userdata.md)
+- [api.namespace](../api/namespace.md)
 - [api.context](../api/context.md)
 - [api.decode](../api/decode.md)
 - [api.coroutine](../api/coroutine.md)
+- [api.string](../api/string.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
-- [api.namespace](../api/namespace.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
 - [testing.bench_runner](../testing/bench_runner.md)
@@ -207,7 +208,7 @@ References: [`Caller`](#type-caller)
 
 ## Context
 
-Callback context for functions registered with `State.register`.
+Callback context for functions created with `State.newFunction`.
 
 ```zig
 pub const Context = struct {
@@ -238,6 +239,11 @@ pub const Context = struct {
 | [coroutine](#fn-context-coroutine) | `self: *Context` | `!Coroutine` | Rooted handle to this callback's coroutine, usable beyond the callback. |
 | [isYieldable](#fn-context-isyieldable) | `self: *Context` | `bool` | Reports whether this callback can yield across the current native boundary. |
 | [yield](#fn-context-yield) | `self: *Context, values: anytype` | `error` | Terminal yield: &#96;return ctx.yield(.{values});&#96;. Defers run before suspension; resume continues Lua with the resume arguments without reentering the Zig body. |
+| [callThen](#fn-context-callthen) | `self: *Context, function: Function, args: anytype, comptime continuation: anytype, saved: anytype` | `error` | Ends the callback by calling &#96;function&#96;, which may yield, then typed callback &#96;continuation&#96; with its results and &#96;saved&#96; bound; the continuation's returns are this callback's. |
+| [yieldThen](#fn-context-yieldthen) | `self: *Context, values: anytype, comptime continuation: anytype, saved: anytype` | `error` | Ends the callback by yielding &#96;values&#96;, then calls &#96;continuation&#96; with the resume arguments as &#96;callThen&#96; does. |
+| [upvalueCount](#fn-context-upvaluecount) | `self: *Context` | `usize` | The number of values bound to this callback by &#96;State.newClosure&#96;. |
+| [upvalue](#fn-context-upvalue) | `self: *Context, index: usize, comptime T: type` | `!T` | The value bound at &#96;index&#96;, or nil past the last one. A &#96;[]const u8&#96; or &#96;*T&#96; borrows VM memory until the callback returns or replaces the value. |
+| [setUpvalue](#fn-context-setupvalue) | `self: *Context, index: usize, value: anytype` | `!void` | Replaces the value bound at &#96;index&#96;, which must be less than &#96;upvalueCount()&#96;. |
 | [coroutineIdentity](#fn-context-coroutineidentity) | `self: *Context` | `usize` | Coroutine token valid only during this callback and until reset. |
 | [callNonYielding](#fn-context-callnonyielding) | `self: *Context, function: Function, args: anytype, comptime R: type` | `!R` | Calls Lua on this coroutine within its budget; yielding is forbidden and errors propagate. |
 
@@ -452,6 +458,69 @@ continues Lua with the resume arguments without reentering the Zig body.
 
 ```zig
 pub fn yield(self: *Context, values: anytype) error{ HostCallbackYield, LuaError, OutOfMemory, InvalidHandle }
+```
+
+References: [`Context`](#type-context)
+
+<a id="fn-context-callthen"></a>
+
+### Context.callThen
+
+Ends the callback by calling `function`, which may yield, then typed callback `continuation`
+with its results and `saved` bound; the continuation's returns are this callback's.
+
+```zig
+pub fn callThen(self: *Context, function: Function, args: anytype, comptime continuation: anytype, saved: anytype) error{ HostCallbackTailCall, LuaError, OutOfMemory, InvalidHandle }
+```
+
+References: [`Context`](#type-context)
+
+<a id="fn-context-yieldthen"></a>
+
+### Context.yieldThen
+
+Ends the callback by yielding `values`, then calls `continuation` with the resume arguments
+as `callThen` does.
+
+```zig
+pub fn yieldThen(self: *Context, values: anytype, comptime continuation: anytype, saved: anytype) error{ HostCallbackTailCall, LuaError, OutOfMemory, InvalidHandle }
+```
+
+References: [`Context`](#type-context)
+
+<a id="fn-context-upvaluecount"></a>
+
+### Context.upvalueCount
+
+The number of values bound to this callback by `State.newClosure`.
+
+```zig
+pub fn upvalueCount(self: *Context) usize
+```
+
+References: [`Context`](#type-context)
+
+<a id="fn-context-upvalue"></a>
+
+### Context.upvalue
+
+The value bound at `index`, or nil past the last one. A `[]const u8` or `*T` borrows VM
+memory until the callback returns or replaces the value.
+
+```zig
+pub fn upvalue(self: *Context, index: usize, comptime T: type) !T
+```
+
+References: [`Context`](#type-context)
+
+<a id="fn-context-setupvalue"></a>
+
+### Context.setUpvalue
+
+Replaces the value bound at `index`, which must be less than `upvalueCount()`.
+
+```zig
+pub fn setUpvalue(self: *Context, index: usize, value: anytype) !void
 ```
 
 References: [`Context`](#type-context)

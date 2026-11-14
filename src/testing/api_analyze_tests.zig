@@ -94,7 +94,7 @@ test "analyze rejects chunks that don't compile" {
 }
 
 test "analyze agrees with what a chunk touches when it runs" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
     const source =
         \\result = 40 + two

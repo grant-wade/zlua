@@ -1,5 +1,6 @@
 const std = @import("std");
 const api = @import("../api.zig");
+const expectString = @import("api_expect.zig").expectString;
 const a = std.testing.allocator;
 
 fn add(x: i64, y: i64) i64 {
@@ -87,7 +88,7 @@ const Api = struct {
 };
 
 test "setGlobals converts functions, values, and nested structs" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
 
     var players: i64 = 4;
@@ -114,7 +115,7 @@ test "setGlobals converts functions, values, and nested structs" {
 }
 
 test "functions converted from Zig keep typed arguments and their errors" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
 
     var wallet = Wallet{ .gold = 5 };
@@ -133,13 +134,13 @@ test "functions converted from Zig keep typed arguments and their errors" {
 }
 
 test "a Zig function converts to one callback however often it is converted" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
 
     try lua.setGlobal("add", add);
     const registered = lua.callbacks.items.len;
     for (0..10) |_| try lua.setGlobals(.{ .again = add, .math = .{ .add = add } });
-    var t = try lua.createTable(.{});
+    var t = try lua.newTable(.{});
     defer t.deinit();
     for (0..10) |_| try t.set("add", add);
 
@@ -148,10 +149,10 @@ test "a Zig function converts to one callback however often it is converted" {
 }
 
 test "functions convert wherever Zig values go to Lua" {
-    var lua = try api.State.init(a, .{ .stdlib = .full });
+    const lua = try api.State.init(a, .{ .stdlib = .full });
     defer lua.deinit();
 
-    var t = try lua.createTable(.{});
+    var t = try lua.newTable(.{});
     defer t.deinit();
     try t.set("add", add);
     try lua.setGlobal("t", t);
@@ -170,7 +171,7 @@ test "functions convert wherever Zig values go to Lua" {
 }
 
 test "Table.setFields assigns through __newindex" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
 
     try lua.doString(
@@ -186,23 +187,23 @@ test "Table.setFields assigns through __newindex" {
     , .{});
 }
 
-test "createTableFrom builds a sandboxed environment" {
-    var lua = try api.State.init(a, .{});
+test "newTableFrom builds a sandboxed environment" {
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
 
-    var env = try lua.createTableFrom(.{ .add = add, .base = 10 });
+    var env = try lua.newTableFrom(.{ .add = add, .base = 10 });
     defer env.deinit();
     var chunk = try lua.loadString("return add(base, 5), print", .{ .name = "=env", .environment = env });
     defer chunk.deinit();
 
-    var result = try chunk.call(.{}, api.Tuple(&.{ i64, ?api.Function }));
-    defer result.deinit();
-    try std.testing.expectEqual(@as(i64, 15), result.get(0));
-    try std.testing.expect(result.get(1) == null);
+    var result = try chunk.call(.{}, struct { i64, ?api.Function });
+    defer api.deinit(&result);
+    try std.testing.expectEqual(@as(i64, 15), result[0]);
+    try std.testing.expect(result[1] == null);
 }
 
 test "a struct type converts to a table of its exported public declarations" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
 
     Api.counter = 40;
@@ -225,15 +226,15 @@ test "a struct type converts to a table of its exported public declarations" {
     , .{});
     try std.testing.expectEqual(@as(i64, 42), Api.counter);
 
-    var module = try lua.createTableFrom(Api.math);
+    var module = try lua.newTableFrom(Api.math);
     defer module.deinit();
     var nested = try module.get("nested", api.Table);
     defer nested.deinit();
     try std.testing.expectEqual(@as(i64, 2), try nested.get("depth", i64));
 
-    var kinds = try lua.createTableFrom(Api.Kind);
+    var kinds = try lua.newTableFrom(Api.Kind);
     defer kinds.deinit();
-    try std.testing.expectEqualStrings("sword", try kinds.get("sword", []const u8));
+    try expectString("sword", kinds.get("sword", api.String));
 }
 
 const Left = struct {
@@ -247,7 +248,7 @@ const Right = struct {
 };
 
 test "namespaces that refer to each other stop at the first repeat" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
 
     try lua.setGlobal("left", Left);
@@ -258,7 +259,7 @@ test "namespaces that refer to each other stop at the first repeat" {
 }
 
 test "a Zig file converts to a Lua module" {
-    var lua = try api.State.init(a, .{ .stdlib = .full });
+    const lua = try api.State.init(a, .{ .stdlib = .full });
     defer lua.deinit();
 
     const Local = struct {
@@ -273,7 +274,7 @@ test "a Zig file converts to a Lua module" {
     try lua.setLoadedModule("local", Local);
     try lua.setLoadedModule("item", @import("globals_module_fixture.zig").Item);
     try lua.setLoadedModule("inventory", @import("globals_module_fixture.zig"));
-    var item = try lua.newUserdataAuto(@import("globals_module_fixture.zig").Item, .{ .count = 2 }, .{});
+    var item = try lua.newUserdata(@import("globals_module_fixture.zig").Item, .{ .count = 2 }, .{});
     defer item.deinit();
     try lua.setGlobal("item", item);
 
@@ -288,7 +289,7 @@ test "a Zig file converts to a Lua module" {
 }
 
 test "globals set after a snapshot are gone after reset" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
 
     try lua.setGlobals(.{ .add = add });
@@ -305,7 +306,7 @@ test "globals set after a snapshot are gone after reset" {
 }
 
 test "setGlobals fails when memory runs out and leaves the state usable" {
-    var lua = try api.State.init(a, .{ .limits = .{ .max_memory = 512 * 1024 } });
+    const lua = try api.State.init(a, .{ .limits = .{ .max_memory = 512 * 1024 } });
     defer lua.deinit();
 
     const big: [100_000]i64 = @splat(7);

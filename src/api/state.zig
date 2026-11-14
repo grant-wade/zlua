@@ -13,11 +13,9 @@ const userdata_mod = @import("userdata.zig");
 const BytecodeLoadOptions = options_mod.BytecodeLoadOptions;
 const Context = @import("context.zig").Context;
 const Coroutine = @import("coroutine.zig").Coroutine;
-const DoOptions = options_mod.DoOptions;
 const ErrorRef = errors.ErrorRef;
 const ExitRequest = capabilities.ExitRequest;
 const Function = @import("function.zig").Function;
-const GcBudget = options_mod.GcBudget;
 const handle_mod = @import("handle.zig");
 const HandleScope = handle_mod.HandleScope;
 const GcMode = options_mod.GcMode;
@@ -40,7 +38,6 @@ const Table = @import("table.zig").Table;
 const TableOptions = options_mod.TableOptions;
 const Userdata = userdata_mod.Userdata;
 const UserdataOptions = userdata_mod.UserdataOptions;
-const UserdataPtrOptions = userdata_mod.UserdataPtrOptions;
 const UserdataType = userdata_mod.UserdataType;
 const Value = @import("value.zig").Value;
 const coroutine_mod = @import("../runtime/coroutine.zig");
@@ -99,8 +96,10 @@ pub const State = struct {
     open_handle_scopes: usize = 0,
 
     /// `state_allocator` must remain valid until `deinit`.
-    pub fn init(state_allocator: std.mem.Allocator, options: Options) !State {
+    pub fn init(state_allocator: std.mem.Allocator, options: Options) !*State {
         inline for (reflection.fieldsOf(GcParam)) |f| try options_mod.validateGcParam(options.gc.params.get(@field(GcParam, f)));
+        const state = try state_allocator.create(State);
+        errdefer state_allocator.destroy(state);
         var memory_limit_allocator: ?*MemoryLimitAllocator = null;
         errdefer if (memory_limit_allocator) |allocator_ptr| state_allocator.destroy(allocator_ptr);
 
@@ -111,7 +110,7 @@ pub const State = struct {
             break :blk allocator_ptr.allocator();
         };
 
-        var state = State{
+        state.* = .{
             .base_allocator = state_allocator,
             .memory_limit_allocator = memory_limit_allocator,
             .raw_state = try runtime.State.initWithOptions(runtime_allocator, options_mod.runtimeOptions(options)),
@@ -122,11 +121,11 @@ pub const State = struct {
         state.raw_state.gc.resetAutoThreshold();
         if (memory_limit_allocator) |limit| state.raw_state.allocator_lifetime = &limit.lifetime;
         memory_limit_allocator = null;
-        errdefer state.deinit();
+        errdefer state.release();
 
         if (options.capabilities.filesystem == .memory) {
             const files = options.capabilities.filesystem.memory;
-            for (files) |file| try appendMemoryFile(&state, file.path, file.contents, false);
+            for (files) |file| try appendMemoryFile(state, file.path, file.contents, false);
             state.raw_state.options.filesystem = .{ .memory = state.memory_files.items };
         }
 
@@ -136,6 +135,12 @@ pub const State = struct {
     /// Runs pending finalizers like `lua_close` (errors ignored, open files flushed), then
     /// frees the state and invalidates all handles. `reset` runs no finalizers.
     pub fn deinit(self: *State) void {
+        const base_allocator = self.base_allocator;
+        self.release();
+        base_allocator.destroy(self);
+    }
+
+    fn release(self: *State) void {
         const state_allocator = self.allocator();
         if (self.last_error_traceback) |text| state_allocator.free(text);
         snapshot_mod.abandonRollbackMetadata(self);
@@ -244,10 +249,10 @@ pub const State = struct {
         try self.raw_state.gc.collect();
     }
 
-    /// Runs at most `budget.steps` basic steps, even while stopped; bounds work, not time.
-    pub fn stepGc(self: *State, budget: GcBudget) !GcStepResult {
+    /// Runs up to `steps` basic steps, and at least one, even while stopped; bounds work, not time.
+    pub fn stepGc(self: *State, steps: usize) !GcStepResult {
         callbacks.bindDispatch(self);
-        return if (try self.raw_state.gc.runSteps(budget.steps)) .complete else .pending;
+        return if (try self.raw_state.gc.runSteps(steps)) .complete else .pending;
     }
 
     pub fn gcMode(self: *const State) GcMode {
@@ -291,14 +296,13 @@ pub const State = struct {
     }
 
     /// Converts a Zig value into a rooted `Value`.
-    pub fn push(self: *State, value: anytype) !Value {
+    pub fn toValue(self: *State, value: anytype) !Value {
         var result = try convert.fromRuntimeValue(self, try convert.toRuntimeValue(self, value), Value);
         errdefer result.deinit();
         try gcBoundary(self);
         return result;
     }
 
-    /// A `[]const u8` result borrows VM memory; see `Value.string`.
     pub fn read(self: *State, value: Value, comptime T: type) !T {
         return convert.fromRuntimeValue(self, try convert.toRuntimeValue(self, value), T);
     }
@@ -317,7 +321,7 @@ pub const State = struct {
 
     /// Creates a table holding the fields of struct `values`, or the tags and exported public
     /// declarations of struct or enum type `values`.
-    pub fn createTableFrom(self: *State, values: anytype) !Table {
+    pub fn newTableFrom(self: *State, values: anytype) !Table {
         const raw = try convert.toRuntimeValue(self, values);
         var table = try convert.fromRuntimeValue(self, raw, Table);
         errdefer table.deinit();
@@ -325,34 +329,47 @@ pub const State = struct {
         return table;
     }
 
-    /// A `[]const u8` result borrows VM memory; see `Value.string`.
     pub fn getGlobal(self: *State, name: []const u8, comptime T: type) !T {
         return convert.fromRuntimeValue(self, self.raw_state.getGlobal(name), T);
     }
 
+    /// Calls the global function `name` as `Function.call` does.
+    pub fn callGlobal(self: *State, name: []const u8, args: anytype, comptime R: type) !R {
+        var function = try self.getGlobal(name, Function);
+        defer function.deinit();
+        return function.call(args, R);
+    }
+
     /// Wraps an untyped callback as a Lua function; it is not installed automatically.
-    pub fn register(self: *State, name: []const u8, callback: HostFn) !Function {
+    pub fn newFunction(self: *State, name: []const u8, callback: HostFn) !Function {
         return callbacks.create(self, name, callback);
     }
 
-    /// Like `register`, reading parameters from Lua arguments by type; `*Context` is injected.
-    pub fn registerTyped(self: *State, name: []const u8, comptime function: anytype) !Function {
-        return self.register(name, callbacks.typedHostFn(function));
+    /// Like `newFunction`, reading parameters from Lua arguments by type; `*Context` is injected.
+    pub fn newTypedFunction(self: *State, name: []const u8, comptime function: anytype) !Function {
+        return self.newFunction(name, callbacks.typedHostFn(function));
     }
 
-    /// Registers a Lua constructor that reads `initializer`'s arguments by type (`*Context` is
-    /// injected) and wraps its `T` or `!T` result with `newUserdataAuto`.
-    pub fn registerUserdataInitializerWith(self: *State, comptime T: type, name: []const u8, comptime initializer: anytype, comptime options: UserdataOptions(T)) !Function {
+    /// Like `newTypedFunction`, binding the values of tuple `upvalues` to the function; the
+    /// callback reads them with `Context.upvalue` and replaces them with `Context.setUpvalue`.
+    pub fn newClosure(self: *State, name: []const u8, comptime function: anytype, upvalues: anytype) !Function {
+        const raw_upvalues = try convert.convertArgs(self, upvalues);
+        return callbacks.createClosure(self, name, callbacks.typedHostFn(function), &raw_upvalues);
+    }
+
+    /// Creates a Lua constructor that reads `initializer`'s arguments by type (`*Context` is
+    /// injected) and wraps its `T` or `!T` result with `newUserdata`.
+    pub fn newConstructor(self: *State, comptime T: type, name: []const u8, comptime initializer: anytype, comptime options: UserdataOptions(T)) !Function {
         const Wrapper = struct {
             fn call(ctx: *Context) !void {
                 try callbacks.callUserdataInitializer(T, initializer, options, ctx);
             }
         };
 
-        return self.register(name, Wrapper.call);
+        return self.newFunction(name, Wrapper.call);
     }
 
-    pub fn createTable(self: *State, options: TableOptions) !Table {
+    pub fn newTable(self: *State, options: TableOptions) !Table {
         const raw = self.raw_state.newTableWithHints(options.array_hint, options.hash_hint) catch |err| return errors.captureLuaError(self, err);
         var table = try convert.fromRuntimeValue(self, raw, Table);
         errdefer table.deinit();
@@ -376,45 +393,30 @@ pub const State = struct {
         return userdata_mod.define(self, T, options);
     }
 
-    /// Allocates Lua-owned userdata initialized with `value`.
+    /// Allocates Lua-owned userdata initialized with `value`, defining `T` on first use with its
+    /// `lua_userdata` options. An explicit `options.metatable` gets `T`'s methods instead.
     pub fn newUserdata(self: *State, comptime T: type, value: T, options: UserdataOptions(T)) !Userdata(T) {
-        return userdata_mod.create(self, T, value, options);
-    }
-
-    /// Like `newUserdata`, defining `T` with `defineUserdata` on first use. With an explicit
-    /// `metatable`, installs `T`'s methods on it instead.
-    pub fn newUserdataAuto(self: *State, comptime T: type, value: T, options: UserdataOptions(T)) !Userdata(T) {
         if (options.metatable == null) {
-            if (!userdata_mod.isDefined(self, T)) try userdata_mod.define(self, T, .{});
-            return self.newUserdata(T, value, options);
+            if (!userdata_mod.isDefined(self, T)) try userdata_mod.defineDeclared(self, T);
+            return userdata_mod.create(self, T, value, options);
         }
-        var userdata = try self.newUserdata(T, value, options);
+        var userdata = try userdata_mod.create(self, T, value, options);
         errdefer userdata.deinit();
-        try userdata.bindMethods(T);
+        try userdata_mod.bindDeclared(T, userdata);
         return userdata;
     }
 
-    /// Wraps host-owned `ptr` as userdata without taking ownership.
-    pub fn newUserdataPtr(self: *State, comptime T: type, ptr: *T, options: UserdataPtrOptions(T)) !Userdata(T) {
-        return userdata_mod.wrapPtr(self, T, ptr, options);
-    }
-
-    /// Like `newUserdataPtr`, also installing `T`'s methods as in `newUserdataAuto`.
-    pub fn newUserdataPtrAuto(self: *State, comptime T: type, ptr: *T, options: UserdataPtrOptions(T)) !Userdata(T) {
+    /// Wraps host-owned `ptr` as userdata without taking ownership, binding methods as
+    /// `newUserdata` does.
+    pub fn wrapUserdata(self: *State, comptime T: type, ptr: *T, options: UserdataOptions(T)) !Userdata(T) {
         if (options.metatable == null) {
-            if (!userdata_mod.isDefined(self, T)) try userdata_mod.define(self, T, .{});
-            return self.newUserdataPtr(T, ptr, options);
+            if (!userdata_mod.isDefined(self, T)) try userdata_mod.defineDeclared(self, T);
+            return userdata_mod.wrapPtr(self, T, ptr, options);
         }
-        var userdata = try self.newUserdataPtr(T, ptr, options);
+        var userdata = try userdata_mod.wrapPtr(self, T, ptr, options);
         errdefer userdata.deinit();
-        try userdata.bindMethods(T);
+        try userdata_mod.bindDeclared(T, userdata);
         return userdata;
-    }
-
-    /// Creates a module table; it is not installed (see `setLoadedModule`).
-    pub fn createModule(self: *State, name: []const u8) !Table {
-        _ = name;
-        return self.createTable(.{ .hash_hint = 4 });
     }
 
     /// Sets `package.loaded[name]` so `require(name)` returns `module`; opens `package` if needed.
@@ -431,15 +433,15 @@ pub const State = struct {
         try preload.set(name, loader);
     }
 
-    /// Registers `loader` like `registerTyped` and installs it with `preloadModule`.
+    /// Wraps `loader` as `newTypedFunction` does and installs it with `preloadModule`.
     pub fn preloadModuleFn(self: *State, name: []const u8, comptime loader: anytype) !void {
-        var function = try self.registerTyped(name, loader);
+        var function = try self.newTypedFunction(name, loader);
         defer function.deinit();
         try self.preloadModule(name, function);
     }
 
     /// Calls the built-in `require(name)`, opening `package` if needed, and converts the result.
-    /// Loaders cannot yield; use `Tuple(&.{ M, []const u8 })` to also read the loader data.
+    /// Loaders cannot yield; read a `struct { M, String }` to also get the loader data.
     pub fn require(self: *State, name: []const u8, comptime T: type) !T {
         try self.ensurePackageLibrary();
         callbacks.bindDispatch(self);
@@ -509,13 +511,13 @@ pub const State = struct {
         return convert.fromRuntimeValue(self, loaded, Function);
     }
 
-    pub fn doString(self: *State, source: []const u8, options: DoOptions) !void {
+    pub fn doString(self: *State, source: []const u8, options: LoadOptions) !void {
         var function = try self.loadString(source, options);
         defer function.deinit();
         try function.call(.{}, void);
     }
 
-    pub fn doFile(self: *State, path: []const u8, options: DoOptions) !void {
+    pub fn doFile(self: *State, path: []const u8, options: LoadOptions) !void {
         var function = try self.loadFile(path, options);
         defer function.deinit();
         try function.call(.{}, void);
@@ -535,24 +537,15 @@ pub const State = struct {
         self.raw_state.warnings_on = on;
     }
 
-    /// Formats the last Lua error; the caller frees the result with `allocator()`.
-    pub fn errorMessage(self: *State) ![]const u8 {
-        const value = errors.lastErrorValue(self);
-        var out = std.ArrayList(u8).empty;
-        defer out.deinit(self.allocator());
-        try runtime.appendErrorValue(self.allocator(), &out, value);
-        return self.allocator().dupe(u8, out.items);
+    /// Writes the last Lua error's message for `error.LuaError`, otherwise the name of `err`.
+    pub fn writeError(self: *State, err: anyerror, writer: *std.Io.Writer) !void {
+        if (err != error.LuaError) return writer.writeAll(@errorName(err));
+        try errors.writeErrorValue(self, errors.lastErrorValue(self), writer);
     }
 
-    /// The last Lua error's message for `error.LuaError`, otherwise the name of `err`; the caller
-    /// frees the result with `allocator()`.
-    pub fn describeError(self: *State, err: anyerror) ![]const u8 {
-        if (err == error.LuaError) return self.errorMessage();
-        return self.allocator().dupe(u8, @errorName(err));
-    }
-
-    /// Takes ownership of the last Lua error value; the caller must `deinit` it.
-    pub fn takeErrorValue(self: *State) ?ErrorRef {
+    /// Takes the Lua error of the last call or resume, with its traceback when one was captured;
+    /// the caller must `deinit` it.
+    pub fn takeError(self: *State) ?ErrorRef {
         const index = self.last_error_root orelse return null;
         self.last_error_root = null;
         const traceback_text = self.last_error_traceback;

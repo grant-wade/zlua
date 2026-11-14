@@ -241,6 +241,13 @@ fn nowNanoseconds(io: std.Io) i64 {
     return @intCast(std.Io.Timestamp.now(io, .awake).nanoseconds);
 }
 
+fn recordLastError(lua: *api.State, result: *ChildResult) void {
+    var out: std.Io.Writer.Allocating = .init(lua.allocator());
+    defer out.deinit();
+    lua.writeError(error.LuaError, &out.writer) catch return recordError(result, "?");
+    recordError(result, out.written());
+}
+
 fn recordError(result: *ChildResult, message: []const u8) void {
     result.outcome = "error";
     result.message_len = @min(message.len, result.message_buffer.len);
@@ -269,34 +276,36 @@ fn runUnderFaults(args: ChildArgs, fail_at: usize, sticky: bool, stress: bool) !
     var faults: FaultAllocator = .{ .child = tracking.allocator(), .fail_at = fail_at, .sticky = sticky };
     var sink_buffer: [256]u8 = undefined;
     var sink: std.Io.Writer.Discarding = .init(&sink_buffer);
-    var lua = api.State.init(faults.allocator(), .{
+    const lua = api.State.init(faults.allocator(), .{
         .capabilities = .{ .io = .{ .stdout = &sink.writer, .stderr = &sink.writer } },
         .limits = .{ .max_instructions = 5_000_000, .max_native_stack = args.stack_bytes / 2 },
     }) catch return .{ .allocations = faults.count, .leaked = tracking.live };
     lua.raw_state.gc.stress_collect = stress;
     run: {
-        installHostBindings(&lua) catch break :run;
+        installHostBindings(lua) catch break :run;
         var function = lua.loadString(args.source, .{ .name = "=fixture" }) catch |err| {
-            if (err == error.LuaError) lua.allocator().free(lua.describeError(err) catch break :run);
+            if (err == error.LuaError) lua.writeError(err, &sink.writer) catch break :run;
             break :run;
         };
         defer function.deinit();
-        var call = function.protectedCall(.{}, void) catch break :run;
-        if (call == .lua_error) call.lua_error.deinit();
+        function.call(.{}, void) catch |err| {
+            if (err == error.LuaError) if (lua.takeError()) |taken| {
+                var lua_error = taken;
+                lua_error.deinit();
+            };
+            break :run;
+        };
     }
     const allocations = faults.count;
     faults.armed = false;
     usable: {
         var probe = lua.loadString("local t = {} for i = 1, 100 do t[i] = {i} end return #t", .{ .name = "=probe" }) catch break :usable;
         defer probe.deinit();
-        var result = probe.protectedCall(.{}, i64) catch break :usable;
-        switch (result) {
-            .ok => |count| if (count != 100) return error.StateCorrupted,
-            .lua_error => |*lua_error| {
-                lua_error.deinit();
-                return error.StateUnusable;
-            },
-        }
+        const count = probe.call(.{}, i64) catch |err| {
+            if (err == error.LuaError) return error.StateUnusable;
+            break :usable;
+        };
+        if (count != 100) return error.StateCorrupted;
     }
     lua.deinit();
     return .{ .allocations = allocations, .leaked = tracking.live };
@@ -319,18 +328,18 @@ fn runFaultSweep(args: ChildArgs) !void {
 
 fn installHostBindings(lua: *api.State) !void {
     for (0..object_count) |id| {
-        var resource = try lua.newUserdataAuto(Resource, .{ .id = id }, .{ .finalizer = Resource.finalize });
+        var resource = try lua.newUserdata(Resource, .{ .id = id }, .{ .finalizer = Resource.finalize });
         defer resource.deinit();
         try lua.setGlobal(if (id == 0) "res" else "res2", resource);
     }
-    var other = try lua.newUserdataAuto(Other, .{}, .{});
+    var other = try lua.newUserdata(Other, .{}, .{});
     defer other.deinit();
     try lua.setGlobal("other", other);
 
-    var host_call = try lua.register("host_call", hostCall);
+    var host_call = try lua.newFunction("host_call", hostCall);
     defer host_call.deinit();
     try lua.setGlobal("host_call", host_call);
-    var host_load = try lua.register("host_load", hostLoad);
+    var host_load = try lua.newFunction("host_load", hostLoad);
     defer host_load.deinit();
     try lua.setGlobal("host_load", host_load);
 }
@@ -344,7 +353,7 @@ fn runScript(args: ChildArgs) !void {
     var sink_buffer: [256]u8 = undefined;
     var sink: std.Io.Writer.Discarding = .init(&sink_buffer);
 
-    var lua = try api.State.init(tracking.allocator(), .{
+    const lua = try api.State.init(tracking.allocator(), .{
         .stdlib = if (meta.stdlib == .full) .full else .safe,
         .capabilities = .{ .io = .{ .stdout = &sink.writer, .stderr = &sink.writer } },
         .limits = .{
@@ -356,7 +365,7 @@ fn runScript(args: ChildArgs) !void {
         .binary_chunks = meta.binary_chunks,
     });
 
-    try installHostBindings(&lua);
+    try installHostBindings(lua);
 
     var watchdog: ?Watchdog = null;
     var watchdog_thread: ?std.Thread = null;
@@ -368,32 +377,19 @@ fn runScript(args: ChildArgs) !void {
     const result = args.result;
     run: {
         var function = lua.loadString(args.source, .{ .name = "=fixture" }) catch |err| {
-            if (err == error.LuaError) {
-                const message = lua.describeError(err) catch "?";
-                defer lua.allocator().free(message);
-                recordError(result, message);
-            } else {
-                result.outcome = @errorName(err);
-            }
+            if (err == error.LuaError) recordLastError(lua, result) else result.outcome = @errorName(err);
             break :run;
         };
         defer function.deinit();
-        var call = function.protectedCallWith(.{}, void, .{ .max_instructions = meta.call_instructions }) catch |err| {
-            result.outcome = if (err == error.Interrupted) "interrupted" else @errorName(err);
+        function.callWith(.{}, void, .{ .max_instructions = meta.call_instructions }) catch |err| {
+            if (err == error.LuaError) {
+                recordLastError(lua, result);
+            } else {
+                result.outcome = if (err == error.Interrupted) "interrupted" else @errorName(err);
+            }
             break :run;
         };
-        switch (call) {
-            .ok => result.outcome = "ok",
-            .lua_error => |*lua_error| {
-                defer lua_error.deinit();
-                const message = lua_error.message() catch {
-                    recordError(result, "?");
-                    break :run;
-                };
-                defer lua.allocator().free(message);
-                recordError(result, message);
-            },
-        }
+        result.outcome = "ok";
     }
     const finished_at = nowNanoseconds(args.io);
     if (watchdog_thread) |thread| {

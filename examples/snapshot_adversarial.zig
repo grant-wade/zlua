@@ -4,7 +4,7 @@ const zlua = @import("zlua");
 
 pub fn main() !void {
     const allocator = std.heap.smp_allocator;
-    var lua = try zlua.State.init(allocator, .{ .stdlib = .full });
+    const lua = try zlua.State.init(allocator, .{ .stdlib = .full });
     defer lua.deinit();
     try lua.doString(
         \\box = {secret = 'baseline'}; box.self = box
@@ -32,7 +32,7 @@ pub fn main() !void {
         defer old_function.deinit();
         var old_value = try lua.getGlobal("box", zlua.Value);
         defer old_value.deinit();
-        var root_only = try lua.createTable(.{});
+        var root_only = try lua.newTable(.{});
         var root_only_live = true;
         defer if (root_only_live) root_only.deinit();
         try root_only.set("secret", "host-root-only");
@@ -55,21 +55,21 @@ pub fn main() !void {
         var steal = try lua.getGlobal("steal", zlua.Function);
         defer steal.deinit();
         try rejected(error.LuaError, lua.doString("error(escape)", .{}));
-        var old_error = lua.takeErrorValue() orelse return error.MissingError;
+        var old_error = lua.takeError() orelse return error.MissingError;
         defer old_error.deinit();
 
         try lua.reset();
 
         // Fresh roots may reuse old slots; stale handles must still be rejected.
-        var fresh = try lua.createTable(.{});
+        var fresh = try lua.newTable(.{});
         defer fresh.deinit();
         try fresh.set("secret", "new-generation");
-        try rejected(error.InvalidHandle, old_table.get("secret", []const u8));
+        try rejected(error.InvalidHandle, old_table.get("secret", zlua.String));
         try rejected(error.InvalidHandle, old_table.set("secret", "poison"));
-        try rejected(error.InvalidHandle, injected.get("secret", []const u8));
-        try rejected(error.InvalidHandle, root_only.get("secret", []const u8));
-        try rejected(error.InvalidHandle, old_function.call(.{}, []const u8));
-        try rejected(error.InvalidHandle, steal.call(.{}, []const u8));
+        try rejected(error.InvalidHandle, injected.get("secret", zlua.String));
+        try rejected(error.InvalidHandle, root_only.get("secret", zlua.String));
+        try rejected(error.InvalidHandle, old_function.call(.{}, zlua.String));
+        try rejected(error.InvalidHandle, steal.call(.{}, zlua.String));
         try rejected(error.InvalidHandle, old_error.value());
         try rejected(error.InvalidHandle, lua.setGlobal("smuggled", old_value));
         try rejected(error.InvalidHandle, fresh.set(old_table, true));
@@ -85,7 +85,9 @@ pub fn main() !void {
         root_only.deinit();
         root_only_live = false;
         try lua.collect();
-        try require(std.mem.eql(u8, try fresh.get("secret", []const u8), "new-generation"));
+        var secret = try fresh.get("secret", zlua.String);
+        defer secret.deinit();
+        try require(std.mem.eql(u8, try secret.bytes(), "new-generation"));
         try lua.doString(
             \\assert(box.secret == 'baseline' and box.self == box and alias == box)
             \\assert(box.injected == nil and getmetatable(box) == nil)
@@ -101,7 +103,7 @@ pub fn main() !void {
     }
     std.debug.print("PASS: 20 rounds of stale-handle, root-reuse, closure, coroutine, module, weak-table and metatable probes\n", .{});
 
-    var worker = try snapshot.newState(allocator);
+    const worker = try snapshot.newState(allocator);
     defer worker.deinit();
     var foreign = try lua.getGlobal("box", zlua.Table);
     defer foreign.deinit();
@@ -128,12 +130,12 @@ const Payload = struct {
 
 fn userdataBoundary(allocator: std.mem.Allocator) !void {
     var backing = Payload{ .value = 7 };
-    var lua = try zlua.State.init(allocator, .{});
+    const lua = try zlua.State.init(allocator, .{});
     defer lua.deinit();
-    var shared = try lua.newUserdataPtr(Payload, &backing, .{});
+    var shared = try lua.wrapUserdata(Payload, &backing, .{});
     defer shared.deinit();
     try lua.setGlobal("shared", shared);
-    var copied = try lua.newUserdataPtr(Payload, &backing, .{
+    var copied = try lua.wrapUserdata(Payload, &backing, .{
         .snapshot = .{ .copy = Payload.copy, .dispose = Payload.dispose },
     });
     defer copied.deinit();

@@ -20,7 +20,7 @@ pub fn collect(allocator: std.mem.Allocator, io: std.Io, options: Options, suite
             continue;
         }
         var counter = allocation.CountingAllocator{ .backing = allocator };
-        var lua = try zlua.State.init(counter.allocator(), .{ .gc = .{ .running = false } });
+        const lua = try zlua.State.init(counter.allocator(), .{ .gc = .{ .running = false } });
         defer lua.deinit();
         try lua.doString(
             \\data = {}; weak = setmetatable({}, {__mode='kv'})
@@ -41,14 +41,14 @@ pub fn collect(allocator: std.mem.Allocator, io: std.Io, options: Options, suite
         for (0..warmup + iterations) |i| {
             if (workload != .incremental) {
                 try lua.reset();
-                try prepare(&lua, workload);
+                try prepare(lua, workload);
             }
             // Finalizer timing includes the Lua call that gives collectgarbage a thread.
             var tick = try lua.getGlobal("tick", zlua.Function);
             defer tick.deinit();
             const before = counter.beginPhase();
             const start = Timestamp.now(io, .awake);
-            if (workload == .finalizers) try tick.call(.{}, void) else _ = try lua.stepGc(.{});
+            if (workload == .finalizers) try tick.call(.{}, void) else _ = try lua.stepGc(1);
             const elapsed = allocation.elapsedSince(io, start);
             if (i >= warmup) samples[i - warmup] = allocation.phaseMetric(&counter, before, elapsed, lua.raw_state.gc.currentAllocationTotal());
         }

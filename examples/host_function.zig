@@ -4,24 +4,23 @@ const zlua = @import("zlua");
 pub fn main() !void {
     const allocator = std.heap.smp_allocator;
 
-    var lua = try zlua.State.init(allocator, .{});
+    const lua = try zlua.State.init(allocator, .{});
     defer lua.deinit();
 
-    var host_add = try lua.register("host_add", hostAdd);
+    var host_add = try lua.newFunction("host_add", hostAdd);
     defer host_add.deinit();
     try lua.setGlobal("host_add", host_add);
 
     var chunk = try lua.loadString(
         \\local sum, status = host_add(20, 22)
         \\return sum, status
-    , .{ .name = "=register_function" });
+    , .{ .name = "=host_function" });
     defer chunk.deinit();
 
-    const Result = zlua.Tuple(&.{ i64, []const u8 });
-    var result = try chunk.call(.{}, Result);
-    defer result.deinit();
+    const sum, var status = try chunk.call(.{}, struct { i64, zlua.String });
+    defer status.deinit();
 
-    std.debug.print("{d} {s}\n", .{ result.get(0), result.get(1) });
+    std.debug.print("{d} {f}\n", .{ sum, status });
 }
 
 fn hostAdd(ctx: *zlua.Context) !void {

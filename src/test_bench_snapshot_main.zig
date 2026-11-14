@@ -16,7 +16,7 @@ fn run(init: std.process.Init) !u8 {
     if (args.len != script_index + 1) return error.ExpectedScript;
     const path = args[script_index];
     const allocator = std.heap.smp_allocator;
-    var baseline = try zlua.State.init(allocator, .{
+    const baseline = try zlua.State.init(allocator, .{
         .stdlib = .full,
         .capabilities = .{
             .io = .{ .runtime = init.io },
@@ -25,9 +25,10 @@ fn run(init: std.process.Init) !u8 {
             .process = .enabled,
             .clock = .system,
         },
-        .debug = .{ .errors = debug, .capture_output = true },
+        .debug = .{ .errors = debug },
     });
     defer baseline.deinit();
+    baseline.raw_state.options.capture_output = true;
     const arg_value = try baseline.raw_state.newTableWithHints(@intCast(args.len), 0);
     for (args, 0..) |arg, index| {
         const key = @as(i64, @intCast(index)) - @as(i64, @intCast(script_index));
@@ -38,7 +39,7 @@ fn run(init: std.process.Init) !u8 {
     // Capture libraries and CLI globals before loading; the whole worker lifecycle is timed.
     var snapshot = try baseline.snapshot(allocator);
     defer snapshot.deinit();
-    var worker = try snapshot.newState(allocator);
+    const worker = try snapshot.newState(allocator);
     defer worker.deinit();
     const source = try std.Io.Dir.cwd().readFileAlloc(init.io, path, allocator, .limited(1024 * 1024));
     defer allocator.free(source);

@@ -50,24 +50,24 @@ pub const Limits = struct {
     max_file_bytes: usize = runtime.default_max_file_bytes,
 };
 
-/// Options for `Function.callWith` and `Function.protectedCallWith`.
+/// Options for `Function.callWith`.
 pub const CallOptions = struct {
     /// Per-call instruction budget covering nested calls and coroutines; nested budgets keep
     /// the tighter limit, and `Limits.max_instructions` still applies.
     max_instructions: ?u64 = null,
-    /// Capture a traceback before failing frames unwind; read it via `ErrorRef.traceback`.
+    /// Capture a traceback before failing frames unwind; read it from `State.takeError`.
     traceback: bool = false,
     /// `xpcall`-style handler run at the error point before `__close` handlers; its first
     /// result becomes the error value. Must belong to the called state.
     message_handler: ?Function = null,
 };
 
-/// Options for `Coroutine.protectedResumeWith`.
+/// Options for `Coroutine.resumeCoroutineWith`.
 pub const ResumeOptions = struct {
     /// Instruction budget for this resume, covering nested calls and coroutines; nested budgets
     /// keep the tighter limit, and `Limits.max_instructions` still applies.
     max_instructions: ?u64 = null,
-    /// Capture a traceback of the failed coroutine; read it via `ErrorRef.traceback`.
+    /// Capture a traceback of the failed coroutine; read it from `State.takeError`.
     traceback: bool = false,
 };
 
@@ -93,8 +93,6 @@ pub const DebugOptions = struct {
     /// Richer internal error diagnostics.
     errors: bool = false,
     trace_vm: bool = false,
-    /// Keep Lua output in `raw_state.stdout` and `raw_state.stderr`, for test harnesses.
-    capture_output: bool = false,
 };
 
 pub const Options = struct {
@@ -121,8 +119,6 @@ pub const LoadOptions = struct {
     mode: LoadMode = .source_only,
 };
 
-pub const DoOptions = LoadOptions;
-
 pub const BytecodeLoadOptions = struct {
     /// Table used as the loaded function's `_ENV`.
     environment: ?Table = null,
@@ -135,11 +131,6 @@ pub const BytecodeDumpOptions = struct {
 pub const TableOptions = struct {
     array_hint: u32 = 0,
     hash_hint: u32 = 0,
-};
-
-pub const GcBudget = struct {
-    /// Maximum basic steps; zero requests one.
-    steps: usize = 0,
 };
 
 pub const GcStepResult = enum {
@@ -179,7 +170,7 @@ pub fn runtimeOptions(options: Options) runtime.StateOptions {
         .binary_chunks = options.binary_chunks,
         .debug_errors = options.debug.errors,
         .trace_vm = options.debug.trace_vm,
-        .capture_output = options.debug.capture_output,
+        .capture_output = false,
     };
 }
 

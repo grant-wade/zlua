@@ -7,6 +7,7 @@ const callbacks = @import("callbacks.zig");
 const convert = @import("convert.zig");
 const errors = @import("errors.zig");
 const handle = @import("handle.zig");
+const namespace = @import("namespace.zig");
 const state_mod = @import("state.zig");
 const Context = @import("context.zig").Context;
 const Ref = handle.Ref;
@@ -17,9 +18,10 @@ const metatable_mod = @import("../runtime/metatable.zig");
 
 pub fn UserdataOptions(comptime T: type) type {
     return struct {
-        /// Shared metatable used instead of allocating one; install methods before sharing it.
+        /// Shared metatable used instead of the type's own.
         metatable: ?Table = null,
-        /// Runs before Lua-owned storage is destroyed, with the state's allocator.
+        /// Runs with the state's allocator when Lua finalizes the userdata, before Lua-owned
+        /// storage is freed.
         finalizer: ?*const fn (*T, std.mem.Allocator) void = null,
         snapshot: ?UserdataSnapshotHooks(T) = null,
         /// Host storage the payload keeps alive, reported to the collector.
@@ -27,24 +29,12 @@ pub fn UserdataOptions(comptime T: type) type {
     };
 }
 
-pub fn UserdataPtrOptions(comptime T: type) type {
-    return struct {
-        /// Shared metatable used instead of allocating one.
-        metatable: ?Table = null,
-        /// Runs when the Lua userdata wrapper is finalized, with the state's allocator.
-        finalizer: ?*const fn (*T, std.mem.Allocator) void = null,
-        snapshot: ?UserdataSnapshotHooks(T) = null,
-        /// Host storage the payload keeps alive, reported to the collector.
-        external_bytes: usize = 0,
-    };
-}
-
-/// Options for `State.defineUserdata`.
+/// Options for `State.defineUserdata`, or a userdata type's `lua_userdata` declaration.
 pub const UserdataType = struct {
     /// Name for `__name` and argument errors; the Zig type name by default.
     name: ?[]const u8 = null,
-    /// Struct whose public functions with a `*T` or `*const T` receiver become methods; `T` by
-    /// default. Names starting with `__` become metamethods.
+    /// Struct whose public functions with a `*T` or `*const T` receiver become methods, under the
+    /// keys its `lua` declaration gives; `T` by default. Keys starting with `__` are metamethods.
     methods: ?type = null,
     /// Lets `getmetatable` return the metatable instead of false.
     expose_metatable: bool = false,
@@ -111,8 +101,7 @@ pub fn Userdata(comptime T: type) type {
             return @call(.auto, callback, .{ pointer, context });
         }
 
-        /// Installs a Zig method on `__index`; its first parameter must be a pointer to `T`.
-        pub fn method(self: @This(), name: []const u8, comptime function: anytype) !void {
+        fn method(self: @This(), name: []const u8, comptime function: anytype) !void {
             try handle.validate(self.ref, self.ref.state);
             const Wrapper = struct {
                 fn call(ctx: *Context) !void {
@@ -138,25 +127,19 @@ pub fn Userdata(comptime T: type) type {
             try index_mod.setTableValue(&self.ref.state.raw_state, index_value, .{ .string = try self.ref.state.raw_state.strings.intern(name) }, try handle.rawValue(method_function.ref));
         }
 
-        /// Installs `Source` methods as in `State.newUserdataAuto`.
-        pub fn bindMethods(self: @This(), comptime Source: type) !void {
+        fn bindMethods(self: @This(), comptime Source: type) !void {
             try handle.validate(self.ref, self.ref.state);
-            if (@typeInfo(Source) != .@"struct") @compileError("bindMethods requires a struct type");
-
-            inline for (reflection.declarationNames(Source)) |decl| {
-                const member = @field(Source, decl);
-                if (comptime isMethod(T, @TypeOf(member))) {
-                    if (comptime isMetamethodName(decl)) {
-                        try self.metamethod(decl, member);
-                    } else {
-                        try self.method(decl, member);
-                    }
+            inline for (comptime methods(T, Source)) |bound| {
+                const member = @field(Source, bound.decl);
+                if (comptime isMetamethodName(bound.key)) {
+                    try self.metamethod(bound.key, member);
+                } else {
+                    try self.method(bound.key, member);
                 }
             }
         }
 
-        /// Installs a typed Zig function as a metamethod such as `__close`.
-        pub fn metamethod(self: @This(), name: []const u8, comptime function: anytype) !void {
+        fn metamethod(self: @This(), name: []const u8, comptime function: anytype) !void {
             try handle.validate(self.ref, self.ref.state);
             const Wrapper = struct {
                 fn call(ctx: *Context) !void {
@@ -227,6 +210,77 @@ pub const AnyUserdata = struct {
     }
 };
 
+/// The options `T` declares as `lua_userdata`, or the defaults.
+pub fn declaredType(comptime T: type) UserdataType {
+    comptime {
+        var options: UserdataType = .{};
+        if (hasDeclarations(T) and @hasDecl(T, "lua_userdata")) {
+            const declared = T.lua_userdata;
+            for (reflection.fieldsOf(@TypeOf(declared))) |option| {
+                if (!@hasField(UserdataType, option)) @compileError(@typeName(T) ++ ".lua_userdata: unknown option " ++ option);
+                @field(options, option) = @field(declared, option);
+            }
+        }
+        return options;
+    }
+}
+
+pub fn defineDeclared(state: *State, comptime T: type) !void {
+    return define(state, T, comptime declaredType(T));
+}
+
+pub fn bindDeclared(comptime T: type, userdata: Userdata(T)) !void {
+    return userdata.bindMethods(comptime declaredType(T).methods orelse T);
+}
+
+fn hasDeclarations(comptime T: type) bool {
+    return switch (@typeInfo(T)) {
+        .@"struct", .@"enum", .@"union", .@"opaque" => true,
+        else => false,
+    };
+}
+
+/// A method of a userdata type: its declaration in the methods struct and its Lua key.
+const Method = struct {
+    decl: [:0]const u8,
+    key: []const u8,
+};
+
+/// The methods `Source` gives userdata of `T`. A method Lua can't call is a compile error.
+fn methods(comptime T: type, comptime Source: type) []const Method {
+    comptime {
+        if (@typeInfo(Source) != .@"struct") {
+            if (Source != T) @compileError("userdata methods must come from a struct type");
+            return &.{};
+        }
+        @setEvalBranchQuota(1_000_000);
+        var found: []const Method = &.{};
+        for (reflection.declarationNames(Source)) |decl| {
+            const options = namespace.declOptions(Source, decl);
+            if (options.skip or !isMethod(T, @TypeOf(@field(Source, decl)))) continue;
+            checkMethod(Source, decl);
+            found = found ++ .{Method{ .decl = decl, .key = options.key }};
+        }
+        return found;
+    }
+}
+
+fn checkMethod(comptime Source: type, comptime decl: []const u8) void {
+    const subject = "userdata method " ++ @typeName(Source) ++ "." ++ decl;
+    const hint = "; leave it out with `pub const lua = .{ ." ++ decl ++ " = .{ .skip = true } }` in " ++ @typeName(Source);
+    const info = functionInfo(@TypeOf(@field(Source, decl))).?;
+    if (info.is_generic) @compileError(subject ++ " is generic and cannot be called from Lua" ++ hint);
+    for (reflection.paramTypes(info)[1..]) |Param| {
+        if (!callbacks.canReadParam(Param.?)) @compileError(subject ++ " takes a " ++ @typeName(Param.?) ++ ", which Lua cannot pass" ++ hint);
+    }
+    const Return = info.return_type.?;
+    const Payload = switch (@typeInfo(Return)) {
+        .error_union => |error_union| error_union.payload,
+        else => Return,
+    };
+    if (Payload != void and !convert.canConvert(Payload)) @compileError(subject ++ " returns a " ++ @typeName(Payload) ++ ", which has no Lua value" ++ hint);
+}
+
 pub fn define(state: *State, comptime T: type, comptime options: UserdataType) !void {
     if (definedMetatable(state, T) != null) return error.UserdataTypeDefined;
     const raw = &state.raw_state;
@@ -244,23 +298,20 @@ pub fn define(state: *State, comptime T: type, comptime options: UserdataType) !
     try raw.setTableRaw(types, typeKey(T), metatable);
 
     const Source = options.methods orelse T;
-    if (@typeInfo(Source) != .@"struct") @compileError("userdata methods must come from a struct type");
-    inline for (reflection.declarationNames(Source)) |decl| {
-        const member = @field(Source, decl);
-        if (comptime isMethod(T, @TypeOf(member))) {
-            const Wrapper = struct {
-                fn call(ctx: *Context) !void {
-                    if (comptime std.mem.eql(u8, decl, "__gc")) return callbacks.callUserdataFinalizer(T, member, ctx);
-                    try callbacks.callUserdataMethod(T, member, ctx);
-                }
-            };
-            const callback_name = try std.fmt.allocPrint(state.allocator(), "{s}.{s}", .{ name, decl });
-            defer state.allocator().free(callback_name);
-            var function = try callbacks.create(state, callback_name, Wrapper.call);
-            defer function.deinit();
-            const target = if (comptime isMetamethodName(decl)) metatable else index;
-            try index_mod.setTableValue(raw, target, .{ .string = try raw.strings.intern(decl) }, try handle.rawValue(function.ref));
-        }
+    inline for (comptime methods(T, Source)) |bound| {
+        const member = @field(Source, bound.decl);
+        const Wrapper = struct {
+            fn call(ctx: *Context) !void {
+                if (comptime std.mem.eql(u8, bound.key, "__gc")) return callbacks.callUserdataFinalizer(T, member, ctx);
+                try callbacks.callUserdataMethod(T, member, ctx);
+            }
+        };
+        const callback_name = try std.fmt.allocPrint(state.allocator(), "{s}.{s}", .{ name, bound.key });
+        defer state.allocator().free(callback_name);
+        var function = try callbacks.create(state, callback_name, Wrapper.call);
+        defer function.deinit();
+        const target = if (comptime isMetamethodName(bound.key)) metatable else index;
+        try index_mod.setTableValue(raw, target, .{ .string = try raw.strings.intern(bound.key) }, try handle.rawValue(function.ref));
     }
 }
 
@@ -312,7 +363,7 @@ pub fn create(state: *State, comptime T: type, value: T, options: UserdataOption
     return userdata;
 }
 
-pub fn wrapPtr(state: *State, comptime T: type, ptr: *T, options: UserdataPtrOptions(T)) !Userdata(T) {
+pub fn wrapPtr(state: *State, comptime T: type, ptr: *T, options: UserdataOptions(T)) !Userdata(T) {
     if (options.snapshot) |hooks| if (hooks.tracking == .scoped) return error.ScopedAccessRequiresOwnedUserdata;
     const metatable = try sharedMetatable(state, options.metatable) orelse definedMetatable(state, T);
     const raw = try state.raw_state.newUserdata(ptr, typeId(T), @typeName(T), null, null, null);
@@ -346,16 +397,19 @@ fn sharedMetatable(state: *State, metatable: ?Table) !?*runtime.Table {
     };
 }
 
-fn isMethod(comptime T: type, comptime FunctionType: type) bool {
-    const function_info = switch (@typeInfo(FunctionType)) {
+fn functionInfo(comptime FunctionType: type) ?std.builtin.Type.Fn {
+    return switch (@typeInfo(FunctionType)) {
         .@"fn" => |info| info,
         .pointer => |pointer| switch (@typeInfo(pointer.child)) {
             .@"fn" => |info| info,
-            else => return false,
+            else => null,
         },
-        else => return false,
+        else => null,
     };
+}
 
+fn isMethod(comptime T: type, comptime FunctionType: type) bool {
+    const function_info = functionInfo(FunctionType) orelse return false;
     if (reflection.isVariadic(function_info) or reflection.paramTypes(function_info).len == 0) return false;
     const Receiver = reflection.paramTypes(function_info)[0] orelse return false;
     return isReceiver(T, Receiver);

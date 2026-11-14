@@ -1,10 +1,12 @@
 const std = @import("std");
 const api = @import("../api.zig");
+const describeError = @import("api_expect.zig").describeError;
+const expectString = @import("api_expect.zig").expectString;
 const a = std.testing.allocator;
 
 fn expectLuaError(lua: *api.State, result: anytype, needle: []const u8) !void {
     if (result) |_| return error.TestExpectedLuaError else |err| try std.testing.expectEqual(error.LuaError, err);
-    const message = try lua.errorMessage();
+    const message = try describeError(lua, error.LuaError);
     defer lua.allocator().free(message);
     if (std.mem.indexOf(u8, message, needle) == null) {
         std.debug.print("unexpected error message: {s}\n", .{message});
@@ -13,7 +15,7 @@ fn expectLuaError(lua: *api.State, result: anytype, needle: []const u8) !void {
 }
 
 test "table get and set honor function and table metamethods; raw access bypasses them" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
     try lua.doString(
         \\writes = {}
@@ -27,9 +29,9 @@ test "table get and set honor function and table metamethods; raw access bypasse
     var t = try lua.getGlobal("t", api.Table);
     defer t.deinit();
 
-    try std.testing.expectEqualStrings("computed missing", try t.get("missing", []const u8));
-    try std.testing.expectEqualStrings("raw", try t.get("present", []const u8));
-    try std.testing.expectEqual(@as(?[]const u8, null), try t.rawGet("missing", ?[]const u8));
+    try expectString("computed missing", t.get("missing", api.String));
+    try expectString("raw", t.get("present", api.String));
+    try std.testing.expectEqual(@as(?api.String, null), try t.rawGet("missing", ?api.String));
 
     try t.set("doubled", 21);
     try std.testing.expectEqual(@as(i64, 42), try t.rawGet("doubled", i64));
@@ -47,28 +49,28 @@ test "table get and set honor function and table metamethods; raw access bypasse
     try lua.doString("assert(proxy.forwarded == true)", .{});
 
     try t.rawSet(2.0, "two");
-    try std.testing.expectEqualStrings("two", try t.rawGet(2, []const u8));
-    try std.testing.expectEqualStrings("two", try t.get(@as(f64, 2.0), []const u8));
-    try expectLuaError(&lua, t.rawSet(null, 1), "table index is nil");
-    try expectLuaError(&lua, t.rawSet(std.math.nan(f64), 1), "table index is NaN");
-    var plain = try lua.createTable(.{});
+    try expectString("two", t.rawGet(2, api.String));
+    try expectString("two", t.get(@as(f64, 2.0), api.String));
+    try expectLuaError(lua, t.rawSet(null, 1), "table index is nil");
+    try expectLuaError(lua, t.rawSet(std.math.nan(f64), 1), "table index is NaN");
+    var plain = try lua.newTable(.{});
     defer plain.deinit();
-    try expectLuaError(&lua, plain.set(null, 1), "table index is nil");
+    try expectLuaError(lua, plain.set(null, 1), "table index is nil");
 
     try lua.doString("bad = setmetatable({}, { __index = function() error('index boom') end, __newindex = function() error('newindex boom') end })", .{});
     var bad = try lua.getGlobal("bad", api.Table);
     defer bad.deinit();
-    try expectLuaError(&lua, bad.get("x", ?i64), "index boom");
-    try expectLuaError(&lua, bad.set("x", 1), "newindex boom");
+    try expectLuaError(lua, bad.get("x", ?i64), "index boom");
+    try expectLuaError(lua, bad.set("x", 1), "newindex boom");
     try lua.doString("loop = {}; setmetatable(loop, { __index = loop, __newindex = loop })", .{});
     var loop = try lua.getGlobal("loop", api.Table);
     defer loop.deinit();
-    try expectLuaError(&lua, loop.get("x", ?i64), "'__index' chain too long");
-    try expectLuaError(&lua, loop.set("x", 1), "'__newindex' chain too long");
+    try expectLuaError(lua, loop.get("x", ?i64), "'__index' chain too long");
+    try expectLuaError(lua, loop.set("x", 1), "'__newindex' chain too long");
 }
 
 test "table len honors __len and rawLen ignores it" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
     try lua.doString(
         \\seq = setmetatable({ 1, 2, 3 }, { __len = function(t) return rawlen(t) * 10 end })
@@ -100,28 +102,28 @@ test "table len honors __len and rawLen ignores it" {
     inline for (.{ "bad_len", "fractional", "fractional_string" }) |name| {
         var table = try lua.getGlobal(name, api.Table);
         defer table.deinit();
-        try expectLuaError(&lua, table.len(), "object length is not an integer");
+        try expectLuaError(lua, table.len(), "object length is not an integer");
     }
     var raising = try lua.getGlobal("raising", api.Table);
     defer raising.deinit();
-    try expectLuaError(&lua, raising.len(), "len boom");
+    try expectLuaError(lua, raising.len(), "len boom");
     try std.testing.expectEqual(@as(i64, 0), try raising.rawLen());
 
-    var empty = try lua.createTable(.{});
+    var empty = try lua.newTable(.{});
     defer empty.deinit();
     try std.testing.expectEqual(@as(i64, 0), try empty.len());
 }
 
 test "table setMetatable matches lua_setmetatable and getMetatable round trips" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
-    var t = try lua.createTable(.{});
+    var t = try lua.newTable(.{});
     defer t.deinit();
     try std.testing.expect((try t.getMetatable()) == null);
 
-    var meta = try lua.createTable(.{});
+    var meta = try lua.newTable(.{});
     defer meta.deinit();
-    var fallback = try lua.createTable(.{});
+    var fallback = try lua.newTable(.{});
     defer fallback.deinit();
     try fallback.set("answer", 42);
     try meta.set("__index", fallback);
@@ -139,7 +141,7 @@ test "table setMetatable matches lua_setmetatable and getMetatable round trips" 
         \\assert(not pcall(setmetatable, t, {}))
     , .{});
 
-    var replacement = try lua.createTable(.{});
+    var replacement = try lua.newTable(.{});
     defer replacement.deinit();
     try t.setMetatable(replacement);
     try lua.doString("assert(getmetatable(t) ~= 'locked' and t.answer == nil)", .{});
@@ -147,24 +149,24 @@ test "table setMetatable matches lua_setmetatable and getMetatable round trips" 
     try std.testing.expect((try t.getMetatable()) == null);
     try lua.doString("assert(getmetatable(t) == nil)", .{});
 
-    var foreign = try api.State.init(a, .{});
+    const foreign = try api.State.init(a, .{});
     defer foreign.deinit();
-    var foreign_meta = try foreign.createTable(.{});
+    var foreign_meta = try foreign.newTable(.{});
     defer foreign_meta.deinit();
     try std.testing.expectError(error.InvalidHandle, t.setMetatable(foreign_meta));
 }
 
 test "table setMetatable installs __gc finalizers and __mode weak tables" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
     try lua.doString("finalized = 0", .{});
-    var meta = try lua.createTable(.{});
+    var meta = try lua.newTable(.{});
     defer meta.deinit();
     var gc = try lua.loadString("finalized = finalized + 1", .{});
     defer gc.deinit();
     try meta.set("__gc", gc);
     {
-        var doomed = try lua.createTable(.{});
+        var doomed = try lua.newTable(.{});
         defer doomed.deinit();
         try doomed.setMetatable(meta);
     }
@@ -172,14 +174,14 @@ test "table setMetatable installs __gc finalizers and __mode weak tables" {
     try lua.collect();
     try std.testing.expectEqual(@as(i64, 1), try lua.getGlobal("finalized", i64));
 
-    var weak = try lua.createTable(.{});
+    var weak = try lua.newTable(.{});
     defer weak.deinit();
-    var weak_meta = try lua.createTable(.{});
+    var weak_meta = try lua.newTable(.{});
     defer weak_meta.deinit();
     try weak_meta.set("__mode", "v");
     try weak.setMetatable(weak_meta);
     {
-        var value = try lua.createTable(.{});
+        var value = try lua.newTable(.{});
         defer value.deinit();
         try weak.set("entry", value);
     }
@@ -188,7 +190,7 @@ test "table setMetatable installs __gc finalizers and __mode weak tables" {
 }
 
 test "table append writes raw sequence slots" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
     try lua.doString("t = setmetatable({}, { __newindex = function() error('no') end, __len = function() return 100 end })", .{});
     var t = try lua.getGlobal("t", api.Table);
@@ -198,7 +200,7 @@ test "table append writes raw sequence slots" {
     try t.append(null);
     try t.append(.{ .nested = true });
     try std.testing.expectEqual(@as(i64, 3), try t.rawLen());
-    try std.testing.expectEqualStrings("one", try t.rawGet(1, []const u8));
+    try expectString("one", t.rawGet(1, api.String));
     try std.testing.expectEqual(@as(i64, 2), try t.rawGet(2, i64));
     var nested = try t.rawGet(3, api.Table);
     defer nested.deinit();
@@ -206,7 +208,7 @@ test "table append writes raw sequence slots" {
 }
 
 test "table raw iterator roots keys values and the table across forced collections" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
     try lua.doString(
         \\local t = {}
@@ -234,21 +236,22 @@ test "table raw iterator roots keys values and the table across forced collectio
         try lua.collect();
         switch (entry.key) {
             .integer => |index| {
-                try std.testing.expectEqualStrings(try std.fmt.bufPrint(&buffer, "array {d}", .{index}), entry.value.string);
+                try std.testing.expectEqualStrings(try std.fmt.bufPrint(&buffer, "array {d}", .{index}), try entry.value.string.bytes());
                 array_seen += 1;
             },
-            .string => |key| {
+            .string => |key_string| {
+                const key = try key_string.bytes();
                 const id = try entry.value.table.get("id", i64);
                 try std.testing.expectEqualStrings(try std.fmt.bufPrint(&buffer, "key {d}", .{id}), key);
                 try seen_keys.put(try std.fmt.allocPrint(lua.allocator(), "{s}", .{key}), {});
                 hash_seen += 1;
             },
             .number => |number| {
-                try std.testing.expectEqual(@as(usize, @intFromFloat(number - 0.5)), entry.value.string.len);
+                try std.testing.expectEqual(@as(usize, @intFromFloat(number - 0.5)), (try entry.value.string.bytes()).len);
                 float_seen += 1;
             },
             .boolean => {
-                try std.testing.expectEqualStrings("boolean", entry.value.string);
+                try std.testing.expectEqualStrings("boolean", try entry.value.string.bytes());
                 boolean_seen += 1;
             },
             else => return error.TestUnexpectedResult,
@@ -266,7 +269,7 @@ test "table raw iterator roots keys values and the table across forced collectio
 }
 
 test "table raw iterator allows clearing and updating fields during traversal" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
     try lua.doString(
         \\t = {}
@@ -285,10 +288,11 @@ test "table raw iterator allows clearing and updating fields during traversal" {
         visited += 1;
         switch (entry.key) {
             .integer => |index| try table.rawSet(index, index * 100),
-            .string => |key| {
+            .string => |key_string| {
                 try table.set(entry.key, null);
                 cleared += 1;
                 try lua.collect();
+                const key = try key_string.bytes();
                 try std.testing.expectEqual(@as(u8, 'k'), key[0]);
                 try std.testing.expectEqual(@as(i64, try std.fmt.parseInt(i64, key[1..], 10)), try entry.value.table.rawGet(1, i64));
             },
@@ -312,7 +316,7 @@ test "table raw iterator allows clearing and updating fields during traversal" {
 }
 
 test "table pairs honors __pairs, closing values, and errors" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
     try lua.doString(
         \\closed = {}
@@ -342,8 +346,9 @@ test "table pairs honors __pairs, closing values, and errors" {
         count += 1;
         try lua.collect();
         try std.testing.expectEqual(count, entry.key.integer);
-        try std.testing.expectEqual(@as(usize, @intCast(count * count)), entry.value.string.len);
-        for (entry.value.string) |byte| try std.testing.expectEqual(@as(u8, '#'), byte);
+        const bytes = try entry.value.string.bytes();
+        try std.testing.expectEqual(@as(usize, @intCast(count * count)), bytes.len);
+        for (bytes) |byte| try std.testing.expectEqual(@as(u8, '#'), byte);
     }
     iterator.deinit();
     try std.testing.expectEqual(@as(i64, 5), count);
@@ -352,7 +357,7 @@ test "table pairs honors __pairs, closing values, and errors" {
     var raw = try squares.rawIterator();
     defer raw.deinit();
     const raw_entry = (try raw.next()).?;
-    try std.testing.expectEqualStrings("hidden", raw_entry.key.string);
+    try std.testing.expectEqualStrings("hidden", try raw_entry.key.string.bytes());
     try std.testing.expect((try raw.next()) == null);
 
     var failing = try lua.getGlobal("failing", api.Table);
@@ -361,7 +366,7 @@ test "table pairs honors __pairs, closing values, and errors" {
     defer failing_iterator.deinit();
     _ = (try failing_iterator.next()).?;
     _ = (try failing_iterator.next()).?;
-    try expectLuaError(&lua, failing_iterator.next(), "iter boom");
+    try expectLuaError(lua, failing_iterator.next(), "iter boom");
     try std.testing.expect((try failing_iterator.next()) == null);
     try lua.doString("assert(#closed == 2 and closed[2]:find('^failing:.*iter boom'), closed[2])", .{});
 
@@ -382,10 +387,10 @@ test "table pairs honors __pairs, closing values, and errors" {
 
     var non_closable = try lua.getGlobal("non_closable", api.Table);
     defer non_closable.deinit();
-    try expectLuaError(&lua, non_closable.pairs(), "non-closable value");
+    try expectLuaError(lua, non_closable.pairs(), "non-closable value");
     var pairs_error = try lua.getGlobal("pairs_error", api.Table);
     defer pairs_error.deinit();
-    try expectLuaError(&lua, pairs_error.pairs(), "pairs boom");
+    try expectLuaError(lua, pairs_error.pairs(), "pairs boom");
 
     var plain = try lua.getGlobal("plain", api.Table);
     defer plain.deinit();
@@ -396,13 +401,10 @@ test "table pairs honors __pairs, closing values, and errors" {
     try std.testing.expectEqual(@as(i64, 60), sum);
 }
 
-test "table iterators and rawNext reject invalid keys and reset" {
-    var lua = try api.State.init(a, .{});
+test "table iterators reject reset" {
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
     try lua.doString("t = { a = 1 }", .{});
-    var table = try lua.getGlobal("t", api.Table);
-    defer table.deinit();
-    try expectLuaError(&lua, table.rawNext("absent"), "invalid key to 'next'");
 
     var snapshot = try lua.snapshot(a);
     defer snapshot.deinit();
@@ -417,7 +419,7 @@ test "table iterators and rawNext reject invalid keys and reset" {
 }
 
 test "table writes follow snapshot rollback" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
     try lua.doString("t = { 1, 2, name = 'base' }; mt = { __index = { extra = 'meta' } }", .{});
     var snapshot = try lua.snapshot(a);
@@ -431,7 +433,7 @@ test "table writes follow snapshot rollback" {
         try t.rawSet("fresh", true);
         try t.append(3);
         try t.setMetatable(mt);
-        try std.testing.expectEqualStrings("meta", try t.get("extra", []const u8));
+        try expectString("meta", t.get("extra", api.String));
         try lua.doString("assert(t.name == 'changed' and t.fresh and #t == 3 and t.extra == 'meta')", .{});
         try lua.reset();
         try lua.doString("assert(t.name == 'base' and t.fresh == nil and #t == 2 and getmetatable(t) == nil)", .{});
@@ -439,7 +441,7 @@ test "table writes follow snapshot rollback" {
 }
 
 test "table toSlice converts raw sequences with ownership and type errors" {
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
     try lua.doString(
         \\ints = { 1, 2.0, 3 }
@@ -464,10 +466,12 @@ test "table toSlice converts raw sequences with ownership and type errors" {
 
     var strings = try lua.getGlobal("strings", api.Table);
     defer strings.deinit();
-    const string_slice = try strings.toSlice([]const u8, a);
-    defer a.free(string_slice);
+    const string_slice = try strings.toSlice(api.String, a);
+    try lua.collect();
     try std.testing.expectEqual(@as(usize, 2), string_slice.len);
-    try std.testing.expectEqualStrings("bb", string_slice[1]);
+    try std.testing.expectEqualStrings("bb", try string_slice[1].bytes());
+    for (string_slice) |*item| item.deinit();
+    a.free(string_slice);
 
     var tables = try lua.getGlobal("tables", api.Table);
     defer tables.deinit();
@@ -494,7 +498,7 @@ test "table toSlice converts raw sequences with ownership and type errors" {
     try std.testing.expectError(error.TypeMismatch, partial.toSlice(api.Table, a));
     try std.testing.expectEqual(roots_with_partial, lua.raw_state.activeRootCount());
     const values = try mixed.toSlice(api.Value, a);
-    try std.testing.expectEqualStrings("two", values[1].string);
+    try std.testing.expectEqualStrings("two", try values[1].string.bytes());
     for (values) |*value| value.deinit();
     a.free(values);
 
@@ -525,13 +529,13 @@ test "preloadModuleFn loads lazily once with Lua 5.5 loader arguments" {
             seen_name_len = name.len;
             @memcpy(seen_data[0..data.len], data);
             seen_data_len = data.len;
-            var module = try ctx.state().createTable(.{});
+            var module = try ctx.state().newTable(.{});
             errdefer module.deinit();
             try module.set("version", 7);
             return module;
         }
     };
-    var lua = try api.State.init(a, .{});
+    const lua = try api.State.init(a, .{});
     defer lua.deinit();
     try lua.preloadModuleFn("hostmod", Loader.open);
     try std.testing.expectEqual(@as(usize, 0), Loader.calls);
@@ -554,7 +558,7 @@ test "preloadModuleFn loads lazily once with Lua 5.5 loader arguments" {
 }
 
 test "package helpers keep the original tables after Lua replaces them" {
-    var lua = try api.State.init(a, .{ .stdlib = .base });
+    const lua = try api.State.init(a, .{ .stdlib = .base });
     defer lua.deinit();
     try lua.setPackagePath("./?.lua");
     try lua.doString(
@@ -572,7 +576,7 @@ test "package helpers keep the original tables after Lua replaces them" {
 
     var hosted = try lua.require("hosted", api.Table);
     defer hosted.deinit();
-    try std.testing.expectEqualStrings("hosted", try hosted.get("name", []const u8));
+    try expectString("hosted", hosted.get("name", api.String));
     try std.testing.expectEqual(@as(i64, 42), try lua.require("answer", i64));
     try lua.doString(
         \\assert(loaded.hosted.name == 'hosted' and loaded.answer == 42 and next(original.loaded) == nil)
@@ -582,7 +586,7 @@ test "package helpers keep the original tables after Lua replaces them" {
 }
 
 test "preloadModule installs Lua loaders and host require reports errors" {
-    var lua = try api.State.init(a, .{ .stdlib = .base });
+    const lua = try api.State.init(a, .{ .stdlib = .base });
     defer lua.deinit();
     var loader = try lua.loadString(
         \\local name, data = ...
@@ -596,25 +600,25 @@ test "preloadModule installs Lua loaders and host require reports errors" {
     try lua.preloadModule("broken", loader);
     try std.testing.expectEqual(@as(?i64, null), try lua.getGlobal("loads", ?i64));
 
-    const Result = api.Tuple(&.{ api.Table, []const u8 });
+    const Result = struct { api.Table, api.String };
     var result = try lua.require("lazy", Result);
-    defer result.deinit();
-    try std.testing.expectEqualStrings("lazy", try result.get(0).get("name", []const u8));
-    try std.testing.expectEqualStrings(":preload:", try result.get(0).get("data", []const u8));
-    try std.testing.expectEqualStrings(":preload:", result.get(1));
+    defer api.deinit(&result);
+    try expectString("lazy", result[0].get("name", api.String));
+    try expectString(":preload:", result[0].get("data", api.String));
+    try std.testing.expectEqualStrings(":preload:", try result[1].bytes());
     try std.testing.expectEqual(@as(i64, 1), try lua.getGlobal("loads", i64));
 
-    try expectLuaError(&lua, lua.require("broken", api.Table), "loader boom");
-    try expectLuaError(&lua, lua.require("broken", api.Table), "loader boom");
+    try expectLuaError(lua, lua.require("broken", api.Table), "loader boom");
+    try expectLuaError(lua, lua.require("broken", api.Table), "loader boom");
     try std.testing.expectEqual(@as(i64, 3), try lua.getGlobal("loads", i64));
-    try expectLuaError(&lua, lua.require("missing", api.Table), "module 'missing' not found");
+    try expectLuaError(lua, lua.require("missing", api.Table), "module 'missing' not found");
 
     try lua.doString("require = function() error('replaced') end", .{});
     var again = try lua.require("lazy", api.Table);
     defer again.deinit();
-    try std.testing.expectEqual(try result.get(0).identity(), try again.identity());
+    try std.testing.expectEqual(try result[0].identity(), try again.identity());
 
-    var eager = try lua.createModule("eager");
+    var eager = try lua.newTable(.{});
     defer eager.deinit();
     try eager.set("ready", true);
     try lua.setLoadedModule("eager", eager);
@@ -623,4 +627,17 @@ test "preloadModule installs Lua loaders and host require reports errors" {
     defer loaded.deinit();
     try std.testing.expect(try loaded.get("ready", bool));
     try std.testing.expectEqual(@as(i64, 42), try lua.require("answer", i64));
+}
+
+test "String.dupe copies bytes that outlive the handle" {
+    const lua = try api.State.init(a, .{});
+    defer lua.deinit();
+    try lua.doString("name = 'copied'", .{});
+    var name = try lua.getGlobal("name", api.String);
+    const copy = try name.dupe(a);
+    defer a.free(copy);
+    name.deinit();
+    try lua.doString("name = nil", .{});
+    try lua.collect();
+    try std.testing.expectEqualStrings("copied", copy);
 }

@@ -4,6 +4,9 @@ const runtime = @import("../runtime.zig");
 const rollback_runtime = @import("../runtime/rollback.zig");
 const runtime_types = @import("../runtime/types.zig");
 const convert = @import("convert.zig");
+const errors = @import("errors.zig");
+const entry_mod = @import("../runtime/entry.zig");
+const load_mod = @import("../runtime/load.zig");
 const decode_mod = @import("decode.zig");
 const snapshot_mod = @import("snapshot.zig");
 const userdata_mod = @import("userdata.zig");
@@ -12,12 +15,13 @@ const Context = context_mod.Context;
 const Coroutine = @import("coroutine.zig").Coroutine;
 const Function = @import("function.zig").Function;
 const Ref = @import("handle.zig").Ref;
+const String = @import("string.zig").String;
 const Table = @import("table.zig").Table;
 const Value = @import("value.zig").Value;
 const State = @import("state.zig").State;
 const UserdataOptions = userdata_mod.UserdataOptions;
 
-/// Untyped callback for `State.register`.
+/// Untyped callback for `State.newFunction`.
 pub const HostFn = *const fn (ctx: *Context) anyerror!void;
 
 pub const RegisteredCallback = struct {
@@ -29,30 +33,73 @@ pub fn bindDispatch(state: *State) void {
     state.raw_state.setApiCallbackDispatch(apiCallbackDispatch, state);
 }
 
+/// A function for the callback entry of `callback` under `name`, adding the entry if there is none.
 pub fn create(state: *State, name: []const u8, callback: HostFn) !Function {
-    try snapshot_mod.writableBindings(state);
-    bindDispatch(state);
-    const name_copy = try state.allocator().dupe(u8, name);
-    errdefer state.allocator().free(name_copy);
-    try state.callbacks.append(state.allocator(), .{ .name = name_copy, .callback = callback });
-    errdefer _ = state.callbacks.pop();
-    return convert.fromRuntimeValue(state, .{ .api_callback = state.callbacks.items.len }, Function);
+    const count = state.callbacks.items.len;
+    const id = find(state, callback, name) orelse try append(state, name, callback);
+    errdefer if (state.callbacks.items.len > count) state.allocator().free(state.callbacks.pop().?.name);
+    return convert.fromRuntimeValue(state, .{ .api_callback = id }, Function);
 }
 
-/// The id of the callback entry for `callback`, registering it under `name` if there is none.
+/// A function for the callback entry of `callback` under `name` with `values` bound to it.
+pub fn createClosure(state: *State, name: []const u8, callback: HostFn, values: []const runtime.Value) !Function {
+    const count = state.callbacks.items.len;
+    const id = find(state, callback, name) orelse try append(state, name, callback);
+    errdefer if (state.callbacks.items.len > count) state.allocator().free(state.callbacks.pop().?.name);
+    const raw = &state.raw_state;
+    const closure = (raw.newTableWithHints(@intCast(values.len + closure_values_start - 1), 0) catch |err| return errors.captureLuaError(state, err)).table;
+    try raw.setTableRaw(closure, .{ .integer = 1 }, .{ .integer = @intCast(id) });
+    try raw.setTableRaw(closure, .{ .integer = 2 }, .{ .integer = @intCast(values.len) });
+    for (values, closure_values_start..) |value, index| try raw.setTableRaw(closure, .{ .integer = @intCast(index) }, value);
+    return convert.fromRuntimeValue(state, .{ .api_closure = closure }, Function);
+}
+
+/// Index of the first bound value in an `api_closure` table, after the callback id and count.
+pub const closure_values_start = 3;
+
+pub fn closureValueCount(closure: *runtime.Table) usize {
+    return @intCast(closure.get(.{ .integer = 2 }).integer);
+}
+
+/// The Lua function `function(k, f, ...) return k(f(...)) end`, compiled once per state.
+pub fn continuationHelper(state: *State) !runtime.Value {
+    const raw = &state.raw_state;
+    if (raw.library_tables.get(.host_continuation)) |holder| return holder.get(.{ .integer = 1 });
+    const chunk = load_mod.loadSourceAsClosureNamedEnv(raw, "return function(k, f, ...) return k(f(...)) end", "=[C]", .nil) catch |err| return errors.captureLuaError(state, err);
+    const results = entry_mod.callFunction(raw, chunk, &.{}) catch |err| return errors.captureLuaError(state, err);
+    defer state.allocator().free(results);
+    results[0].closure.stripped_debug = true;
+    const holder = (raw.newTableWithHints(1, 0) catch |err| return errors.captureLuaError(state, err)).table;
+    try raw.setTableRaw(holder, .{ .integer = 1 }, results[0]);
+    raw.library_tables.set(.host_continuation, holder);
+    return results[0];
+}
+
+/// The id of the callback entry for `callback`, adding one under `name` if there is none.
 pub fn intern(state: *State, name: []const u8, callback: HostFn) !usize {
-    for (state.callbacks.items, 1..) |entry, id| {
-        if (entry.callback == callback) return id;
-    }
-    try snapshot_mod.writableBindings(state);
+    return find(state, callback, null) orelse append(state, name, callback);
+}
+
+/// `name` null matches an entry under any name.
+fn find(state: *State, callback: HostFn, name: ?[]const u8) ?usize {
     bindDispatch(state);
+    for (state.callbacks.items, 1..) |entry, id| {
+        if (entry.callback != callback) continue;
+        if (name) |wanted| if (!std.mem.eql(u8, entry.name, wanted)) continue;
+        return id;
+    }
+    return null;
+}
+
+fn append(state: *State, name: []const u8, callback: HostFn) !usize {
+    try snapshot_mod.writableBindings(state);
     const name_copy = try state.allocator().dupe(u8, name);
     errdefer state.allocator().free(name_copy);
     try state.callbacks.append(state.allocator(), .{ .name = name_copy, .callback = callback });
     return state.callbacks.items.len;
 }
 
-/// The untyped callback that calls `function` as `State.registerTyped` does.
+/// The untyped callback that calls `function` as `State.newTypedFunction` does.
 pub fn typedHostFn(comptime function: anytype) HostFn {
     return struct {
         fn call(ctx: *Context) !void {
@@ -83,7 +130,7 @@ pub fn canReadParam(comptime T: type) bool {
     if (T == *Context or context_mod.isHost(T)) return true;
     if (@typeInfo(T) == .optional) return canReadParam(@typeInfo(T).optional.child);
     if (decode_mod.needsDecoding(T)) return decode_mod.canDecode(T);
-    if (T == Value or T == Ref or T == Table or T == Function or T == Coroutine or T == userdata_mod.AnyUserdata or userdata_mod.isHandle(T)) return true;
+    if (T == Value or T == Ref or T == String or T == Table or T == Function or T == Coroutine or T == userdata_mod.AnyUserdata or userdata_mod.isHandle(T)) return true;
     return switch (@typeInfo(T)) {
         .bool, .int, .float => true,
         .pointer => |pointer| switch (pointer.size) {
@@ -101,20 +148,20 @@ pub fn callTyped(comptime function: anytype, ctx: *Context) !void {
         .@"fn" => FunctionType,
         .pointer => |pointer| switch (@typeInfo(pointer.child)) {
             .@"fn" => pointer.child,
-            else => @compileError("registerTyped requires a function or function pointer"),
+            else => @compileError("newTypedFunction requires a function or function pointer"),
         },
-        else => @compileError("registerTyped requires a function or function pointer"),
+        else => @compileError("newTypedFunction requires a function or function pointer"),
     };
     const function_info = switch (@typeInfo(FunctionType)) {
         .@"fn" => |info| info,
         .pointer => |pointer| switch (@typeInfo(pointer.child)) {
             .@"fn" => |info| info,
-            else => @compileError("registerTyped requires a function or function pointer"),
+            else => @compileError("newTypedFunction requires a function or function pointer"),
         },
-        else => @compileError("registerTyped requires a function or function pointer"),
+        else => @compileError("newTypedFunction requires a function or function pointer"),
     };
 
-    if (reflection.isVariadic(function_info)) @compileError("registerTyped does not support varargs functions");
+    if (reflection.isVariadic(function_info)) @compileError("newTypedFunction does not support varargs functions");
 
     var args: std.meta.ArgsTuple(SignatureType) = undefined;
     var scopes: ArgumentScopes(reflection.paramTypes(function_info).len) = .{};
@@ -123,7 +170,7 @@ pub fn callTyped(comptime function: anytype, ctx: *Context) !void {
     var bound: usize = 0;
     defer releaseArgs(reflection.paramTypes(function_info), &args, bound);
     inline for (reflection.paramTypes(function_info), 0..) |param, index| {
-        const Param = param orelse @compileError("registerTyped requires typed parameters");
+        const Param = param orelse @compileError("newTypedFunction requires typed parameters");
         if (comptime !canReadParam(Param)) @compileError("typed callbacks cannot take a " ++ @typeName(Param) ++ " parameter from Lua");
         args[index] = try scopes.param(ctx, &lua_arg_index, Param);
         bound += 1;
@@ -191,14 +238,14 @@ pub fn callUserdataInitializer(comptime T: type, comptime initializer: anytype, 
         .error_union => |error_union| {
             if (comptime error_union.payload != T) @compileError("userdata initializers must return T or !T");
             const value = try @call(.auto, initializer, args);
-            var userdata = try ctx.state().newUserdataAuto(T, value, options);
+            var userdata = try ctx.state().newUserdata(T, value, options);
             defer userdata.deinit();
             try ctx.returnValues(userdata);
         },
         else => {
             if (comptime Return != T) @compileError("userdata initializers must return T or !T");
             const value = @call(.auto, initializer, args);
-            var userdata = try ctx.state().newUserdataAuto(T, value, options);
+            var userdata = try ctx.state().newUserdata(T, value, options);
             defer userdata.deinit();
             try ctx.returnValues(userdata);
         },

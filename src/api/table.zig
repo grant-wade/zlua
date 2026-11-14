@@ -24,7 +24,6 @@ pub const Table = struct {
     }
 
     /// Reads `t[key]` honoring `__index`; metamethods cannot yield and fail with `error.LuaError`.
-    /// A `[]const u8` result borrows VM memory; see `Value.string`.
     pub fn get(self: Table, key: anytype, comptime T: type) !T {
         const state = self.ref.state;
         const raw = try self.rawValue();
@@ -105,7 +104,6 @@ pub const Table = struct {
         metatable_mod.setDebugMetatableValue(&state.raw_state, raw, raw_metatable) catch |err| return errors.captureLuaError(state, err);
     }
 
-    /// A `[]const u8` result borrows VM memory; see `Value.string`.
     pub fn rawGet(self: Table, key: anytype, comptime T: type) !T {
         const state = self.ref.state;
         const raw = try self.rawValue();
@@ -114,7 +112,7 @@ pub const Table = struct {
     }
 
     /// Reads raw entries `1..rawLen()`; holes fail with `error.TypeMismatch` unless `T` is optional.
-    /// The caller frees the slice and deinits handle elements; string elements borrow VM memory.
+    /// The caller frees the slice and deinits handle elements.
     pub fn toSlice(self: Table, comptime T: type, allocator: std.mem.Allocator) ![]T {
         const state = self.ref.state;
         const table = (try self.rawValue()).table;
@@ -130,29 +128,15 @@ pub const Table = struct {
         return items;
     }
 
-    /// String fields borrow VM memory; see `Value.string`.
     pub const Entry = struct {
         key: Value,
         value: Value,
 
-        /// Only for `rawNext` entries; `Iterator` owns the entries it returns.
-        pub fn deinit(self: *Entry) void {
+        fn deinit(self: *Entry) void {
             self.key.deinit();
             self.value.deinit();
         }
     };
-
-    /// Lua `next`: start with null or `.nil`; deinit each entry. Prefer `rawIterator`.
-    pub fn rawNext(self: Table, key: anytype) !?Entry {
-        const state = self.ref.state;
-        const raw = try self.rawValue();
-        const raw_key = readableTableKey(try convert.toRuntimeValue(state, key)) orelse runtime.Value.nil;
-        const pair = raw.table.next(raw_key) catch return errors.captureLuaError(state, state.raw_state.fail("invalid key to 'next'"));
-        if (pair[0] == .nil) return null;
-        var owned_key = try convert.fromRuntimeValue(state, pair[0], Value);
-        errdefer owned_key.deinit();
-        return .{ .key = owned_key, .value = try convert.fromRuntimeValue(state, pair[1], Value) };
-    }
 
     /// Raw-entry iterator like Lua `next`; the caller must `deinit` it. Existing fields may be
     /// assigned or cleared during traversal; adding keys is undefined.
@@ -388,7 +372,7 @@ fn assignTable(state: *State, start: *runtime.Table, key: runtime.Value, value: 
     return state.raw_state.fail("'__newindex' chain too long; possible loop");
 }
 
-fn storeRaw(state: *State, table: *runtime.Table, key: runtime.Value, value: runtime.Value) !void {
+pub fn storeRaw(state: *State, table: *runtime.Table, key: runtime.Value, value: runtime.Value) !void {
     if (table.rollback != null and table.get(key) != .nil) try rollback_runtime.tableWritable(table);
     if (!table.setExistingNonNil(key, value)) try state.raw_state.setTableRaw(table, key, value);
     state.raw_state.gc.writeTableBarrier(table, key, value);

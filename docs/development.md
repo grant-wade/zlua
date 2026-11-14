@@ -19,7 +19,7 @@ A few conventions keep the codebase consistent:
 - Keep imports and commonly used type aliases at file scope.
 - If a host needs something new, prefer a small addition to the embedding API
   over exposing runtime internals. Put it in the matching `src/api/` module and
-  re-export public names from `src/api.zig`.
+  re-export public names from `src/api.zig` and `src/root.zig`.
 - Keep `runtime.State` methods to its widely used core. Runtime subsystems live
   in their own modules as functions that take `*State`, called directly (for
   example `call_mod.invokeValue(state, ...)`); don't add thin `State` methods

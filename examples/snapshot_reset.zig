@@ -7,14 +7,14 @@ const warmup = 10;
 
 pub fn main(init: std.process.Init) !void {
     const allocator = std.heap.smp_allocator;
-    var lua: ?zlua.State = try initialize(allocator);
-    defer if (lua) |*state| state.deinit();
+    var lua: ?*zlua.State = try initialize(allocator);
+    defer if (lua) |state| state.deinit();
 
     const capture_start = Timestamp.now(init.io, .awake);
     var snapshot = try lua.?.snapshot(allocator);
     defer snapshot.deinit();
     const capture_ns = elapsed(init.io, capture_start);
-    var worker = try snapshot.newState(allocator);
+    const worker = try snapshot.newState(allocator);
     defer worker.deinit();
 
     var reset_samples: [iterations]u64 = undefined;
@@ -23,7 +23,7 @@ pub fn main(init: std.process.Init) !void {
         // Alternate order to avoid systematic timing bias.
         for (0..2) |j| {
             const reset = (i + j) % 2 == 0;
-            try call(if (reset) &worker else &lua.?, "request");
+            try call(if (reset) worker else lua.?, "request");
             const start = Timestamp.now(init.io, .awake);
             if (reset) {
                 try worker.reset();
@@ -34,7 +34,7 @@ pub fn main(init: std.process.Init) !void {
             }
             const ns = elapsed(init.io, start);
             // Reacquire handles after reset; previous handles are invalidated.
-            try call(if (reset) &worker else &lua.?, "verify_baseline");
+            try call(if (reset) worker else lua.?, "verify_baseline");
             if (i >= warmup) {
                 if (reset) reset_samples[i - warmup] = ns else rebuild_samples[i - warmup] = ns;
             }
@@ -62,13 +62,13 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
-fn initialize(allocator: std.mem.Allocator) !zlua.State {
-    var lua = try zlua.State.init(allocator, .{ .stdlib = .full });
+fn initialize(allocator: std.mem.Allocator) !*zlua.State {
+    const lua = try zlua.State.init(allocator, .{ .stdlib = .full });
     errdefer lua.deinit();
     for (0..128) |i| {
         var buffer: [32]u8 = undefined;
         const name = try std.fmt.bufPrint(&buffer, "host_{d}", .{i});
-        var callback = try lua.registerTyped(name, hostScale);
+        var callback = try lua.newTypedFunction(name, hostScale);
         defer callback.deinit();
         try lua.setGlobal(name, callback);
     }

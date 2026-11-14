@@ -9,16 +9,18 @@
 <summary>All documents</summary>
 
 - [root](../root.md)
-- [frontend](../frontend.md)
+- [api](../api.md)
+- [api.analyze](../api/analyze.md)
+- [compile](../compile.md)
 - [errors](../errors.md)
 - [frontend.source](../frontend/source.md)
 - [frontend.token](../frontend/token.md)
+- [frontend](../frontend.md)
 - [frontend.diagnostic](../frontend/diagnostic.md)
 - [frontend.lexer](../frontend/lexer.md)
 - [stack_guard](../stack_guard.md)
 - [frontend.ast](../frontend/ast.md)
 - [frontend.parser](../frontend/parser.md)
-- [compile](../compile.md)
 - [compile.resolver](../compile/resolver.md)
 - [compile.bytecode](../compile/bytecode.md)
 - [compile.proto](../compile/proto.md)
@@ -80,8 +82,6 @@
 - [compile.compiler](../compile/compiler.md)
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
-- [api](../api.md)
-- [api.analyze](../api/analyze.md)
 - [api.callbacks](../api/callbacks.md)
 - [api.convert](../api/convert.md)
 - [api.errors](../api/errors.md)
@@ -94,12 +94,13 @@
 - [api.table](../api/table.md)
 - [api.value](../api/value.md)
 - [api.userdata](../api/userdata.md)
+- [api.namespace](../api/namespace.md)
 - [api.context](../api/context.md)
 - [api.decode](../api/decode.md)
 - [api.coroutine](../api/coroutine.md)
+- [api.string](../api/string.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
-- [api.namespace](../api/namespace.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
 - [testing.bench_runner](../testing/bench_runner.md)
@@ -133,9 +134,11 @@
 ## Functions
 
 - [UserdataOptions](#fn-userdataoptions)
-- [UserdataPtrOptions](#fn-userdataptroptions)
 - [UserdataSnapshotHooks](#fn-userdatasnapshothooks)
 - [Userdata](#fn-userdata)
+- [declaredType](#fn-declaredtype)
+- [defineDeclared](#fn-definedeclared)
+- [bindDeclared](#fn-binddeclared)
 - [define](#fn-define)
 - [isDefined](#fn-isdefined)
 - [definedName](#fn-definedname)
@@ -162,26 +165,18 @@
 pub fn UserdataOptions(comptime T: type) type
 ```
 
-<a id="fn-userdataptroptions"></a>
-
-## UserdataPtrOptions
-
-```zig
-pub fn UserdataPtrOptions(comptime T: type) type
-```
-
 <a id="type-userdatatype"></a>
 
 ## UserdataType
 
-Options for `State.defineUserdata`.
+Options for `State.defineUserdata`, or a userdata type's `lua_userdata` declaration.
 
 ```zig
 pub const UserdataType = struct {
     /// Name for `__name` and argument errors; the Zig type name by default.
     name: ?[]const u8 = null,
-    /// Struct whose public functions with a `*T` or `*const T` receiver become methods; `T` by
-    /// default. Names starting with `__` become metamethods.
+    /// Struct whose public functions with a `*T` or `*const T` receiver become methods, under the
+    /// keys its `lua` declaration gives; `T` by default. Keys starting with `__` are metamethods.
     methods: ?type = null,
     /// Lets `getmetatable` return the metatable instead of false.
     expose_metatable: bool = false,
@@ -251,6 +246,34 @@ pub fn as(self: AnyUserdata, comptime T: type) !Userdata(T)
 
 References: [`AnyUserdata`](#type-anyuserdata)
 
+<a id="fn-declaredtype"></a>
+
+## declaredType
+
+The options `T` declares as `lua_userdata`, or the defaults.
+
+```zig
+pub fn declaredType(comptime T: type) UserdataType
+```
+
+References: [`UserdataType`](#type-userdatatype)
+
+<a id="fn-definedeclared"></a>
+
+## defineDeclared
+
+```zig
+pub fn defineDeclared(state: *State, comptime T: type) !void
+```
+
+<a id="fn-binddeclared"></a>
+
+## bindDeclared
+
+```zig
+pub fn bindDeclared(comptime T: type, userdata: Userdata(T)) !void
+```
+
 <a id="fn-define"></a>
 
 ## define
@@ -292,7 +315,7 @@ pub fn create(state: *State, comptime T: type, value: T, options: UserdataOption
 ## wrapPtr
 
 ```zig
-pub fn wrapPtr(state: *State, comptime T: type, ptr: *T, options: UserdataPtrOptions(T)) !Userdata(T)
+pub fn wrapPtr(state: *State, comptime T: type, ptr: *T, options: UserdataOptions(T)) !Userdata(T)
 ```
 
 <a id="fn-isreceiver"></a>

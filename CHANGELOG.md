@@ -2,6 +2,51 @@
 
 ## Unreleased
 
+### Breaking changes
+
+- Strings read from Lua are `String` handles, including `Value.string`.
+- Reading a `[]const u8` or `*T` anywhere but a callback argument is a compile
+  error.
+- Reading an enum, struct, or non-byte slice outside `decode` is a compile
+  error.
+- `State.createModule`, `DoOptions`, `GcBudget`, `Tuple`, `Table.rawNext`,
+  `DebugOptions.capture_output`, and `Userdata.method`, `metamethod`, and
+  `bindMethods` are removed.
+- `State.stepGc` takes a step count.
+- Creating a function from the same callback and name again returns the same
+  Lua function.
+- `newUserdata` binds the methods of `T` and defines `T` on first use, and
+  `wrapUserdata` wraps host-owned storage. `newUserdataAuto`, `newUserdataPtr`,
+  `newUserdataPtrAuto`, and `UserdataPtrOptions` are removed.
+- A userdata method that Lua can't call is a compile error.
+- `State.createTable`, `createTableFrom`, `register`, `registerTyped`,
+  `registerUserdataInitializerWith`, and `push` are `newTable`, `newTableFrom`,
+  `newFunction`, `newTypedFunction`, `newConstructor`, and `toValue`.
+- `State.init` and `Snapshot.newState` return `*State`, and `deinit` frees it.
+- `protectedCall`, `protectedCallWith`, `protectedResume`,
+  `protectedResumeWith`, `protectedClose`, and `CallResult` are removed. Lua
+  failures return `error.LuaError`, and `State.takeError` returns the error.
+- A call or resume clears the error the state kept from an earlier one.
+- `Coroutine.resumeCoroutineWith` takes `ResumeOptions`.
+- `State.errorMessage`, `describeError`, and `takeErrorValue` are
+  `writeError` and `takeError`, and `ErrorRef.message` is `writeMessage`.
+- `Function.dumpBytecode` writes to a `std.Io.Writer`.
+- `zlua.api` is removed; its declarations are at the top level of `zlua`.
+
+### Embedding API
+
+- Calls and resumes read results into Zig tuple types such as
+  `struct { i64, zlua.String }`, and `zlua.deinit` releases their handles.
+- `String.dupe` copies a string's bytes into an allocator.
+- `String` and `ErrorRef` print with the `{f}` format specifier.
+- A userdata type's `lua` declaration renames or leaves out methods, and its
+  `lua_userdata` declaration sets the options `newUserdata` defines it with.
+- `State.newClosure` binds Lua values to a callback, which
+  `Context.upvalue` and `setUpvalue` read and replace.
+- `Context.callThen` and `yieldThen` end a callback with a call or yield and
+  continue in another callback after Lua resumes.
+- `State.callGlobal` calls a global function.
+
 ### Data Formats
 
 - JSON, TOML, MessagePack, and CSV are built into zlua, which has no package
@@ -38,6 +83,8 @@
 - Float arithmetic is faster.
 - Lua function calls and returns are faster.
 - `pcall` and `xpcall` of a Lua function are faster.
+- Calls from Zig into Lua pass their arguments without allocating.
+- Creating a handle takes the same time however many handles are live.
 
 ### Packaging
 
@@ -57,9 +104,14 @@
 
 ### Fixes
 
+- Strings returned by `Function.call`, `Table.get`, and other reads could be
+  freed while still in use.
+- Registering callbacks, and creating userdata with a shared metatable, added
+  callback entries that were never freed.
 - Setting a numeric `for` variable with `debug.setlocal` changed how many times
   the loop ran.
 - `msgpack.read` panicked on an array or map length longer than the input.
+- Typed callbacks that returned a tuple of handles never released them.
 
 ## 0.8.1
 

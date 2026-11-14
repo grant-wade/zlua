@@ -7,6 +7,7 @@ const callbacks = @import("callbacks.zig");
 const convert = @import("convert.zig");
 const decode_mod = @import("decode.zig");
 const handle = @import("handle.zig");
+const table_mod = @import("table.zig");
 const Coroutine = @import("coroutine.zig").Coroutine;
 const Function = @import("function.zig").Function;
 const State = @import("state.zig").State;
@@ -46,7 +47,7 @@ pub const Caller = struct {
     }
 };
 
-/// Callback context for functions registered with `State.register`.
+/// Callback context for functions created with `State.newFunction`.
 pub const Context = struct {
     lua: *State,
     raw: *runtime.ApiCallbackContext,
@@ -107,7 +108,7 @@ pub const Context = struct {
     /// A `[]const u8` argument borrows VM memory until the callback returns.
     pub fn arg(self: *Context, index: usize, comptime T: type) !T {
         const raw = self.raw.callbackArgValue(index);
-        return convert.fromRuntimeValue(self.lua, raw, T) catch |err| return self.argConversionError(index, T, raw, err);
+        return convert.fromRuntimeBorrowed(self.lua, raw, T) catch |err| return self.argConversionError(index, T, raw, err);
     }
 
     /// Decodes an argument by type like `decode`, allocating strings and slices with `allocator`;
@@ -188,6 +189,66 @@ pub const Context = struct {
         return error.HostCallbackYield;
     }
 
+    /// Ends the callback by calling `function`, which may yield, then typed callback `continuation`
+    /// with its results and `saved` bound; the continuation's returns are this callback's.
+    pub fn callThen(self: *Context, function: Function, args: anytype, comptime continuation: anytype, saved: anytype) error{ HostCallbackTailCall, LuaError, OutOfMemory, InvalidHandle } {
+        const target = convert.toRuntimeValue(self.lua, function) catch |err| return raiseConversionError(err);
+        const raw_args = convert.convertArgs(self.lua, args) catch |err| return raiseConversionError(err);
+        return self.finishWith(target, &raw_args, continuation, saved);
+    }
+
+    /// Ends the callback by yielding `values`, then calls `continuation` with the resume arguments
+    /// as `callThen` does.
+    pub fn yieldThen(self: *Context, values: anytype, comptime continuation: anytype, saved: anytype) error{ HostCallbackTailCall, LuaError, OutOfMemory, InvalidHandle } {
+        if (coroutine_runtime.yieldRejection(self.raw.thread)) |message| return self.raise(message);
+        const raw_values = convert.convertArgs(self.lua, values) catch |err| return raiseConversionError(err);
+        return self.finishWith(.native_coroutine_yield, &raw_values, continuation, saved);
+    }
+
+    fn finishWith(self: *Context, target: runtime.Value, args: []const runtime.Value, comptime continuation: anytype, saved: anytype) error{ HostCallbackTailCall, LuaError, OutOfMemory, InvalidHandle } {
+        self.prepareTailCall(target, args, callbacks.typedHostFn(continuation), saved) catch |err| return switch (err) {
+            error.RuntimeError => self.raw.raise(self.raw.state.currentErrorValue()),
+            else => raiseConversionError(err),
+        };
+        return error.HostCallbackTailCall;
+    }
+
+    fn prepareTailCall(self: *Context, target: runtime.Value, args: []const runtime.Value, continuation: callbacks.HostFn, saved: anytype) !void {
+        const helper = try callbacks.continuationHelper(self.lua);
+        const raw_saved = try convert.convertArgs(self.lua, saved);
+        var next = try callbacks.createClosure(self.lua, self.functionName(), continuation, &raw_saved);
+        defer next.deinit();
+        self.raw.clearReturns();
+        try self.raw.appendReturn(try convert.toRuntimeValue(self.lua, next));
+        try self.raw.appendReturn(target);
+        for (args) |value| try self.raw.appendReturn(value);
+        self.raw.tail_callee = helper;
+    }
+
+    /// The number of values bound to this callback by `State.newClosure`.
+    pub fn upvalueCount(self: *Context) usize {
+        const closure = self.raw.closure orelse return 0;
+        return callbacks.closureValueCount(closure);
+    }
+
+    /// The value bound at `index`, or nil past the last one. A `[]const u8` or `*T` borrows VM
+    /// memory until the callback returns or replaces the value.
+    pub fn upvalue(self: *Context, index: usize, comptime T: type) !T {
+        return convert.fromRuntimeBorrowed(self.lua, self.rawUpvalue(index), T);
+    }
+
+    /// Replaces the value bound at `index`, which must be less than `upvalueCount()`.
+    pub fn setUpvalue(self: *Context, index: usize, value: anytype) !void {
+        if (index >= self.upvalueCount()) return self.raw.fail("upvalue index out of range");
+        const raw_value = convert.toRuntimeValue(self.lua, value) catch |err| return self.returnConversionError(err);
+        try table_mod.storeRaw(self.lua, self.raw.closure.?, .{ .integer = @intCast(index + callbacks.closure_values_start) }, raw_value);
+    }
+
+    fn rawUpvalue(self: *Context, index: usize) runtime.Value {
+        if (index >= self.upvalueCount()) return .nil;
+        return self.raw.closure.?.get(.{ .integer = @intCast(index + callbacks.closure_values_start) });
+    }
+
     /// Coroutine token valid only during this callback and until reset.
     pub fn coroutineIdentity(self: *Context) usize {
         return @intFromPtr(self.raw.thread);
@@ -198,10 +259,9 @@ pub const Context = struct {
         try handle.validate(function.ref, self.lua);
         callbacks.bindDispatch(self.lua);
         const raw_args = try convert.convertArgs(self.lua, args);
-        defer self.lua.allocator().free(raw_args);
         self.raw.thread.native_call_depth += 1;
         defer self.raw.thread.native_call_depth -= 1;
-        const result = try call_mod.protectedCall(self.raw.state, self.raw.thread, try handle.rawValue(function.ref), raw_args);
+        const result = try call_mod.protectedCall(self.raw.state, self.raw.thread, try handle.rawValue(function.ref), &raw_args);
         return switch (result) {
             .success => |values| blk: {
                 defer self.lua.allocator().free(values);

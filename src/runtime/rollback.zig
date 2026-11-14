@@ -317,6 +317,7 @@ pub const Journal = struct {
             state.table_pending_finalizers.deinit(self.allocator);
         }
         const roots = state.api_roots;
+        const root_free = state.api_root_free;
         const callback_dispatch = state.api_callback_dispatch;
         const callback_data = state.api_callback_user_data;
         const interrupt = state.budget.interrupt;
@@ -346,6 +347,8 @@ pub const Journal = struct {
         state.gc.advanceGeneration();
         state.api_roots = roots;
         state.api_roots.clearRetainingCapacity();
+        state.api_root_free = root_free;
+        state.api_root_free.clearRetainingCapacity();
         state.api_callback_dispatch = callback_dispatch;
         state.api_callback_user_data = callback_data;
         state.budget.interrupt = interrupt;

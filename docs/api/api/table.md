@@ -9,16 +9,18 @@
 <summary>All documents</summary>
 
 - [root](../root.md)
-- [frontend](../frontend.md)
+- [api](../api.md)
+- [api.analyze](../api/analyze.md)
+- [compile](../compile.md)
 - [errors](../errors.md)
 - [frontend.source](../frontend/source.md)
 - [frontend.token](../frontend/token.md)
+- [frontend](../frontend.md)
 - [frontend.diagnostic](../frontend/diagnostic.md)
 - [frontend.lexer](../frontend/lexer.md)
 - [stack_guard](../stack_guard.md)
 - [frontend.ast](../frontend/ast.md)
 - [frontend.parser](../frontend/parser.md)
-- [compile](../compile.md)
 - [compile.resolver](../compile/resolver.md)
 - [compile.bytecode](../compile/bytecode.md)
 - [compile.proto](../compile/proto.md)
@@ -80,8 +82,6 @@
 - [compile.compiler](../compile/compiler.md)
 - [compile.fold](../compile/fold.md)
 - [compile.disasm](../compile/disasm.md)
-- [api](../api.md)
-- [api.analyze](../api/analyze.md)
 - [api.callbacks](../api/callbacks.md)
 - [api.convert](../api/convert.md)
 - [api.errors](../api/errors.md)
@@ -94,12 +94,13 @@
 - [api.table](../api/table.md)
 - [api.value](../api/value.md)
 - [api.userdata](../api/userdata.md)
+- [api.namespace](../api/namespace.md)
 - [api.context](../api/context.md)
 - [api.decode](../api/decode.md)
 - [api.coroutine](../api/coroutine.md)
+- [api.string](../api/string.md)
 - [api.snapshot](../api/snapshot.md)
 - [api.memory_limit](../api/memory_limit.md)
-- [api.namespace](../api/namespace.md)
 - [testing](../testing.md)
 - [testing.clua](../testing/clua.md)
 - [testing.bench_runner](../testing/bench_runner.md)
@@ -130,6 +131,10 @@
 
 </details>
 
+## Functions
+
+- [storeRaw](#fn-storeraw)
+
 ## Types
 
 - [Table](#type-table)
@@ -151,7 +156,7 @@ pub const Table = struct {
 | Name | Parameters | Return Type | Description |
 | --- | --- | --- | --- |
 | [deinit](#fn-table-deinit) | `self: *Table` | `void` |  |
-| [get](#fn-table-get) | `self: Table, key: anytype, comptime T: type` | `!T` | Reads &#96;t[key]&#96; honoring &#96;__index&#96;; metamethods cannot yield and fail with &#96;error.LuaError&#96;. A &#96;[]const u8&#96; result borrows VM memory; see &#96;Value.string&#96;. |
+| [get](#fn-table-get) | `self: Table, key: anytype, comptime T: type` | `!T` | Reads &#96;t[key]&#96; honoring &#96;__index&#96;; metamethods cannot yield and fail with &#96;error.LuaError&#96;. |
 | [set](#fn-table-set) | `self: Table, key: anytype, value: anytype` | `!void` | Assigns &#96;t[key]&#96; honoring &#96;__newindex&#96;; metamethods cannot yield. A nil or NaN key returns &#96;error.LuaError&#96;. |
 | [setFields](#fn-table-setfields) | `self: Table, values: anytype` | `!void` | Assigns &#96;t[key]&#96; as &#96;set&#96; does for each field of struct &#96;values&#96;, or for each tag and exported public declaration of struct or enum type &#96;values&#96;. |
 | [rawSet](#fn-table-rawset) | `self: Table, key: anytype, value: anytype` | `!void` | Like &#96;set&#96; without &#96;__newindex&#96;; a nil or NaN key returns &#96;error.LuaError&#96;. |
@@ -161,10 +166,9 @@ pub const Table = struct {
 | [identity](#fn-table-identity) | `self: Table` | `!usize` | State-local, non-retaining token valid while rooted and until reset. |
 | [getMetatable](#fn-table-getmetatable) | `self: Table` | `!?Table` | Ignores &#96;__metatable&#96;. The caller must &#96;deinit&#96; the result. |
 | [setMetatable](#fn-table-setmetatable) | `self: Table, metatable: ?Table` | `!void` | Sets or removes the metatable, ignoring &#96;__metatable&#96; like &#96;lua_setmetatable&#96;. |
-| [rawGet](#fn-table-rawget) | `self: Table, key: anytype, comptime T: type` | `!T` | A &#96;[]const u8&#96; result borrows VM memory; see &#96;Value.string&#96;. |
-| [toSlice](#fn-table-toslice) | `self: Table, comptime T: type, allocator: std.mem.Allocator` | `![]T` | Reads raw entries &#96;1..rawLen()&#96;; holes fail with &#96;error.TypeMismatch&#96; unless &#96;T&#96; is optional. The caller frees the slice and deinits handle elements; string elements borrow VM memory. |
-| [Entry](#type-table-entry) |  |  | String fields borrow VM memory; see &#96;Value.string&#96;. |
-| [rawNext](#fn-table-rawnext) | `self: Table, key: anytype` | `!?Entry` | Lua &#96;next&#96;: start with null or &#96;.nil&#96;; deinit each entry. Prefer &#96;rawIterator&#96;. |
+| [rawGet](#fn-table-rawget) | `self: Table, key: anytype, comptime T: type` | `!T` |  |
+| [toSlice](#fn-table-toslice) | `self: Table, comptime T: type, allocator: std.mem.Allocator` | `![]T` | Reads raw entries &#96;1..rawLen()&#96;; holes fail with &#96;error.TypeMismatch&#96; unless &#96;T&#96; is optional. The caller frees the slice and deinits handle elements. |
+| [Entry](#type-table-entry) |  |  |  |
 | [rawIterator](#fn-table-rawiterator) | `self: Table` | `!Iterator` | Raw-entry iterator like Lua &#96;next&#96;; the caller must &#96;deinit&#96; it. Existing fields may be assigned or cleared during traversal; adding keys is undefined. |
 | [pairs](#fn-table-pairs) | `self: Table` | `!Iterator` | Iterator like Lua &#96;pairs(t)&#96;, honoring &#96;__pairs&#96;; its calls cannot yield. A closing value gets &#96;__close&#96; when iteration ends, fails, or &#96;close&#96; is called, but not on &#96;deinit&#96;. |
 | [Iterator](#type-table-iterator) |  |  | Owns each returned &#96;Entry&#96; until the next &#96;next&#96;, &#96;close&#96;, or &#96;deinit&#96;; do not deinit entries. Reset invalidates the iterator. |
@@ -184,7 +188,6 @@ References: [`Table`](#type-table)
 ### Table.get
 
 Reads `t[key]` honoring `__index`; metamethods cannot yield and fail with `error.LuaError`.
-A `[]const u8` result borrows VM memory; see `Value.string`.
 
 ```zig
 pub fn get(self: Table, key: anytype, comptime T: type) !T
@@ -304,8 +307,6 @@ References: [`Table`](#type-table)
 
 ### Table.rawGet
 
-A `[]const u8` result borrows VM memory; see `Value.string`.
-
 ```zig
 pub fn rawGet(self: Table, key: anytype, comptime T: type) !T
 ```
@@ -317,7 +318,7 @@ References: [`Table`](#type-table)
 ### Table.toSlice
 
 Reads raw entries `1..rawLen()`; holes fail with `error.TypeMismatch` unless `T` is optional.
-The caller frees the slice and deinits handle elements; string elements borrow VM memory.
+The caller frees the slice and deinits handle elements.
 
 ```zig
 pub fn toSlice(self: Table, comptime T: type, allocator: std.mem.Allocator) ![]T
@@ -329,44 +330,12 @@ References: [`Table`](#type-table)
 
 ### Table.Entry
 
-String fields borrow VM memory; see `Value.string`.
-
 ```zig
 pub const Entry = struct {
     key: Value,
     value: Value,
 };
 ```
-
-#### Nested Declarations
-
-| Name | Parameters | Return Type | Description |
-| --- | --- | --- | --- |
-| [deinit](#fn-entry-deinit) | `self: *Entry` | `void` | Only for &#96;rawNext&#96; entries; &#96;Iterator&#96; owns the entries it returns. |
-
-<a id="fn-entry-deinit"></a>
-
-#### Entry.deinit
-
-Only for `rawNext` entries; `Iterator` owns the entries it returns.
-
-```zig
-pub fn deinit(self: *Entry) void
-```
-
-References: [`Entry`](#type-table-entry)
-
-<a id="fn-table-rawnext"></a>
-
-### Table.rawNext
-
-Lua `next`: start with null or `.nil`; deinit each entry. Prefer `rawIterator`.
-
-```zig
-pub fn rawNext(self: Table, key: anytype) !?Entry
-```
-
-References: [`Table`](#type-table), [`Entry`](#type-table-entry)
 
 <a id="fn-table-rawiterator"></a>
 
@@ -455,4 +424,14 @@ pub fn deinit(self: *Iterator) void
 ```
 
 References: [`Iterator`](#type-table-iterator)
+
+<a id="fn-storeraw"></a>
+
+## storeRaw
+
+```zig
+pub fn storeRaw(state: *State, table: *runtime.Table, key: runtime.Value, value: runtime.Value) !void
+```
+
+References: [`runtime.Table`](../runtime.md#alias-table), [`runtime.Value`](../runtime.md#alias-value)
 
