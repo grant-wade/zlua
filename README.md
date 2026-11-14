@@ -56,11 +56,9 @@ pub fn main(init: std.process.Init) !void {
         \\function greet(name)
         \\  return greeting .. ", " .. name .. "! 2 + 3 = " .. add(2, 3)
         \\end
-    , .{ .name = "=readme" });
+    , .{ .name = "=quickstart" });
 
-    var greet = try lua.getGlobal("greet", zlua.Function);
-    defer greet.deinit();
-    var message = try greet.call(.{"zlua"}, zlua.String);
+    var message = try lua.callGlobal("greet", .{"zlua"}, zlua.String);
     defer message.deinit();
     std.debug.print("{f}\n", .{message});
 }

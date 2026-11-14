@@ -14,7 +14,7 @@ pub fn main() !void {
     var chunk = try lua.loadString(
         \\local sum, status = host_add(20, 22)
         \\return sum, status
-    , .{ .name = "=register_function" });
+    , .{ .name = "=host_function" });
     defer chunk.deinit();
 
     const sum, var status = try chunk.call(.{}, struct { i64, zlua.String });

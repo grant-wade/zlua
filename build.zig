@@ -158,18 +158,19 @@ pub fn build(b: *std.Build) void {
         .{ .name = "zlua-embed-coroutine-story", .path = "examples/coroutine_story.zig" },
         .{ .name = "zlua-embed-run-script", .path = "examples/run_script.zig" },
         .{ .name = "zlua-embed-select-libraries", .path = "examples/select_libraries.zig" },
-        .{ .name = "zlua-embed-register-function", .path = "examples/register_function.zig" },
+        .{ .name = "zlua-embed-host-function", .path = "examples/host_function.zig" },
         .{ .name = "zlua-embed-decode-config", .path = "examples/decode_config.zig" },
         .{ .name = "zlua-embed-typed-host-function", .path = "examples/typed_host_function.zig" },
+        .{ .name = "zlua-embed-closure", .path = "examples/closure.zig" },
         .{ .name = "zlua-embed-plugin-sandbox", .path = "examples/plugin_sandbox.zig" },
         .{ .name = "zlua-embed-bytecode-roundtrip", .path = "examples/bytecode_roundtrip.zig" },
         .{ .name = "zlua-embed-memory-rw-files", .path = "examples/memory_rw_files.zig" },
         .{ .name = "zlua-embed-userdata-counter", .path = "examples/userdata_counter.zig" },
-        .{ .name = "zlua-embed-userdata-auto", .path = "examples/userdata_auto.zig" },
-        .{ .name = "zlua-embed-typed-userdata-initializer", .path = "examples/typed_userdata_initializer.zig" },
+        .{ .name = "zlua-embed-userdata-options", .path = "examples/userdata_options.zig" },
+        .{ .name = "zlua-embed-userdata-constructor", .path = "examples/userdata_constructor.zig" },
         .{ .name = "zlua-embed-preload-module", .path = "examples/preload_module.zig" },
         .{ .name = "zlua-embed-watchdog", .path = "examples/watchdog.zig" },
-        .{ .name = "zlua-embed-readme", .path = "examples/readme.zig" },
+        .{ .name = "zlua-embed-quickstart", .path = "examples/quickstart.zig" },
     };
 
     const examples_step = b.step("examples", "Compile and run all embedding examples, requiring exit code 0");

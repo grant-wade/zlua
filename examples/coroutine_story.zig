@@ -16,6 +16,14 @@ fn answered(ctx: *zlua.Context, answer: []const u8) ![]const u8 {
     return if (std.mem.eql(u8, answer, "yes")) prompt else "declined";
 }
 
+fn scored(ctx: *zlua.Context, scene: zlua.Function, bonus: i64) !void {
+    return ctx.callThen(scene, .{}, addBonus, .{bonus});
+}
+
+fn addBonus(ctx: *zlua.Context, points: i64) !i64 {
+    return points + try ctx.upvalue(0, i64);
+}
+
 pub fn main() !void {
     const lua = try zlua.State.init(std.heap.smp_allocator, .{});
     defer lua.deinit();
@@ -74,4 +82,22 @@ pub fn main() !void {
     var confirmed = try flow.resumeCoroutine(.{"yes"}, void, zlua.String);
     defer confirmed.deinit();
     std.debug.print("{f}\n", .{confirmed.returned});
+
+    try lua.setGlobal("scored", scored);
+    var scene = try lua.loadString(
+        \\local total = scored(function()
+        \\    local door = coroutine.yield("Pick a door")
+        \\    return door == "left" and 10 or 0
+        \\end, 5)
+        \\return "Score: " .. total
+    , .{ .name = "=scene.lua" });
+    defer scene.deinit();
+    var play = try lua.newCoroutine(scene);
+    defer play.deinit();
+    var picking = try play.resumeCoroutine(.{}, zlua.String, void);
+    defer picking.deinit();
+    std.debug.print("{f}\n", .{picking.yielded});
+    var score = try play.resumeCoroutine(.{"left"}, void, zlua.String);
+    defer score.deinit();
+    std.debug.print("{f}\n", .{score.returned});
 }

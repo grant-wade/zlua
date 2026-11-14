@@ -1013,7 +1013,7 @@ userdata payloads.
 
 | Topic | Example |
 | --- | --- |
-| Overview | [`readme.zig`](../examples/readme.zig) |
+| Overview | [`quickstart.zig`](../examples/quickstart.zig) |
 | Scripts | [`run_script.zig`](../examples/run_script.zig) |
 | Library selection | [`select_libraries.zig`](../examples/select_libraries.zig) |
 | Sandboxing | [`plugin_sandbox.zig`](../examples/plugin_sandbox.zig) |
@@ -1021,8 +1021,8 @@ userdata payloads.
 | Interrupts | [`watchdog.zig`](../examples/watchdog.zig) |
 | Bytecode | [`bytecode_roundtrip.zig`](../examples/bytecode_roundtrip.zig) |
 | Modules | [`preload_module.zig`](../examples/preload_module.zig) |
-| Callbacks | [`register_function.zig`](../examples/register_function.zig), [`typed_host_function.zig`](../examples/typed_host_function.zig) |
+| Callbacks | [`host_function.zig`](../examples/host_function.zig), [`typed_host_function.zig`](../examples/typed_host_function.zig), [`closure.zig`](../examples/closure.zig) |
 | Decoding | [`decode_config.zig`](../examples/decode_config.zig) |
 | Coroutines | [`coroutine_story.zig`](../examples/coroutine_story.zig) |
-| Userdata | [`userdata_counter.zig`](../examples/userdata_counter.zig), [`userdata_auto.zig`](../examples/userdata_auto.zig), [`typed_userdata_initializer.zig`](../examples/typed_userdata_initializer.zig) |
+| Userdata | [`userdata_counter.zig`](../examples/userdata_counter.zig), [`userdata_options.zig`](../examples/userdata_options.zig), [`userdata_constructor.zig`](../examples/userdata_constructor.zig) |
 | Snapshots | [`snapshot_adventure.zig`](../examples/snapshot_adventure.zig), [`snapshot_adversarial.zig`](../examples/snapshot_adversarial.zig), [`snapshot_reset.zig`](../examples/snapshot_reset.zig) |
