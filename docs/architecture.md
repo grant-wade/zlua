@@ -219,8 +219,8 @@ where compatibility tests pin down Lua's behavior.
 
 Each thread owns a value stack and a stack of `CallFrame`s. Calls go through
 `runtime/call.zig`, and host code enters Lua through `runtime/entry.zig`, which
-runs each host call on a host thread and keeps one finished thread for the next
-call:
+runs each host call on a host thread and keeps the thread of one successful call
+for the next:
 
 ```text
 value + arguments

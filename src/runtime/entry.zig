@@ -93,6 +93,7 @@ fn callLoadedClosureHandled(self: *State, closure: *Closure, args: []const Value
         error.StackOverflow => return self.fail("stack overflow"),
         else => return err,
     };
+    errdefer self.freeIdleHostThread();
     defer retireHostThread(self, thread);
     try load_mod.setRootThreadArgs(self, thread, args);
     thread.frames.items[0].return_count = bytecode.multret_count;
@@ -118,6 +119,7 @@ fn protectedCallLoadedClosureHandled(self: *State, closure: *Closure, args: []co
         error.StackOverflow => return .{ .failure = .{ .string = try self.strings.intern("stack overflow") } },
         else => return err,
     };
+    errdefer self.freeIdleHostThread();
     defer retireHostThread(self, thread);
     try load_mod.setRootThreadArgs(self, thread, args);
     thread.frames.items[0].return_count = bytecode.multret_count;
@@ -179,6 +181,7 @@ pub fn callFunctionInto(self: *State, function: Value, args: []const Value, hand
         error.StackOverflow => return self.fail("stack overflow"),
         else => return err,
     };
+    errdefer self.freeIdleHostThread();
     defer retireHostThread(self, thread);
     installHostErrorHandler(thread, handler);
     const previous_thread = self.current_thread;
@@ -222,6 +225,7 @@ fn executeClosure(self: *State, closure: *Closure, handler: HostErrorHandler) !v
         error.StackOverflow => return self.fail("stack overflow"),
         else => return err,
     };
+    errdefer self.freeIdleHostThread();
     defer retireHostThread(self, thread);
     installHostErrorHandler(thread, handler);
     const previous_thread = self.current_thread;

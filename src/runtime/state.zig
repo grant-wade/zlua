@@ -370,6 +370,13 @@ pub const State = struct {
         self.deinit();
     }
 
+    pub fn freeIdleHostThread(self: *State) void {
+        const thread = self.idle_host_thread orelse return;
+        self.idle_host_thread = null;
+        thread.deinit(self.allocator);
+        self.allocator.destroy(thread);
+    }
+
     /// Like `lua_close`: runs pending finalizers newest first, restarting the
     /// instruction budget for each, then frees the state.
     pub fn deinit(self: *State) void {
@@ -402,10 +409,7 @@ pub const State = struct {
         self.gc.tables.deinit(self.allocator);
         self.gc.finalizers.deinit(self.allocator);
         for (self.thread_allocations.items) |thread| self.gc.destroyThread(thread);
-        if (self.idle_host_thread) |thread| {
-            thread.deinit(self.allocator);
-            self.allocator.destroy(thread);
-        }
+        self.freeIdleHostThread();
         for (self.closure_allocations.items) |closure| self.gc.destroyClosure(closure);
         for (self.upvalue_allocations.items) |upvalue| self.objects().destroy(upvalue);
         for (self.userdata_allocations.items) |userdata| self.gc.destroyUserdata(userdata);

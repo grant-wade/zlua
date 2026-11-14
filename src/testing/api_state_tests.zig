@@ -783,6 +783,15 @@ test "api calls into Lua allocate nothing once a host thread is kept" {
     try std.testing.expectEqual(allocations, counter.allocations);
 }
 
+test "api a failed call keeps no host thread" {
+    const lua = try State.init(std.testing.allocator, .{});
+    defer lua.deinit();
+    try lua.doString("function fail() error('failed') end", .{});
+    try std.testing.expect(lua.raw_state.idle_host_thread != null);
+    try std.testing.expectError(error.LuaError, lua.callGlobal("fail", .{}, void));
+    try std.testing.expect(lua.raw_state.idle_host_thread == null);
+}
+
 fn callBack(ctx: *Context, function: Function, value: i64) !i64 {
     _ = ctx;
     return try function.call(.{value}, i64) + 1;
